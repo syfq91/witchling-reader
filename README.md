@@ -13,7 +13,6 @@ This fork focuses on a lighter, more reliable, and standardized reading experien
 - **Removed USB Serial File Transfer**: Stripped the custom USB-CDC serial transfer protocol and host scripts, keeping serial strictly for logging and diagnostics.
 - **Removed Legacy KOReader Synchronization**: Removed the legacy KOReader sync client, XPath indexing/mapping engines, credential stores, and sync screens (preparing for modern OPDS Progression 1.0 synchronization).
 - **Decoupled Document ID & Reading Stats**: Replaced KOReader document hash generation with a lightweight, standalone `calculateBookId` helper in Reading Stats to preserve reading history, pace tracking, and cover caches.
-- **Reduced Memory & Flash Footprint**: Eliminated over 8,000 lines of unused networking and transfer code, removed redundant background tasks, and stripped unused translation keys across all 24 supported languages.
 
 # Installation
 
