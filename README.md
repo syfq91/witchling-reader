@@ -18,7 +18,6 @@ Flashing is done from the browser — no toolchain or driver install needed. Use
 - Speed - rendering should be *fast*
 - CSS layout - a lot of effort have gone into rendering 
 - Memory - where others fail Witch Reader still works
-- Proper KOReader Snychronisation
 - Additional sleep screens support (information overlay, transparent pictures over current reader screen)
 - Clock-Support for X4 and X3
 - Multiple under-the-hood performance improvements
@@ -116,7 +115,6 @@ Legend: ✅ supported · ⚠️ partial / basic · ❌ not supported.
 | Sleep screens: PNG with alpha | ✅ | ❌ BMP only |
 | Sleep screens: info overlay (title/chapter/page/percent) | ✅ | ❌ |
 | Sleep screens: sequential image pick | ✅ | ⚠️ random only |
-| KOReader sync | ✅ auto bidirectional, on-device settings, differential refresh | ⚠️ proper sync + automatic resolution, no on-device registration |
 | Per-button custom actions (23 actions × short/double/long) | ✅ + overview screen | ❌ physical remap + a few toggles |
 | Captive-portal login (client detect + QR to authorize) | ✅ | ❌ AP-side only |
 | System information screen | ✅ | ❌ |
@@ -130,7 +128,7 @@ Legend: ✅ supported · ⚠️ partial / basic · ❌ not supported.
 **Choose Witch Reader for:** speed, richer CSS and typography (floats, real tables, small-caps,
 strikethrough, line-height), GIF and better image handling, Markdown, a clock on
 the X4, reading statistics, global bookmarks, a cover carousel, fully customizable per-button
-gestures, automatic KOReader sync, and a deeper settings/system surface.
+gestures, and a deeper settings/system surface.
 
 **Choose CrossPoint for:** right-to-left languages (Hebrew / Arabic) — the one user-facing
 capability Witch Reader genuinely lacks — plus  a
@@ -171,7 +169,7 @@ These are bundled directly in the repository. Each retains its upstream copyrigh
 Pulled from the PlatformIO registry at build time.
 
 - **ArduinoJson** by Benoît Blanchon — JSON parsing/serialization. https://github.com/bblanchon/ArduinoJson — MIT.
-- **arduinoWebSockets** by Markus Sattler — WebSocket client (KOReader sync). https://github.com/Links2004/arduinoWebSockets — LGPL-2.1.
+- **arduinoWebSockets** by Markus Sattler — WebSocket server (web UI binary file uploads). https://github.com/Links2004/arduinoWebSockets — LGPL-2.1.
 
 # Why this name
 Originally this fork was called CrossPoint++ - it had a small userbase and then I made an honest mistake by reusing the crosspoint fork, providing ample reference in the PRs and the release notes of code origin and authorship but was losing the github commit author information in the progress when I copied code over instead of taking the tedious (and correct) way of cherrypicking the original commit and post-cleanup effort.

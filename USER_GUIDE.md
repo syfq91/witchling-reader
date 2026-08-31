@@ -22,7 +22,6 @@ Welcome to **Witch Reader** firmware. This guide outlines the hardware controls,
       - [3.7.4 System](#374-system)
       - [3.7.5 OPDS Servers (Multiple Libraries)](#375-opds-servers-multiple-libraries)
       - [3.7.6 Web Settings (WiFi + OPDS)](#376-web-settings-wifi--opds)
-      - [3.7.7 KOReader Sync Quick Setup](#377-koreader-sync-quick-setup)
     - [3.8 Sleep Screen](#38-sleep-screen)
   - [4. Reading Mode](#4-reading-mode)
     - [Page Turning](#page-turning)
@@ -193,7 +192,7 @@ The Settings screen allows you to configure the device's behavior.
 #### 3.7.3 Controls
 
 - **Remap Front Buttons**: Reassign the physical function of each bottom-edge button.
-- **Button Actions** (submenus — one per logical button: Back, Confirm, Left, Right, Up/Page Back, Down/Page Forward, Power): For each button, independently configure the **Short Press**, **Double Press**, and **Long Press** action. Available actions include: page forward/back, skip 10 pages, go home, sleep, force refresh, force fast refresh, open TOC, open bookmarks, star page, footnotes, next/previous chapter, exit reader, open reader menu, toggle bionic reading, KOReader sync, cycle font size, cycle orientation, quick overrides, and ignore.
+- **Button Actions** (submenus — one per logical button: Back, Confirm, Left, Right, Up/Page Back, Down/Page Forward, Power): For each button, independently configure the **Short Press**, **Double Press**, and **Long Press** action. Available actions include: page forward/back, skip 10 pages, go home, sleep, force refresh, force fast refresh, open TOC, open bookmarks, star page, footnotes, next/previous chapter, exit reader, open reader menu, toggle bionic reading, cycle font size, cycle orientation, quick overrides, and ignore.
 - **Button Actions Overview**: A read-only overview screen showing the current short/double/long press mapping for every button at a glance.
 - **Tilt Page Turn** *(X3 only)*: Use the tilt sensor to turn pages by tilting the device. Sub-settings:
   - **Enable Tilt Page Turn**: "ON" / "OFF"
@@ -208,7 +207,6 @@ The Settings screen allows you to configure the device's behavior.
 
 **Network**:
 - **WiFi Networks**: Add, remove, and connect to WiFi networks.
-- **KOReader Sync**: Configure and authenticate KOReader progress sync. See [KOReader Sync Quick Setup](#377-koreader-sync-quick-setup).
 - **OPDS Servers**: Manage OPDS libraries. See [OPDS Servers (Multiple Libraries)](#375-opds-servers-multiple-libraries).
 
 **Tools**:
@@ -268,59 +266,6 @@ Behavior notes:
 - Passwords are never shown back in the web UI after saving.
 - Leaving Password blank while editing keeps the existing saved password unchanged.
 - The web UI can save hidden-network SSIDs, but connecting to hidden networks still depends on device-side WiFi connection flow.
-
-#### 3.7.7 KOReader Sync Quick Setup
-
-Witch Reader can sync reading progress with KOReader-compatible sync servers automatically and bidirectionally. It also interoperates with KOReader apps/devices when they use the same server and credentials.
-
-##### Option A: Free Public Server (`sync.koreader.rocks`)
-
-1. Go to **Settings → System → KOReader Sync**.
-2. Set **Sync Server URL** to `https://sync.koreader.rocks` (or leave it empty — the default points to the same server).
-3. Enter your **Username** and **Password**.
-4. Select **Register** to create a new account on the server — Witch Reader handles the registration on-device, including the required MD5 password hashing. If the username is already taken, choose a different one and try again.
-5. Once registration succeeds, select **Authenticate** to confirm the credentials are working.
-
-Already have KOReader Sync credentials? Skip **Register** and go straight to **Authenticate**.
-
-##### Option B: Self-Hosted Server (Docker Compose)
-
-1. Start a sync server on your computer or home server:
-
-```bash
-mkdir -p kosync-quickstart && cd kosync-quickstart
-
-cat > compose.yaml <<'YAML'
-services:
-  kosync:
-    image: koreader/kosync:latest
-    ports:
-      - "7200:7200"
-      - "17200:17200"
-    volumes:
-      - ./data/redis:/var/lib/redis
-    environment:
-      - ENABLE_USER_REGISTRATION=true
-    restart: unless-stopped
-YAML
-
-docker compose up -d
-```
-
-> [!NOTE]
-> Set `ENABLE_USER_REGISTRATION=false` after creating your accounts to prevent unexpected registrations.
-
-2. On the device, go to **Settings → System → KOReader Sync**:
-   - Set **Sync Server URL** to `http://<server-ip>:17200` (or `https://<server-ip>:7200` for the TLS listener).
-   - Enter your **Username** and **Password**.
-   - Select **Register** to create the account directly from the device.
-   - Select **Authenticate** to confirm.
-
-##### Using sync while reading
-
-Press **Confirm** to open the reader menu, then select **Sync Progress**:
-- **Apply Remote** — jump to the progress stored on the server.
-- **Upload Local** — push the current position to the server.
 
 ### 3.8 Sleep Screen
 

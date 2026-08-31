@@ -10,7 +10,6 @@
 #include "EnumSelectionActivity.h"
 #include "FontDownloadActivity.h"
 #include "FontSelectionActivity.h"
-#include "KOReaderSettingsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
@@ -36,8 +35,6 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<FontDownloadActivity>(renderer, mappedInput);
     case SettingAction::ClockSettings:
       return std::make_unique<ClockSettingsActivity>(renderer, mappedInput);
-    case SettingAction::KOReaderSync:
-      return std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput);
     case SettingAction::OPDSBrowser:
       return std::make_unique<OpdsServerListActivity>(renderer, mappedInput);
     case SettingAction::Network:

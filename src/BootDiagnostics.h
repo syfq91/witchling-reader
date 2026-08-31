@@ -61,7 +61,7 @@ enum class BootPhase : uint8_t {
   SerialUp,        // USB-CDC opened (only when USB is connected; earlier phases log nothing)
   RecoverySettle,  // UP+POWER recovery-combo sample window
   SdMount,         // Storage.begin()
-  ConfigLoad,      // settings, app state, i18n, KOReader, OPDS, theme
+  ConfigLoad,      // settings, app state, i18n, OPDS, theme
   DisplayFonts,    // panel init + framebuffer alloc + font registration + SD font scan
   FirstPaint,      // splash / quick-resume frame handed to the panel (logo now visible)
   StoreLoad,       // clock, recent books, bookmarks, reading stats

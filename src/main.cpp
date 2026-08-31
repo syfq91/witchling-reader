@@ -30,7 +30,6 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "GlobalBookmarkIndex.h"
-#include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "ReadingSessionTracker.h"
@@ -160,13 +159,10 @@ constexpr uint32_t SILENT_REBOOT_TARGET_CLOCK_SETTINGS = 3;
 // "Quick Resume on Timeout").
 constexpr uint32_t SILENT_REBOOT_TARGET_SLEEP = 4;
 constexpr uint32_t SILENT_REBOOT_TARGET_SLEEP_TIMEOUT = 5;
-// Boot into the KOReader settings screen after an auth/register WiFi session, so
-// the user lands back where they started instead of on Home.
-constexpr uint32_t SILENT_REBOOT_TARGET_KOREADER_SETTINGS = 6;
 // Upper bound for the cold-boot sanity check on silentRebootTarget (RTC_NOINIT is
 // uninitialized on power-up). Must equal the highest target above — keep it in
 // sync when adding one, or the new target silently reads as HOME.
-constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_KOREADER_SETTINGS;
+constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_SLEEP_TIMEOUT;
 constexpr uint32_t HEAP_RECOVERY_RESTART_LATCH_MAGIC = 0x48EA9C01;
 
 // How the device is coming back to life, resolved once at boot. Both resume
@@ -219,16 +215,6 @@ void silentRestartToClockSettings() {
   silentRebootTarget = SILENT_REBOOT_TARGET_CLOCK_SETTINGS;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_DBG("MAIN", "Silent restart (target=clock-settings)");
-  delay(50);
-  ESP.restart();
-}
-
-void silentRestartToKOReaderSettings() {
-  if (deepSleepInProgress) return;
-  globalReadingSessionTracker().end();
-  silentRebootTarget = SILENT_REBOOT_TARGET_KOREADER_SETTINGS;
-  silentRebootMagic = SILENT_REBOOT_MAGIC;
-  LOG_DBG("MAIN", "Silent restart (target=koreader-settings)");
   delay(50);
   ESP.restart();
 }
@@ -965,7 +951,6 @@ void setup() {
   HalSystem::clearPanic();  // TODO: move this to an activity when we have one to display the panic info
   HalClock::applyTimezone(SETTINGS.timeZone);
   I18N.loadSettings();
-  KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
@@ -1108,8 +1093,6 @@ void setup() {
     activityManager.goToReader(APP_STATE.openEpubPath);
   } else if (resume == BootResume::Silent && silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_CLOCK_SETTINGS) {
     activityManager.goToClockSettings();
-  } else if (resume == BootResume::Silent && silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_KOREADER_SETTINGS) {
-    activityManager.goToKOReaderSettings();
   } else if (resume == BootResume::Silent) {
     // target == home (or reader with no open book): land on home — don't fall
     // through to the sleep-wake "resume reader" logic, which fires on stale
@@ -1459,7 +1442,6 @@ void loop() {
         case BA::BTN_EXIT_READER:
         case BA::BTN_READER_MENU:
         case BA::BTN_TOGGLE_BIONIC_READING:
-        case BA::BTN_KOREADER_SYNC:
         case BA::BTN_CYCLE_FONT_SIZE:
         case BA::BTN_CYCLE_ORIENTATION:
         case BA::BTN_QUICK_OVERRIDES:
@@ -1544,9 +1526,6 @@ void loop() {
           break;
         case BA::BTN_READER_MENU:
           activityManager.dispatchButtonAction(BA::BTN_READER_MENU);
-          break;
-        case BA::BTN_KOREADER_SYNC:
-          activityManager.dispatchButtonAction(BA::BTN_KOREADER_SYNC);
           break;
         case BA::BTN_TOGGLE_BIONIC_READING:
           activityManager.dispatchButtonAction(BA::BTN_TOGGLE_BIONIC_READING);

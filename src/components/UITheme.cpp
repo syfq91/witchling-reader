@@ -15,7 +15,6 @@
 #include <memory>
 #include <string>
 
-#include "KOReaderDocumentId.h"
 #include "MappedInputManager.h"
 #include "ReadingStats.h"
 #include "RecentBooksStore.h"
@@ -66,7 +65,7 @@ std::string bookEtaSuffix(const RecentBook& book, int progressPercent) {
   if (progressPercent < 0 || progressPercent >= 100) {
     return {};
   }
-  const std::string docId = KOReaderDocumentId::calculateFromFilename(book.path);
+  const std::string docId = calculateBookId(book.path);
   const uint32_t etaSeconds =
       READING_STATS.estimateRemainingSeconds(docId, 100.0f - static_cast<float>(progressPercent));
   if (etaSeconds == 0) {

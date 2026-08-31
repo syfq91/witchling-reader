@@ -17,7 +17,6 @@
 #include "CrossPointState.h"
 #include "Epub.h"
 #include "EpubReaderActivity.h"
-#include "KOReaderCredentialStore.h"
 #include "MdReaderActivity.h"
 #include "Txt.h"
 #include "TxtReaderActivity.h"
@@ -662,39 +661,6 @@ void ReaderActivity::onGoToEpubReader(std::unique_ptr<Epub> epub) {
   const auto epubPath = epub->getPath();
   currentBookPath = epubPath;
 
-  // Long-press Confirm on RecentBooks/FileBrowser sets autoPullEpubPath so the user can
-  // ask for KOReader sync at open time. Route into the sync activity instead of creating the
-  // reader; sync's resumeReader() will create the reader once the remote position is applied.
-  // Pull-only mode does not need accurate local reader state, so we hand off zeros for spine/page.
-  auto& sync = APP_STATE.koReaderSyncSession;
-  if (!sync.autoPullEpubPath.empty() && sync.autoPullEpubPath == epubPath && KOREADER_STORE.hasCredentials()) {
-    LOG_DBG("READER", "AUTO_PULL on open: %s", epubPath.c_str());
-    sync.autoPullEpubPath.clear();  // consume the flag
-    sync.active = true;
-    sync.epubPath = epubPath;
-    sync.spineIndex = 0;
-    sync.page = 0;
-    sync.totalPagesInSpine = 0;
-    sync.paragraphIndex = 0;
-    sync.hasParagraphIndex = false;
-    sync.xhtmlSeekHint = 0;
-    sync.intent = KOReaderSyncIntentState::AUTO_PULL;
-    sync.outcome = KOReaderSyncOutcomeState::PENDING;
-    sync.resultSpineIndex = 0;
-    sync.resultPage = 0;
-    sync.resultParagraphIndex = 0;
-    sync.resultHasParagraphIndex = false;
-    sync.resultListItemIndex = 0;
-    sync.resultHasListItemIndex = false;
-    sync.postAction = KOReaderSyncPostAction::Reader;
-    APP_STATE.saveToFile();
-    // Drop the loaded Epub before TLS — sync activity will reload it for remote-position
-    // mapping. Holding it here would needlessly inflate the heap during WiFi/TLS work.
-    epub.reset();
-    activityManager.goToKOReaderSync();
-    return;
-  }
-
   logReaderLaunchMemSnapshot("before_replace_epub_reader");
   activityManager.replaceActivity(std::make_unique<EpubReaderActivity>(renderer, mappedInput, std::move(epub)));
 }
@@ -731,11 +697,6 @@ void ReaderActivity::onEnter() {
   if (initialBookPath.empty()) {
     goToLibrary();  // Start from root when entering via Browse
     return;
-  }
-
-  if (APP_STATE.koReaderSyncSession.active && APP_STATE.koReaderSyncSession.epubPath == initialBookPath) {
-    LOG_DBG("READER", "Opening EPUB with pending KOReader sync outcome=%d",
-            static_cast<int>(APP_STATE.koReaderSyncSession.outcome));
   }
 
   currentBookPath = initialBookPath;

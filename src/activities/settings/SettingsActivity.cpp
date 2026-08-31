@@ -117,7 +117,7 @@ void SettingsActivity::onEnter() {
     }
     if (isReaderFontEntry) sawReaderFontSection = true;
 
-    // Web-only categories (KOReader Sync, OPDS Browser) are skipped for device UI
+    // Web-only categories (e.g. OPDS Browser) are skipped for device UI
   }
 
   if (!insertedFontDownload && sawReaderFontSection) {
@@ -141,9 +141,6 @@ void SettingsActivity::onEnter() {
   addToMoved(systemSettings, lastSystemSub, SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
   addToMoved(systemSettings, lastSystemSub,
              std::move(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network)
-                           .withSubcategory(StrId::STR_MENU_SYS_NETWORK)));
-  addToMoved(systemSettings, lastSystemSub,
-             std::move(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync)
                            .withSubcategory(StrId::STR_MENU_SYS_NETWORK)));
   addToMoved(systemSettings, lastSystemSub,
              std::move(SettingInfo::Action(StrId::STR_OPDS_BROWSER, SettingAction::OPDSBrowser)

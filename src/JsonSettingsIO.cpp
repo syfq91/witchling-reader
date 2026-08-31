@@ -11,7 +11,6 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
-#include "KOReaderCredentialStore.h"
 #include "OpdsServerStore.h"
 #include "ReadingStats.h"
 #include "RecentBooksStore.h"
@@ -97,27 +96,6 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
   doc["lastSleepFromReader"] = s.lastSleepFromReader;
   doc["recentBooksGridView"] = s.recentBooksGridView;
   doc["showBootScreen"] = s.showBootScreen;
-  // Information about a pending KOReader sync session
-  JsonObject sync = doc["koReaderSyncSession"].to<JsonObject>();
-  sync["active"] = s.koReaderSyncSession.active;
-  sync["epubPath"] = s.koReaderSyncSession.epubPath;
-  sync["spineIndex"] = s.koReaderSyncSession.spineIndex;
-  sync["page"] = s.koReaderSyncSession.page;
-  sync["totalPagesInSpine"] = s.koReaderSyncSession.totalPagesInSpine;
-  sync["paragraphIndex"] = s.koReaderSyncSession.paragraphIndex;
-  sync["hasParagraphIndex"] = s.koReaderSyncSession.hasParagraphIndex;
-  sync["xhtmlSeekHint"] = s.koReaderSyncSession.xhtmlSeekHint;
-  sync["intent"] = static_cast<uint8_t>(s.koReaderSyncSession.intent);
-  sync["outcome"] = static_cast<uint8_t>(s.koReaderSyncSession.outcome);
-  sync["resultSpineIndex"] = s.koReaderSyncSession.resultSpineIndex;
-  sync["resultPage"] = s.koReaderSyncSession.resultPage;
-  sync["resultParagraphIndex"] = s.koReaderSyncSession.resultParagraphIndex;
-  sync["resultHasParagraphIndex"] = s.koReaderSyncSession.resultHasParagraphIndex;
-  sync["resultListItemIndex"] = s.koReaderSyncSession.resultListItemIndex;
-  sync["resultHasListItemIndex"] = s.koReaderSyncSession.resultHasListItemIndex;
-  sync["postAction"] = static_cast<uint8_t>(s.koReaderSyncSession.postAction);
-  sync["postActionTarget"] = s.koReaderSyncSession.postActionTarget;
-  sync["autoPullEpubPath"] = s.koReaderSyncSession.autoPullEpubPath;
   // Information about a pending bookmark jump
   JsonObject jump = doc["pendingBookmarkJump"].to<JsonObject>();
   jump["active"] = s.pendingBookmarkJump.active;
@@ -158,32 +136,6 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   s.lastSleepFromReader = doc["lastSleepFromReader"] | false;
   s.recentBooksGridView = doc["recentBooksGridView"] | false;
   s.showBootScreen = doc["showBootScreen"] | true;
-  JsonObject sync = doc["koReaderSyncSession"].as<JsonObject>();
-  s.koReaderSyncSession.active = sync["active"] | false;
-  s.koReaderSyncSession.epubPath = sync["epubPath"] | std::string("");
-  s.koReaderSyncSession.spineIndex = sync["spineIndex"] | 0;
-  s.koReaderSyncSession.page = sync["page"] | 0;
-  s.koReaderSyncSession.totalPagesInSpine = sync["totalPagesInSpine"] | 0;
-  s.koReaderSyncSession.paragraphIndex = sync["paragraphIndex"] | (uint16_t)0;
-  s.koReaderSyncSession.hasParagraphIndex = sync["hasParagraphIndex"] | false;
-  s.koReaderSyncSession.xhtmlSeekHint = sync["xhtmlSeekHint"] | (uint32_t)0;
-  s.koReaderSyncSession.intent =
-      static_cast<KOReaderSyncIntentState>(sync["intent"] | static_cast<uint8_t>(KOReaderSyncIntentState::COMPARE));
-  s.koReaderSyncSession.outcome =
-      static_cast<KOReaderSyncOutcomeState>(sync["outcome"] | static_cast<uint8_t>(KOReaderSyncOutcomeState::NONE));
-  s.koReaderSyncSession.resultSpineIndex = sync["resultSpineIndex"] | 0;
-  s.koReaderSyncSession.resultPage = sync["resultPage"] | 0;
-  s.koReaderSyncSession.resultParagraphIndex = sync["resultParagraphIndex"] | (uint16_t)0;
-  s.koReaderSyncSession.resultHasParagraphIndex = sync["resultHasParagraphIndex"] | false;
-  s.koReaderSyncSession.resultListItemIndex = sync["resultListItemIndex"] | (uint16_t)0;
-  s.koReaderSyncSession.resultHasListItemIndex = sync["resultHasListItemIndex"] | false;
-  s.koReaderSyncSession.postAction =
-      static_cast<KOReaderSyncPostAction>(sync["postAction"] | static_cast<uint8_t>(KOReaderSyncPostAction::Reader));
-  s.koReaderSyncSession.postActionTarget = sync["postActionTarget"] | std::string("");
-  s.koReaderSyncSession.autoPullEpubPath = sync["autoPullEpubPath"] | std::string("");
-  if (s.koReaderSyncSession.autoPullEpubPath.empty() && (sync["autoPullOnOpen"] | false)) {
-    LOG_DBG("CPS", "Legacy autoPullOnOpen state found without epubPath - ignoring");
-  }
 
   JsonObject jump = doc["pendingBookmarkJump"].as<JsonObject>();
   s.pendingBookmarkJump.active = jump["active"] | false;
@@ -201,7 +153,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
 
   for (const auto& info : settings) {
     if (!info.key) continue;
-    // Dynamic entries (KOReader etc.) are stored in their own files — skip.
+    // Dynamic entries are stored in their own files — skip.
     if (!info.valuePtr && !info.stringOffset) continue;
 
     if (info.stringOffset) {
@@ -238,8 +190,6 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   }
   doc["moveFinishedBooksToCompleted"] = s.moveFinishedBooksToCompleted;
   doc["removeFinishedBooksFromRecents"] = s.removeFinishedBooksFromRecents;
-  doc["syncFinishedBookToKOReader"] = s.syncFinishedBookToKOReader;
-  doc["koSyncMinSessionPages"] = s.koSyncMinSessionPages;
   doc["sleepTimeoutMinutes"] = s.sleepTimeoutMinutes;
   doc["refreshFrequencyPages"] = s.refreshFrequencyPages;
 
@@ -319,7 +269,7 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
 
   for (const auto& info : settings) {
     if (!info.key) continue;
-    // Dynamic entries (KOReader etc.) are stored in their own files — skip.
+    // Dynamic entries are stored in their own files — skip.
     if (!info.valuePtr && !info.stringOffset) continue;
 
     if (info.stringOffset) {
@@ -400,8 +350,6 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.txtSdFontFamilyName[sizeof(s.txtSdFontFamilyName) - 1] = '\0';
   s.moveFinishedBooksToCompleted = doc["moveFinishedBooksToCompleted"] | (uint8_t)0;
   s.removeFinishedBooksFromRecents = doc["removeFinishedBooksFromRecents"] | (uint8_t)0;
-  s.syncFinishedBookToKOReader = doc["syncFinishedBookToKOReader"] | (uint8_t)0;
-  s.koSyncMinSessionPages = doc["koSyncMinSessionPages"] | (uint8_t)3;
 
   const uint8_t quickResumeBeforeNormalize = s.quickResumeSleepScreen;
   CrossPointSettings::normalizeDependentSettings(s);
@@ -409,71 +357,6 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
 
   LOG_DBG("CPS", "Settings loaded from file");
 
-  return true;
-}
-
-// ---- KOReaderCredentialStore ----
-
-bool JsonSettingsIO::saveKOReader(const KOReaderCredentialStore& store, const char* path) {
-  JsonDocument doc;
-  doc["username"] = store.getUsername();
-  doc["password_obf"] = obfuscation::obfuscateToBase64(store.getPassword());
-  doc["serverUrl"] = store.getServerUrl();
-  doc["matchMethod"] = static_cast<uint8_t>(store.getMatchMethod());
-  doc["sendMetadata"] = store.getSendMetadata();
-  doc["syncBehavior"] = static_cast<uint8_t>(store.getSyncBehavior());
-
-  String json;
-  serializeJson(doc, json);
-  return Storage.writeFile(path, json);
-}
-
-bool JsonSettingsIO::loadKOReader(KOReaderCredentialStore& store, const char* json, bool* needsResave) {
-  if (needsResave) *needsResave = false;
-  JsonDocument doc;
-  auto error = deserializeJson(doc, json);
-  if (error) {
-    LOG_ERR("KRS", "JSON parse error: %s", error.c_str());
-    return false;
-  }
-
-  store.username = doc["username"] | std::string("");
-  bool ok = false;
-  bool tooLong = false;
-  store.password = obfuscation::deobfuscateFromBase64(doc["password_obf"] | "", MAX_PASSWORD_LENGTH, &ok, &tooLong);
-  if (tooLong) {
-    LOG_ERR("KRS", "Discarding oversized password for user: %s", store.username.c_str());
-    if (needsResave) *needsResave = true;
-  }
-  if (!ok || store.password.empty()) {
-    store.password = doc["password"] | std::string("");
-    if (store.password.size() > MAX_PASSWORD_LENGTH) {
-      LOG_ERR("KRS", "Discarding oversized legacy password for user: %s", store.username.c_str());
-      store.password.clear();
-      if (needsResave) *needsResave = true;
-    } else if (!store.password.empty() && needsResave) {
-      *needsResave = true;
-    }
-  }
-  // Repair a scheme typo saved by an older build, so the settings screen shows the
-  // same URL getBaseUrl() will connect to.
-  store.serverUrl = UrlUtils::repairSchemeSeparator(doc["serverUrl"] | std::string(""));
-  uint8_t method = doc["matchMethod"] | (uint8_t)0;
-  store.matchMethod = static_cast<DocumentMatchMethod>(method);
-  store.sendMetadata = doc["sendMetadata"] | false;
-
-  // A file written before this key existed belongs to someone already using the chooser.
-  // Default them to ASK_EVERY_TIME rather than the SMART the member initialiser carries, so
-  // an update never silently changes how their sync resolves; only fresh installs get SMART.
-  const JsonVariantConst behaviorValue = doc["syncBehavior"];
-  if (behaviorValue.isNull()) {
-    store.setSyncBehavior(KOReaderSyncBehavior::ASK_EVERY_TIME);
-    if (needsResave) *needsResave = true;
-  } else {
-    store.setSyncBehavior(static_cast<KOReaderSyncBehavior>(behaviorValue | (uint8_t)0));
-  }
-
-  LOG_DBG("KRS", "Loaded KOReader credentials for user: %s", store.username.c_str());
   return true;
 }
 

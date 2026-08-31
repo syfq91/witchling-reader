@@ -30,34 +30,16 @@ enum class FinishedBookAction {
 // handler regardless of outcome — readers use it to clear a "menu is open"
 // flag. Plain function pointer + context instead of std::function per the
 // project callback convention.
-// `onSyncToKOReader` (optional, with `onSyncToKOReaderCtx`), when non-null, offers a "sync
-// progress to KOReader" toggle (only when KOReader credentials are also configured) alongside
-// the move-to-/COMPLETED and forget-book toggles. Unlike those two, applying it isn't a plain
-// settings write: it's invoked in place of navigating away directly, with the book's current
-// path (which may already be the moved-to-/COMPLETED path — the move/forget settings are still
-// applied first, "in parallel" rather than replaced), a KOReaderSyncPostAction describing which
-// of Go Home / Open Next / Search OPDS was picked, and that action's target (next-book path or
-// OPDS author, empty for Go Home). The callback owns pushing progress and, once its own reboot
-// completes, performing that action itself (EpubReaderActivity is the only caller that supplies
-// one, since KOReader sync is EPUB-only).
-// It returns whether it actually took over: the sync path REPLACES this flow's own navigation, so
-// a callback that declines (no credentials, no live Epub to read a position from) must say so or
-// the user is left sitting on a dead screen with nothing having happened. False means "I did not
-// navigate", and the picked action is performed here as if the toggle had been off.
 void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputManager& mappedInput,
                             const std::string& bookPath, const std::string& series, const std::string& seriesIndex,
                             const std::string& author = {}, void (*onMenuClosed)(void*) = nullptr,
-                            void* onMenuClosedCtx = nullptr,
-                            bool (*onSyncToKOReader)(void*, const std::string& bookPath, KOReaderSyncPostAction,
-                                                     const std::string& target) = nullptr,
-                            void* onSyncToKOReaderCtx = nullptr);
+                            void* onMenuClosedCtx = nullptr);
 }  // namespace BookFinished
 
 class FinishedBookActivity : public Activity {
  public:
   FinishedBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string currentBookPath,
-                       std::string nextBookPath, std::string currentBookAuthor = {},
-                       bool koReaderSyncAvailable = false);
+                       std::string nextBookPath, std::string currentBookAuthor = {});
 
   void onEnter() override;
   void loop() override;
@@ -72,7 +54,7 @@ class FinishedBookActivity : public Activity {
   // mapped input state directly and is unaffected.
   ButtonNavigator buttonNavigator;
 
-  // The menu's rows are conditional (next-book, OPDS-search, sync-to-KOReader and
+  // The menu's rows are conditional (next-book, OPDS-search, and
   // move-to-/COMPLETED each appear only when applicable), so the row count and every row's
   // index depend on the same booleans. Those were previously re-derived independently in
   // onEnter(), loop() and render(); any divergence between the count handed to GUI.drawList
@@ -85,7 +67,7 @@ class FinishedBookActivity : public Activity {
   // author/series, which author an OPDS search) either duplicates the preview panel above or
   // fits in the title itself.
   struct RowModel {
-    enum class Action { GoHome, OpenNext, SearchOpds, ToggleMoveToCompleted, ToggleForget, ToggleSyncToKOReader };
+    enum class Action { GoHome, OpenNext, SearchOpds, ToggleMoveToCompleted, ToggleForget };
     std::vector<Action> actions;
     std::vector<std::string> titles;
     std::vector<std::string> values;
@@ -105,9 +87,7 @@ class FinishedBookActivity : public Activity {
   std::string nextBookCoverPath_;
   bool nextBookAvailable_ = false;
   bool nextBookMetadataLoaded_ = false;
-  bool koReaderSyncAvailable_ = false;
   bool moveFinishedBooksToCompleted_ = false;
   bool removeFinishedBooksFromRecents_ = false;
-  bool syncFinishedBookToKOReader_ = false;
   int selectedIndex_ = 0;
 };

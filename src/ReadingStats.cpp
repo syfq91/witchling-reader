@@ -4,9 +4,23 @@
 #include <HalStorage.h>
 #include <JsonSettingsIO.h>
 #include <Logging.h>
+#include <MD5Builder.h>
 
 #include <algorithm>
 #include <ctime>
+
+std::string calculateBookId(const std::string& filePath) {
+  const size_t lastSlash = filePath.find_last_of('/');
+  const std::string filename = (lastSlash == std::string::npos) ? filePath : filePath.substr(lastSlash + 1);
+  if (filename.empty()) {
+    return "";
+  }
+  MD5Builder md5;
+  md5.begin();
+  md5.add(filename.c_str());
+  md5.calculate();
+  return md5.toString().c_str();
+}
 
 namespace {
 constexpr char READING_STATS_FILE[] = "/.crosspoint/reading-stats.json";

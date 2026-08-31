@@ -8,9 +8,9 @@
 
 #include "CrossPointState.h"
 #include "FinishedBookActivity.h"
-#include "KOReaderDocumentId.h"
 #include "ReaderActivity.h"
 #include "ReadingSessionTracker.h"
+#include "ReadingStats.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 
@@ -42,7 +42,7 @@ void LineReaderActivity::onEnter() {
 
   // Start reading-stats session. Same filename-hash policy as EPUB so renamed
   // files start fresh; author is unknown for plain text formats.
-  globalReadingSessionTracker().begin(KOReaderDocumentId::calculateFromFilename(filePath), fileName, "");
+  globalReadingSessionTracker().begin(calculateBookId(filePath), fileName, "");
 
   // Trigger first update
   requestUpdate();

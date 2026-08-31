@@ -18,11 +18,11 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "FinishedBookActivity.h"
-#include "KOReaderDocumentId.h"
 #include "MappedInputManager.h"
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
 #include "ReadingSessionTracker.h"
+#include "ReadingStats.h"
 #include "RecentBooksStore.h"
 #include "XtcReaderChapterSelectionActivity.h"
 #include "components/UITheme.h"
@@ -52,7 +52,7 @@ void XtcReaderActivity::onEnter() {
 
   // Start the reading-stats session. XTC has real title/author from the
   // file header so the per-book screen will look nicer than TXT/MD.
-  globalReadingSessionTracker().begin(KOReaderDocumentId::calculateFromFilename(xtc->getPath()), xtc->getTitle(),
+  globalReadingSessionTracker().begin(calculateBookId(xtc->getPath()), xtc->getTitle(),
                                       xtc->getAuthor());
 
   // Trigger first update

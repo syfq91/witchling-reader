@@ -651,23 +651,6 @@ void HomeActivity::onEnter() {
   // since that ~15 KB and its effect on the largest free block is what starves a section build.
   statsLoad_.emplace();
 
-  // A finished-book "sync to KOReader, then search OPDS for this author" request that just
-  // rebooted (the sync reboots to reclaim WiFi-session heap fragmentation, see
-  // KOReaderSyncActivity::onExit()) lands here first — there's no reader to hand it to the way
-  // the OpenBook/Reader post-actions can via APP_STATE.openEpubPath, so Home is what consumes it.
-  // replaceActivity() defers this to the next loop() tick rather than re-entering while this
-  // activity is still being constructed (see the "delete this" guard in ActivityManager).
-  auto& pendingSync = APP_STATE.koReaderSyncSession;
-  if (pendingSync.postAction == KOReaderSyncPostAction::OpdsSearch) {
-    const std::string author = pendingSync.postActionTarget;
-    pendingSync.clear();
-    APP_STATE.saveToFile();
-    if (!author.empty() && OPDS_STORE.hasServers()) {
-      activityManager.goToBrowserWithSearch(author);
-      return;
-    }
-  }
-
   hasOpdsServers = OPDS_STORE.hasServers();
 
   selectorIndex = 0;

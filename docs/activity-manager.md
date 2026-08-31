@@ -302,7 +302,7 @@ activityManager.setReturnHint(std::move(hint));
 activityManager.goToSettings();     // parent destroyed; hint survives the round trip
 ```
 
-`goTo*()` helpers do **not** clear the hint — only `goHome()` (explicit hard-reset) and the `replaceWith*()` helpers (which overwrite it with their own hint) do. This lets a hint survive chained transitions: Home → Reader → KOReaderSync → Reader → back to Home, hint intact.
+`goTo*()` helpers do **not** clear the hint — only `goHome()` (explicit hard-reset) and the `replaceWith*()` helpers (which overwrite it with their own hint) do. This lets a hint survive chained transitions: Home → Reader → Settings → Reader → back to Home, hint intact.
 
 How `finish()` interacts with the hint:
 

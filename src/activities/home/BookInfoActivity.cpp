@@ -7,7 +7,6 @@
 #include <HalClock.h>
 #include <HalStorage.h>
 #include <I18n.h>
-#include <KOReaderDocumentId.h>
 #include <Logging.h>
 #include <Xtc.h>
 
@@ -154,7 +153,7 @@ void BookInfoActivity::loadData() {
   // Pull any recorded reading history for this book. Keyed by the same
   // filename-based document id the reader uses when recording sessions.
   if (loadSucceeded) {
-    const std::string docId = KOReaderDocumentId::calculateFromFilename(filePath);
+    const std::string docId = calculateBookId(filePath);
     if (const BookReadingStats* stats = READING_STATS.findBook(docId)) {
       hasReadingStats = stats->totalSeconds > 0 || stats->sessions > 0;
       statTotalSeconds = stats->totalSeconds;

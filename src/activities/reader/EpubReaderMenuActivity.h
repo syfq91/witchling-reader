@@ -26,8 +26,6 @@ class EpubReaderMenuActivity final : public MenuListActivity {
     SCREENSHOT,
     DISPLAY_QR,
     GO_HOME,
-    PULL_REMOTE,
-    PUSH_LOCAL,
     STARRED_PAGES,
     STAR_PAGE,
     MARK_AS_READ,

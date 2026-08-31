@@ -23,7 +23,6 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "FileContextMenuActivity.h"
-#include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -320,14 +319,6 @@ void FileBrowserActivity::loop() {
         std::string fullPath = basepath;
         if (fullPath.back() != '/') fullPath += "/";
         fullPath += entry;
-        // Long-press on an EPUB arms an AUTO_PULL before the reader renders its first page.
-        // Restricted to EPUB so long-pressing a non-EPUB cannot leak the flag to the reader.
-        if (longPress && KOREADER_STORE.hasCredentials() && FsHelpers::hasEpubExtension(fullPath)) {
-          auto& sync = APP_STATE.koReaderSyncSession;
-          sync.autoPullEpubPath = fullPath;
-          sync.postAction = KOReaderSyncPostAction::Reader;
-          APP_STATE.saveToFile();
-        }
         ReturnHint hint;
         hint.target = ReturnTo::FileBrowser;
         hint.path = basepath;
@@ -691,20 +682,6 @@ void FileBrowserActivity::handleContextMenuAction(int action, const std::string&
   // File-specific actions (require fullPath)
   switch (actionEnum) {
     case Action::Open: {
-      ReturnHint hint;
-      hint.target = ReturnTo::FileBrowser;
-      hint.path = basepath;
-      hint.selectName = entry;
-      activityManager.replaceWithReader(std::string(fullPath), std::move(hint));
-      return;
-    }
-    case Action::FetchAndOpen: {
-      if (KOREADER_STORE.hasCredentials() && FsHelpers::hasEpubExtension(fullPath)) {
-        auto& sync = APP_STATE.koReaderSyncSession;
-        sync.autoPullEpubPath = fullPath;
-        sync.postAction = KOReaderSyncPostAction::Reader;
-        APP_STATE.saveToFile();
-      }
       ReturnHint hint;
       hint.target = ReturnTo::FileBrowser;
       hint.path = basepath;

@@ -6,7 +6,6 @@
 #include "../ActivityResult.h"
 #include "../settings/SettingInfo.h"
 #include "CrossPointSettings.h"
-#include "KOReaderCredentialStore.h"
 #include "components/UITheme.h"
 
 FileContextMenuActivity::FileContextMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -81,9 +80,6 @@ void FileContextMenuActivity::buildMenuItems() {
     menuItems.push_back(SettingInfo::Action(StrId::STR_REMOVE, SettingAction::None));
   } else if (isEpub) {
     menuItems.push_back(SettingInfo::Action(StrId::STR_OPEN, SettingAction::None));
-    if (KOREADER_STORE.hasCredentials()) {
-      menuItems.push_back(SettingInfo::Action(StrId::STR_FETCH_AND_OPEN, SettingAction::None));
-    }
     menuItems.push_back(SettingInfo::Action(StrId::STR_MARK_AS_READ, SettingAction::None));
     menuItems.push_back(SettingInfo::Action(StrId::STR_INFO, SettingAction::None));
     menuItems.push_back(SettingInfo::Action(StrId::STR_DELETE_CACHE, SettingAction::None));
@@ -124,8 +120,6 @@ void FileContextMenuActivity::onActionSelected(int index) {
   // items handled inline via their setters (no finish() until the menu closes).
   if (nameId == StrId::STR_OPEN) {
     action = Action::Open;
-  } else if (nameId == StrId::STR_FETCH_AND_OPEN) {
-    action = Action::FetchAndOpen;
   } else if (nameId == StrId::STR_MARK_AS_READ) {
     action = Action::MarkAsRead;
   } else if (nameId == StrId::STR_INFO) {

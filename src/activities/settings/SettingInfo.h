@@ -20,7 +20,6 @@ enum class SettingAction {
   CustomiseStatusBar,
   DownloadFonts,
   ClockSettings,
-  KOReaderSync,
   OPDSBrowser,
   Network,
   ClearCache,
@@ -35,7 +34,6 @@ enum class SettingAction {
   DictionarySelect,
   SleepTimeoutPicker,
   RefreshFrequencyPicker,
-  KOSyncMinPagesPicker,
   SwitchToUsbDrive,
   Submenu,
 };
@@ -70,7 +68,7 @@ struct SettingInfo {
   size_t stringOffset = 0;
   size_t stringMaxLen = 0;
 
-  // Dynamic accessors (for settings stored outside CrossPointSettings, e.g. KOReaderCredentialStore).
+  // Dynamic accessors (for settings stored outside CrossPointSettings).
   // Function pointers + opaque context avoid the heap allocation of std::function. Stateless
   // lambdas pass ctx=nullptr; captures must be hand-written as trampoline functions. See
   // DynamicEnumCtx / DynamicStringCtx factories below.

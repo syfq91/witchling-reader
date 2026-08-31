@@ -23,7 +23,6 @@
 #include <string>
 #include <vector>
 
-#include "KOReaderCredentialStore.h"
 #include "OpdsServerStore.h"
 #include "ReaderActivity.h"
 #include "ReadingSessionTracker.h"
@@ -483,18 +482,12 @@ bool moveFinishedBookToCompleted(const std::string& currentBookPath, std::string
 
 void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputManager& mappedInput,
                             const std::string& bookPath, const std::string& series, const std::string& seriesIndex,
-                            const std::string& author, void (*onMenuClosed)(void*), void* onMenuClosedCtx,
-                            bool (*onSyncToKOReader)(void*, const std::string&, KOReaderSyncPostAction,
-                                                     const std::string&),
-                            void* onSyncToKOReaderCtx) {
+                            const std::string& author, void (*onMenuClosed)(void*), void* onMenuClosedCtx) {
   const std::string nextBookPath = findNextBookInDirectory(bookPath, series, seriesIndex);
-  const bool koReaderSyncAvailable = onSyncToKOReader != nullptr && KOREADER_STORE.hasCredentials();
   Activity* hostPtr = &host;
   host.startActivityForResult(
-      std::make_unique<FinishedBookActivity>(renderer, mappedInput, bookPath, nextBookPath, author,
-                                             koReaderSyncAvailable),
-      [hostPtr, bookPath, nextBookPath, author, onMenuClosed, onMenuClosedCtx, onSyncToKOReader,
-       onSyncToKOReaderCtx](const ActivityResult& result) {
+      std::make_unique<FinishedBookActivity>(renderer, mappedInput, bookPath, nextBookPath, author),
+      [hostPtr, bookPath, nextBookPath, author, onMenuClosed, onMenuClosedCtx](const ActivityResult& result) {
         if (onMenuClosed) {
           onMenuClosed(onMenuClosedCtx);
         }
@@ -516,39 +509,13 @@ void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputMa
           return;
         }
         // The move-to-/COMPLETED and forget-book settings apply no matter which of the three
-        // actions below was picked, and no matter whether the sync toggle is also on — the
-        // toggle composes with the picked action rather than replacing it.
-        std::string effectiveBookPath = bookPath;
+        // actions below was picked.
         if (SETTINGS.moveFinishedBooksToCompleted) {
           std::string movedPath;
-          if (moveFinishedBookToCompleted(bookPath, movedPath)) {
-            effectiveBookPath = movedPath;
-          }
+          moveFinishedBookToCompleted(bookPath, movedPath);
         }
         if (SETTINGS.removeFinishedBooksFromRecents) {
           RECENT_BOOKS.removeBook(bookPath);
-        }
-        const bool syncToKOReader =
-            onSyncToKOReader != nullptr && KOREADER_STORE.hasCredentials() && SETTINGS.syncFinishedBookToKOReader;
-        if (syncToKOReader) {
-          // The sync callback (EpubReaderActivity::launchKOReaderSync) hands off to
-          // KOReaderSyncActivity, which owns pushing progress and, once its reboot completes,
-          // performing the very action (Home / open next book / OPDS search) that was picked
-          // here — see the postAction/target comment on launchFinishedBookFlow's declaration.
-          KOReaderSyncPostAction postAction = KOReaderSyncPostAction::Home;
-          std::string target;
-          if (openNext) {
-            postAction = KOReaderSyncPostAction::OpenBook;
-            target = nextBookPath;
-          } else if (searchOpds) {
-            postAction = KOReaderSyncPostAction::OpdsSearch;
-            target = author;
-          }
-          // Falls through to the ordinary navigation below when the callback declines, so a
-          // sync that cannot run degrades to "the toggle was off" rather than stranding the user.
-          if (onSyncToKOReader(onSyncToKOReaderCtx, effectiveBookPath, postAction, target)) {
-            return;
-          }
         }
         if (goHome) {
           activityManager.goHome();
@@ -564,13 +531,12 @@ void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputMa
 
 FinishedBookActivity::FinishedBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                            std::string currentBookPath, std::string nextBookPath,
-                                           std::string currentBookAuthor, bool koReaderSyncAvailable)
+                                           std::string currentBookAuthor)
     : Activity("FinishedBook", renderer, mappedInput),
       currentBookPath_(std::move(currentBookPath)),
       nextBookPath_(std::move(nextBookPath)),
       currentBookAuthor_(std::move(currentBookAuthor)),
-      nextBookAvailable_(!nextBookPath_.empty()),
-      koReaderSyncAvailable_(koReaderSyncAvailable) {
+      nextBookAvailable_(!nextBookPath_.empty()) {
   nextBookName_ = nextBookAvailable_ ? getFilename(nextBookPath_) : tr(STR_NOT_SET);
 }
 
@@ -606,14 +572,6 @@ FinishedBookActivity::RowModel FinishedBookActivity::buildRowModel() const {
   model.titles.push_back(tr(STR_FORGET_BOOK));
   model.values.push_back(removeFinishedBooksFromRecents_ ? tr(STR_STATE_ON) : tr(STR_STATE_OFF));
 
-  if (koReaderSyncAvailable_) {
-    // A toggle, not an action row, so it composes with whichever of GoHome/OpenNext/SearchOpds
-    // is picked above instead of replacing it — see launchFinishedBookFlow.
-    model.actions.push_back(RowModel::Action::ToggleSyncToKOReader);
-    model.titles.push_back(tr(STR_KO_SYNC_FINISHED_BOOK));
-    model.values.push_back(syncFinishedBookToKOReader_ ? tr(STR_STATE_ON) : tr(STR_STATE_OFF));
-  }
-
   return model;
 }
 
@@ -621,7 +579,6 @@ void FinishedBookActivity::onEnter() {
   Activity::onEnter();
   moveFinishedBooksToCompleted_ = SETTINGS.moveFinishedBooksToCompleted;
   removeFinishedBooksFromRecents_ = SETTINGS.removeFinishedBooksFromRecents;
-  syncFinishedBookToKOReader_ = SETTINGS.syncFinishedBookToKOReader;
   selectedIndex_ = std::clamp(selectedIndex_, 0, std::max(0, buildRowModel().count() - 1));
 
   if (nextBookAvailable_) {
@@ -693,12 +650,6 @@ void FinishedBookActivity::loop() {
         case RowModel::Action::ToggleForget:
           removeFinishedBooksFromRecents_ = !removeFinishedBooksFromRecents_;
           SETTINGS.removeFinishedBooksFromRecents = removeFinishedBooksFromRecents_;
-          SETTINGS.saveToFile();
-          requestUpdate();
-          return;
-        case RowModel::Action::ToggleSyncToKOReader:
-          syncFinishedBookToKOReader_ = !syncFinishedBookToKOReader_;
-          SETTINGS.syncFinishedBookToKOReader = syncFinishedBookToKOReader_;
           SETTINGS.saveToFile();
           requestUpdate();
           return;

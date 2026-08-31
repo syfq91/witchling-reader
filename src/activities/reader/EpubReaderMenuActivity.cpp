@@ -3,7 +3,6 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
-#include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "SdCardFontGlobals.h"
 #include "activities/settings/SettingsSubmenuActivity.h"
@@ -348,13 +347,6 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
                           })
                           .withSubmenu(StrId::STR_READER_OVERRIDES));
 
-  // --- Synchronisation (only if credentials are set) ---
-  if (KOREADER_STORE.hasCredentials()) {
-    menuItems.push_back(SettingInfo::Separator(StrId::STR_KOREADER_SYNC));
-    menuItems.push_back(SettingInfo::Action(StrId::STR_PULL_PROGRESS_FROM_OTHER_DEVICES, SettingAction::None));
-    menuItems.push_back(SettingInfo::Action(StrId::STR_PUSH_PROGRESS_FROM_THIS_DEVICE, SettingAction::None));
-  }
-
   // --- Tools ---
   menuItems.push_back(SettingInfo::Separator(StrId::STR_READER_TOOLS));
   menuItems.push_back(
@@ -404,10 +396,6 @@ EpubReaderMenuActivity::MenuAction EpubReaderMenuActivity::actionForNameId(StrId
       return MenuAction::TEXT_DARKNESS;
     case StrId::STR_ORIENTATION:
       return MenuAction::ROTATE_SCREEN;
-    case StrId::STR_PULL_PROGRESS_FROM_OTHER_DEVICES:
-      return MenuAction::PULL_REMOTE;
-    case StrId::STR_PUSH_PROGRESS_FROM_THIS_DEVICE:
-      return MenuAction::PUSH_LOCAL;
     case StrId::STR_SCREENSHOT_BUTTON:
       return MenuAction::SCREENSHOT;
     case StrId::STR_DISPLAY_QR:

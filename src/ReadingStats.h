@@ -17,6 +17,9 @@ struct DayBucket {
 uint16_t localDayIndexFromEpoch(time_t epoch);
 uint16_t currentLocalDayIndex();
 
+// Compute unique MD5-based book ID from filename for reading statistics
+std::string calculateBookId(const std::string& filePath);
+
 // Per-book reading statistics. Keyed by KOReader document hash (or filename
 // hash fallback) so a renamed/moved file keeps its history.
 struct BookReadingStats {

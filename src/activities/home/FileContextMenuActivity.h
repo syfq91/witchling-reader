@@ -20,7 +20,6 @@ class FileContextMenuActivity final : public MenuListActivity {
     DisplayOptionsChanged = 0,
     // File-specific actions
     Open = 10,
-    FetchAndOpen,
     MarkAsRead,
     Info,
     DeleteCache,

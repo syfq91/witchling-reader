@@ -20,10 +20,8 @@
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
-#include "reader/KOReaderSyncActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/ClockSettingsActivity.h"
-#include "settings/KOReaderSettingsActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
@@ -354,10 +352,6 @@ void ActivityManager::goToClockSettings() {
   replaceActivity(std::make_unique<ClockSettingsActivity>(renderer, mappedInput));
 }
 
-void ActivityManager::goToKOReaderSettings() {
-  replaceActivity(std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput));
-}
-
 void ActivityManager::goToFileBrowser(std::string path, std::string focusName) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path), std::move(focusName)));
 }
@@ -396,19 +390,6 @@ void ActivityManager::goToReader(std::string path) {
   RenderLock lock;
   ensureSdFontLoadedForPath(path.c_str());
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
-}
-
-void ActivityManager::goToKOReaderSync() {
-  const auto& sync = APP_STATE.koReaderSyncSession;
-  if (!sync.active || sync.epubPath.empty()) {
-    LOG_ERR("ACT", "Cannot launch KOReader sync without an active EPUB handoff");
-    goHome();
-    return;
-  }
-
-  replaceActivity(std::make_unique<KOReaderSyncActivity>(renderer, mappedInput, sync.epubPath, sync.spineIndex,
-                                                         sync.page, sync.totalPagesInSpine, sync.paragraphIndex,
-                                                         sync.hasParagraphIndex, sync.xhtmlSeekHint, sync.intent));
 }
 
 void ActivityManager::replaceWithReader(std::string path, ReturnHint hint) {

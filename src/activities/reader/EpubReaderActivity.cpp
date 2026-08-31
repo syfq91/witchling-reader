@@ -1,4 +1,4 @@
-﻿#define DEBUG_MEMORY_CONSUMPTION 1
+#define DEBUG_MEMORY_CONSUMPTION 1
 #define DEBUG_BACKGROUND_WORK 1
 #define DEBUG_BACKGROUND_OVERLAY 0
 
@@ -50,14 +50,13 @@
 #include "EpubReaderPrintedPageInputActivity.h"
 #include "FinishedBookActivity.h"
 #include "GlobalBookmarkIndex.h"
-#include "KOReaderCredentialStore.h"
-#include "KOReaderDocumentId.h"
 #include "MappedInputManager.h"
 #include "QrDisplayActivity.h"
 #include "QuickOverridesActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
 #include "ReadingSessionTracker.h"
+#include "ReadingStats.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontGlobals.h"
 #include "SilentRestart.h"
@@ -548,7 +547,6 @@ void EpubReaderActivity::onEnter() {
     navTarget = NavigationTarget::makePage(0);
   }
 
-  applyPendingSyncSession();
   applyPendingBookmarkJump();
   logReaderMemSnapshot("onEnter_after_pending_sync");
 
@@ -600,7 +598,7 @@ void EpubReaderActivity::onEnter() {
   // computing the content hash would re-read the file on every reader open,
   // and a renamed book getting a new stats entry is acceptable — it'll still
   // accumulate going forward.
-  globalReadingSessionTracker().begin(KOReaderDocumentId::calculateFromFilename(epub->getPath()), epub->getTitle(),
+  globalReadingSessionTracker().begin(calculateBookId(epub->getPath()), epub->getTitle(),
                                       epub->getAuthor());
   // Bookmarks + recent-books overrides + the stats session. These are the loads a wake
   // shortcut would most plausibly skip or cache in RTC, so they get their own bucket.
@@ -740,10 +738,6 @@ void EpubReaderActivity::loop() {
   ButtonEventManager::ButtonEvent ev;
   while (buttonEvents.consumeEvent(ev)) {
     if (ev.button == MappedInputManager::Button::Confirm) {
-      if (ev.type == ButtonEventManager::PressType::Long && KOREADER_STORE.hasCredentials()) {
-        launchKOReaderSync(SyncLaunchMode::COMPARE);
-        return;
-      }
       if (ev.type == ButtonEventManager::PressType::Short) {
         if (pageHasPlaceholders) {
           forceLoadLargeImages = true;
@@ -759,7 +753,6 @@ void EpubReaderActivity::loop() {
     if (ev.button == MappedInputManager::Button::Back) {
       if (ev.type == ButtonEventManager::PressType::Long) {
         ReaderUtils::enforceExitFullRefresh(renderer);
-        if (tryAutoPushOnClose()) return;
         onGoHome();
         return;
       }
@@ -769,7 +762,6 @@ void EpubReaderActivity::loop() {
           return;
         }
         ReaderUtils::enforceExitFullRefresh(renderer);
-        if (tryAutoPushOnClose()) return;
         finish();
         return;
       }
@@ -839,13 +831,9 @@ void EpubReaderActivity::loop() {
         lastPageIndex = std::max(0, section->pageCount - 1);
       }
       writeReaderProgressCache(epub->getCachePath(), lastSpineIndex, lastPageIndex, lastPageCount, 100);
-      finishedBookSyncSpineIndex_ = lastSpineIndex;
-      finishedBookSyncPage_ = lastPageIndex;
-      finishedBookSyncPageCount_ = lastPageCount;
 
       BookFinished::launchFinishedBookFlow(*this, renderer, mappedInput, epub->getPath(), epub->getSeries(),
-                                           epub->getSeriesIndex(), epub->getAuthor(), nullptr, nullptr,
-                                           &EpubReaderActivity::onFinishedBookSyncRequested, this);
+                                           epub->getSeriesIndex(), epub->getAuthor());
     } else {
       currentSpineIndex = epub->getSpineItemsCount() - 1;
       navTarget = NavigationTarget::makeLastPage();
@@ -1978,7 +1966,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       // the screen will show "no data"; that's accurate.
       if (!epub) break;
       startActivityForResult(std::make_unique<ReadingStatsBookDetailActivity>(
-                                 renderer, mappedInput, KOReaderDocumentId::calculateFromFilename(epub->getPath())),
+                                 renderer, mappedInput, calculateBookId(epub->getPath())),
                              [this](const ActivityResult&) { requestUpdate(); });
       break;
     }
@@ -2006,13 +1994,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         } else {
           writeReaderProgressCache(epub->getCachePath(), lastSpineIndex, 0, 0, 100);
         }
-        finishedBookSyncSpineIndex_ = lastSpineIndex;
-        finishedBookSyncPage_ = lastPageCount > 0 ? lastPageIndex : 0;
-        finishedBookSyncPageCount_ = lastPageCount;
       }
       BookFinished::launchFinishedBookFlow(*this, renderer, mappedInput, epub->getPath(), epub->getSeries(),
-                                           epub->getSeriesIndex(), epub->getAuthor(), nullptr, nullptr,
-                                           &EpubReaderActivity::onFinishedBookSyncRequested, this);
+                                           epub->getSeriesIndex(), epub->getAuthor());
       return;
     }
     case EpubReaderMenuActivity::MenuAction::DELETE_CACHE: {
@@ -2049,22 +2033,6 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         pendingScreenshot = true;
       }
       requestUpdate();
-      break;
-    }
-    case EpubReaderMenuActivity::MenuAction::PULL_REMOTE: {
-      // One-tap pull path: run network preconditions and apply remote progress
-      // directly instead of showing an intermediate chooser screen.
-      if (KOREADER_STORE.hasCredentials()) {
-        launchKOReaderSync(SyncLaunchMode::PULL_REMOTE);
-      }
-      break;
-    }
-    case EpubReaderMenuActivity::MenuAction::PUSH_LOCAL: {
-      // One-tap push path: run network preconditions and upload local progress
-      // directly for KOReader-like "sync now" behavior.
-      if (KOREADER_STORE.hasCredentials()) {
-        launchKOReaderSync(SyncLaunchMode::PUSH_LOCAL);
-      }
       break;
     }
   }
@@ -2983,9 +2951,6 @@ void EpubReaderActivity::renderFinishedBookPass(const int spineCount) {
   finishedBookActivityStarted_ = true;
   const int lastSpineIndex = std::max(0, spineCount - 1);
   writeReaderProgressCache(epub->getCachePath(), lastSpineIndex, 0, 0, 100);
-  finishedBookSyncSpineIndex_ = lastSpineIndex;
-  finishedBookSyncPage_ = 0;
-  finishedBookSyncPageCount_ = 0;
   // Arm only; loop() performs the launch on the loop task (see finishedBookLaunchPending_).
   // This pass used to drop the render lock and call launchFinishedBookFlow() from here, which
   // both mutated ActivityManager's pending-activity state from the wrong task and did SD work
@@ -3001,8 +2966,7 @@ void EpubReaderActivity::serviceFinishedBookLaunch() {
   finishedBookLaunchPending_ = false;
   BookFinished::launchFinishedBookFlow(
       *this, renderer, mappedInput, epub->getPath(), epub->getSeries(), epub->getSeriesIndex(), epub->getAuthor(),
-      [](void* ctx) { static_cast<EpubReaderActivity*>(ctx)->finishedBookActivityStarted_ = false; }, this,
-      &EpubReaderActivity::onFinishedBookSyncRequested, this);
+      [](void* ctx) { static_cast<EpubReaderActivity*>(ctx)->finishedBookActivityStarted_ = false; }, this);
 }
 
 bool EpubReaderActivity::renderBufferDisplayPass(const RenderLayout& layout) {
@@ -5222,7 +5186,6 @@ void EpubReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION 
     }
     case BA::BTN_EXIT_READER:
       ReaderUtils::enforceExitFullRefresh(renderer);
-      if (tryAutoPushOnClose()) break;
       finish();
       break;
     case BA::BTN_READER_MENU:
@@ -5256,9 +5219,6 @@ void EpubReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION 
         applyOrientation(nextOrientation);
         requestUpdate();
       }
-      break;
-    case BA::BTN_KOREADER_SYNC:
-      launchKOReaderSync(SyncLaunchMode::COMPARE);
       break;
     case BA::BTN_QUICK_OVERRIDES:
       if (epub) {

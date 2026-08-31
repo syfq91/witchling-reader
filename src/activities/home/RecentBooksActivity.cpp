@@ -18,7 +18,6 @@
 #include "../util/ConfirmationActivity.h"
 #include "BookInfoActivity.h"
 #include "CrossPointState.h"
-#include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "activities/reader/ReaderActivity.h"
@@ -294,21 +293,12 @@ void RecentBooksActivity::loop() {
 
   ButtonEventManager::ButtonEvent ev;
   while (buttonEvents.consumeEvent(ev)) {
-    // Confirm short/long: open book (long = KOReader sync for EPUBs)
+    // Confirm short/long: open book
     if (ev.button == MappedInputManager::Button::Confirm &&
         (ev.type == ButtonEventManager::PressType::Short || ev.type == ButtonEventManager::PressType::Long)) {
       if (recentBooks.empty() || selectorIndex >= static_cast<int>(recentBooks.size())) return;
-      const bool longPress = (ev.type == ButtonEventManager::PressType::Long) && KOREADER_STORE.hasCredentials();
       const std::string& selectedPath = recentBooks[selectorIndex].path;
-      const bool isEpubBook = FsHelpers::hasEpubExtension(selectedPath);
-      LOG_DBG("RBA", "Selected recent book: %s (sync=%d epub=%d)", selectedPath.c_str(), longPress ? 1 : 0,
-              isEpubBook ? 1 : 0);
-      if (longPress && isEpubBook) {
-        auto& sync = APP_STATE.koReaderSyncSession;
-        sync.autoPullEpubPath = selectedPath;
-        sync.postAction = KOReaderSyncPostAction::Reader;
-        APP_STATE.saveToFile();
-      }
+      LOG_DBG("RBA", "Selected recent book: %s", selectedPath.c_str());
       openingBook = true;
       ReturnHint hint;
       hint.target = ReturnTo::RecentBooks;

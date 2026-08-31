@@ -125,29 +125,12 @@ Notes:
 - rendering favors reusing precomputed layout data to keep page turns responsive on constrained hardware
 - progress/session state is persisted so the reader can reopen at the last position after reboot/sleep
 
-## KOReader sync position mapping
-
-KOReader sync integration is implemented under `lib/KOReaderSync/` and is used by
-`src/activities/reader/KOReaderSyncActivity.*`.
-
-Position translation currently follows a dual-path strategy:
-
-- CrossPoint -> KOReader: prefer element-level XPath extracted from the current
-  spine XHTML; fallback to chapter-level `DocFragment` path when needed.
-- KOReader -> CrossPoint: prefer incoming XPath resolution; fallback to
-  percentage-based estimation if XPath is invalid or cannot be resolved.
-
-Detailed algorithm and constraints (including low-memory rationale for ESP32-C3)
-are documented in:
-
-- [KOReader Sync XPath Mapping](koreader-sync-xpath-mapping.md)
-
 ## State and persistence
 
 Two singletons are central:
 
 - `src/CrossPointSettings.h` (`SETTINGS`): user preferences and behavior flags
-- `src/CrossPointState.h` (`APP_STATE`): runtime/session state such as current book, sleep context, and standalone KOReader sync handoff/outcome state
+- `src/CrossPointState.h` (`APP_STATE`): runtime/session state such as current book and sleep context
 
 Typical persisted areas on SD:
 

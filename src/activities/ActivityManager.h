@@ -127,7 +127,6 @@ class ActivityManager {
   void goToFileTransfer();
   void goToSettings();
   void goToClockSettings();
-  void goToKOReaderSettings();
   void goToFileBrowser(std::string path = {}, std::string focusName = {});
   void goToRecentBooks(int focusIndex = -1);
   void goToGlobalBookmarks();
@@ -135,7 +134,6 @@ class ActivityManager {
   void goToBrowser();
   void goToBrowserWithSearch(std::string query);
   void goToReader(std::string path);
-  void goToKOReaderSync();
   // fromTimeout=true marks this as an auto-sleep (used to gate Quick Resume on Timeout).
   void goToSleep(bool fromTimeout = false);
   void goToBoot();
