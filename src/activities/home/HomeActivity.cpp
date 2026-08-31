@@ -126,9 +126,6 @@ void HomeActivity::rebuildMenuEntries() {
     menuEntries.push_back({MenuAction::OpdsBrowser, StrId::STR_OPDS_BROWSER, Library});
   }
   menuEntries.push_back({MenuAction::FileTransfer, StrId::STR_FILE_TRANSFER, Transfer});
-  if (SETTINGS.useWeather) {
-    menuEntries.push_back({MenuAction::Weather, StrId::STR_WEATHER, Weather});
-  }
   menuEntries.push_back({MenuAction::Settings, StrId::STR_SETTINGS_TITLE, Settings});
   menuEntriesDirty = false;
 }
@@ -984,9 +981,6 @@ void HomeActivity::dispatchMenuAction(MenuAction action) {
       break;
     case MenuAction::FileTransfer:
       activityManager.goToFileTransfer();
-      break;
-    case MenuAction::Weather:
-      activityManager.goToWeather();
       break;
     case MenuAction::Settings:
       activityManager.goToSettings();

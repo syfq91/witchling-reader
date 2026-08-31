@@ -373,8 +373,6 @@ class CrossPointSettings {
   // Use clock and keep the LP timer running during deep sleep (GPIO13 HIGH)
   // so time can be accurately restored on wake. Increases sleep current by ~3-4 mA.
   uint8_t useClock = 0;
-  // Show the Weather home screen menu item (1 = enabled, 0 = hidden)
-  uint8_t useWeather = 1;
   // Include release candidate builds when checking for OTA updates.
   uint8_t includeBetaUpdates = 0;
   // Accept any TLS certificate on https requests (1 = skip validation).

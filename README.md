@@ -21,7 +21,6 @@ Flashing is done from the browser — no toolchain or driver install needed. Use
 - Proper KOReader Snychronisation
 - Additional sleep screens support (information overlay, transparent pictures over current reader screen)
 - Clock-Support for X4 and X3
-- Weather information panel
 - Multiple under-the-hood performance improvements
 - Book information screen
 - Markdown-support
@@ -111,7 +110,6 @@ Legend: ✅ supported · ⚠️ partial / basic · ❌ not supported.
 | Feature | Witch Reader | CrossPoint |
 | --- | :---: | :---: |
 | Clock on X4 | ✅ software clock (X3 **and** X4) | ❌ X3 only (DS3231 hardware RTC) |
-| Weather panel (Open-Meteo, forecast, 48h graph) | ✅ from Home menu | ❌ |
 | Timezone auto-detect (IP geolocation + DST) | ✅ | ⚠️ l offset picker |
 | Time sync (NTP) | ✅ | ✅ (X3) |
 | Sleep screens: transparent overlay over reader page | ✅ | ❌ |
@@ -132,7 +130,7 @@ Legend: ✅ supported · ⚠️ partial / basic · ❌ not supported.
 ## At a glance
 
 **Choose Witch Reader for:** speed, richer CSS and typography (floats, real tables, small-caps,
-strikethrough, line-height), GIF and better image handling, Markdown, a weather panel, a clock on
+strikethrough, line-height), GIF and better image handling, Markdown, a clock on
 the X4, reading statistics, global bookmarks, a cover carousel, fully customizable per-button
 gestures, automatic KOReader sync, and a deeper settings/system surface.
 

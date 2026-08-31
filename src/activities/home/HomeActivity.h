@@ -28,7 +28,6 @@ class HomeActivity final : public Activity {
     GlobalBookmarks,
     OpdsBrowser,
     FileTransfer,
-    Weather,
     Settings,
   };
 

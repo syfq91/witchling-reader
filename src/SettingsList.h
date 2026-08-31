@@ -429,9 +429,6 @@ inline std::vector<SettingInfo> buildSettingsList() {
           .withSelectorActivity());
   settings.push_back(SettingInfo::String(StrId::STR_NTP_SERVER, SETTINGS.ntpServer, sizeof(SETTINGS.ntpServer),
                                          "ntpServer", StrId::STR_CLOCK));
-  // Weather
-  settings.push_back(
-      SettingInfo::Toggle(StrId::STR_USE_WEATHER, &CrossPointSettings::useWeather, "useWeather", StrId::STR_WEATHER));
 
   // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
   settings.push_back(SettingInfo::DynamicString(

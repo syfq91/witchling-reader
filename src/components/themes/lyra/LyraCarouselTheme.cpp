@@ -30,7 +30,6 @@
 #include "components/icons/settings2.h"
 #include "components/icons/text24.h"
 #include "components/icons/transfer.h"
-#include "components/icons/weather32.h"
 #include "components/icons/wifi.h"
 #include "fontIds.h"
 
@@ -75,8 +74,6 @@ const uint8_t* iconBitmapFor(UIIcon icon) {
       return BookIcon;
     case UIIcon::Library:
       return LibraryIcon;
-    case UIIcon::Weather:
-      return Weather32Icon;
     case UIIcon::Wifi:
       return WifiIcon;
     case UIIcon::Hotspot:

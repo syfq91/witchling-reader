@@ -77,7 +77,7 @@ Upon turning the device on for the first time, you will be placed on the **[Home
 
 ### 3.1 Home Screen
 
-The Home screen is the main entry point to the firmware. It shows the most recently read book as a cover thumbnail and provides navigation to **[Reading Mode](#4-reading-mode)**, the **[Browse Files](#33-browse-files-screen)** screen, the **[Recent Books](#34-recent-books-screen)** screen, the **[File Transfer](#36-file-transfer-screen)** screen, and **[Settings](#37-settings)**. A weather panel and clock are also accessible from the Home screen when configured.
+The Home screen is the main entry point to the firmware. It shows the most recently read book as a cover thumbnail and provides navigation to **[Reading Mode](#4-reading-mode)**, the **[Browse Files](#33-browse-files-screen)** screen, the **[Recent Books](#34-recent-books-screen)** screen, the **[File Transfer](#36-file-transfer-screen)** screen, and **[Settings](#37-settings)**. A clock is also accessible from the Home screen when configured.
 
 ### 3.2 Reading Mode
 
@@ -247,7 +247,6 @@ The Settings screen allows you to configure the device's behavior.
   - **Timezone**: Select from a list of supported timezones (UTC, CET, EET, MSK, IST, AEST, EST, CST, MST, PST, and more)
   - **Detect Timezone**: Auto-detect timezone via IP geolocation (requires WiFi).
   - **Sync Time**: Sync the clock via NTP (requires WiFi).
-- **Weather Settings**: Configure the Open-Meteo weather panel shown on the Home Screen.
 
 **System**:
 - **Clear Reading Cache**: Clear the internal SD card cache.

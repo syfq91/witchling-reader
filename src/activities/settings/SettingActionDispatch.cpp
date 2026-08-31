@@ -22,7 +22,6 @@
 #include "SyncTimeActivity.h"
 #include "SystemInformationActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
-#include "activities/weather/WeatherSettingsActivity.h"
 
 std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRenderer& renderer,
                                                   MappedInputManager& mappedInput) {
@@ -53,8 +52,6 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<SwitchToUsbDriveActivity>(renderer, mappedInput);
     case SettingAction::Language:
       return std::make_unique<LanguageSelectActivity>(renderer, mappedInput);
-    case SettingAction::Weather:
-      return std::make_unique<WeatherSettingsActivity>(renderer, mappedInput);
     case SettingAction::SystemInfo:
       return std::make_unique<SystemInformationActivity>(renderer, mappedInput);
     case SettingAction::BootDiagnostics:
