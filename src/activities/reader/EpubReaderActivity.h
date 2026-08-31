@@ -705,7 +705,7 @@ class EpubReaderActivity final : public Activity {
   // soon as loadSectionFile() finds the file. Throwing it away here would free
   // nothing worth having and cost the next visit a needless re-open.
   void suspendBackgroundWork();
-  resumeBackgroundWork();
+  void resumeBackgroundWork();
   // Consume a persisted bookmark-jump request (from GlobalBookmarksActivity) for
   // this book. Rewrites progress.bin to the bookmarked position before the normal
   // reader startup path reads it.

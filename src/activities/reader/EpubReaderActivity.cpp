@@ -1954,7 +1954,6 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       break;
     }
     case EpubReaderMenuActivity::MenuAction::GO_HOME: {
-      if (tryAutoPushOnClose()) return;
       onGoHome();
       return;
     }
@@ -2702,7 +2701,6 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
       if (!stepPageState(isForwardTurn)) {
         return;
       }
-      sessionPagesAdvanced++;
       globalReadingSessionTracker().onPageTurn();
       preRenderedPage.ready = false;
       pendingPreRender = false;
@@ -2729,7 +2727,6 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     anchorNavTargetToCurrentPage();
     preRenderedPage.ready = false;
     usePreRenderedBuffer = true;
-    sessionPagesAdvanced++;
     globalReadingSessionTracker().onPageTurn();
     lastPageTurnTime = millis();
     requestUpdate();
@@ -2748,7 +2745,6 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
           pageTurnStatsWindow.turns, expectedNextPage);
   logPageTurnWindowIfReady();
 
-  sessionPagesAdvanced++;
   globalReadingSessionTracker().onPageTurn();
   // Page state advanced without using a pre-render. Drop any pre-render that was
   // scheduled for the page we just left: otherwise the coalesced render() would
