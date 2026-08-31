@@ -1,8 +1,19 @@
 # Witch(hunt) Reader
 
-This firmware is based on the [crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader) for the XTEINK X3/X4, a great piece of software by Dave Allie and others.
+This firmware is a streamlined fork based on [jpirnay/witchhunt-reader](https://github.com/jpirnay/witchhunt-reader) (originally derived from [crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader) by Dave Allie and others).
 
 **Caveat: new hardware batches of the X3 / X4 from xteink seem to come with a newer display panels. These models should work with Witch(hunt) Reader from version 2.21 onwards.**
+
+## Changes from `jpirnay/witchhunt-reader`
+
+This fork focuses on a lighter, more reliable, and standardized reading experience by streamlining network protocols and removing non-essential background features in favor of open standards:
+
+- **Removed Weather Integration**: Removed the Open-Meteo weather client, home screen weather widget, weather icon sets, settings, and background polling to conserve RAM and reduce battery drain.
+- **Removed Calibre Wireless Device Transfer**: Dropped the proprietary Calibre SmartDevice wireless protocol in favor of standard OPDS library catalog browsing and browser-based file management.
+- **Removed USB Serial File Transfer**: Stripped the custom USB-CDC serial transfer protocol and host scripts, keeping serial strictly for logging and diagnostics.
+- **Removed Legacy KOReader Synchronization**: Removed the legacy KOReader sync client, XPath indexing/mapping engines, credential stores, and sync screens (preparing for modern OPDS Progression 1.0 synchronization).
+- **Decoupled Document ID & Reading Stats**: Replaced KOReader document hash generation with a lightweight, standalone `calculateBookId` helper in Reading Stats to preserve reading history, pace tracking, and cover caches.
+- **Reduced Memory & Flash Footprint**: Eliminated over 8,000 lines of unused networking and transfer code, removed redundant background tasks, and stripped unused translation keys across all 24 supported languages.
 
 # Installation
 
@@ -12,22 +23,7 @@ Flashing is done from the browser — no toolchain or driver install needed. Use
 2. Open the [CrossPoint flash tools](https://crosspointreader.com/#flash-tools).
 3. Pick your device (X3 or X4).
 4. Choose **Custom .bin** and upload the `firmware.bin` you downloaded in step 1.
-5. Connect the device via USB and start the flash — pick the device's serial port when the browser asks.
-
-# What this reader does differently
-- Speed - rendering should be *fast*
-- CSS layout - a lot of effort have gone into rendering 
-- Memory - where others fail Witch Reader still works
-- Additional sleep screens support (information overlay, transparent pictures over current reader screen)
-- Clock-Support for X4 and X3
-- Multiple under-the-hood performance improvements
-- Book information screen
-- Markdown-support
-- WiFi captive portal support
-- Supporting ~~strikethrough~~, superscript / subscript and tables
-- Support for used defined actions on double-click / long-click per button 
-- Background preprocessing of sections, so hopefully you will see fewer of the infamous "Indexing" messages
-- A lot of smaller quality of life improvements 
+5. Connect the device via USB and start the flash — pick the device's serial port when the browser asks. 
 
 # What this reader doesn't
 * Great UI design is not necessarily/obviously not a forte of mine, so if you look for a polished look and feel, I would recommend going e.g. to [CrossInk](https://github.com/uxjulia/crossink), a great piece of work by uxJulia
@@ -170,17 +166,3 @@ Pulled from the PlatformIO registry at build time.
 
 - **ArduinoJson** by Benoît Blanchon — JSON parsing/serialization. https://github.com/bblanchon/ArduinoJson — MIT.
 - **arduinoWebSockets** by Markus Sattler — WebSocket server (web UI binary file uploads). https://github.com/Links2004/arduinoWebSockets — LGPL-2.1.
-
-# Why this name
-Originally this fork was called CrossPoint++ - it had a small userbase and then I made an honest mistake by reusing the crosspoint fork, providing ample reference in the PRs and the release notes of code origin and authorship but was losing the github commit author information in the progress when I copied code over instead of taking the tedious (and correct) way of cherrypicking the original commit and post-cleanup effort.
-
-Another crosspoint developer approached me pointing this flaw out and I agreed to change the future integration work. What I did not care for was that persons attitude and way of communicating, and I told him so.
-
-Then all hell broke lose, ending up in insults, harassment and plain lies in other forums without even caring for feedback (a good cause for any lawsuit for slander). So I took the repo down and just continued the development for my own benefit.
-
-Still I wanted others to benefit from my progress, so here we are again:
-
-Witch(hunt) Reader (name for obvious reasons) 
-
-- So if you are one of those who felt poorly appreciated: please accept my apologies, that was never my intent, and I have taken a lot of effort to replace code / to properly attribute the origin of code or ideas
-- If you are one of those who felt the need to raise a witchhunt, to lie, to libel: just go away - trolls aren't welcome here or more clearly: F*** OFF
