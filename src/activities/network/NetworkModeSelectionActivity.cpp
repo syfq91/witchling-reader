@@ -8,7 +8,7 @@
 #include "fontIds.h"
 
 namespace {
-constexpr int MENU_ITEM_COUNT = 4;
+constexpr int MENU_ITEM_COUNT = 3;
 }  // namespace
 
 void NetworkModeSelectionActivity::onEnter() {
@@ -34,10 +34,8 @@ void NetworkModeSelectionActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     NetworkMode mode = NetworkMode::JOIN_NETWORK;
     if (selectedIndex == 1) {
-      mode = NetworkMode::CONNECT_CALIBRE;
-    } else if (selectedIndex == 2) {
       mode = NetworkMode::CREATE_HOTSPOT;
-    } else if (selectedIndex == 3) {
+    } else if (selectedIndex == 2) {
       mode = NetworkMode::USB_SERIAL;
     }
 
@@ -70,12 +68,11 @@ void NetworkModeSelectionActivity::render(RenderLock&&) {
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = contentRect.height - contentTop - metrics.verticalSpacing * 2;
   // Menu items and descriptions
-  static constexpr StrId menuItems[MENU_ITEM_COUNT] = {StrId::STR_JOIN_NETWORK, StrId::STR_CALIBRE_WIRELESS,
-                                                       StrId::STR_CREATE_HOTSPOT, StrId::STR_USB_TRANSFER};
-  static constexpr StrId menuDescs[MENU_ITEM_COUNT] = {StrId::STR_JOIN_DESC, StrId::STR_CALIBRE_DESC,
-                                                       StrId::STR_HOTSPOT_DESC, StrId::STR_USB_TRANSFER_DESC};
-  static constexpr UIIcon menuIcons[MENU_ITEM_COUNT] = {UIIcon::Wifi, UIIcon::Library, UIIcon::Hotspot,
-                                                        UIIcon::Transfer};
+  static constexpr StrId menuItems[MENU_ITEM_COUNT] = {StrId::STR_JOIN_NETWORK, StrId::STR_CREATE_HOTSPOT,
+                                                       StrId::STR_USB_TRANSFER};
+  static constexpr StrId menuDescs[MENU_ITEM_COUNT] = {StrId::STR_JOIN_DESC, StrId::STR_HOTSPOT_DESC,
+                                                       StrId::STR_USB_TRANSFER_DESC};
+  static constexpr UIIcon menuIcons[MENU_ITEM_COUNT] = {UIIcon::Wifi, UIIcon::Hotspot, UIIcon::Transfer};
 
   GUI.drawList(
       renderer, Rect{contentRect.x, contentTop, contentRect.width, contentHeight}, static_cast<int>(MENU_ITEM_COUNT),
