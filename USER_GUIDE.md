@@ -106,7 +106,11 @@ The Book Info screen shows full metadata for a book: cover image, title, author,
 
 ### 3.6 File Transfer Screen
 
-The File Transfer screen allows you to upload new e-books to the device. When you enter the screen, you'll be prompted with a WiFi selection dialog and then your X4 will start hosting a web server.
+The File Transfer screen provides multiple ways to manage and transfer e-books:
+
+- **Join a Network**: Connect to an existing WiFi network (STA mode) and host a local web server for browser-based file management and uploads.
+- **Create Hotspot**: Create a standalone WiFi Access Point (AP mode) on the device, allowing phones or laptops to connect directly and upload books without an existing network.
+- **OPDS Browser**: Open the on-device OPDS browser to browse and download books directly from your configured OPDS catalogs (such as Calibre, Kavita, or public catalogs).
 
 See the [webserver docs](./docs/webserver.md) for more information on how to connect to the web server and upload files.
 
