@@ -150,11 +150,6 @@ RTC_NOINIT_ATTR uint32_t heapCorruptionBootLatch;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
-// Boot straight back into the USB serial file-transfer activity. Armed (without
-// restarting) while that activity is open, so the unavoidable C3 USB-Serial/JTAG
-// reset that fires when a host opens the port lands back in the activity instead
-// of Home — making the transfer reset-tolerant. See armSerialTransferReboot().
-constexpr uint32_t SILENT_REBOOT_TARGET_SERIAL_TRANSFER = 2;
 // Boot into the clock settings screen after a timezone-detection WiFi session
 // (WiFi teardown fragments the heap; need a clean reboot before re-entering the UI).
 constexpr uint32_t SILENT_REBOOT_TARGET_CLOCK_SETTINGS = 3;
@@ -265,23 +260,6 @@ static void silentRestartToSleep(bool fromTimeout) {
   LOG_INF("MAIN", "Silent restart (target=sleep, framebuffers released, fromTimeout=%d)", fromTimeout ? 1 : 0);
   delay(50);
   ESP.restart();
-}
-
-void armSerialTransferReboot() {
-  // Does NOT restart — just arms the RTC target so that *if* the device resets
-  // (the C3 hardware reset that fires when a host opens the USB serial port),
-  // setup() routes straight back into the serial-transfer activity. Re-armed on
-  // every entry into that activity (setup() read-and-clears the magic).
-  silentRebootTarget = SILENT_REBOOT_TARGET_SERIAL_TRANSFER;
-  silentRebootMagic = SILENT_REBOOT_MAGIC;
-}
-
-void disarmSerialTransferReboot() {
-  // Clear the arm on a clean exit so the next plain reboot shows Home as usual.
-  if (silentRebootMagic == SILENT_REBOOT_MAGIC && silentRebootTarget == SILENT_REBOOT_TARGET_SERIAL_TRANSFER) {
-    silentRebootMagic = 0;
-    silentRebootTarget = 0;
-  }
 }
 
 // ---- Retained-frame persistence across deep sleep ----
@@ -829,14 +807,6 @@ void setup() {
     heapRecoveryRestartLatch = 0;
   }
 
-  // When rebooting back into the USB serial-transfer activity (after the host's
-  // open-triggered reset), keep all boot LOG_* off the wire so the reconnecting
-  // host sees a clean binary protocol stream, not interleaved boot logs. The
-  // activity unmutes on exit; a plain boot is unaffected.
-  if (silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_SERIAL_TRANSFER) {
-    setSerialWireMuted(true);
-  }
-
   powerManager.setSleepStepHook(onSleepStep);
   HalSystem::begin();
   // Create the shared-SPI-bus mutex before anything can touch the panel or the
@@ -1037,11 +1007,7 @@ void setup() {
                             : haveSleepFrame           ? BootResume::QuickResume
                                                        : BootResume::ReaderResume;
 
-  // Booting straight into the USB serial-transfer activity? Skip SD-font
-  // discovery (only built-in UI fonts are used there) to shorten the reboot the
-  // host is waiting through. Safe because that activity reboots on exit.
-  const bool bootToSerialTransfer = (silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_SERIAL_TRANSFER);
-  setupDisplayAndFonts(resume != BootResume::Splash, bootToSerialTransfer);
+  setupDisplayAndFonts(resume != BootResume::Splash);
   BootDiag::markPhase(BootPhase::DisplayFonts);
   logStartupMemory("after_display_fonts");
 
@@ -1137,10 +1103,6 @@ void setup() {
     LOG_INF("MAIN", "Resuming sleep transition after framebuffer-recovery reboot");
     enterDeepSleep(/*fromTimeout=*/silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_SLEEP_TIMEOUT);
     return;  // not reached — enterDeepSleep() never returns
-  } else if (resume == BootResume::Silent && silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_SERIAL_TRANSFER) {
-    // Reset fired while the USB transfer screen was open (host opened the port):
-    // land straight back in it so the host's retried command is served.
-    activityManager.goToSerialTransfer();
   } else if (resume == BootResume::Silent && silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_READER &&
              !APP_STATE.openEpubPath.empty()) {
     activityManager.goToReader(APP_STATE.openEpubPath);

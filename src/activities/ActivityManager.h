@@ -125,7 +125,6 @@ class ActivityManager {
 
   // goTo... functions are convenient wrapper for replaceActivity()
   void goToFileTransfer();
-  void goToSerialTransfer();  // direct entry (also used by the boot-into-transfer path)
   void goToSettings();
   void goToClockSettings();
   void goToKOReaderSettings();

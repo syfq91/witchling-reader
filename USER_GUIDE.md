@@ -15,7 +15,6 @@ Welcome to **Witch Reader** firmware. This guide outlines the hardware controls,
     - [3.4 Recent Books Screen](#34-recent-books-screen)
     - [3.5 Book Info Screen](#35-book-info-screen)
     - [3.6 File Transfer Screen](#36-file-transfer-screen)
-      - [3.6.1 USB Transfer (over the cable)](#361-usb-transfer-over-the-cable)
     - [3.7 Settings](#37-settings)
       - [3.7.1 Display](#371-display)
       - [3.7.2 Reader](#372-reader)
@@ -114,21 +113,6 @@ See the [webserver docs](./docs/webserver.md) for more information on how to con
 
 > [!TIP]
 > Advanced users can also manage files programmatically or via the command line using `curl`. See the [webserver docs](./docs/webserver.md) for details.
-
-### 3.6.1 USB Transfer (over the cable)
-
-If you'd rather not use WiFi, you can transfer books over the USB cable. On the device choose **File Transfer → USB Transfer**; the screen then waits for a host connection and shows per-operation status (e.g. *Receiving 'book.epub'*, *Saved …*).
-
-This uses a serial protocol that is wire-compatible with **[MicroReader](https://github.com/CidVonHighwind/microreader)** by CidVonHighwind — a clean-room, independently written reimplementation of its protocol — so MicroReader's host tools work unchanged:
-
-- Its **Calibre device plugin** ("Send to device" over USB), and
-- Its `tools/serial_cmd.py` command-line tool (`--upload`, `--list`, …).
-
-A **Total Commander / Double Commander file-system plugin (WFX)** that works with both Witch Reader and MicroReader is available at **[jpirnay/x4-filemanager-plugin](https://github.com/jpirnay/x4-filemanager-plugin)**. It lets you browse and manage the SD card directly from the file manager over the USB cable.
-
-Full credit to CidVonHighwind for the original protocol and tooling. While a transfer is in progress the device pauses on-screen redraws and on-wire logging so the binary stream stays clean.
-
-**Open this screen first, then connect.** Opening the USB port from a computer briefly resets the device (a hardware quirk of the ESP32-C3's USB port). As long as you've opened the **USB Transfer** screen first, the device automatically returns to this screen after that reset, so the transfer just works — press **Back** when you're done. (If you connect while on another screen, the device will simply reboot to Home; open USB Transfer and reconnect.)
 
 ### 3.7 Settings
 
