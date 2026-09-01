@@ -598,8 +598,7 @@ void EpubReaderActivity::onEnter() {
   // computing the content hash would re-read the file on every reader open,
   // and a renamed book getting a new stats entry is acceptable — it'll still
   // accumulate going forward.
-  globalReadingSessionTracker().begin(calculateBookId(epub->getPath()), epub->getTitle(),
-                                      epub->getAuthor());
+  globalReadingSessionTracker().begin(calculateBookId(epub->getPath()), epub->getTitle(), epub->getAuthor());
   // Bookmarks + recent-books overrides + the stats session. These are the loads a wake
   // shortcut would most plausibly skip or cache in RTC, so they get their own bucket.
   WakeTrace::mark(WakeTrace::Phase::StoresLoaded);
@@ -1964,9 +1963,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       // exit. For a brand-new book that's never been finished a session yet
       // the screen will show "no data"; that's accurate.
       if (!epub) break;
-      startActivityForResult(std::make_unique<ReadingStatsBookDetailActivity>(
-                                 renderer, mappedInput, calculateBookId(epub->getPath())),
-                             [this](const ActivityResult&) { requestUpdate(); });
+      startActivityForResult(
+          std::make_unique<ReadingStatsBookDetailActivity>(renderer, mappedInput, calculateBookId(epub->getPath())),
+          [this](const ActivityResult&) { requestUpdate(); });
       break;
     }
     case EpubReaderMenuActivity::MenuAction::BOOK_INFO: {

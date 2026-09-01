@@ -52,8 +52,7 @@ void XtcReaderActivity::onEnter() {
 
   // Start the reading-stats session. XTC has real title/author from the
   // file header so the per-book screen will look nicer than TXT/MD.
-  globalReadingSessionTracker().begin(calculateBookId(xtc->getPath()), xtc->getTitle(),
-                                      xtc->getAuthor());
+  globalReadingSessionTracker().begin(calculateBookId(xtc->getPath()), xtc->getTitle(), xtc->getAuthor());
 
   // Trigger first update
   requestUpdate();
