@@ -14,10 +14,12 @@
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "MdReaderTocSelectionActivity.h"
+#include "OpdsProgressionSyncActivity.h"
 #include "ReaderUtils.h"
 #include "ReadingSessionTracker.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/OpdsProgressionSync.h"
 
 namespace {
 constexpr size_t CHUNK_SIZE = 8 * 1024;
@@ -950,6 +952,25 @@ void MdReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION ac
       initialized = false;
       initializeReader();
       requestUpdate();
+      break;
+    }
+    case BA::BTN_SYNC_PROGRESS: {
+      if (!txt) break;
+      const float progress = totalPages > 0 ? static_cast<float>(currentPage) / static_cast<float>(totalPages) : 0.0f;
+      startActivityForResult(std::make_unique<OpdsProgressionSyncActivity>(renderer, mappedInput, txt->getCachePath(),
+                                                                           progress, txt->getTitle()),
+                             [this](const ActivityResult& result) {
+                               if (!result.isCancelled && std::holds_alternative<OpdsProgressionResult>(result.data)) {
+                                 const auto& res = std::get<OpdsProgressionResult>(result.data);
+                                 if (res.progression >= 0.0f && totalPages > 0) {
+                                   currentPage = static_cast<int>(res.progression * totalPages);
+                                   if (currentPage >= totalPages) currentPage = totalPages - 1;
+                                   if (currentPage < 0) currentPage = 0;
+                                   onPageChanged();
+                                 }
+                               }
+                               requestUpdate();
+                             });
       break;
     }
     default:

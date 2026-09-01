@@ -162,6 +162,9 @@ void OpdsParser::startElement(void* userData, const char* name, const char** att
                    strstr(rel, "thumbnail") == nullptr && strncmp(type, "image/", 6) == 0 &&
                    self->currentEntry.imageHref.empty()) {
           self->currentEntry.imageHref = href;
+        } else if ((rel && strstr(rel, "opds-spec.org/progression") != nullptr) ||
+                   (type && strcmp(type, "application/opds-progression+json") == 0)) {
+          self->currentEntry.progressionHref = href;
         } else if (type && strstr(type, "application/atom+xml") != nullptr) {
           if (self->currentEntry.type != OpdsEntryType::BOOK) {
             self->currentEntry.type = OpdsEntryType::NAVIGATION;

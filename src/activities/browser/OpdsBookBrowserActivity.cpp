@@ -27,6 +27,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
+#include "network/OpdsProgressionSync.h"
 #include "util/OpdsFilename.h"
 #include "util/StringUtils.h"
 #include "util/UrlUtils.h"
@@ -97,6 +98,7 @@ void writeEntryToCache(HalFile& f, const OpdsEntry& entry) {
   writeString(f, entry.id);
   writeString(f, entry.summary);
   writeString(f, entry.imageHref);
+  writeString(f, entry.progressionHref);
   uint16_t numLinks = entry.acquisitionLinks.size();
   f.write(reinterpret_cast<const uint8_t*>(&numLinks), sizeof(numLinks));
   for (const auto& link : entry.acquisitionLinks) {
@@ -119,6 +121,7 @@ OpdsEntry readEntryFromCache(HalFile& f) {
   entry.id = readString(f, ok);
   entry.summary = readString(f, ok);
   entry.imageHref = readString(f, ok);
+  entry.progressionHref = readString(f, ok);
   if (!ok) return {};
   uint16_t numLinks = 0;
   if (f.read(&numLinks, sizeof(numLinks)) != sizeof(numLinks)) return {};
@@ -830,6 +833,14 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const OpdsAcqu
     downloadedFile.close();
 
     LOG_DBG("OPDS", "Download complete: %s", filename.c_str());
+
+    if (!book.progressionHref.empty()) {
+      const std::string progUrl = (book.progressionHref.rfind("http", 0) == 0)
+                                      ? book.progressionHref
+                                      : UrlUtils::buildUrl(server.url, book.progressionHref);
+      const std::string bookCachePath = OpdsProgressionSync::computeCachePath(filename);
+      OpdsProgressionSync::saveSyncConfig(bookCachePath, progUrl, server.url);
+    }
 
     // Clear any existing cache for this book just in case it's a redownload of
     // a previously opened book.

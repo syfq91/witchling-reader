@@ -694,6 +694,7 @@ class EpubReaderActivity final : public Activity {
                                        uint8_t percent);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
+  void syncProgression(bool interactive = true);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
 
   // Open word selection over the current page, or the dictionary picker when no

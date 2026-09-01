@@ -32,6 +32,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 
@@ -51,6 +52,7 @@
 #include "FinishedBookActivity.h"
 #include "GlobalBookmarkIndex.h"
 #include "MappedInputManager.h"
+#include "OpdsProgressionSyncActivity.h"
 #include "QrDisplayActivity.h"
 #include "QuickOverridesActivity.h"
 #include "ReaderActivity.h"
@@ -66,6 +68,7 @@
 #include "activities/settings/ReadingStatsBookDetailActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/OpdsProgressionSync.h"
 #include "util/ScreenshotUtil.h"
 #include "util/WakeTrace.h"
 
@@ -635,6 +638,9 @@ void EpubReaderActivity::onEnter() {
 
   // Trigger first update
   logReaderMemSnapshot("onEnter_before_request_update");
+  if (WiFi.status() == WL_CONNECTED && epub && OpdsProgressionSync::hasSyncConfig(epub->getCachePath())) {
+    syncProgression(false);
+  }
   requestUpdate();
   logReaderMemSnapshot("onEnter_ready");
   checkHeapIntegrity("reader_onEnter_ready");
@@ -657,6 +663,9 @@ void EpubReaderActivity::onExit() {
   bookmarkStore.save();
   if (epub) {
     GLOBAL_BOOKMARKS.syncFromStore(bookmarkStore, epub->getPath(), epub->getCachePath(), epub->getTitle(), false);
+    if (WiFi.status() == WL_CONNECTED && OpdsProgressionSync::hasSyncConfig(epub->getCachePath())) {
+      syncProgression(false);
+    }
   }
 
   // Reset orientation back to portrait for the rest of the UI
@@ -1783,6 +1792,69 @@ void EpubReaderActivity::jumpToPercent(int percent) {
   }
 }
 
+void EpubReaderActivity::syncProgression(const bool interactive) {
+  if (!epub) return;
+  const std::string cachePath = epub->getCachePath();
+
+  if (interactive) {
+    float bookProgress = 0.0f;
+    std::string currentTitle = "";
+    std::string currentRef = "";
+    if (section && section->pageCount > 0) {
+      const float chapterProg = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
+      bookProgress = epub->calculateProgress(currentSpineIndex, chapterProg);
+      const auto item = epub->getSpineItem(currentSpineIndex);
+      currentRef = item.href;
+      const int tocIdx = epub->getTocIndexForSpineIndex(currentSpineIndex);
+      if (tocIdx >= 0 && tocIdx < epub->getTocItemsCount()) {
+        const auto toc = epub->getTocItem(tocIdx);
+        currentTitle = toc.title;
+      }
+    }
+    suspendBackgroundWork();
+    startActivityForResult(std::make_unique<OpdsProgressionSyncActivity>(renderer, mappedInput, cachePath, bookProgress,
+                                                                         currentTitle, currentRef),
+                           [this](const ActivityResult& result) {
+                             resumeBackgroundWork();
+                             if (!result.isCancelled && std::holds_alternative<OpdsProgressionResult>(result.data)) {
+                               const auto& res = std::get<OpdsProgressionResult>(result.data);
+                               if (!res.reference.empty()) {
+                                 navigateToHref(res.reference, true);
+                               } else if (res.progression >= 0.0f) {
+                                 jumpToPercent(clampPercent(static_cast<int>(res.progression * 100.0f + 0.5f)));
+                               }
+                             }
+                             requestUpdate();
+                           });
+  } else {
+    // Non-interactive / opportunistic sync when WiFi is already connected
+    if (WiFi.status() == WL_CONNECTED && OpdsProgressionSync::hasSyncConfig(cachePath)) {
+      float bookProgress = 0.0f;
+      std::string currentTitle = "";
+      std::string currentRef = "";
+      if (section && section->pageCount > 0) {
+        const float chapterProg = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
+        bookProgress = epub->calculateProgress(currentSpineIndex, chapterProg);
+        const auto item = epub->getSpineItem(currentSpineIndex);
+        currentRef = item.href;
+        const int tocIdx = epub->getTocIndexForSpineIndex(currentSpineIndex);
+        if (tocIdx >= 0 && tocIdx < epub->getTocItemsCount()) {
+          const auto toc = epub->getTocItem(tocIdx);
+          currentTitle = toc.title;
+        }
+      }
+      const auto res = OpdsProgressionSync::performSync(cachePath, bookProgress, currentTitle, currentRef);
+      if (res.status == OpdsProgressionSync::SyncStatus::SUCCESS_REMOTE_NEWER) {
+        if (!res.remote.reference.empty()) {
+          navigateToHref(res.remote.reference, false);
+        } else if (res.remote.progression >= 0.0f) {
+          jumpToPercent(clampPercent(static_cast<int>(res.remote.progression * 100.0f + 0.5f)));
+        }
+      }
+    }
+  }
+}
+
 void EpubReaderActivity::openDictionary() {
   if (!section) return;
 
@@ -2015,6 +2087,10 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       if (!epub) break;
       startActivityForResult(std::make_unique<BookInfoActivity>(renderer, mappedInput, epub->getPath()),
                              [this](const ActivityResult&) { requestUpdate(); });
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::SYNC_PROGRESS: {
+      syncProgression(true);
       break;
     }
     case EpubReaderMenuActivity::MenuAction::MARK_AS_READ: {
@@ -5261,6 +5337,11 @@ void EpubReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION 
     case BA::BTN_QUICK_OVERRIDES:
       if (epub) {
         openQuickOverrides();
+      }
+      break;
+    case BA::BTN_SYNC_PROGRESS:
+      if (epub) {
+        syncProgression(true);
       }
       break;
     case BA::BTN_FORCE_REFRESH:

@@ -32,7 +32,8 @@ struct OpdsEntry {
   std::string id;
   std::string summary;  // Short description from <summary> or <content>, books only
   std::vector<OpdsAcquisitionLink> acquisitionLinks;
-  std::string imageHref;  // Cover image URL (rel="http://opds-spec.org/image"), books only
+  std::string imageHref;        // Cover image URL (rel="http://opds-spec.org/image"), books only
+  std::string progressionHref;  // OPDS Progression 1.0 endpoint (rel="http://opds-spec.org/progression")
 };
 
 // Legacy alias for backward compatibility

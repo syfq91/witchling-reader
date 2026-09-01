@@ -99,9 +99,14 @@ struct StarredPageResult {
   int pageNumber = 0;
 };
 
+struct OpdsProgressionResult {
+  float progression = 0.0f;
+  std::string reference;
+};
+
 using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult,
                                    PageResult, SyncResult, NetworkModeResult, FootnoteResult, FilePathResult,
-                                   StarredPageResult, PrintedPageResult, DictionarySwitchResult>;
+                                   StarredPageResult, PrintedPageResult, DictionarySwitchResult, OpdsProgressionResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

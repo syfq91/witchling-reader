@@ -19,6 +19,7 @@
 #include "CrossPointState.h"
 #include "FinishedBookActivity.h"
 #include "MappedInputManager.h"
+#include "OpdsProgressionSyncActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
 #include "ReadingSessionTracker.h"
@@ -27,6 +28,7 @@
 #include "XtcReaderChapterSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/OpdsProgressionSync.h"
 
 void XtcReaderActivity::onEnter() {
   Activity::onEnter();
@@ -481,6 +483,22 @@ void XtcReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION a
       ReaderUtils::enforceExitFullRefresh(renderer);
       finish();
       break;
+    case BA::BTN_SYNC_PROGRESS: {
+      const float progress = pageCount > 0 ? static_cast<float>(currentPage) / static_cast<float>(pageCount) : 0.0f;
+      startActivityForResult(std::make_unique<OpdsProgressionSyncActivity>(renderer, mappedInput, xtc->getCachePath(),
+                                                                           progress, xtc->getTitle()),
+                             [this, pageCount](const ActivityResult& result) {
+                               if (!result.isCancelled && std::holds_alternative<OpdsProgressionResult>(result.data)) {
+                                 const auto& res = std::get<OpdsProgressionResult>(result.data);
+                                 if (res.progression >= 0.0f && pageCount > 0) {
+                                   currentPage = static_cast<uint32_t>(res.progression * pageCount);
+                                   if (currentPage >= pageCount) currentPage = pageCount - 1;
+                                 }
+                               }
+                               requestUpdate();
+                             });
+      break;
+    }
     default:
       break;
   }

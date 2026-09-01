@@ -415,6 +415,7 @@ class CrossPointSettings {
     BTN_QUICK_OVERRIDES,
     BTN_IGNORE,
     BTN_DICTIONARY,
+    BTN_SYNC_PROGRESS,
     BUTTON_ACTION_COUNT
   };
 
