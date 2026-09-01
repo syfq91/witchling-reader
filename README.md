@@ -1,14 +1,10 @@
-# Witch(hunt) Reader
+# Witchling Reader
 
-A streamlined fork of [jpirnay/witchhunt-reader](https://github.com/jpirnay/witchhunt-reader) (originally derived from [crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)) for the Xteink X4 / ESP32-C3 e-reader.
-
-For full device documentation, hardware specifications, and build guides, refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme).
+A lightweight fork of [jpirnay/witchhunt-reader](https://github.com/jpirnay/witchhunt-reader) for the Xteink X4 / ESP32-C3 e-reader.
 
 ---
 
 ## Changes in this Fork
-
-This fork prioritizes standard protocols, minimal memory overhead (~380KB RAM ceiling), and extended battery life:
 
 - **OPDS Progression 1.0 Sync**: Standardized reading progress synchronization ([OPDS Progression 1.0](https://github.com/opds-community/drafts/blob/main/opds-progression-1.0.md)) across EPUB, Markdown, TXT, and XTC readers with on-demand sync (via Reader Menu or remappable button controls) and opportunistic sync when WiFi is connected.
 - **Removed Legacy Sync & Proprietary Protocols**: Dropped legacy KOReader sync and Calibre SmartDevice wireless transfer in favor of standard OPDS catalog downloads and OPDS Progression sync.
