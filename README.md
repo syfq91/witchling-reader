@@ -1,6 +1,6 @@
 # Witchling Reader
 
-A lightweight fork of [jpirnay/witchhunt-reader](https://github.com/jpirnay/witchhunt-reader) for the Xteink X4 / ESP32-C3 e-reader.
+My personal fork of [jpirnay/witchhunt-reader](https://github.com/jpirnay/witchhunt-reader) for the Xteink X4 / ESP32-C3 e-reader.
 
 ---
 
