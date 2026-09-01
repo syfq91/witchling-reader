@@ -638,7 +638,7 @@ void EpubReaderActivity::onEnter() {
 
   // Trigger first update
   logReaderMemSnapshot("onEnter_before_request_update");
-  if (WiFi.status() == WL_CONNECTED && epub && OpdsProgressionSync::hasSyncConfig(epub->getCachePath())) {
+  if (WiFi.status() == WL_CONNECTED && OpdsProgressionSync::hasSyncConfig(epub->getCachePath())) {
     syncProgression(false);
   }
   requestUpdate();
