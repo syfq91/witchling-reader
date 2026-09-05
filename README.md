@@ -18,3 +18,32 @@ This fork prioritizes physical button navigation, standard protocols, minimal me
 - **Removed Weather Integration**: Stripped Open-Meteo weather polling, home screen widgets, and weather icons to eliminate background network wakeups and save RAM.
 - **Removed USB Serial File Transfer Protocol**: Removed custom binary serial transfer handling to keep serial output strictly dedicated to debugging.
 - **Lightweight Reading Stats**: Standalone book ID generation without KOReader hashing dependencies, preserving reading history and pacing analytics.
+
+---
+
+## Building
+
+Requires [PlatformIO Core](https://platformio.org/install/cli) (`pio`) — or VS Code with the PlatformIO IDE extension.
+
+```sh
+# Clone with submodules (or run `git submodule update --init --recursive` after cloning without)
+git clone --recursive <repo-url> witchling-reader
+cd witchling-reader
+
+# Enable repo-managed git hooks (once per clone)
+git config core.hooksPath .githooks && chmod +x .githooks/pre-commit
+
+# Build (default = debug build with serial logging)
+pio run
+
+# Build a release build
+pio run -e gh_release
+
+# Flash to the device (USB-C)
+pio run --target upload
+
+# Serial monitor
+pio device monitor   # or: python3 scripts/debugging_monitor.py
+```
+
+For device documentation, hardware specifications, and troubleshooting, refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme) and the `docs/` directory.
