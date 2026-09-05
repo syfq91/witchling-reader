@@ -60,10 +60,10 @@ def get_base_version(project_dir: str) -> (str, str):
     ini_path = os.path.join(project_dir, "platformio.ini")
     if not os.path.isfile(ini_path):
         warn(f"platformio.ini not found at {ini_path}; using 0.0.0")
-        return "CrossPoint Reader", "0.0.0"
+        return "Witchling Reader", "0.0.0"
     config = configparser.ConfigParser()
     config.read(ini_path)
-    base_name = config.get("crosspoint", "name", fallback="CrossPoint Reader")
+    base_name = config.get("crosspoint", "name", fallback="Witchling Reader")
     base_name = base_name.strip('"')
     if not config.has_option("crosspoint", "version"):
         warn("No [crosspoint] section or version in platformio.ini; using 0.0.0")

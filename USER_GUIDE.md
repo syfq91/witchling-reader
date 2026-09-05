@@ -1,8 +1,8 @@
-# Witch Reader User Guide
+# Witchling Reader User Guide
 
-Welcome to **Witch Reader** firmware. This guide outlines the hardware controls, navigation, and reading features of the device.
+Welcome to **Witchling Reader** firmware. This guide outlines the hardware controls, navigation, and reading features of the device.
 
-- [Witch Reader User Guide](#witch-reader-user-guide)
+- [Witchling Reader User Guide](#witchling-reader-user-guide)
   - [1. Hardware Overview](#1-hardware-overview)
     - [Button Layout](#button-layout)
   - [2. Power \& Startup](#2-power--startup)
@@ -125,7 +125,7 @@ The Settings screen allows you to configure the device's behavior.
 
 - **Time to Sleep**: Slider from 0 (Never) to 60 minutes; sets the inactivity period before the device sleeps.
 - **Sleep Screen**: Which sleep screen to display when the device sleeps:
-  - "Dark" (default) - The Witch Reader logo on a dark background
+  - "Dark" (default) - The Witchling Reader logo on a dark background
   - "Light" - The same logo on a white background
   - "Custom" - Custom images from the SD card; see [Sleep Screen](#38-sleep-screen) for more information
   - "Cover" - The cover of the currently open book
@@ -218,14 +218,14 @@ The Settings screen allows you to configure the device's behavior.
 - **Reading Statistics**: View reading stats (streaks, time read, pages/min, per-book ETA, sparkline history).
 
 **Firmware Update**:
-- **Check for Updates**: Check for and download Witch Reader firmware updates over WiFi.
+- **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi.
 - **Include Beta Updates**: Whether to include release-candidate builds in update checks. "ON" / "OFF"
 - **SD Firmware Update**: Flash a firmware `.bin` file from the SD card.
 - **Switch to USB Drive**: Reboot the device into USB mass-storage mode to access the SD card directly from a computer.
 
 #### 3.7.5 OPDS Servers (Multiple Libraries)
 
-Witch Reader supports saving multiple OPDS servers and switching between them when browsing catalogs.
+Witchling Reader supports saving multiple OPDS servers and switching between them when browsing catalogs.
 
 1. Open **Settings -> System -> OPDS Servers**.
 2. Select **Add Server** to create a new entry, or select an existing server to edit it.
@@ -252,7 +252,7 @@ For web-based WiFi network management, see [Web Settings (WiFi + OPDS)](#376-web
 While in **File Transfer** mode, the web settings page includes management cards for both **WiFi Networks** and **OPDS Servers**.
 
 1. On device: open **File Transfer** and connect to WiFi.
-1. In a browser, open `http://<device-ip>/settings` or `http://witchhunt.local`.
+1. In a browser, open `http://<device-ip>/settings` or `http://witchling.local`.
 1. In **WiFi Networks**, add, edit, or delete saved network entries (SSID + optional password).
 1. In **OPDS Servers**, add, edit, or delete OPDS catalogs.
 
@@ -268,8 +268,8 @@ The **Sleep Screen** setting controls what is displayed when the device goes to 
 
 | Mode | Behavior |
 |------|----------|
-| **Dark** (default) | The Witch Reader logo on a dark background. |
-| **Light** | The Witch Reader logo on a white background. |
+| **Dark** (default) | The Witchling Reader logo on a dark background. |
+| **Light** | The Witchling Reader logo on a white background. |
 | **Custom** | A custom image from the SD card (see below). Falls back to **Dark** if no custom image is found. |
 | **Cover** | The cover of the currently open book. Falls back to **Dark** if no book is open. |
 | **Cover + Custom** | The cover of the currently open book. Falls back to **Custom** behavior if no book is open. |
@@ -330,7 +330,7 @@ This feature can be disabled in the **[Controls Settings](#373-controls)** to he
 
 ### Supported Languages
 
-Witch Reader renders text using the following Unicode character blocks, enabling support for a wide range of languages:
+Witchling Reader renders text using the following Unicode character blocks, enabling support for a wide range of languages:
 
 *   **Latin Script (Basic, Supplement, Extended-A):** Covers English, German, French, Spanish, Portuguese, Italian, Dutch, Swedish, Norwegian, Danish, Finnish, Polish, Czech, Hungarian, Romanian, Slovak, Slovenian, Turkish, and others.
 *   **Cyrillic Script (Standard and Extended):** Covers Russian, Ukrainian, Belarusian, Bulgarian, Serbian, Macedonian, Kazakh, Kyrgyz, Mongolian, and others.
@@ -361,7 +361,7 @@ Please note that this firmware is currently in active development. The following
 
 ## 7. Troubleshooting Issues & Escaping Bootloop
 
-If an issue or crash is encountered while using Witch Reader, feel free to raise an issue ticket and attach the serial monitor logs. The logs can be obtained by connecting the device to a computer and starting a serial monitor. Either [Serial Monitor](https://www.serialmonitor.org/) or the following command can be used:
+If an issue or crash is encountered while using Witchling Reader, feel free to raise an issue ticket and attach the serial monitor logs. The logs can be obtained by connecting the device to a computer and starting a serial monitor. Either [Serial Monitor](https://www.serialmonitor.org/) or the following command can be used:
 
 ```
 pio device monitor
