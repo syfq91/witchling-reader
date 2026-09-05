@@ -71,7 +71,7 @@ class LyraCarouselTheme : public LyraTheme {
                          int menuCount, const std::function<std::string(int)>& menuLabel,
                          const std::function<UIIcon(int)>& menuIcon, const char* hintBtn1, const char* hintBtn2,
                          const char* hintBtn3, const char* hintBtn4) const override;
-  void onBookWillClose(const std::string& path, Epub* epub, Xtc* xtc, Txt* txt) override;
+  void onBookWillClose(const std::string& path, Epub* epub, Xtc* xtc) override;
   void invalidateFrameCache() override;
   void markFrameCacheDirty() override;
 

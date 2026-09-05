@@ -240,8 +240,6 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
     if (xtc.load()) {
       return RecentBook{path, xtc.getTitle(), xtc.getAuthor(), "", xtc.getThumbBmpPath()};
     }
-  } else if (FsHelpers::hasTxtExtension(lastBookFileName) || FsHelpers::hasMarkdownExtension(lastBookFileName)) {
-    return RecentBook{path, lastBookFileName, "", "", ""};
   }
   return RecentBook{path, "", "", "", ""};
 }

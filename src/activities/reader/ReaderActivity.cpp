@@ -17,9 +17,6 @@
 #include "CrossPointState.h"
 #include "Epub.h"
 #include "EpubReaderActivity.h"
-#include "MdReaderActivity.h"
-#include "Txt.h"
-#include "TxtReaderActivity.h"
 #include "Xtc.h"
 #include "XtcReaderActivity.h"
 #include "activities/util/BmpViewerActivity.h"
@@ -184,10 +181,6 @@ std::string ReaderActivity::extractFolderPath(const std::string& filePath) {
 
 bool ReaderActivity::isXtcFile(const std::string& path) { return FsHelpers::hasXtcExtension(path); }
 
-bool ReaderActivity::isTxtFile(const std::string& path) { return FsHelpers::hasTxtExtension(path); }
-
-bool ReaderActivity::isMdFile(const std::string& path) { return FsHelpers::hasMarkdownExtension(path); }
-
 bool ReaderActivity::isImageFile(const std::string& path) {
   return FsHelpers::hasBmpExtension(path) || FsHelpers::hasJpgExtension(path) || FsHelpers::hasPngExtension(path);
 }
@@ -203,7 +196,7 @@ std::string ReaderActivity::sidecarCoverPath(const std::string& bookPath) {
 std::string ReaderActivity::bookCacheDir(const std::string& bookPath) {
   if (FsHelpers::hasEpubExtension(bookPath)) return Epub(bookPath, "/.crosspoint").getCachePath();
   if (FsHelpers::hasXtcExtension(bookPath)) return Xtc(bookPath, "/.crosspoint").getCachePath();
-  return Txt(bookPath, "/.crosspoint").getCachePath();
+  return "";
 }
 
 std::string ReaderActivity::convertSidecarToBmp(const std::string& cacheDir, const std::string& sidecarPath, int width,
@@ -481,10 +474,6 @@ ThumbResult ReaderActivity::ensureCoverThumb(const std::string& bookPath, int wi
     Xtc xtc(bookPath, "/.crosspoint");
     return (xtc.load() && xtc.generateThumbBmp(width, height)) ? ThumbResult::Ok : ThumbResult::TransientFail;
   }
-  if (FsHelpers::hasTxtExtension(bookPath) || FsHelpers::hasMarkdownExtension(bookPath)) {
-    Txt txt(bookPath, "/.crosspoint");
-    return txt.generateThumbBmp(width, height) ? ThumbResult::Ok : ThumbResult::TransientFail;
-  }
   return ThumbResult::TransientFail;
 }
 
@@ -525,10 +514,6 @@ ThumbResult ReaderActivity::ensureCoverThumb(const std::string& bookPath, int he
   if (FsHelpers::hasXtcExtension(bookPath)) {
     Xtc xtc(bookPath, "/.crosspoint");
     return (xtc.load() && xtc.generateThumbBmp(height)) ? ThumbResult::Ok : ThumbResult::TransientFail;
-  }
-  if (FsHelpers::hasTxtExtension(bookPath) || FsHelpers::hasMarkdownExtension(bookPath)) {
-    Txt txt(bookPath, "/.crosspoint");
-    return txt.generateThumbBmp(height) ? ThumbResult::Ok : ThumbResult::TransientFail;
   }
   return ThumbResult::TransientFail;
 }
@@ -654,21 +639,6 @@ std::unique_ptr<Xtc> ReaderActivity::loadXtc(const std::string& path) {
   return nullptr;
 }
 
-std::unique_ptr<Txt> ReaderActivity::loadTxt(const std::string& path) {
-  if (!Storage.exists(path.c_str())) {
-    LOG_ERR("READER", "File does not exist: %s", path.c_str());
-    return nullptr;
-  }
-
-  auto txt = std::unique_ptr<Txt>(new Txt(path, "/.crosspoint"));
-  if (txt->load()) {
-    return txt;
-  }
-
-  LOG_ERR("READER", "Failed to load TXT");
-  return nullptr;
-}
-
 void ReaderActivity::goToLibrary(const std::string& fromBookPath) {
   // If coming from a book, start in that book's folder; otherwise start from root
   auto initialPath = fromBookPath.empty() ? "/" : extractFolderPath(fromBookPath);
@@ -691,18 +661,6 @@ void ReaderActivity::onGoToXtcReader(std::unique_ptr<Xtc> xtc) {
   const auto xtcPath = xtc->getPath();
   currentBookPath = xtcPath;
   activityManager.replaceActivity(std::make_unique<XtcReaderActivity>(renderer, mappedInput, std::move(xtc)));
-}
-
-void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
-  const auto txtPath = txt->getPath();
-  currentBookPath = txtPath;
-  activityManager.replaceActivity(std::make_unique<TxtReaderActivity>(renderer, mappedInput, std::move(txt)));
-}
-
-void ReaderActivity::onGoToMdReader(std::unique_ptr<Txt> txt) {
-  const auto txtPath = txt->getPath();
-  currentBookPath = txtPath;
-  activityManager.replaceActivity(std::make_unique<MdReaderActivity>(renderer, mappedInput, std::move(txt)));
 }
 
 void ReaderActivity::onEnter() {
@@ -734,20 +692,6 @@ void ReaderActivity::onEnter() {
       return;
     }
     onGoToXtcReader(std::move(xtc));
-  } else if (isMdFile(initialBookPath)) {
-    auto txt = loadTxt(initialBookPath);
-    if (!txt) {
-      onGoBack();
-      return;
-    }
-    onGoToMdReader(std::move(txt));
-  } else if (isTxtFile(initialBookPath)) {
-    auto txt = loadTxt(initialBookPath);
-    if (!txt) {
-      onGoBack();
-      return;
-    }
-    onGoToTxtReader(std::move(txt));
   } else {
     // The first open of a book runs a multi-second index build inside load()
     // (spine/TOC, content.opf, and the CSS compile). Show a popup so the wait

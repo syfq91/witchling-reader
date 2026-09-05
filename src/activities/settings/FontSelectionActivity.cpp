@@ -10,8 +10,7 @@
 void FontSelectionActivity::onEnter() {
   Activity::onEnter();
   fontCount = fontFamilyOptionCount();
-  selectedIndex =
-      static_cast<int>(target == Target::TXT ? txtFontFamilyDynamicGetter(nullptr) : fontFamilyDynamicGetter(nullptr));
+  selectedIndex = static_cast<int>(fontFamilyDynamicGetter(nullptr));
   if (selectedIndex >= fontCount) selectedIndex = 0;
   requestUpdate();
 }
@@ -34,11 +33,7 @@ void FontSelectionActivity::loop() {
 }
 
 void FontSelectionActivity::handleSelection() {
-  if (target == Target::TXT) {
-    txtFontFamilyDynamicSetter(nullptr, static_cast<uint8_t>(selectedIndex));
-  } else {
-    fontFamilyDynamicSetter(nullptr, static_cast<uint8_t>(selectedIndex));
-  }
+  fontFamilyDynamicSetter(nullptr, static_cast<uint8_t>(selectedIndex));
   finish();
 }
 
@@ -48,15 +43,13 @@ void FontSelectionActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect contentRect = UITheme::getContentRect(renderer, true, false);
 
-  const StrId headerStr = target == Target::TXT ? StrId::STR_TXT_FONT_FAMILY : StrId::STR_FONT_FAMILY;
   GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
-                 I18N.get(headerStr));
+                 I18N.get(StrId::STR_FONT_FAMILY));
 
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = contentRect.height - contentTop - metrics.verticalSpacing;
 
-  const uint8_t activeIndex = static_cast<uint8_t>(target == Target::TXT ? txtFontFamilyDynamicGetter(nullptr)
-                                                                         : fontFamilyDynamicGetter(nullptr));
+  const uint8_t activeIndex = static_cast<uint8_t>(fontFamilyDynamicGetter(nullptr));
   GUI.drawList(
       renderer, Rect{contentRect.x, contentTop, contentRect.width, contentHeight}, fontCount, selectedIndex,
       [](int index) { return fontFamilyOptionLabel(static_cast<uint8_t>(index)); }, nullptr, nullptr,

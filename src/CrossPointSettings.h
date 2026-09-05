@@ -201,8 +201,6 @@ class CrossPointSettings {
     TILT_GESTURE_ACTION_COUNT
   };
 
-
-
   // Text darkness for AA glyph rendering (forwarded to GfxRenderer::setTextDarkness)
   enum TEXT_DARKNESS {
     DARKNESS_NORMAL = 0,      // true 4-level AA
@@ -312,10 +310,6 @@ class CrossPointSettings {
   // separators and dot prefixes so a hand-edited value cannot escape the roots.
   char dictionaryName[32] = "";
   uint8_t fontSize = MEDIUM;
-  // Reader font settings (TXT / MD) — defaults to EPUB settings when not explicitly set
-  uint8_t txtFontFamily = NOTOSANS;
-  char txtSdFontFamilyName[32] = "";
-  uint8_t txtFontSize = MEDIUM;
   uint8_t lineSpacing = NORMAL;
   uint8_t paragraphAlignment = JUSTIFIED;
   // Legacy enum fields — kept for JSON migration only; not used at runtime.
@@ -495,7 +489,6 @@ class CrossPointSettings {
   // stray pocket press, and the prelude is the only margin left doing that.
   static constexpr uint16_t getPowerWakeHoldDuration() { return 300; }
   int getReaderFontId() const;
-  int getTxtReaderFontId() const;
   // Pure built-in lookup (size enum + family enum -> font ID). Independent of
   // SD-card font selection. Used by the per-book fontFamilyOverride path so
   // an override forces back to a known built-in even when an SD font is the
@@ -514,8 +507,6 @@ class CrossPointSettings {
   void saveStartupToNvs() const;
 
   static void validateFrontButtonMapping(CrossPointSettings& settings);
-
-
 
   // True for an action only the reader can carry out. Such an action must NOT be
   // consumed on another screen: doing so would swallow the input and shadow that

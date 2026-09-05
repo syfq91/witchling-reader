@@ -194,18 +194,6 @@ inline std::vector<SettingInfo> buildSettingsList() {
                                        "textDarkness", StrId::STR_CAT_READER)
                          .withSubmenu(StrId::STR_MENU_READER_FONT)
                          .withSelectorActivity());
-  // TXT/MD font submenu — same dynamic structure as EPUB, includes SD card fonts.
-  settings.push_back(SettingInfo::DynamicEnum(StrId::STR_TXT_FONT_FAMILY, {StrId::STR_BOOKERLY, StrId::STR_NOTO_SANS},
-                                              txtFontFamilyDynamicGetter, txtFontFamilyDynamicSetter, "txtFontFamily",
-                                              StrId::STR_CAT_READER)
-                         .withSubmenu(StrId::STR_MENU_TXT_FONT)
-                         .withSelectorActivity());
-  settings.push_back(
-      SettingInfo::Enum(StrId::STR_TXT_FONT_SIZE, &CrossPointSettings::txtFontSize,
-                        {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE, StrId::STR_X_LARGE, StrId::STR_TINY},
-                        "txtFontSize", StrId::STR_CAT_READER)
-          .withSubmenu(StrId::STR_MENU_TXT_FONT)
-          .withSelectorActivity());
   settings.push_back(SettingInfo::Enum(StrId::STR_PARA_ALIGNMENT, &CrossPointSettings::paragraphAlignment,
                                        {StrId::STR_JUSTIFY, StrId::STR_ALIGN_LEFT, StrId::STR_CENTER,
                                         StrId::STR_ALIGN_RIGHT, StrId::STR_BOOK_S_STYLE},

@@ -11,10 +11,8 @@ class MappedInputManager;
 /// Replaces in-place enum cycling for the Reader Font Family setting.
 class FontSelectionActivity final : public Activity {
  public:
-  enum class Target { EPUB, TXT };
-
-  explicit FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, Target target = Target::EPUB)
-      : Activity("FontSelect", renderer, mappedInput), target(target) {}
+  explicit FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+      : Activity("FontSelect", renderer, mappedInput) {}
 
   void onEnter() override;
   void onExit() override;
@@ -27,5 +25,4 @@ class FontSelectionActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   int selectedIndex = 0;
   uint8_t fontCount = 0;
-  Target target;
 };

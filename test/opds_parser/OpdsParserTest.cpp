@@ -98,8 +98,7 @@ TEST(OpdsParser, DistinctAcquisitionFormatsRemainSeparate) {
     <id>book-2</id>
     <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/example.epub"/>
     <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/example.kepub.epub"/>
-    <link rel="http://opds-spec.org/acquisition" type="text/plain" href="/books/example.txt"/>
-    <link rel="http://opds-spec.org/acquisition" type="text/markdown" href="/books/example.md"/>
+    <link rel="http://opds-spec.org/acquisition" type="application/vnd.xteink.xtc" href="/books/example.xtc"/>
   </entry>
 </feed>)";
 
@@ -112,11 +111,10 @@ TEST(OpdsParser, DistinctAcquisitionFormatsRemainSeparate) {
   ASSERT_TRUE(!parser.error());
   ASSERT_EQ(entries.size(), static_cast<size_t>(1));
   const auto& links = entries.front().acquisitionLinks;
-  ASSERT_EQ(links.size(), static_cast<size_t>(4));
+  ASSERT_EQ(links.size(), static_cast<size_t>(3));
   ASSERT_EQ(links[0].formatKey, "epub");
   ASSERT_EQ(links[1].formatKey, "kepub");
-  ASSERT_EQ(links[2].formatKey, "txt");
-  ASSERT_EQ(links[3].formatKey, "md");
+  ASSERT_EQ(links[2].formatKey, "xtc");
 }
 
 TEST(OpdsParser, UnsupportedMimeType) {

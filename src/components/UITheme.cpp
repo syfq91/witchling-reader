@@ -7,7 +7,6 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
-#include <Txt.h>
 #include <Xtc.h>
 
 #include <algorithm>
@@ -237,9 +236,6 @@ int UITheme::getBookProgressPercent(const RecentBook& book) {
   } else if (FsHelpers::hasXtcExtension(book.path)) {
     cachePath = Xtc(book.path, "/.crosspoint").getCachePath();
     percentByteOffset = 4;  // xtc: [page(4), percent(1)]
-  } else if (FsHelpers::hasTxtExtension(book.path) || FsHelpers::hasMarkdownExtension(book.path)) {
-    cachePath = Txt(book.path, "/.crosspoint").getCachePath();
-    percentByteOffset = 6;  // txt: [page(2), offset(4), percent(1)]
   } else {
     return -1;
   }
@@ -355,9 +351,6 @@ UIIcon UITheme::getFileIcon(const std::string& filename) {
   }
   if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename)) {
     return Book;
-  }
-  if (FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename)) {
-    return Text;
   }
   if (FsHelpers::hasBmpExtension(filename) || FsHelpers::hasJpgExtension(filename) ||
       FsHelpers::hasPngExtension(filename)) {

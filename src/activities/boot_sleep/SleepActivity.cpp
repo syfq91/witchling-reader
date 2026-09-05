@@ -12,7 +12,6 @@
 #include <Memory.h>
 #include <PngStreamDecoder.h>
 #include <Serialization.h>
-#include <Txt.h>
 #include <Xtc.h>
 #include <esp_system.h>
 
@@ -22,7 +21,6 @@
 #include <new>
 
 #include "../reader/EpubReaderActivity.h"
-#include "../reader/TxtReaderActivity.h"
 #include "../reader/XtcReaderActivity.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -603,48 +601,6 @@ BookOverlayInfo SleepActivity::getBookOverlayInfo(const std::string& bookPath) c
         f.close();
       }
     }
-  } else if (FsHelpers::hasTxtExtension(bookPath) || FsHelpers::hasMarkdownExtension(bookPath)) {
-    Txt txt(bookPath, "/.crosspoint");
-    if (txt.load()) {
-      info.title = txt.getTitle();
-
-      FsFile f;
-      if (Storage.openFileForRead("SLP", txt.getCachePath() + "/progress.bin", f)) {
-        uint8_t data[4];
-        if (f.read(data, 4) == 4) {
-          uint32_t currentPage = data[0] + (data[1] << 8);
-
-          uint32_t totalPages = 0;
-          FsFile indexFile;
-          if (Storage.openFileForRead("SLP", txt.getCachePath() + "/index.bin", indexFile)) {
-            uint32_t magic;
-            serialization::readPod(indexFile, magic);
-            uint8_t version;
-            serialization::readPod(indexFile, version);
-            static constexpr uint32_t INDEX_CACHE_MAGIC = 0x54585449;  // "TXTI"
-            static constexpr uint8_t INDEX_CACHE_VERSION = 2;
-            if (magic == INDEX_CACHE_MAGIC && version == INDEX_CACHE_VERSION) {
-              indexFile.seek(32);
-              serialization::readPod(indexFile, totalPages);
-            }
-            indexFile.close();
-          }
-
-          if (totalPages > 0) {
-            float progress = (currentPage + 1) * 100.0f / totalPages;
-            char buf[64];
-            snprintf(buf, sizeof(buf), tr(STR_OVERLAY_READING_PROGRESS), (unsigned long)currentPage + 1, totalPages,
-                     progress);
-            info.progressText = buf;
-          } else {
-            char buf[64];
-            snprintf(buf, sizeof(buf), tr(STR_OVERLAY_READING_PROGRESS_NO_TOTAL), (unsigned long)currentPage + 1);
-            info.progressText = buf;
-          }
-        }
-        f.close();
-      }
-    }
   } else if (FsHelpers::checkFileExtension(bookPath, ".epub")) {
     Epub epub(bookPath, "/.crosspoint");
     if (epub.load(true, true)) {
@@ -932,13 +888,6 @@ void SleepActivity::renderCoverSleepScreen() const {
     } else {
       LOG_ERR("SLP", "Failed to load/generate XTC cover bmp");
     }
-  } else if (FsHelpers::hasTxtExtension(APP_STATE.openEpubPath)) {
-    Txt lastTxt(APP_STATE.openEpubPath, "/.crosspoint");
-    if (lastTxt.load() && lastTxt.generateCoverBmp()) {
-      coverBmpPath = lastTxt.getCoverBmpPath();
-    } else {
-      LOG_ERR("SLP", "No cover image found for TXT file");
-    }
   } else if (FsHelpers::hasEpubExtension(APP_STATE.openEpubPath)) {
     Epub lastEpub(APP_STATE.openEpubPath, "/.crosspoint");
     // Skip loading css since we only need metadata here.
@@ -1005,8 +954,6 @@ void SleepActivity::renderOverlaySleepScreen() const {
 
     if (FsHelpers::checkFileExtension(path, ".xtc") || FsHelpers::checkFileExtension(path, ".xtch")) {
       rendered = XtcReaderActivity::drawCurrentPageToBuffer(path, renderer);
-    } else if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
-      rendered = TxtReaderActivity::drawCurrentPageToBuffer(path, renderer);
     } else if (FsHelpers::checkFileExtension(path, ".epub")) {
       rendered = EpubReaderActivity::drawCurrentPageToBuffer(path, renderer);
     }

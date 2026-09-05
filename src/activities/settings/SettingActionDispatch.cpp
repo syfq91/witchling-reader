@@ -67,14 +67,11 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
 
 std::unique_ptr<Activity> createSelectorActivity(const SettingInfo& setting, GfxRenderer& renderer,
                                                  MappedInputManager& mappedInput) {
-  // Font-family settings keep their dedicated selector: it enumerates SD-card font
+  // Font-family setting keeps its dedicated selector: it enumerates SD-card font
   // families (which aren't part of the setting's static enum list) on top of the
-  // built-in families. The EPUB/TXT variant is distinguished by the getter, matching
-  // the sniff previously duplicated at each call site.
-  if (setting.valueGetter == fontFamilyDynamicGetter || setting.valueGetter == txtFontFamilyDynamicGetter) {
-    const auto target = (setting.valueGetter == txtFontFamilyDynamicGetter) ? FontSelectionActivity::Target::TXT
-                                                                            : FontSelectionActivity::Target::EPUB;
-    return std::make_unique<FontSelectionActivity>(renderer, mappedInput, target);
+  // built-in families.
+  if (setting.valueGetter == fontFamilyDynamicGetter) {
+    return std::make_unique<FontSelectionActivity>(renderer, mappedInput);
   }
 
   if (setting.type != SettingType::ENUM) return nullptr;

@@ -9,7 +9,6 @@
 
 class GfxRenderer;
 class Epub;
-class Txt;
 class Xtc;
 struct RecentBook;
 
@@ -218,8 +217,8 @@ class BaseTheme {
 
   // Called by readers just before releasing the book object. Themes that cache
   // cover thumbnails can generate them here while the book is still loaded.
-  // Only one of epub/xtc/txt will be non-null depending on the reader.
-  virtual void onBookWillClose(const std::string& path, Epub* epub, Xtc* xtc, Txt* txt) {}
+  // Only one of epub/xtc will be non-null depending on the reader.
+  virtual void onBookWillClose(const std::string& path, Epub* epub, Xtc* xtc) {}
 
   // Called when HomeActivity exits. Themes that hold heap-allocated render caches
   // should free them here so the memory is available to child activities.

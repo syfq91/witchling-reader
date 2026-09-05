@@ -7,7 +7,6 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
-#include <Txt.h>
 #include <WiFi.h>
 #include <Xtc.h>
 #include <esp_task_wdt.h>
@@ -110,13 +109,6 @@ void clearBookCacheIfNeeded(const String& filePath) {
   } else if (FsHelpers::hasXtcExtension(filePath)) {
     Xtc(filePath.c_str(), "/.crosspoint").clearCache();
     LOG_DBG("WEB", "Cleared xtc cache for: %s", filePath.c_str());
-  } else if (FsHelpers::hasTxtExtension(filePath) || FsHelpers::hasMarkdownExtension(filePath)) {
-    const Txt txt(filePath.c_str(), "/.crosspoint");
-    const String cachePath = txt.getCachePath().c_str();
-    if (Storage.exists(cachePath.c_str())) {
-      Storage.removeDir(cachePath.c_str());
-      LOG_DBG("WEB", "Cleared txt cache for: %s", filePath.c_str());
-    }
   }
 }
 
@@ -1602,7 +1594,7 @@ void CrossPointWebServer::handleGetSettings() const {
     // Enrich font-family entries with current SD card families.
     SettingInfo sLocal;
     const SettingInfo* sPtr = &sBase;
-    if (sBase.key && (std::strcmp(sBase.key, "fontFamily") == 0 || std::strcmp(sBase.key, "txtFontFamily") == 0)) {
+    if (sBase.key && std::strcmp(sBase.key, "fontFamily") == 0) {
       sLocal = sBase;
       const uint8_t n = fontFamilyOptionCount();
       sLocal.enumLabels.clear();
@@ -1755,8 +1747,7 @@ void CrossPointWebServer::handlePostSettings() {
         const int val = doc[s.key].as<int>();
         // For font-family keys the enumLabels in the static list are empty by design
         // (built lazily by handleGetSettings); use the dynamic option count instead.
-        const bool isFontFamilyKey =
-            s.key && (std::strcmp(s.key, "fontFamily") == 0 || std::strcmp(s.key, "txtFontFamily") == 0);
+        const bool isFontFamilyKey = s.key && std::strcmp(s.key, "fontFamily") == 0;
         const int count = isFontFamilyKey
                               ? static_cast<int>(fontFamilyOptionCount())
                               : static_cast<int>(s.enumLabels.empty() ? s.enumValues.size() : s.enumLabels.size());

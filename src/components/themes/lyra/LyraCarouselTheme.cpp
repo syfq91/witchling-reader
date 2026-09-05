@@ -7,7 +7,6 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
-#include <Txt.h>
 #include <Xtc.h>
 
 #include <algorithm>
@@ -140,7 +139,7 @@ void LyraCarouselTheme::setPreRenderIndex(int idx) { lastCarouselSelectorIndex =
 void LyraCarouselTheme::invalidateFrameCache() { freeFrameCache(); }
 void LyraCarouselTheme::markFrameCacheDirty() { gFrameCacheDirty = true; }
 
-void LyraCarouselTheme::onBookWillClose(const std::string& /*path*/, Epub* /*epub*/, Xtc* xtc, Txt* /*txt*/) {
+void LyraCarouselTheme::onBookWillClose(const std::string& /*path*/, Epub* /*epub*/, Xtc* xtc) {
   // EPUB thumbnail generation is handled lazily by HomeActivity (sliced ZIP + PNG decode).
   // XTC covers are generated synchronously here — they read from the first page of the XTC
   // file directly, no ZIP involved, so the extraction is fast enough to run at close time.

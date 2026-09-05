@@ -585,15 +585,6 @@ void ensureSdFontLoadedForPath(const char* path) {
   // RenderLock, so the lambda must not take one. Fires only on a genuine first load.
   const auto onColdFontLoad = [] { GUI.drawPopup(renderer, tr(STR_LOADING_FONT)); };
 
-  const std::string_view filePath(path);
-  const bool isTxtMd = static_cast<bool (*)(std::string_view)>(FsHelpers::hasTxtExtension)(filePath) ||
-                       static_cast<bool (*)(std::string_view)>(FsHelpers::hasMarkdownExtension)(filePath);
-  if (isTxtMd) {
-    // TXT/MD has no per-book SD font override — use global settings directly.
-    sdFontSystem.ensureLoaded(renderer, SETTINGS.txtSdFontFamilyName, SETTINGS.txtFontSize, onColdFontLoad);
-    return;
-  }
-
   // For EPUB: honour per-book SD font and/or size overrides. The book record
   // is available here — the reader activity hasn't started yet, but
   // RecentBooksStore already has the persisted overrides for this path.
@@ -1311,8 +1302,8 @@ void loop() {
   // (reader -> KOReader sync) reached WiFi.begin() at 10 MHz and wedged. Holding a button is
   // user activity by any reasonable reading, so count it as such. wasTouchActivity() is the same
   // argument for the touch boards: a finger on the glass raises no button edge at all.
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.isAnyPressed() ||
-      halTiltSensor.hadActivity() || activityManager.preventAutoSleep()) {
+  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.isAnyPressed() || halTiltSensor.hadActivity() ||
+      activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }

@@ -6,7 +6,6 @@
 #include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
-#include <Txt.h>
 #include <Xtc.h>
 
 #include <algorithm>
@@ -71,7 +70,6 @@ void FileBrowserActivity::loadFiles() {
         shouldAdd = FsHelpers::checkFileExtension(filename, ".bin");
       } else {
         shouldAdd = FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
-                    FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
                     FsHelpers::hasBmpExtension(filename) || FsHelpers::hasJpgExtension(filename) ||
                     FsHelpers::hasPngExtension(filename);
       }
@@ -106,7 +104,6 @@ bool FileBrowserActivity::acceptFileForBrowser(const char* name, bool isDir) {
   // File: check extension
   std::string_view filename{name};
   return FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
-         FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
          FsHelpers::hasBmpExtension(filename) || FsHelpers::hasJpgExtension(filename) ||
          FsHelpers::hasPngExtension(filename);
 }
@@ -733,13 +730,6 @@ void FileBrowserActivity::doMarkAsRead(const std::string& fullPath) {
     // 5-byte XTC progress: page(4) + percent(1)
     data[4] = 100;
     dataLen = 5;
-  } else if (FsHelpers::hasTxtExtension(fullPath) || FsHelpers::hasMarkdownExtension(fullPath)) {
-    Txt txt(fullPath, "/.crosspoint");
-    txt.setupCacheDir();
-    cachePath = txt.getCachePath();
-    // 7-byte TXT progress: page(2) + offset(4) + percent(1)
-    data[6] = 100;
-    dataLen = 7;
   } else {
     return;
   }

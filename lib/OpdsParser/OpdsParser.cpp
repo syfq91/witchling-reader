@@ -44,14 +44,6 @@ OpdsAcquisitionLink supportedAcquisitionLink(const char* type, const char* href)
     return {href, type, "epub", ".epub"};
   }
 
-  if (strcmp(type, "text/plain") == 0) {
-    return {href, type, "txt", ".txt"};
-  }
-
-  if (strcmp(type, "text/markdown") == 0 || strcmp(type, "text/x-markdown") == 0) {
-    return {href, type, "md", ".md"};
-  }
-
   if (FsHelpers::checkFileExtension(trimmedHref, ".xtc")) {
     return {href, "application/vnd.xteink.xtc", "xtc", ".xtc"};
   }

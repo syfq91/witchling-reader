@@ -86,8 +86,7 @@ void SettingsActivity::onEnter() {
     // Enrich font-family entries with SD card families discovered at boot.
     // The list itself is a namespace-static; we only mutate our local copy here.
     SettingInfo enriched = setting;
-    if (setting.key &&
-        (std::strcmp(setting.key, "fontFamily") == 0 || std::strcmp(setting.key, "txtFontFamily") == 0)) {
+    if (setting.key && std::strcmp(setting.key, "fontFamily") == 0) {
       const uint8_t n = fontFamilyOptionCount();
       enriched.enumLabels.clear();
       enriched.enumLabels.reserve(n);
@@ -99,8 +98,7 @@ void SettingsActivity::onEnter() {
       continue;
     }
     const bool isReaderFontEntry =
-        enriched.category == StrId::STR_CAT_READER &&
-        (enriched.submenu == StrId::STR_MENU_READER_FONT || enriched.submenu == StrId::STR_MENU_TXT_FONT);
+        enriched.category == StrId::STR_CAT_READER && enriched.submenu == StrId::STR_MENU_READER_FONT;
 
     if (!insertedFontDownload && sawReaderFontSection && !isReaderFontEntry) {
       insertFontDownloadBelowFontSection();

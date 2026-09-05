@@ -170,10 +170,6 @@ The Settings screen allows you to configure the device's behavior.
 - **Fast AA** *(X3 only)*: Swaps the slow 53-frame grayscale waveform for a fast 7-frame LUT (~130 ms). Mid-tones appear slightly darker. "ON" / "OFF"
 - **Text Darkness**: Ink density for rendered text: "Normal" (default), "Dark", "Extra Dark", "Max Dark"
 
-**TXT/Markdown Font** (submenu):
-- **Font Family**: Font used when reading `.txt` and `.md` files (independent of the EPUB font).
-- **Font Size**: "Tiny", "Small", "Medium" (default), "Large", "X Large"
-
 **Layout** (submenu):
 - **Paragraph Alignment**: "Justified" (default), "Left", "Center", "Right", "Book Style"
 

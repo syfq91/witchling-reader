@@ -10,7 +10,6 @@
 #include <Logging.h>
 #include <PngToBmpConverter.h>
 #include <SidecarFiles.h>
-#include <Txt.h>
 #include <Xtc.h>
 #include <esp_task_wdt.h>
 
@@ -209,25 +208,11 @@ NextBookMetadata loadNextBookMetadata(const std::string& nextBookPath) {
     return metadata;
   }
 
-  if (FsHelpers::hasMarkdownExtension(nextBookPath) || FsHelpers::hasTxtExtension(nextBookPath)) {
-    Txt txt(nextBookPath, "/.crosspoint");
-    if (txt.load()) {
-      metadata.title = txt.getTitle();
-      if (txt.generateCoverBmp()) {
-        metadata.coverPath = txt.getCoverBmpPath();
-      } else {
-        metadata.coverPath = getSidecarCoverBmpPath(nextBookPath, kFinishedBookCoverMaxWidth, kFinishedBookCoverHeight);
-      }
-    }
-    return metadata;
-  }
-
   return metadata;
 }
 
 bool isSupportedBookFile(const std::string& fileName) {
-  return FsHelpers::hasEpubExtension(fileName) || FsHelpers::hasXtcExtension(fileName) ||
-         FsHelpers::hasTxtExtension(fileName) || FsHelpers::hasMarkdownExtension(fileName);
+  return FsHelpers::hasEpubExtension(fileName) || FsHelpers::hasXtcExtension(fileName);
 }
 
 bool caseInsensitiveEqual(const std::string& left, const std::string& right) {

@@ -11,7 +11,6 @@
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
 #include <PngToBmpConverter.h>
-#include <Txt.h>
 #include <Utf8.h>
 #include <Xtc.h>
 #include <esp_system.h>

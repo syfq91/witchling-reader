@@ -70,9 +70,6 @@ const OpdsServer* findServerCredentials(const std::string& serverUrl, const std:
 
 std::string computeCachePath(const std::string& filePath, const std::string& cacheBase) {
   const size_t hash = std::hash<std::string>{}(filePath);
-  if (FsHelpers::checkFileExtension(filePath, ".txt") || FsHelpers::checkFileExtension(filePath, ".md")) {
-    return cacheBase + "/txt_" + std::to_string(hash);
-  }
   if (FsHelpers::checkFileExtension(filePath, ".xtc")) {
     return cacheBase + "/xtc_" + std::to_string(hash);
   }

@@ -65,7 +65,6 @@ void FileContextMenuActivity::buildMenuItems() {
   const bool isBin = FsHelpers::checkFileExtension(name, ".bin");
   const bool isEpub = FsHelpers::hasEpubExtension(name);
   const bool isXtc = FsHelpers::hasXtcExtension(name);
-  const bool isTxt = FsHelpers::hasTxtExtension(name) || FsHelpers::hasMarkdownExtension(name);
   const bool isImage =
       FsHelpers::hasBmpExtension(name) || FsHelpers::hasJpgExtension(name) || FsHelpers::hasPngExtension(name);
 
@@ -89,10 +88,6 @@ void FileContextMenuActivity::buildMenuItems() {
     menuItems.push_back(SettingInfo::Action(StrId::STR_MARK_AS_READ, SettingAction::None));
     menuItems.push_back(SettingInfo::Action(StrId::STR_INFO, SettingAction::None));
     menuItems.push_back(SettingInfo::Action(StrId::STR_DELETE_CACHE, SettingAction::None));
-    menuItems.push_back(SettingInfo::Action(StrId::STR_REMOVE, SettingAction::None));
-  } else if (isTxt) {
-    menuItems.push_back(SettingInfo::Action(StrId::STR_OPEN, SettingAction::None));
-    menuItems.push_back(SettingInfo::Action(StrId::STR_MARK_AS_READ, SettingAction::None));
     menuItems.push_back(SettingInfo::Action(StrId::STR_REMOVE, SettingAction::None));
   }
 }
