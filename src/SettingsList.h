@@ -148,11 +148,6 @@ inline std::vector<SettingInfo> buildSettingsList() {
                          .withSubcategory(StrId::STR_MENU_DISP_REFRESH));
   settings.push_back(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                                          StrId::STR_CAT_DISPLAY));
-  settings.push_back(SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme,
-                                       {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED,
-                                        StrId::STR_THEME_LYRA_CAROUSEL},
-                                       "uiTheme", StrId::STR_CAT_DISPLAY)
-                         .withSelectorActivity());
 
   // --- Reader ---
   // General reader settings

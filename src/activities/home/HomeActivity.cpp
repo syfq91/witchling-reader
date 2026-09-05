@@ -32,11 +32,8 @@
 #include "fontIds.h"
 
 namespace {
-constexpr int CLASSIC_MIN_RECENT_TILE_HEIGHT = 280;
-constexpr int LYRA_MIN_RECENT_TILE_HEIGHT = 170;
-constexpr int LYRA_3_COVERS_MIN_RECENT_TILE_HEIGHT = 200;
-constexpr int CLASSIC_MIN_RECENT_TO_MENU_GAP = 2;
-constexpr int LYRA_MIN_RECENT_TO_MENU_GAP = 4;
+constexpr int MIN_RECENT_TILE_HEIGHT = 170;
+constexpr int MIN_RECENT_TO_MENU_GAP = 4;
 
 struct HomeScreenLayout {
   int recentTileHeight;
@@ -44,28 +41,9 @@ struct HomeScreenLayout {
   int menuHeight;
 };
 
-bool isLyraFamilyTheme() {
-  const auto theme = static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
-  return theme == CrossPointSettings::UI_THEME::LYRA || theme == CrossPointSettings::UI_THEME::LYRA_3_COVERS;
-}
+int getMinRecentTileHeight() { return MIN_RECENT_TILE_HEIGHT; }
 
-bool isLyraExtendedTheme() {
-  return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_3_COVERS;
-}
-
-int getMinRecentTileHeight() {
-  if (isLyraExtendedTheme()) {
-    return LYRA_3_COVERS_MIN_RECENT_TILE_HEIGHT;
-  }
-  if (isLyraFamilyTheme()) {
-    return LYRA_MIN_RECENT_TILE_HEIGHT;
-  }
-  return CLASSIC_MIN_RECENT_TILE_HEIGHT;
-}
-
-int getMinRecentToMenuGap() {
-  return isLyraFamilyTheme() ? LYRA_MIN_RECENT_TO_MENU_GAP : CLASSIC_MIN_RECENT_TO_MENU_GAP;
-}
+int getMinRecentToMenuGap() { return MIN_RECENT_TO_MENU_GAP; }
 
 HomeScreenLayout computeHomeScreenLayout(const ThemeMetrics& metrics, int contentHeight, int menuItemCount) {
   HomeScreenLayout layout{metrics.homeCoverTileHeight, metrics.verticalSpacing, 0};
@@ -104,10 +82,7 @@ HomeScreenLayout computeHomeScreenLayout(const ThemeMetrics& metrics, int conten
   return layout;
 }
 
-int getHomeCoverRenderHeight(const HomeScreenLayout& layout) {
-  return isLyraExtendedTheme() ? std::max(120, layout.recentTileHeight - 58)
-                               : std::max(120, layout.recentTileHeight - (isLyraFamilyTheme() ? 16 : 0));
-}
+int getHomeCoverRenderHeight(const HomeScreenLayout& layout) { return std::max(120, layout.recentTileHeight - 16); }
 }  // namespace
 
 // Builds the menu entry list in display order. Single source of truth for both loop() (which
@@ -754,86 +729,29 @@ void HomeActivity::loop() {
     rebuildMenuEntries();
   }
 
-  const bool isCarousel = (GUI.getHomeNavigation() == HomeNavigation::Carousel);
-
-  // A press may be in EITHER place: hasPendingInput() reads the live sampler accumulator
-  // (presses arriving this tick), while wasAnyPressed()/wasAnyReleased() read the snapshot
-  // that gpio.update() already drained the accumulator INTO at the top of the main loop —
-  // BEFORE this loop() runs. Gating cover loading on hasPendingInput() alone therefore
-  // starves the snapshot edge: the press sits unconsumed in snapPressed_ while the gate
-  // keeps diverting to loadRecentCovers() every tick, and the next update() overwrites it.
-  // Defer cover loading whenever input is waiting in either place so the handlers below run.
   const bool inputWaiting =
       mappedInput.hasPendingInput() || mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased();
 
-  if (isCarousel) {
-    if (firstRenderDone && !recentsLoaded && !recentsLoading && !inputWaiting) {
-      loadRecentCovers(UITheme::getInstance().getMetrics().homeCoverHeight);
-      return;
-    }
+  const int totalItems = static_cast<int>(recentBooks.size() + menuEntries.size());
 
-    const int bookCount = static_cast<int>(recentBooks.size());
-    const int menuItemCount = static_cast<int>(menuEntries.size());
-    const bool inCarouselRow = (selectorIndex < bookCount);
-    const int menuIdx = inCarouselRow ? 0 : (selectorIndex - bookCount);
-
-    // Up and Down both toggle between the carousel row and the menu row. They are
-    // handled together, and as a single else-if chain with Left/Right, so that AT MOST
-    // ONE direction acts per tick. Two row-toggle edges landing in the same drained
-    // input batch (easy when a slow cover-loading tick lets the sampler accumulate
-    // several edges) would otherwise both run against the stale `inCarouselRow` above:
-    // the first sets selectorIndex = bookCount, the second then captures THAT into
-    // lastCarouselBookIndex (= bookCount, an invalid carousel index), permanently
-    // stranding the selector in the menu row — Left/Right still move the icon highlight
-    // but Up/Down can never return to the carousel. One-direction-per-tick prevents it.
-    const bool rowToggle = mappedInput.wasLogicalPressed(MappedInputManager::Direction::Up) ||
-                           mappedInput.wasLogicalPressed(MappedInputManager::Direction::Down);
-
-    if (mappedInput.wasLogicalPressed(MappedInputManager::Direction::Right)) {
-      if (inCarouselRow && bookCount > 0)
-        selectorIndex = (selectorIndex + 1) % bookCount;
-      else if (!inCarouselRow)
-        selectorIndex = bookCount + (menuIdx + 1) % menuItemCount;
-      requestUpdate();
-    } else if (mappedInput.wasLogicalPressed(MappedInputManager::Direction::Left)) {
-      if (inCarouselRow && bookCount > 0)
-        selectorIndex = (selectorIndex + bookCount - 1) % bookCount;
-      else if (!inCarouselRow)
-        selectorIndex = bookCount + (menuIdx + menuItemCount - 1) % menuItemCount;
-      requestUpdate();
-    } else if (rowToggle) {
-      if (inCarouselRow) {
-        lastCarouselBookIndex = selectorIndex;  // selectorIndex < bookCount here — always valid
-        selectorIndex = bookCount;              // jump to first menu entry
-      } else {
-        // Restore the remembered carousel slot, clamped in case it was never set or
-        // the recents list shrank since it was recorded.
-        selectorIndex = (bookCount > 0) ? std::min(std::max(lastCarouselBookIndex, 0), bookCount - 1) : 0;
-      }
-      requestUpdate();
-    }
-  } else {
-    const int totalItems = static_cast<int>(recentBooks.size() + menuEntries.size());
-
-    if (firstRenderDone && !recentsLoaded && !recentsLoading && !inputWaiting) {
-      const auto& metrics = UITheme::getInstance().getMetrics();
-      const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-      const HomeScreenLayout layout =
-          computeHomeScreenLayout(metrics, contentRect.height, static_cast<int>(menuEntries.size()));
-      loadRecentCovers(getHomeCoverRenderHeight(layout));
-      return;
-    }
-
-    buttonNavigator.onNext([this, totalItems] {
-      selectorIndex = ButtonNavigator::nextIndex(selectorIndex, totalItems);
-      requestUpdate();
-    });
-
-    buttonNavigator.onPrevious([this, totalItems] {
-      selectorIndex = ButtonNavigator::previousIndex(selectorIndex, totalItems);
-      requestUpdate();
-    });
+  if (firstRenderDone && !recentsLoaded && !recentsLoading && !inputWaiting) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+    const HomeScreenLayout layout =
+        computeHomeScreenLayout(metrics, contentRect.height, static_cast<int>(menuEntries.size()));
+    loadRecentCovers(getHomeCoverRenderHeight(layout));
+    return;
   }
+
+  buttonNavigator.onNext([this, totalItems] {
+    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, totalItems);
+    requestUpdate();
+  });
+
+  buttonNavigator.onPrevious([this, totalItems] {
+    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, totalItems);
+    requestUpdate();
+  });
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     const int recentsCount = static_cast<int>(recentBooks.size());
@@ -857,32 +775,6 @@ void HomeActivity::render(RenderLock&&) {
   }
 
   const int menuCount = static_cast<int>(menuEntries.size());
-  const bool isCarousel = (GUI.getHomeNavigation() == HomeNavigation::Carousel);
-
-  // Fast path: theme owns its own pre-rendered frame cache
-  if (isCarousel) {
-    // The carousel scrolls along logical Left/Right and the row toggle sits on logical Up/Down, so
-    // in landscape the front strip carries the toggle instead — mapHints puts the matching arrows
-    // there. (Only the front strip is drawn; the side buttons are unlabelled on the home screen.)
-    const auto carouselLabels =
-        mappedInput.mapHints("", tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT), tr(STR_DIR_UP), tr(STR_DIR_DOWN))
-            .front;
-    const bool handled = GUI.tryFastHomeRender(
-        renderer, recentBooks, selectorIndex, menuCount,
-        [this](int index) { return std::string(I18N.get(menuEntries[index].label)); },
-        [this](int index) { return menuEntries[index].icon; }, carouselLabels.btn1, carouselLabels.btn2,
-        carouselLabels.btn3, carouselLabels.btn4);
-    if (handled) {
-      // Opens the cover-loading gate in loop(); see the note at the end of render() for
-      // why this deliberately does NOT also request a second render.
-      firstRenderDone = true;
-      return;
-    }
-    // Fast path failed (e.g. frame cache malloc failed). Force cover re-render
-    // so the fallback drawRecentBookCover below doesn't skip based on stale state.
-    coverRendered = false;
-    coverBufferStored = false;
-  }
 
   renderer.clearScreen();
   bool bufferRestored = coverBufferStored && restoreCoverBuffer();
@@ -914,11 +806,7 @@ void HomeActivity::render(RenderLock&&) {
       [this](int index) { return std::string(I18N.get(menuEntries[index].label)); },
       [this](int index) { return menuEntries[index].icon; });
 
-  const auto labels = isCarousel ? mappedInput
-                                       .mapHints("", tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT),
-                                                 tr(STR_DIR_UP), tr(STR_DIR_DOWN))
-                                       .front
-                                 : mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();
