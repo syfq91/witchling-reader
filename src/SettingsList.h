@@ -1,10 +1,13 @@
 #pragma once
 
+#include <BoardConfig.h>
 #include <HalGPIO.h>
 #include <I18n.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "CrossPointSettings.h"
@@ -27,7 +30,10 @@
 //                 works inside a submenu exactly as it does in the parent tab.
 //                 Add with .withSubmenu(StrId::STR_MY_SUBMENU).
 //   key         — JSON property name used by the web settings API (nullptr = device-only).
-//   deviceTarget — hardware visibility (BOTH by default; override with .withDeviceTarget()).
+//   requiredCapability — hardware visibility. Default is "always visible";
+//     override with .requiring(SettingRequires::X) to hide the setting on boards
+//     that physically cannot do the thing it controls. Ask for a CAPABILITY,
+//     never a board name — see SettingInfo.h.
 //
 // ACTION-type entries and entries without a key are device-only and are added directly
 // in SettingsActivity::onEnter(), not here.
@@ -83,6 +89,9 @@ inline std::vector<SettingInfo> buildSettingsList() {
                                                StrId::STR_BTN_ACT_SYNC_PROGRESS};
 
   // Prepend the per-button default action to the shared options list.
+  assert(1 + btnActionOptions.size() == static_cast<size_t>(CrossPointSettings::BUTTON_ACTION_COUNT) &&
+         "btnActionOptions must name every BUTTON_ACTION except BTN_DEFAULT, in enum order");
+
   auto makeBtnActionOptions = [&](StrId defaultAction) {
     std::vector<StrId> result;
     result.reserve(1 + btnActionOptions.size());
@@ -92,7 +101,7 @@ inline std::vector<SettingInfo> buildSettingsList() {
   };
 
   std::vector<SettingInfo> settings;
-  settings.reserve(77);
+  settings.reserve(100);
 
   // --- Display ---
   settings.push_back(SettingInfo::Action(StrId::STR_TIME_TO_SLEEP, SettingAction::SleepTimeoutPicker)
@@ -179,7 +188,7 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Toggle(StrId::STR_FAST_AA, &CrossPointSettings::fastAntiAliasing,
                                          "fastAntiAliasingV2", StrId::STR_CAT_READER)
                          .withSubmenu(StrId::STR_MENU_READER_FONT)
-                         .withDeviceTarget(SettingDeviceTarget::X3));
+                         .requiring(SettingRequires::SelectableGrayscaleLut));
   settings.push_back(SettingInfo::Enum(StrId::STR_TEXT_DARKNESS, &CrossPointSettings::textDarkness,
                                        {StrId::STR_NORMAL, StrId::STR_DARK, StrId::STR_EXTRA_DARK, StrId::STR_MAX_DARK},
                                        "textDarkness", StrId::STR_CAT_READER)
@@ -366,17 +375,17 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Toggle(StrId::STR_TILT_PAGE_TURN, &CrossPointSettings::tiltPageTurn, "tiltPageTurn",
                                          StrId::STR_CAT_CONTROLS)
                          .withSubmenu(StrId::STR_TILT_PAGE_TURN)
-                         .withDeviceTarget(SettingDeviceTarget::X3));
+                         .requiring(SettingRequires::TiltSensor));
   settings.push_back(SettingInfo::Enum(StrId::STR_DIR_RIGHT, &CrossPointSettings::tiltPositiveAction,
                                        {StrId::STR_NONE_OPT, StrId::STR_NEXT_PAGE, StrId::STR_PREV_PAGE},
                                        "tiltPositiveAction", StrId::STR_CAT_CONTROLS)
                          .withSubmenu(StrId::STR_TILT_PAGE_TURN)
-                         .withDeviceTarget(SettingDeviceTarget::X3));
+                         .requiring(SettingRequires::TiltSensor));
   settings.push_back(SettingInfo::Enum(StrId::STR_DIR_LEFT, &CrossPointSettings::tiltNegativeAction,
                                        {StrId::STR_NONE_OPT, StrId::STR_NEXT_PAGE, StrId::STR_PREV_PAGE},
                                        "tiltNegativeAction", StrId::STR_CAT_CONTROLS)
                          .withSubmenu(StrId::STR_TILT_PAGE_TURN)
-                         .withDeviceTarget(SettingDeviceTarget::X3));
+                         .requiring(SettingRequires::TiltSensor));
   // --- System ---
   settings.push_back(SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles,
                                          "showHiddenFiles", StrId::STR_CAT_SYSTEM)
@@ -456,17 +465,20 @@ inline std::vector<SettingInfo> buildSettingsList() {
 
 inline std::vector<SettingInfo> getSettingsList() {
   std::vector<SettingInfo> settings = SettingsListDetail::buildSettingsList();
-  const bool isX3 = gpio.deviceIsX3();
-  settings.erase(std::remove_if(settings.begin(), settings.end(),
-                                [isX3](const SettingInfo& setting) {
-                                  if (setting.deviceTarget == SettingDeviceTarget::BOTH) {
-                                    return false;
-                                  }
-                                  if (setting.deviceTarget == SettingDeviceTarget::X3) {
-                                    return !isX3;
-                                  }
-                                  return isX3;
-                                }),
-                 settings.end());
+  const auto boardHas = [](const SettingRequires capability) {
+    switch (capability) {
+      case SettingRequires::Nothing:
+        return true;
+      case SettingRequires::TiltSensor:
+        return BoardConfig::ACTIVE.sensors.imuType != BoardConfig::ImuType::None;
+      case SettingRequires::SelectableGrayscaleLut:
+        return BoardConfig::ACTIVE.displayController != BoardConfig::DisplayController::SSD1677;
+    }
+    return true;
+  };
+  settings.erase(
+      std::remove_if(settings.begin(), settings.end(),
+                     [&boardHas](const SettingInfo& setting) { return !boardHas(setting.requiredCapability); }),
+      settings.end());
   return settings;
 }

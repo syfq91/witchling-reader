@@ -1,6 +1,7 @@
 #include "HalClock.h"
 
 #include <Arduino.h>
+#include <HalCapabilities.h>
 #include <HalGPIO.h>
 #include <Logging.h>
 #include <Preferences.h>
@@ -15,9 +16,16 @@
 #include <cmath>
 #include <cstdlib>
 
+#include "HalI2cBus.h"
+
 // ---- RTC / I2C configuration ----------------------------------------------
 // Pins for ESP32-C3 (according to https://gist.github.com/CrazyCoder/1c5f846adee18e21f91e264601a6ddce)
-static constexpr uint8_t DS3231_ADDRESS = 0x68;
+// The DS3231's own I2C address. Read from the board profile rather than
+// hardcoded, but note the guard in initExternalRTC() is rtcType() == Ds3231, so
+// this is only ever used on a board that actually has one -- it is not a generic
+// "the RTC" address. A BM8563 answers at 0x51 with different registers and needs
+// its own driver, not this one with a different constant.
+static uint8_t ds3231Address() { return BoardConfig::ACTIVE.sensors.rtcAddr; }
 // static constexpr int I2C_SDA = 8;
 // static constexpr int I2C_SCL = 9;
 static uint8_t bin2bcd(uint8_t val) { return val + 6 * (val / 10); }
@@ -271,7 +279,8 @@ static float readExternalTemp();
 
 static float readChipTemperatureC() {
   // ESP32 and ESP32-C3 use the internal ADC temperature sensor.
-  if (initExternalRTC()) {
+  // The DS3231 carries a temperature register at 0x11.
+  if (HalCapabilities::rtcType() == BoardConfig::RtcType::Ds3231 && initExternalRTC()) {
     return readExternalTemp();
   }
   return (float)temperatureRead();
@@ -285,13 +294,13 @@ static bool initExternalRTC() {
   if (initialized) return exists;
   initialized = true;
 
-  if (!gpio.deviceIsX3()) {
-    LOG_DBG("CLK", "Skipping DS3231 init on non-X3 board");
+  if (HalCapabilities::rtcType() != BoardConfig::RtcType::Ds3231) {
+    LOG_DBG("CLK", "Skipping external RTC init: board profile declares none");
     return false;
   }
 
-  // Wire has already been initialized; no need to call Wire.begin(I2C_SDA, I2C_SCL);
-  Wire.beginTransmission(DS3231_ADDRESS);
+  HalI2cBus::Lock i2cLock;
+  Wire.beginTransmission(ds3231Address());
   if (Wire.endTransmission() == 0) {
     exists = true;
     LOG_INF("CLK", "DS3231 Hardware via I2C found.");
@@ -301,12 +310,13 @@ static bool initExternalRTC() {
   return exists;
 }
 
-// Write full date+time to DS3231 (all 7 registers)
+// Write full date+time to the external RTC (DS3231 inline, operated in UTC).
 static void writeExternalRTC(time_t t) {
   struct tm timeinfo;
   gmtime_r(&t, &timeinfo);  // DS3231 is usually operated in UTC
 
-  Wire.beginTransmission(DS3231_ADDRESS);
+  HalI2cBus::Lock i2cLock;
+  Wire.beginTransmission(ds3231Address());
   Wire.write(0x00);                             // Start at register 0x00 (seconds)
   Wire.write(bin2bcd(timeinfo.tm_sec));         // 0x00: Seconds
   Wire.write(bin2bcd(timeinfo.tm_min));         // 0x01: Minutes
@@ -318,13 +328,14 @@ static void writeExternalRTC(time_t t) {
   Wire.endTransmission();
 }
 
-// Read time from DS3231
+// Read time from the external RTC. Returns 0 when the time cannot be trusted.
 static time_t readExternalRTC() {
-  Wire.beginTransmission(DS3231_ADDRESS);
+  HalI2cBus::Lock i2cLock;
+  Wire.beginTransmission(ds3231Address());
   Wire.write(0x00);
   if (Wire.endTransmission() != 0) return 0;
 
-  Wire.requestFrom(DS3231_ADDRESS, (uint8_t)7);
+  Wire.requestFrom(ds3231Address(), (uint8_t)7);
   if (Wire.available() < 7) return 0;
 
   struct tm timeinfo = {};
@@ -342,13 +353,13 @@ static time_t readExternalRTC() {
 
 // Read temperature (Register 0x11)
 static float readExternalTemp() {
-  Wire.beginTransmission(DS3231_ADDRESS);
+  Wire.beginTransmission(ds3231Address());
   Wire.write(0x11);
   if (Wire.endTransmission() != 0) {
     return 0.0f;
   }
 
-  int count = Wire.requestFrom(DS3231_ADDRESS, (uint8_t)2);
+  int count = Wire.requestFrom(ds3231Address(), (uint8_t)2);
   if (count < 2) {
     return 0.0f;
   }
@@ -819,7 +830,7 @@ void restore() {
       setSystemClock(rtcTime);
       rtcEpoch = rtcTime;
       clockApproximate = false;
-      LOG_INF("CLK", "Got time from DS3231. Last deep sleep %us", lastSleepSec);
+      LOG_INF("CLK", "Got time from hardware RTC. Last deep sleep %us", lastSleepSec);
       return;
     }
   }
@@ -933,7 +944,7 @@ void updatePeriodic() {
       if (rtcTime > 1577836800) {  // Check if time is after 2020 (plausible timestamp)
         lastPeriodicUpdateMs = nowMs;
         setSystemClock(rtcTime);
-        LOG_DBG("CLK", "Systemtime has been taken from DS3231");
+        LOG_DBG("CLK", "Systemtime has been taken from the hardware RTC");
       }
     }
     return;
@@ -1124,7 +1135,7 @@ bool applyClientTime(time_t timestamp) {
   // Persist to RTC if available (X3 only)
   if (initExternalRTC()) {
     writeExternalRTC(timestamp);
-    LOG_DBG("CLK", "Persisted client time to DS3231 RTC");
+    LOG_DBG("CLK", "Persisted client time to the hardware RTC");
   }
 
   // Also persist to NVS

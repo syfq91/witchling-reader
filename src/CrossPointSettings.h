@@ -119,6 +119,35 @@ class CrossPointSettings {
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Font size options
   enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, TINY = 4, FONT_SIZE_COUNT };
+  // The sizes in ASCENDING VISUAL order, which the enum is not: TINY was appended
+  // as 4 rather than inserted before SMALL, so persisted values would have shifted.
+  // Anything that means "one size bigger" — a pinch, a font-size shortcut — must
+  // step through this, never through enum arithmetic.
+  static constexpr uint8_t FONT_SIZE_LADDER[] = {TINY, SMALL, MEDIUM, LARGE, EXTRA_LARGE};
+  // `size` moved `delta` steps along the ladder and clamped at both ends. Clamped
+  // rather than wrapped: a pinch that has reached the largest size should stay
+  // there, not jump to the smallest.
+  //
+  // Inline so it can be exercised on the host without dragging in the NVS half
+  // of CrossPointSettings.cpp — the ladder order is exactly the kind of thing a
+  // test should hold still.
+  static constexpr uint8_t stepFontSize(const uint8_t size, const int delta) {
+    constexpr int len = static_cast<int>(sizeof(FONT_SIZE_LADDER) / sizeof(FONT_SIZE_LADDER[0]));
+    int idx = -1;
+    for (int i = 0; i < len; ++i) {
+      if (FONT_SIZE_LADDER[i] == size) {
+        idx = i;
+        break;
+      }
+    }
+    // An unrecognised value (a hand-edited settings file) has no place on the
+    // ladder; leave it alone rather than guessing which end it belongs at.
+    if (idx < 0) return size;
+    int target = idx + delta;
+    if (target < 0) target = 0;
+    if (target > len - 1) target = len - 1;
+    return FONT_SIZE_LADDER[target];
+  }
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
   enum PARAGRAPH_ALIGNMENT {
     JUSTIFIED = 0,
@@ -171,6 +200,8 @@ class CrossPointSettings {
     TILT_ACT_PREV_PAGE = 2,
     TILT_GESTURE_ACTION_COUNT
   };
+
+
 
   // Text darkness for AA glyph rendering (forwarded to GfxRenderer::setTextDarkness)
   enum TEXT_DARKNESS {
@@ -483,6 +514,18 @@ class CrossPointSettings {
   void saveStartupToNvs() const;
 
   static void validateFrontButtonMapping(CrossPointSettings& settings);
+
+
+
+  // True for an action only the reader can carry out. Such an action must NOT be
+  // consumed on another screen: doing so would swallow the input and shadow that
+  // screen's own handling of it. Buttons let the event fall through to the
+  // activity; gestures decline to claim the contact at all.
+  //
+  // Everything not named here is global — go home, sleep, the refreshes,
+  // bookmarks, the reading light, the touch-navigation switch — and works
+  // wherever it is triggered.
+  static bool isReaderScopedAction(uint8_t action);
 
   // Enforce settings whose values depend on others (e.g. sleepScreen=QUICK_RESUME implies
   // quickResumeSleepScreen=ON). Call after any setting mutation that could invalidate the pair.

@@ -11,6 +11,23 @@
 namespace {
 constexpr int kSmallStep = 1;
 constexpr int kLargeStep = 10;
+
+constexpr int kBarWidth = 360;
+constexpr int kBarHeight = 16;
+constexpr int kBarY = 140;
+constexpr int kTrackInset = 2;
+
+int barLeft(const GfxRenderer& renderer) {
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+  return contentRect.x + (contentRect.width - kBarWidth) / 2;
+}
+
+int fillWidthFor(int val, int width, int minVal, int maxVal) {
+  if (maxVal <= minVal) return 0;
+  const int usable = width - kTrackInset * 2;
+  const int clamped = std::max(minVal, std::min(maxVal, val));
+  return (clamped - minVal) * usable / (maxVal - minVal);
+}
 }  // namespace
 
 void SliderPickerActivity::onEnter() {
@@ -44,10 +61,6 @@ void SliderPickerActivity::loop() {
       return;
     }
 
-    // Fine step on logical Left/Right, coarse on logical Up/Down (below) — four directions, four
-    // buttons, one meaning each. The PageBack/PageForward names that used to be matched here as
-    // well are the SIDE buttons under a second name, i.e. the coarse pair: a single press of the
-    // side back button ran both arms and moved the value by +10 then -1.
     if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left) &&
         ev.type == ButtonEventManager::PressType::Short) {
       adjustValue(-kSmallStep);
@@ -78,24 +91,19 @@ void SliderPickerActivity::render(RenderLock&&) {
   }
   renderer.drawCenteredText(UI_12_FONT_ID, 90, valueText.c_str(), true, EpdFontFamily::BOLD);
 
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-  constexpr int barWidth = 360;
-  constexpr int barHeight = 16;
-  const int barX = contentRect.x + (contentRect.width - barWidth) / 2;
-  constexpr int barY = 140;
+  const int barX = barLeft(renderer);
 
-  renderer.drawRect(barX, barY, barWidth, barHeight);
+  renderer.drawRect(barX, kBarY, kBarWidth, kBarHeight);
 
-  const int range = cfg.maxValue - cfg.minValue;
-  const int fillWidth = range > 0 ? (barWidth - 4) * (value - cfg.minValue) / range : 0;
+  const int fillWidth = fillWidthFor(value, kBarWidth, cfg.minValue, cfg.maxValue);
   if (fillWidth > 0) {
-    renderer.fillRect(barX + 2, barY + 2, fillWidth, barHeight - 4);
+    renderer.fillRect(barX + kTrackInset, kBarY + 2, fillWidth, kBarHeight - 4);
   }
 
-  const int knobX = barX + 2 + fillWidth - 2;
-  renderer.fillRect(knobX, barY - 4, 4, barHeight + 8, true);
+  const int knobX = barX + kTrackInset + fillWidth - 2;
+  renderer.fillRect(knobX, kBarY - 4, 4, kBarHeight + 8, true);
 
-  renderer.drawCenteredText(SMALL_FONT_ID, barY + 30, I18N.get(cfg.hintId), true);
+  renderer.drawCenteredText(SMALL_FONT_ID, kBarY + 30, I18N.get(cfg.hintId), true);
 
   // The slider runs across the screen, so - / + ride logical Left/Right and move to whichever
   // button pair lies on that axis; the coarse step rides logical Up/Down and is unlabelled.

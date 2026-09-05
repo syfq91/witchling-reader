@@ -702,6 +702,8 @@ void HomeActivity::onEnter() {
 }
 
 void HomeActivity::onExit() {
+  // The cover-loading burst is over; release the one book's metadata the memo still holds.
+  Epub::clearCoverMetadataMemo();
   Activity::onExit();
   statsLoad_.reset();
   freeCoverBuffer();
@@ -872,10 +874,9 @@ void HomeActivity::render(RenderLock&&) {
         [this](int index) { return menuEntries[index].icon; }, carouselLabels.btn1, carouselLabels.btn2,
         carouselLabels.btn3, carouselLabels.btn4);
     if (handled) {
-      if (!firstRenderDone) {
-        firstRenderDone = true;
-        requestUpdate();
-      }
+      // Opens the cover-loading gate in loop(); see the note at the end of render() for
+      // why this deliberately does NOT also request a second render.
+      firstRenderDone = true;
       return;
     }
     // Fast path failed (e.g. frame cache malloc failed). Force cover re-render
@@ -923,12 +924,29 @@ void HomeActivity::render(RenderLock&&) {
 
   renderer.displayBuffer();
 
-  if (!firstRenderDone) {
-    firstRenderDone = true;
-    requestUpdate();
-  }
+  // Opens the cover-loading gate in loop() (which requires firstRenderDone, so that covers are
+  // read off SD only after something is already on screen).
+  //
+  // No requestUpdate() here. It used to post a second full render unconditionally, before
+  // anything knew whether the cover pass would change a pixel; the render task serialises
+  // behind that pass on the RenderLock, so it landed after it and repainted the same screen.
+  // On a device whose thumbs are all cached -- the steady state -- that was a whole extra panel
+  // update per Home entry for nothing (measured: 643 ms on the 960x540 S3, on top of the 1573 ms
+  // first paint).
+  //
+  // Nothing is lost by dropping it:
+  //   - a cover that IS decoded already repaints itself; every path in loadRecentCovers() that
+  //     writes a BMP ends in yieldAfterDecode(), which calls requestUpdate(). The remaining early
+  //     returns are all "produced nothing, retry later" and need no repaint.
+  //   - cover loading still starts: ActivityManager calls loop() every tick regardless of whether
+  //     an update is pending, and the gate lives in loop().
+  //   - the _redBaselineAuthoritative one-shot armed by reallocSecondaryBuffer() is state, not a
+  //     timer: it survives until whatever paints next, which then diffs against the controller's
+  //     retained RED plane exactly as it would have here.
+  firstRenderDone = true;
 }
 
+// A tap on a cover or a menu entry. Both sets of targets were published by whichever theme
 void HomeActivity::onSelectBook(const std::string& path) {
   // Arm a clean HALF baseline for the reader's first page. It diffs against whatever RED RAM holds
   // — this home frame — and a FAST diff of a dramatic home->page change leaves the home screen

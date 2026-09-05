@@ -47,6 +47,32 @@ void CrossPointSettings::normalizeDependentSettings(CrossPointSettings& settings
   }
 }
 
+bool CrossPointSettings::isReaderScopedAction(const uint8_t action) {
+  switch (static_cast<BUTTON_ACTION>(action)) {
+    case BTN_PAGE_FORWARD:
+    case BTN_PAGE_BACK:
+    case BTN_PAGE_FORWARD_10:
+    case BTN_PAGE_BACK_10:
+    case BTN_OPEN_TOC:
+    case BTN_STAR_PAGE:
+    case BTN_FOOTNOTES:
+    case BTN_NEXT_SECTION:
+    case BTN_PREV_SECTION:
+    case BTN_EXIT_READER:
+    case BTN_READER_MENU:
+    case BTN_TOGGLE_BIONIC_READING:
+    case BTN_SYNC_PROGRESS:
+    case BTN_CYCLE_FONT_SIZE:
+    case BTN_CYCLE_ORIENTATION:
+    case BTN_QUICK_OVERRIDES:
+    case BTN_DICTIONARY:
+      return true;
+    default:
+      // BTN_GO_HOME / BTN_SLEEP / BTN_FORCE_*_REFRESH / BTN_OPEN_BOOKMARKS / BTN_IGNORE are global.
+      return false;
+  }
+}
+
 void CrossPointSettings::validateFrontButtonMapping(CrossPointSettings& settings) {
   const uint8_t mapping[] = {settings.frontButtonBack, settings.frontButtonConfirm, settings.frontButtonLeft,
                              settings.frontButtonRight};
@@ -182,6 +208,8 @@ int CrossPointSettings::getBuiltinReaderFontId(uint8_t family, uint8_t size) {
       }
   }
 }
+
+constexpr uint8_t CrossPointSettings::FONT_SIZE_LADDER[];
 
 int CrossPointSettings::getTallerBuiltinReaderFontId(const uint8_t family, const uint8_t size, const uint8_t stepUp,
                                                      uint8_t* const actualStep) {

@@ -632,7 +632,9 @@ void LyraCarouselTheme::drawList(const GfxRenderer& renderer, Rect rect, int ite
                                                  : LyraCarouselMetrics::values.listRowHeight;
   const int pageItems = rect.height / rowHeight;
   if (view != nullptr) view->visibleRows = std::min(pageItems, itemCount);
-  if (pageItems <= 0 || itemCount <= 0) return;
+  if (pageItems <= 0 || itemCount <= 0 || rowTitle == nullptr) {
+    return;
+  }
   const int totalPages = (itemCount + pageItems - 1) / pageItems;
 
   if (totalPages > 1) {
@@ -672,6 +674,7 @@ void LyraCarouselTheme::drawList(const GfxRenderer& renderer, Rect rect, int ite
   }
 
   const auto pageStartIndex = selectedIndex / pageItems * pageItems;
+
   for (int i = pageStartIndex; i < itemCount && i < pageStartIndex + pageItems; i++) {
     const int itemY = rect.y + (i % pageItems) * rowHeight;
     const bool sel = (i == selectedIndex);
@@ -687,7 +690,8 @@ void LyraCarouselTheme::drawList(const GfxRenderer& renderer, Rect rect, int ite
     }
 
     auto itemName = rowTitle(i);
-    if (UITheme::isSeparatorTitle(itemName)) {
+    const bool isSeparator = UITheme::isSeparatorTitle(itemName);
+    if (isSeparator) {
       itemName = UITheme::stripSeparatorTitle(itemName);
       drawListSeparator(renderer,
                         Rect{rect.x + LyraCarouselMetrics::values.contentSidePadding, itemY,
@@ -738,6 +742,7 @@ void LyraCarouselTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const
 
   for (const auto& tab : tabs) {
     const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, tab.label, EpdFontFamily::REGULAR);
+    const int advance = textWidth + LyraCarouselMetrics::values.tabSpacing + 2 * hPad;
 
     if (tab.selected) {
       if (selected) {
@@ -751,7 +756,7 @@ void LyraCarouselTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const
     renderer.drawText(UI_10_FONT_ID, currentX + hPad, rect.y + 6, tab.label, !(tab.selected && selected),
                       EpdFontFamily::REGULAR);
 
-    currentX += textWidth + LyraCarouselMetrics::values.tabSpacing + 2 * hPad;
+    currentX += advance;
   }
 
   renderer.drawLine(rect.x, rect.y + rect.height - 1, rect.x + rect.width - 1, rect.y + rect.height - 1, true);

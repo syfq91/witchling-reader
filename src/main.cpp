@@ -6,9 +6,11 @@
 #include <FontDecompressor.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalCapabilities.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
 #include <HalGPIO.h>
+#include <HalI2cBus.h>
 #include <HalPowerManager.h>
 #include <HalSpiBus.h>
 #include <HalStorage.h>
@@ -52,14 +54,14 @@
 // Static-init heap probes bracketing this TU's globals (slots 4/5); see BootHeapProbe.h.
 static BootHeapProbe s_probeMainFirst(4);
 #endif
-MappedInputManager mappedInputManager(gpio);
+GfxRenderer renderer(display);
+MappedInputManager mappedInputManager(gpio, renderer);
 ButtonEventManager buttonEventManager(mappedInputManager);
 
 // Lets lib-layer long tasks (image decoders) bail out mid-work so a queued button
 // press is serviced on the next main-loop pass. Installed once in setup().
 static bool hasPendingButtonInput() { return mappedInputManager.hasPendingInput(); }
 ButtonEventManager& globalButtonEvents() { return buttonEventManager; }
-GfxRenderer renderer(display);
 ActivityManager activityManager(renderer, mappedInputManager);
 FontDecompressor fontDecompressor;
 SdCardFontSystem sdFontSystem;
@@ -388,9 +390,13 @@ static void serviceBootPowerRelease() {
 // into "powered off, needs a hold long enough to carry the whole boot" — and losing the
 // clock with it, because those paths also never called HalClock::saveBeforeSleep().
 //
-// X3 is excluded: its DS3231 keeps time independently, so it never needs the LP timer
-// held alive, and GPIO13 there is the SD rail enable rather than a battery latch.
-static bool keepClockAliveForSleep() { return SETTINGS.useClock && !gpio.deviceIsX3(); }
+// Any board with a battery-backed RTC is excluded: it keeps time independently, so it
+// never needs the LP timer held alive, and paying deep-sleep current to preserve one is
+// pure waste. This was `!gpio.deviceIsX3()`, i.e. "the X3 is the only board with an RTC"
+// — true while the X3 and X4 were the only two, and wrong the moment a third arrived.
+// The X4 Pro's BM8563 and the T5S3's PCF8563 both answer yes here; on the X3 the answer
+// is unchanged (DS3231), so the C3 keeps its existing behaviour byte for byte.
+static bool keepClockAliveForSleep() { return SETTINGS.useClock && !HalCapabilities::hasHardwareRtc(); }
 
 // Translate HalPowerManager's report of its own last steps into breadcrumb stages. The
 // HAL cannot call BootDiag directly (it must not depend on app code), and startDeepSleep()
@@ -446,8 +452,6 @@ void enterDeepSleep(bool fromTimeout = false, BootDiag::SleepTrigger trigger = B
   gpio.stopInputSampler();
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
-  // On X3 the DS3231 keeps time independently, so there's no need to keep the MCU
-  // powered during deep sleep for LP timer preservation.
   const bool keepLpAlive = keepClockAliveForSleep();
   HalClock::saveBeforeSleep(keepLpAlive);
   // If sleeping from a running reader the book loaded successfully, so the boot-loop
@@ -515,6 +519,11 @@ void enterDeepSleep(bool fromTimeout = false, BootDiag::SleepTrigger trigger = B
   // is done, so this is the last safe moment to write. The record is amended in place on
   // the next boot when the RTC breadcrumb survived — see BootDiag::persistBoot().
   BootDiag::persistSleep();
+  // After the last write of the whole sleep sequence, and only there: this ends
+  // the card session, so anything writing afterwards would find no card. Leaves
+  // a still-powered card (the T5S3 has no SD rail to cut) idle in a state it
+  // defines instead of mid-transaction with a dirty cache.
+  Storage.prepareForSleep();
   LOG_DBG("MAIN", "Entering deep sleep (powerBtn isPressed=%d, rawPin=%d)", gpio.isPressed(HalGPIO::BTN_POWER),
           digitalRead(InputManager::POWER_BUTTON_PIN) == LOW);
 
@@ -728,8 +737,45 @@ void setup() {
   // Safe before device detection: the dual C3 binary boots with the X4 profile, whose
   // latch0 is GPIO13; the X3 profiles leave latch0 unassigned and carry GPIO13 as their
   // SD rail enable, which wants HIGH at boot anyway. selectDevice() in gpio.begin()
-  // re-runs holdPowerRails() with the resolved profile.
+  // re-runs holdPowerRails() with the resolved profile. It stays ahead of the serial
+  // bring-up below because that one spends 250 ms in delay(): on a non-self-latching
+  // unit the rail must already be held before anything blocks for that long.
   BoardConfig::holdPowerRails();
+
+#ifdef ENABLE_SERIAL_LOG
+  // Earliest possible Serial setup, and UNCONDITIONAL — see the isUsbConnected()
+  // gate further down, which sizes the transfer buffers but must NOT gate this.
+  // A board with no usbDetect pin (T5S3: usbDetect = PIN_UNASSIGNED) can never
+  // satisfy that gate from electrical detection, so Serial.begin() never ran
+  // there and no log line could reach the host however the transport was set.
+  //
+  // The 250 ms stall lets the USB Serial/JTAG peripheral finish power-on and the
+  // host complete enumeration before we touch CDC state; without it a cold boot
+  // races and the board has to be physically replugged before logs flow (a warm
+  // reboot hides this, because USB is already enumerated). Ported from
+  // upstream/feat-touch, which carries the same reasoning.
+  delay(250);
+  Serial.begin(115200);
+#endif
+#if defined(ENABLE_SERIAL_LOG) && defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+  // FIRST STATEMENT IN setup(), AND LOAD-BEARING. Do not move it later or raise
+  // the value.
+  //
+  // HWCDC's default TX timeout is 100 ms, and a log write blocks for it whenever
+  // no host is draining the endpoint. On a transport that writes unconditionally
+  // (FREEINK_LOG_TRANSPORT_USB_CDC_WRITE — the T5S3, where HWCDC's `operator
+  // bool` reads false under a monitor, so the readiness guard cannot be used),
+  // that is per log line. A boot's worth of them blocks long enough to trip the
+  // INTERRUPT watchdog: TG1WDT_SYS_RST before one line reaches the wire.
+  //
+  // This previously sat ~126 lines into setup(), after gpio.begin() and several
+  // BootDiag::markPhase()/LOG_ calls — i.e. after the damage was already done, which is
+  // exactly how it looked like a hang rather than a logging problem. It is also
+  // deliberately outside the isUsbConnected() gate further down: the T5S3 has no
+  // usbDetect pin, so that gate can read false precisely when this matters.
+  // CDC_ON_BOOT means the core has already begun Serial, so this is valid here.
+  logSerial.setTxTimeoutMs(1);
+#endif
   BootDiag::markPhase(BootPhase::SetupEntry);
   // Load just the settings we need before any other init, so the wake gesture mirrors
   // whichever press type(s) the user configured to put the device to sleep.
@@ -798,7 +844,9 @@ void setup() {
   // Create the shared-SPI-bus mutex before anything can touch the panel or the
   // SD card, so no first-use allocation happens inside a refresh or read path.
   HalSpiBus::begin();
+  HalI2cBus::begin();
   gpio.begin();
+  HalI2cBus::ensureBusStarted();
   powerManager.begin();
   halTiltSensor.begin();
   gpio_deep_sleep_hold_dis();  // Release deep sleep GPIO hold state from previous sleep cycle
@@ -830,7 +878,10 @@ void setup() {
   }
 #endif
 
-  LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");
+  // Same fix as SystemStatus::collectFast(): the old deviceIsX3() ternary logged
+  // "X4" on every S3 board, because deviceIsX3() is false there by construction.
+  LOG_INF("MAIN", "Hardware detect: %s (%ux%u)", HalCapabilities::boardDisplayName(BoardConfig::ACTIVE.board),
+          BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
   // The gate ran before Serial was open, so this is the first chance to report it. INF
   // level: a rejected wake leaves no other trace, and release builds must be able to
   // answer "why did nothing happen when I pressed power".
@@ -954,6 +1005,7 @@ void setup() {
   OPDS_STORE.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
+
   // Navigation follows the screen, not the panel: rotating the device rotates which physical
   // button means "up". The input layer sits below the renderer and so cannot ask it directly —
   // this bridges the two, and is queried live so it can never go stale.
@@ -1150,6 +1202,7 @@ void loop() {
 
   gpio.update();
   buttonEventManager.update();
+
   // Must follow the drain above and precede every power consumer below.
   serviceBootPowerRelease();
   HalClock::updatePeriodic();
@@ -1242,7 +1295,13 @@ void loop() {
     }
   }
 
-  // Check for any user activity (button press or release) or active background work
+  // Check for any user activity (button press or release, screen touch) or
+  // active background work.
+  //
+  // wasTouchActivity() is the touch analogue of wasAnyPressed/Released and must
+  // be here: on a touch board a user can read a whole chapter by tapping and
+  // never press a button, and without this the device would sleep under their
+  // finger. Always false on non-touch boards.
   static unsigned long lastActivityTime = millis();
   // isAnyPressed() alongside the edge checks: a button that is DOWN produces no press/release
   // edges, so an edge-only test reads a held finger as an idle device. With IDLE_DOWNCLOCK_MS at
@@ -1250,9 +1309,10 @@ void loop() {
   // idle threshold mid-hold — the CPU dropped to 10 MHz and the action the long press triggered
   // then ran there. Harmless for most actions, fatal for one: a long press that brings WiFi up
   // (reader -> KOReader sync) reached WiFi.begin() at 10 MHz and wedged. Holding a button is
-  // user activity by any reasonable reading, so count it as such.
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.isAnyPressed() || halTiltSensor.hadActivity() ||
-      activityManager.preventAutoSleep()) {
+  // user activity by any reasonable reading, so count it as such. wasTouchActivity() is the same
+  // argument for the touch boards: a finger on the glass raises no button edge at all.
+  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.isAnyPressed() ||
+      halTiltSensor.hadActivity() || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
@@ -1335,6 +1395,11 @@ void loop() {
   {
     using BA = CrossPointSettings::BUTTON_ACTION;
     using B = MappedInputManager::Button;
+    // Five percent, matching CrossInk's frontlight panel. Ten was too coarse:
+    // the SDK maps percent to duty through a gamma-1.6554 curve, so most of the
+    // usable range sits in the bottom third and a 10-point step there is a large
+    // visible jump. The brightness slider remains the way to set an exact level.
+    constexpr int LIGHT_STEP_PERCENT = 5;
     auto actionFor = [&](const ButtonEventManager::ButtonEvent& ev) -> uint8_t {
       switch (ev.button) {
         case B::Back:
@@ -1427,43 +1492,16 @@ void loop() {
     // event — shadowing the current activity's own built-in handling for that button
     // (e.g. RecentBooks long-Left=remove / long-Right=info, which defaulted to
     // BTN_PREV_SECTION / BTN_NEXT_SECTION). Outside the reader we must let the original
-    // (button, pressType) event fall through to the activity instead.
-    auto isReaderScopedAction = [](uint8_t a) {
-      switch (static_cast<BA>(a)) {
-        case BA::BTN_PAGE_FORWARD:
-        case BA::BTN_PAGE_BACK:
-        case BA::BTN_PAGE_FORWARD_10:
-        case BA::BTN_PAGE_BACK_10:
-        case BA::BTN_OPEN_TOC:
-        case BA::BTN_STAR_PAGE:
-        case BA::BTN_FOOTNOTES:
-        case BA::BTN_NEXT_SECTION:
-        case BA::BTN_PREV_SECTION:
-        case BA::BTN_EXIT_READER:
-        case BA::BTN_READER_MENU:
-        case BA::BTN_TOGGLE_BIONIC_READING:
-        case BA::BTN_CYCLE_FONT_SIZE:
-        case BA::BTN_CYCLE_ORIENTATION:
-        case BA::BTN_QUICK_OVERRIDES:
-        case BA::BTN_DICTIONARY:
-          return true;
-        default:  // BTN_GO_HOME / BTN_SLEEP / BTN_FORCE_*_REFRESH / BTN_OPEN_BOOKMARKS / BTN_IGNORE are global
-          return false;
-      }
-    };
-    ButtonEventManager::ButtonEvent ev;
-    std::vector<ButtonEventManager::ButtonEvent> defaultEvents;
-    defaultEvents.reserve(8);
-    while (buttonEventManager.consumeEvent(ev)) {
-      const uint8_t action = actionFor(ev);
-      // Fall through to the activity when the event has no global effect here: either an
-      // explicit Default mapping, or a reader-scoped action while not in the reader.
-      if (action == BA::BTN_DEFAULT || (isReaderScopedAction(action) && !activityManager.isReaderActivity())) {
-        defaultEvents.push_back(ev);
-        continue;
-      }
-
-      switch (static_cast<BA>(action)) {
+    // (button, pressType) event fall through to the activity instead. The predicate is
+    // shared with the gesture path, which needs the same answer for the same reason.
+    const auto isReaderScopedAction = [](const uint8_t a) { return CrossPointSettings::isReaderScopedAction(a); };
+    // Executes one resolved action. Extracted from the button loop below so the
+    // gesture path runs exactly the same code: a gesture bound to "Reader Menu"
+    // must do precisely what a button bound to it does, and two copies of this
+    // ladder would not stay that way. Returns false only when the device is on
+    // its way into deep sleep and the caller must stop.
+    auto runAction = [&](const BA action) -> bool {
+      switch (action) {
         case BA::BTN_PAGE_FORWARD:
           activityManager.dispatchButtonAction(BA::BTN_PAGE_FORWARD);
           break;
@@ -1481,7 +1519,9 @@ void loop() {
           break;
         case BA::BTN_SLEEP:
           enterDeepSleep(/*fromTimeout=*/false, BootDiag::SleepTrigger::ButtonAction);
-          return;  // enterDeepSleep() never returns, but return here to stop processing
+          // enterDeepSleep() never returns; report it anyway rather than relying
+          // on that, so the caller stops processing.
+          return false;
         case BA::BTN_FORCE_REFRESH: {
           // In the reader, route through the activity so it re-displays the CURRENT page in
           // the requested mode (a raw displayBuffer() here can flush a Background-A pre-render
@@ -1542,6 +1582,9 @@ void loop() {
         case BA::BTN_DICTIONARY:
           activityManager.dispatchButtonAction(BA::BTN_DICTIONARY);
           break;
+        case BA::BTN_SYNC_PROGRESS:
+          activityManager.dispatchButtonAction(BA::BTN_SYNC_PROGRESS);
+          break;
         case BA::BTN_IGNORE:
           // Explicit "do nothing": swallow the event so neither a global action nor the
           // activity's built-in behaviour fires. A press that produced a Long emits no
@@ -1551,6 +1594,21 @@ void loop() {
         default:
           break;
       }
+      return true;
+    };
+
+    ButtonEventManager::ButtonEvent ev;
+    std::vector<ButtonEventManager::ButtonEvent> defaultEvents;
+    defaultEvents.reserve(8);
+    while (buttonEventManager.consumeEvent(ev)) {
+      const uint8_t action = actionFor(ev);
+      // Fall through to the activity when the event has no global effect here: either an
+      // explicit Default mapping, or a reader-scoped action while not in the reader.
+      if (action == BA::BTN_DEFAULT || (isReaderScopedAction(action) && !activityManager.isReaderActivity())) {
+        defaultEvents.push_back(ev);
+        continue;
+      }
+      if (!runAction(static_cast<BA>(action))) return;
     }
 
     for (auto it = defaultEvents.rbegin(); it != defaultEvents.rend(); ++it) {

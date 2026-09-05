@@ -14,3 +14,10 @@ void silentRestartToClockSettings();  // clock / time settings screen
 // restart attempt across consecutive silent boots until a non-silent boot
 // clears the latch.
 bool trySilentRestartToReaderForHeapRecovery();
+// Reboot immediately after an activity gives back exclusive raw storage (USB
+// Drive). This is NOT a heap-defrag restart: the filesystem was unmounted and a
+// USB host owned every sector, so every cache the firmware held — FAT state,
+// covers, section caches, the open book's progress — is now potentially stale.
+// A reboot is the only honest way back, and the RTC target lands setup() on
+// Home rather than resuming a reader into a book that may no longer be there.
+void restartToHomeAfterStorageHandoff();

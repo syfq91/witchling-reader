@@ -4,6 +4,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>

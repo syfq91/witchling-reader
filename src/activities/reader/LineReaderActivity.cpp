@@ -113,7 +113,6 @@ void LineReaderActivity::loop() {
       return;
     }
   }
-
   auto [prevTriggered, nextTriggered] = ReaderUtils::detectTiltPageTurn();
   if (prevTriggered) {
     goToPreviousPage();

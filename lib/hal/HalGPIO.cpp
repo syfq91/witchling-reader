@@ -1,5 +1,7 @@
 #include <BoardConfig.h>
+#include <HalCapabilities.h>
 #include <HalGPIO.h>
+#include <HalI2cBus.h>
 #include <Logging.h>
 #include <Preferences.h>
 #include <SPI.h>
@@ -14,6 +16,10 @@ HalGPIO gpio;
 namespace X3GPIO {
 
 bool readI2CReg16LE(uint8_t addr, uint8_t reg, uint16_t* outValue) {
+  // Held across the whole repeated-start transaction: a touch read interleaving
+  // between endTransmission(false) and requestFrom() would break it. Runs on the
+  // loop task; touch runs on the sampler. No-op on non-touch boards.
+  HalI2cBus::Lock i2cLock;
   Wire.beginTransmission(addr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) {
@@ -143,26 +149,54 @@ void HalGPIO::begin() {
     }
   }
 
-  // inputMgr.begin() is board-generic (it reads BoardConfig::ACTIVE.input). The
-  // rest below is still hardcoded to C3 Xteink pin macros — bringing up another
-  // board means sourcing these from BoardConfig::ACTIVE.display too.
+  // All board-generic now: inputMgr.begin() already read BoardConfig::ACTIVE.input,
+  // and the bus/pin setup below reads the active profile rather than the C3
+  // Xteink macros in HalGPIO.h. Verified pin-for-pin against the X3/X4 profiles
+  // before converting, so the C3 drives exactly the pins it always did:
+  //   EPD_SCLK 8 = display.sclk, EPD_MOSI 10 = display.mosi, EPD_CS 21 =
+  //   display.cs, SPI_MISO 7 = sd.miso, BAT_GPIO0 0 = batteryAdc,
+  //   UART0_RXD 20 = usbDetect.
   inputMgr.begin();
-  SPI.begin(EPD_SCLK, SPI_MISO, EPD_MOSI, EPD_CS);
 
-  if (deviceIsX4()) {
-    pinMode(BAT_GPIO0, INPUT);
-    pinMode(UART0_RXD, INPUT);
+  // Pre-claim the shared SPI bus with the C3's display + SD pins.
+  //
+  // C3 ONLY, and the reason is subtle: SPIClass::begin() early-returns once the
+  // bus is started, so whoever calls first wins the pin assignment. On the C3
+  // the panel and the card share one bus and nothing else claims it, so this
+  // pre-claim is correct and load-bearing. On every other board someone better
+  // informed gets there first -- the SDK's display driver, SDCardManager, or a
+  // board-support layer (the T5S3's BoardT5S3::begin(), which also deselects the
+  // LoRa radio sharing that bus before starting it). Pre-claiming here would
+  // stick on the wrong pins and undo those deselects.
+  //
+  // Pins come from the active profile rather than the EPD_* macros; verified
+  // equal on the C3 (display.sclk 8 / mosi 10 / cs 21, sd.miso 7).
+#if FREEINK_MCU_C3
+  const BoardConfig::DisplayPins& display = BoardConfig::ACTIVE.display;
+  SPI.begin(display.sclk, BoardConfig::ACTIVE.sd.miso, display.mosi, BoardConfig::ACTIVE.sd.cs);
+#endif
+
+  // ADC battery sense. Gated on the board actually reading its battery that way:
+  // on a fuel-gauge board the same GPIO is the gauge's I2C bus (on X3, BAT_GPIO0
+  // is X3_I2C_SCL), so configuring it as an ADC input would break the bus. This
+  // replaces a deviceIsX4() test that would have been TRUE on X4 Pro — whose
+  // batteryAdc is PIN_UNASSIGNED — and driven pinMode(-1).
+  if (HalCapabilities::hasAdcBattery()) {
+    pinMode(BoardConfig::ACTIVE.batteryAdc, INPUT);
+  }
+
+  // USB-presence detect. The pin must exist AND not be shared with the fuel-gauge
+  // I2C bus: X3 lists usbDetect = GPIO20, which is also its gauge SDA, so it must
+  // stay an I2C line. X4 has no gauge and owns GPIO20 outright; X4 Pro leaves
+  // usbDetect unassigned because the pin has not been identified yet.
+  const int8_t usbDetect = BoardConfig::ACTIVE.usbDetect;
+  const BoardConfig::BatteryGaugeConfig& gauge = BoardConfig::ACTIVE.batteryGauge;
+  if (usbDetect != BoardConfig::PIN_UNASSIGNED && usbDetect != gauge.i2cSda && usbDetect != gauge.i2cScl) {
+    pinMode(usbDetect, INPUT);
   }
 }
 
-// Ported from crosspoint-reader PR #2998 ("fix: Guard GPIO13 power control for
-// Xteink C3 boards only", Justin Mitchell / @itsthisjustin). The predicate is
-// his, verbatim; the call sites differ because this fork has no light sleep.
-bool HalGPIO::isXteinkDevice() const {
-  return BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3 ||
-         BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3Uc8279 ||
-         BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4;
-}
+
 
 // Push one debounced edge into the loop-drained FIFO. Caller holds inputMux_.
 // Drops the newest edge if the ring is full — a full ring means the loop task
@@ -201,8 +235,6 @@ void HalGPIO::sampleOnce() {
   accumReleased_ |= released;
   heldTimeSnapshot_ = held;
   for (uint8_t i = 0; i <= BTN_POWER; i++) {
-    // A debounced button makes at most one transition per pass, so a button can
-    // appear in pressed or released here, never both.
     if (pressed & (1u << i)) pushEdgeLocked(i, true, now);
     if (released & (1u << i)) pushEdgeLocked(i, false, now);
   }
@@ -225,20 +257,14 @@ void HalGPIO::startInputSampler() {
   }
   samplerRunning_ = true;
   sampleOnce();  // prime so the first loop iteration sees current state
-  // Priority above the Arduino loop task (1) so the 10ms cadence holds even while
-  // the loop task is busy in a long build slice. 2 KB stack: the sampler's deepest
-  // path (inputMgr.update → analogRead) was measured at ~380 bytes peak on device,
-  // so this leaves >4x headroom while staying small (this codebase is sensitive to
-  // stack-into-heap spills). Watch the btnSampler high-water [MEM] line if changed.
-  xTaskCreate(&HalGPIO::samplerTask, "btnsample", 2048, this, 2, &samplerTaskHandle_);
+  constexpr uint32_t SAMPLER_STACK_BYTES = 2048;
+  xTaskCreate(&HalGPIO::samplerTask, "btnsample", SAMPLER_STACK_BYTES, this, 2, &samplerTaskHandle_);
 }
 
 void HalGPIO::stopInputSampler() {
   if (!samplerRunning_) {
     return;
   }
-  // Signal the task to exit on its next wake and self-delete. Avoids vTaskDelete()
-  // tearing it down mid-analogRead (which would leak the ADC driver mutex).
   samplerRunning_ = false;
   samplerTaskHandle_ = nullptr;
 }
@@ -275,42 +301,24 @@ void HalGPIO::flushButtonEdges() {
 }
 
 void HalGPIO::update() {
-  if (samplerRunning_) {
-    // Drain the sampler's accumulated edges + latest state into the loop-side
-    // snapshot. No edge seen since the last drain is ever lost, regardless of how
-    // long this loop iteration took.
-    portENTER_CRITICAL(&inputMux_);
-    snapState_ = liveState_;
-    snapPressed_ = accumPressed_;
-    snapReleased_ = accumReleased_;
-    accumPressed_ = 0;
-    accumReleased_ = 0;
-    portEXIT_CRITICAL(&inputMux_);
-  } else {
+  if (!samplerRunning_) {
     // Pre-sampler (early boot): sample synchronously on the calling task.
     sampleOnce();
-    portENTER_CRITICAL(&inputMux_);
-    snapState_ = liveState_;
-    snapPressed_ = accumPressed_;
-    snapReleased_ = accumReleased_;
-    accumPressed_ = 0;
-    accumReleased_ = 0;
-    portEXIT_CRITICAL(&inputMux_);
   }
+  // Drain the sampler's accumulated edges + latest state into the loop-side snapshot.
+  portENTER_CRITICAL(&inputMux_);
+  snapState_ = liveState_;
+  snapPressed_ = accumPressed_;
+  snapReleased_ = accumReleased_;
+  accumPressed_ = 0;
+  accumReleased_ = 0;
+  portEXIT_CRITICAL(&inputMux_);
   updateUsbState(millis());
 }
 
 void HalGPIO::updateUsbState(const unsigned long now) {
-  // Host-link check (see the member comment). A single volatile read of a flag
-  // the IDF tick hook maintains, so it runs on every call on both devices and is
-  // never behind the I2C throttle below — a fresh enumeration must cancel light
-  // sleep within a poll or two, or the next slice kills the CDC link again.
   usbHostLinkActive = isUsbHostLinkActive();
 
-  // Throttle the X3's I2C-based USB detection; see USB_POLL_X3_MS. First call
-  // (usbLastPollMs == 0) always polls so boot state is correct. The combined
-  // verdict below is still recomputed every call so a host-link-detected attach
-  // is not held back by the throttle window.
   if (usbLastPollMs == 0 || !deviceIsX3() || now - usbLastPollMs >= USB_POLL_X3_MS) {
     usbLastPollMs = now;
     usbElectricalConnected = isUsbElectricalConnected();
@@ -577,8 +585,13 @@ bool HalGPIO::isUsbElectricalConnected() const {
     }
     return false;
   }
-  // X4: U0RXD/GPIO20 reads HIGH when USB is connected
-  return digitalRead(UART0_RXD) == HIGH;
+  // Boards without a gauge read a plain GPIO instead: it goes HIGH when USB is
+  // connected (X4: U0RXD/GPIO20). Pin from the profile. Unassigned means the
+  // board has no electrical detect, so report not-connected and let the SOF path
+  // in updateUsbState() be the sole source of truth (X4 Pro today).
+  const int8_t usbDetect = BoardConfig::ACTIVE.usbDetect;
+  if (usbDetect == BoardConfig::PIN_UNASSIGNED) return false;
+  return digitalRead(usbDetect) == HIGH;
 }
 
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
@@ -614,7 +627,28 @@ HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   // matched nothing and fell through to Other, so setup() skipped the hold verification entirely
   // and any tap woke the device. Plugging USB does not pull this pin low, so the AfterUSBPower
   // case below (POWERON + USB) is unaffected.
-  if ((wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && !usbConnected) ||
+  // The POWERON arm below infers "the user pressed power" from "we booted with
+  // no USB". That inference needs BOTH of the things it assumes:
+  //
+  //  - a power path the button actually gates, so that being powered at all
+  //    implies a press (the C3's GPIO13 battery latch), and
+  //  - a trustworthy USB-detect signal, since the whole test is !usbConnected.
+  //
+  // The T5S3 has neither. Its profile leaves usbDetect PIN_UNASSIGNED, so
+  // isUsbConnected() reports false even on USB power, and its power path is the
+  // PMIC/PWR button rather than the BOOT button the profile maps as `power`. The
+  // result was that pressing the hardware RST button -- a POWERON-class reset
+  // with usbConnected forced false -- was classified as a power-button wake,
+  // failed the wake gate (the button is not held during a reset), and sent the
+  // device straight back to deep sleep in setup(). It looked like RST bricking
+  // the board; it was RST being mistaken for a spurious power press.
+  //
+  // So require a usable USB-detect signal before trusting the inference. A GPIO
+  // deep-sleep wake needs no such caveat: the pin was physically pulled low, so
+  // it is a press by definition on any board.
+  const bool canTrustUsbDetect = BoardConfig::ACTIVE.usbDetect != BoardConfig::PIN_UNASSIGNED;
+  if ((wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && !usbConnected &&
+       canTrustUsbDetect) ||
       (wakeupCause == ESP_SLEEP_WAKEUP_GPIO && resetReason == ESP_RST_DEEPSLEEP)) {
     return WakeupReason::PowerButton;
   }

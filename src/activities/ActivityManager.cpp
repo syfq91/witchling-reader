@@ -4,6 +4,7 @@
 #include <HalClock.h>
 #include <HalPowerManager.h>
 #include <Logging.h>
+#include <Memory.h>  // makeUniqueNoThrow
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 
@@ -26,6 +27,22 @@
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
 
+// Guards ActivityManager's cross-task state (requestedUpdate, waitingTaskHandle),
+// which the loop task and the render task both touch.
+//
+// This used to pass a null mux. That is a latent bug that only
+// bites on a dual-core part: on the single-core ESP32-C3 the port ignores the
+// mux and just disables interrupts, so a null pointer is harmless — but on the
+// dual-core ESP32-S3 the same macro performs a real spinlock_acquire() and
+// asserts the lock is non-null. It boot-looped the X4 Pro with
+// "assert failed: spinlock_acquire spinlock.h:84 (lock)".
+//
+// One mux for all four sections is deliberate: they are short, they guard the
+// same handful of fields, and sharing one preserves the mutual exclusion the
+// nullptr form gave them (a global interrupt disable made every section
+// exclusive with every other).
+static portMUX_TYPE activityStateMux = portMUX_INITIALIZER_UNLOCKED;
+
 #ifndef DEBUG_MEMORY_CONSUMPTION
 #define DEBUG_MEMORY_CONSUMPTION 0
 #endif
@@ -43,12 +60,24 @@ void ActivityManager::begin() {
   // documented hazard in EpubReaderActivity). Field high-water dipped to ~1.7 KB free of the
   // former 8 KB on a parse-on-render-task pass; +2 KB restores a safer margin. renderTaskLoop()
   // also warns (RENDER_STACK_WARN_BYTES) if the live margin ever gets thin again.
-  xTaskCreate(&renderTaskTrampoline, "ActivityManagerRender",
-              10240,             // Stack size (bytes)
-              this,              // Parameters
-              1,                 // Priority
-              &renderTaskHandle  // Task handle
-  );
+  // Pin the render task to CPU 1 on dual-core parts (S3), CPU 0 on single-core
+  // (C3, where this is the only choice and the call is equivalent to
+  // xTaskCreate). Ported from upstream/develop, whose comment gives the reason:
+  // keep long renders and cover decodes off CPU 0's idle watchdog. CPU 0 also
+  // runs the Arduino loop task and the system/WiFi tasks, so a multi-second page
+  // build or JPEG decode landing there can starve the idle task and trip the
+  // watchdog. On the C3 this changes nothing.
+#if defined(configNUM_CORES) && configNUM_CORES > 1
+  constexpr BaseType_t renderTaskCore = 1;
+#else
+  constexpr BaseType_t renderTaskCore = 0;
+#endif
+  xTaskCreatePinnedToCore(&renderTaskTrampoline, "ActivityManagerRender",
+                          10240,              // Stack size (bytes)
+                          this,               // Parameters
+                          1,                  // Priority
+                          &renderTaskHandle,  // Task handle
+                          renderTaskCore);
   assert(renderTaskHandle != nullptr && "Failed to create render task");
 }
 
@@ -137,10 +166,10 @@ void ActivityManager::renderTaskLoop() {
     }
     // Notify any task blocked in requestUpdateAndWait() that the render is done.
     TaskHandle_t waiter = nullptr;
-    taskENTER_CRITICAL(nullptr);
+    taskENTER_CRITICAL(&activityStateMux);
     waiter = waitingTaskHandle;
     waitingTaskHandle = nullptr;
-    taskEXIT_CRITICAL(nullptr);
+    taskEXIT_CRITICAL(&activityStateMux);
     if (waiter) {
       xTaskNotify(waiter, 1, eIncrement);
     }
@@ -305,9 +334,9 @@ void ActivityManager::loop() {
   }
 
   if (requestedUpdate) {
-    taskENTER_CRITICAL(nullptr);
+    taskENTER_CRITICAL(&activityStateMux);
     requestedUpdate = false;
-    taskEXIT_CRITICAL(nullptr);
+    taskEXIT_CRITICAL(&activityStateMux);
     // Using direct notification to signal the render task to update
     // Increment counter so multiple rapid calls won't be lost
     if (renderTaskHandle) {
@@ -509,9 +538,9 @@ void ActivityManager::requestUpdate(bool immediate) {
   } else {
     // Deferring the update until current loop is finished
     // This is to avoid multiple updates being requested in the same loop
-    taskENTER_CRITICAL(nullptr);
+    taskENTER_CRITICAL(&activityStateMux);
     requestedUpdate = true;
-    taskEXIT_CRITICAL(nullptr);
+    taskEXIT_CRITICAL(&activityStateMux);
   }
 }
 void ActivityManager::requestUpdateAndWait() {
@@ -520,7 +549,7 @@ void ActivityManager::requestUpdateAndWait() {
   }
 
   // Atomic section to perform checks
-  taskENTER_CRITICAL(nullptr);
+  taskENTER_CRITICAL(&activityStateMux);
   auto currTaskHandler = xTaskGetCurrentTaskHandle();
   auto mutexHolder = xSemaphoreGetMutexHolder(renderingMutex);
   bool isRenderTask = (currTaskHandler == renderTaskHandle);
@@ -529,7 +558,7 @@ void ActivityManager::requestUpdateAndWait() {
   if (!alreadyWaiting && !isRenderTask && !holdingRenderLock) {
     waitingTaskHandle = currTaskHandler;
   }
-  taskEXIT_CRITICAL(nullptr);
+  taskEXIT_CRITICAL(&activityStateMux);
 
   // Render task cannot call requestUpdateAndWait() or it will cause a deadlock
   assert(!isRenderTask && "Render task cannot call requestUpdateAndWait()");

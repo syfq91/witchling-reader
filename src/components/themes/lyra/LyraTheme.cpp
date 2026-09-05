@@ -7,6 +7,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -234,6 +235,7 @@ void LyraTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::ve
 
   for (const auto& tab : tabs) {
     const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, tab.label, EpdFontFamily::REGULAR);
+    const int advance = textWidth + LyraMetrics::values.tabSpacing + 2 * hPaddingInSelection;
 
     if (tab.selected) {
       if (selected) {
@@ -250,7 +252,7 @@ void LyraTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::ve
     renderer.drawText(UI_10_FONT_ID, currentX + hPaddingInSelection, rect.y + 6, tab.label, !(tab.selected && selected),
                       EpdFontFamily::REGULAR);
 
-    currentX += textWidth + LyraMetrics::values.tabSpacing + 2 * hPaddingInSelection;
+    currentX += advance;
   }
 
   renderer.drawLine(rect.x, rect.y + rect.height - 1, rect.x + rect.width - 1, rect.y + rect.height - 1, true);
@@ -279,10 +281,13 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
     drawWrappedList(renderer, rect, itemCount, selectedIndex, rowTitle, rowIcon, *view);
     return;
   }
-  int rowHeight =
+  const int rowHeight =
       (rowSubtitle != nullptr) ? LyraMetrics::values.listWithSubtitleRowHeight : LyraMetrics::values.listRowHeight;
   int pageItems = rect.height / rowHeight;
   if (view != nullptr) view->visibleRows = std::min(pageItems, itemCount);
+  if (pageItems <= 0 || itemCount <= 0 || rowTitle == nullptr) {
+    return;
+  }
 
   const int totalPages = (itemCount + pageItems - 1) / pageItems;
   if (totalPages > 1) {
@@ -326,6 +331,7 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
 
   // Draw all items
   const auto pageStartIndex = selectedIndex / pageItems * pageItems;
+
   for (int i = pageStartIndex; i < itemCount && i < pageStartIndex + pageItems; i++) {
     const int itemY = rect.y + (i % pageItems) * rowHeight;
     int rowTextWidth = textWidth;
@@ -413,10 +419,18 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   constexpr int buttonHeight = LyraMetrics::values.buttonHintsHeight;
   constexpr int buttonY = LyraMetrics::values.buttonHintsHeight;  // Distance from bottom
   constexpr int textYOffset = 7;                                  // Distance from top of button to text baseline
-  // X3 has wider screen in portrait (528 vs 480), use more spacing
   constexpr int x4ButtonPositions[] = {58, 146, 254, 342};
   constexpr int x3ButtonPositions[] = {65, 157, 291, 383};
-  const int* buttonPositions = gpio.deviceIsX3() ? x3ButtonPositions : x4ButtonPositions;
+  int buttonPositions[4];
+  const int sw = renderer.getScreenWidth();
+  if (sw == 480) {
+    for (int i = 0; i < 4; i++) buttonPositions[i] = x4ButtonPositions[i];
+  } else if (sw == 528) {
+    for (int i = 0; i < 4; i++) buttonPositions[i] = x3ButtonPositions[i];
+  } else {
+    const int gap = (sw - 4 * buttonWidth) / 5;
+    for (int i = 0; i < 4; i++) buttonPositions[i] = gap + i * (buttonWidth + gap);
+  }
   const char* labels[] = {btn1, btn2, btn3, btn4};
 
   // Inverted flips both axes: the strip's panel-bottom band becomes the top one and each slot

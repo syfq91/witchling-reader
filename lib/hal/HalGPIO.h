@@ -102,7 +102,7 @@ class HalGPIO {
     uint32_t timeMs = 0;
   };
 
- private:
+  private:
   DeviceType _deviceType = DeviceType::X4;
 
   // ---- Background button sampler (see HalGPIO.cpp) ----------------------------
@@ -142,13 +142,8 @@ class HalGPIO {
   inline bool deviceIsX3() const { return _deviceType == DeviceType::X3; }
   inline bool deviceIsX4() const { return _deviceType == DeviceType::X4; }
 
-  // True only on the Xteink C3 boards (X3, X3/UC8279, X4). Guards the pin
-  // assumptions that hold for the C3 hardware but not for its S3 siblings or
-  // third-party boards — chiefly GPIO13, which is a power control here and an
-  // ordinary bus signal elsewhere. Note this is NOT !deviceIsX3(): X4 Pro is an
-  // Xteink board but not an Xteink *C3* board, and _deviceType only ever
-  // distinguishes the two C3 variants.
-  bool isXteinkDevice() const;
+  // True on the Xteink C3 boards (X3, X3/UC8279, X4).
+  bool isXteinkDevice() const { return true; }
 
   // Start button GPIO and setup SPI for screen and SD card
   void begin();
@@ -160,16 +155,14 @@ class HalGPIO {
   bool wasAnyPressed() const;
   bool wasReleased(uint8_t buttonIndex) const;
   bool wasAnyReleased() const;
-  // True while ANY button is currently held down. Distinct from wasAnyPressed(), which is
-  // edge-triggered and therefore false for every loop iteration after the initial press —
-  // a held button looks exactly like an idle device to an edge-only check.
+  // True while ANY button is currently held down.
   bool isAnyPressed() const;
   // True while a raw button-state change is still inside the debounce window.
-  // The idle loop polls fast while this is set so the confirming sample lands
-  // ~10 ms after the first; at the light-sleep cadence a short tap can
-  // otherwise appear in a single sample and never commit (dropped press).
   bool isDebouncePending() const;
   unsigned long getHeldTime() const;
+
+  // Touch query for callers expecting capability check
+  inline bool hasTouch() const { return false; }
 
   // Start/stop the background sampler. startInputSampler() must be called once
   // input handling is wanted (end of setup, after the boot-time power-button

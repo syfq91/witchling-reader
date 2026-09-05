@@ -35,7 +35,7 @@ Welcome to **Witch Reader** firmware. This guide outlines the hardware controls,
 
 ## 1. Hardware Overview
 
-The device utilises the standard buttons on the Xteink X4 (in the same layout as the manufacturer firmware, by default):
+The device utilises the standard buttons on the Xteink X3 and X4 (in the same layout as the manufacturer firmware, by default):
 
 ### Button Layout
 | Location        | Buttons                                              |
@@ -196,7 +196,7 @@ The Settings screen allows you to configure the device's behavior.
 #### 3.7.3 Controls
 
 - **Remap Front Buttons**: Reassign the physical function of each bottom-edge button.
-- **Button Actions** (submenus — one per logical button: Back, Confirm, Left, Right, Up/Page Back, Down/Page Forward, Power): For each button, independently configure the **Short Press**, **Double Press**, and **Long Press** action. Available actions include: page forward/back, skip 10 pages, go home, sleep, force refresh, force fast refresh, open TOC, open bookmarks, star page, footnotes, next/previous chapter, exit reader, open reader menu, toggle bionic reading, cycle font size, cycle orientation, quick overrides, and ignore.
+- **Button Actions** (submenus — one per logical button: Back, Confirm, Left, Right, Up/Page Back, Down/Page Forward, Power): For each button, independently configure the **Short Press**, **Double Press**, and **Long Press** action. Available actions include: page forward/back, skip 10 pages, go home, sleep, force refresh, force fast refresh, open TOC, open bookmarks, star page, footnotes, next/previous chapter, exit reader, open reader menu, toggle bionic reading, sync progress, cycle font size, cycle orientation, quick overrides, and ignore.
 - **Button Actions Overview**: A read-only overview screen showing the current short/double/long press mapping for every button at a glance.
 - **Tilt Page Turn** *(X3 only)*: Use the tilt sensor to turn pages by tilting the device. Sub-settings:
   - **Enable Tilt Page Turn**: "ON" / "OFF"
@@ -335,7 +335,7 @@ This feature can be disabled in the **[Controls Settings](#373-controls)** to he
 ### System Navigation
 * **Return to Home:** Press the **Back** button to close the book and return to the **[Home](#31-home-screen)** screen.
 * **Return to Browse Files:** Press and hold the **Back** button to close the book and return to the **[Browse Files](#33-browse-files-screen)** screen.
-* **Reader Menu:** Press **Confirm** to open the reader menu, which includes: **[Table of Contents](#5-chapter-selection-screen)**, bookmarks, sync progress, reading statistics, quick per-book overrides (font, images, hyphenation, bionic reading…), take screenshot, and more.
+* **Reader Menu:** Press **Confirm** to open the reader menu, which includes: **[Table of Contents](#6-chapter-selection-screen)**, bookmarks, sync progress, reading statistics, quick per-book overrides (font, images, hyphenation, bionic reading…), take screenshot, and more.
 
 ### Supported Languages
 

@@ -187,10 +187,19 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   constexpr int buttonHeight = BaseMetrics::values.buttonHintsHeight;
   constexpr int buttonY = BaseMetrics::values.buttonHintsHeight;  // Distance from bottom
   constexpr int textYOffset = 7;                                  // Distance from top of button to text baseline
-  // X3 has wider screen in portrait (528 vs 480), use more spacing
+  // Hand-tuned for the widths on X4/X3; other widths spread evenly.
   constexpr int x4ButtonPositions[] = {25, 130, 245, 350};
   constexpr int x3ButtonPositions[] = {38, 154, 268, 384};
-  const int* buttonPositions = gpio.deviceIsX3() ? x3ButtonPositions : x4ButtonPositions;
+  int buttonPositions[4];
+  const int sw = renderer.getScreenWidth();
+  if (sw == 480) {
+    for (int i = 0; i < 4; i++) buttonPositions[i] = x4ButtonPositions[i];
+  } else if (sw == 528) {
+    for (int i = 0; i < 4; i++) buttonPositions[i] = x3ButtonPositions[i];
+  } else {
+    const int gap = (sw - 4 * buttonWidth) / 5;
+    for (int i = 0; i < 4; i++) buttonPositions[i] = gap + i * (buttonWidth + gap);
+  }
   const char* labels[] = {btn1, btn2, btn3, btn4};
   // Inverted flips both axes, so the strip's panel-bottom band becomes the top one and each slot
   // mirrors across the width. Labels keep their hardware index — the mirroring is what carries
@@ -366,7 +375,9 @@ void BaseTheme::drawWrappedList(const GfxRenderer& renderer, const Rect rect, co
   const ListLayout::Window window =
       ListLayout::computeWindow(itemCount, selectedIndex, rect.height, view.firstVisible, rowHeightFor);
   view.visibleRows = window.count;
-  if (window.count <= 0) return;
+  if (window.count <= 0) {
+    return;
+  }
 
   // Scroll position: how far the window's top row is through the rows that can be a top row.
   if (window.count < itemCount) {
@@ -450,6 +461,9 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
   // A fixed-height list still reports its page size, so Left/Right page by what is really on
   // screen rather than by a guess.
   if (view != nullptr) view->visibleRows = std::min(pageItems, itemCount);
+  if (pageItems <= 0 || itemCount <= 0 || rowTitle == nullptr) {
+    return;
+  }
 
   const int totalPages = (itemCount + pageItems - 1) / pageItems;
   if (totalPages > 1) {
@@ -468,6 +482,7 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
   }
   // Draw all items
   const auto pageStartIndex = selectedIndex / pageItems * pageItems;
+
   for (int i = pageStartIndex; i < itemCount && i < pageStartIndex + pageItems; i++) {
     const int itemY = rect.y + (i % pageItems) * rowHeight;
     int textWidth = contentWidth - BaseMetrics::values.contentSidePadding * 2 - (rowValue != nullptr ? 60 : 0);
@@ -590,6 +605,7 @@ void BaseTheme::drawTabBar(const GfxRenderer& renderer, const Rect rect, const s
   for (const auto& tab : tabs) {
     const int textWidth =
         renderer.getTextWidth(UI_12_FONT_ID, tab.label, tab.selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
+    const int advance = textWidth + BaseMetrics::values.tabSpacing;
 
     // Draw underline for selected tab
     if (tab.selected) {
@@ -604,7 +620,7 @@ void BaseTheme::drawTabBar(const GfxRenderer& renderer, const Rect rect, const s
     renderer.drawText(UI_12_FONT_ID, currentX, rect.y, tab.label, !(tab.selected && selected),
                       tab.selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
 
-    currentX += textWidth + BaseMetrics::values.tabSpacing;
+    currentX += advance;
   }
 }
 

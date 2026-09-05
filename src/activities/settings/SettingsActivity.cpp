@@ -169,9 +169,6 @@ void SettingsActivity::onEnter() {
   addToMoved(systemSettings, lastSystemSub,
              std::move(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate)
                            .withSubmenu(StrId::STR_SYSTEM_UPDATE)));
-  // addToMoved(systemSettings, lastSystemSub,
-  //            std::move(SettingInfo::Action(StrId::STR_SWITCH_TO_USB_DRIVE, SettingAction::SwitchToUsbDrive)
-  //                          .withSubmenu(StrId::STR_SYSTEM_UPDATE)));
   addToMoved(systemSettings, lastSystemSub,
              std::move(SettingInfo::Action(StrId::STR_SYSTEM_INFO, SettingAction::SystemInfo)
                            .withSubcategory(StrId::STR_MENU_SYS_SYSTEM)));

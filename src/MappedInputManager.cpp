@@ -1,5 +1,7 @@
 #include "MappedInputManager.h"
 
+#include <GfxRenderer.h>
+
 #include "CrossPointSettings.h"
 
 MappedInputManager::ScreenOrientation (*MappedInputManager::orientationProvider)() = nullptr;
@@ -18,10 +20,6 @@ MappedInputManager::Button MappedInputManager::applyStripOrder(const Button butt
   return applyStripOrder(button, isVerticalStripReversed());
 }
 
-// The whole logical-direction table, checked at compile time. Each row is one orientation and
-// spells out the button a reader holding the device that way expects to move them that way; the
-// LandscapeCounterClockwise row reads "wrong" on purpose, because those answers still have to
-// survive the strip reversal that mapButton()/rawIndex() apply on the way to the hardware.
 namespace {
 using MIM = MappedInputManager;
 using SO = MIM::ScreenOrientation;
@@ -43,15 +41,11 @@ static_assert(MIM::buttonFor(SO::PortraitInverted, Dir::Right) == Btn::Left, "in
 static_assert(MIM::buttonFor(SO::PortraitInverted, Dir::Up) == Btn::Down, "inverted up");
 static_assert(MIM::buttonFor(SO::PortraitInverted, Dir::Down) == Btn::Up, "inverted down");
 
-// Pre-compensated for the reversal: Up resolves to Left so that rawIndex() lands on the front
-// button configured as Right, which is the topmost one when the strip renders bottom-to-top.
 static_assert(MIM::buttonFor(SO::LandscapeCounterClockwise, Dir::Left) == Btn::Up, "ccw left");
 static_assert(MIM::buttonFor(SO::LandscapeCounterClockwise, Dir::Right) == Btn::Down, "ccw right");
 static_assert(MIM::buttonFor(SO::LandscapeCounterClockwise, Dir::Up) == Btn::Left, "ccw up");
 static_assert(MIM::buttonFor(SO::LandscapeCounterClockwise, Dir::Down) == Btn::Right, "ccw down");
 
-// Every orientation must reach all four buttons, or one press would drive two directions while
-// another button went dead.
 constexpr bool coversAllButtons(const SO orientation) {
   return MIM::buttonFor(orientation, Dir::Left) != MIM::buttonFor(orientation, Dir::Right) &&
          MIM::buttonFor(orientation, Dir::Up) != MIM::buttonFor(orientation, Dir::Down) &&
@@ -146,18 +140,12 @@ unsigned long MappedInputManager::getHeldTime() const { return gpio.getHeldTime(
 
 MappedInputManager::Labels MappedInputManager::mapLabels(const char* back, const char* confirm, const char* previous,
                                                          const char* next) const {
-  // The movement labels follow the buttons that actually move the selection. In landscape the
-  // front strip stands vertically on screen, so it carries logical Up/Down rather than Left/Right,
-  // and in the orientations that render the strip in reverse the two swap ends. Resolving the hint
-  // through buttonFor()/rawIndex() is what keeps it on the very button the handler listens to —
-  // spelling the swap out here again is how the label and the action drift apart.
   const DirectionPair front = frontStripDirections();
   const uint8_t backHw = rawIndex(Button::Back);
   const uint8_t confirmHw = rawIndex(Button::Confirm);
   const uint8_t previousHw = rawIndex(buttonFor(front.previous));
   const uint8_t nextHw = rawIndex(buttonFor(front.next));
 
-  // Build the label order based on the configured hardware mapping.
   auto labelForHardware = [&](const uint8_t hw) -> const char* {
     if (hw == backHw) {
       return back;
@@ -180,8 +168,6 @@ MappedInputManager::Labels MappedInputManager::mapLabels(const char* back, const
 
 MappedInputManager::Hints MappedInputManager::mapHints(const char* back, const char* confirm, const char* left,
                                                        const char* right, const char* up, const char* down) const {
-  // Portrait hands the front strip the Left/Right pair and the side buttons the Up/Down one;
-  // landscape swaps them, because the strip is what stands vertically on screen there.
   const DirectionPair front = frontStripDirections();
   const bool frontIsHorizontal = front.previous == Direction::Left;
   const char* const frontPrevious = frontIsHorizontal ? left : up;
@@ -189,8 +175,6 @@ MappedInputManager::Hints MappedInputManager::mapHints(const char* back, const c
   const char* const sidePrevious = frontIsHorizontal ? up : left;
   const char* const sideNext = frontIsHorizontal ? down : right;
 
-  // The side hints are drawn in panel order (BTN_UP's box above BTN_DOWN's), so they have to be
-  // handed over in that order — and BTN_UP is not always the button that moves backwards.
   const DirectionPair side = sideButtonDirections();
   const SideLabels sideLabels =
       buttonFor(side.previous) == Button::Up ? SideLabels{sidePrevious, sideNext} : SideLabels{sideNext, sidePrevious};
@@ -198,8 +182,6 @@ MappedInputManager::Hints MappedInputManager::mapHints(const char* back, const c
 }
 
 int MappedInputManager::getPressedFrontButton() const {
-  // Scan the raw front buttons in hardware order.
-  // This bypasses remapping so the remap activity can capture physical presses.
   if (gpio.wasPressed(HalGPIO::BTN_BACK)) {
     return HalGPIO::BTN_BACK;
   }
@@ -214,3 +196,4 @@ int MappedInputManager::getPressedFrontButton() const {
   }
   return -1;
 }
+
