@@ -15,6 +15,7 @@ This fork prioritizes physical button navigation, standard protocols, minimal me
 - **Removed USB Mass Storage (MSC) & Frontlight**: Removed TinyUSB MSC mode and frontlight controls to keep memory usage low and execution fast on ESP32-C3 hardware.
 - **OPDS Progression 1.0 Sync**: Standardized reading progress synchronization ([OPDS Progression 1.0](https://github.com/opds-community/drafts/blob/main/opds-progression-1.0.md)) across EPUB and XTC readers with on-demand sync (via Reader Menu or remappable button controls) and opportunistic sync when WiFi is connected.
 - **Removed TXT and Markdown Support**: Removed plain text and Markdown readers, parsers, and menus to concentrate firmware resources strictly on EPUB and XTC formats.
+- **Lyra Sole Theme**: Standardized on Lyra as the sole UI theme and removed Classic, Lyra 3 Covers, and Carousel variants along with the theme selection menu to reduce firmware footprint and simplify the UI.
 - **Removed Legacy Sync & Proprietary Protocols**: Dropped legacy KOReader sync and Calibre SmartDevice wireless transfer in favor of standard OPDS catalog downloads and OPDS Progression sync.
 - **Removed Weather Integration**: Stripped Open-Meteo weather polling, home screen widgets, and weather icons to eliminate background network wakeups and save RAM.
 - **Removed USB Serial File Transfer Protocol**: Removed custom binary serial transfer handling to keep serial output strictly dedicated to debugging.

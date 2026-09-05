@@ -152,11 +152,6 @@ The Settings screen allows you to configure the device's behavior.
   - **Refresh Frequency** - Slider (0 = Never, up to 60) for how often a full refresh runs to clear ghosting
   - **Refresh After Image Pages** - Whether to do an extra refresh after pages containing images
 - **Sunlight Fading Fix**: Software fix for white X4 models that may fade in direct sunlight. "OFF" (default) / "ON".
-- **UI Theme**: Visual theme for the device UI:
-  - "Classic" - The original theme
-  - "Lyra" - Rounded elements and menu icons
-  - "Lyra Extended" - Lyra with 3 books on the Home Screen
-  - "Lyra Carousel" - Lyra with a full cover carousel on the Home Screen
 
 #### 3.7.2 Reader
 
