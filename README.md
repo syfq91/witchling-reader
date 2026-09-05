@@ -1,6 +1,6 @@
-# Witch(hunt) Reader
+# Witchling Reader
 
-A streamlined fork of [jpirnay/witchhunt-reader](https://github.com/jpirnay/witchhunt-reader) (originally derived from [crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)) exclusively targeting the **Xteink X3 and X4** (ESP32-C3 architecture).
+A personal, streamlined fork of [jpirnay/witchhunt-reader](https://github.com/jpirnay/witchhunt-reader) (originally derived from [crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)) exclusively targeting the **Xteink X3 and X4** (ESP32-C3 architecture).
 
 For full device documentation, hardware specifications, and build guides, refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme).
 
