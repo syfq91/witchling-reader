@@ -187,15 +187,12 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   constexpr int buttonHeight = BaseMetrics::values.buttonHintsHeight;
   constexpr int buttonY = BaseMetrics::values.buttonHintsHeight;  // Distance from bottom
   constexpr int textYOffset = 7;                                  // Distance from top of button to text baseline
-  // Hand-tuned for the widths on X4/X3; other widths spread evenly.
+  // Hand-tuned for the X4 width (480); other widths spread evenly.
   constexpr int x4ButtonPositions[] = {25, 130, 245, 350};
-  constexpr int x3ButtonPositions[] = {38, 154, 268, 384};
   int buttonPositions[4];
   const int sw = renderer.getScreenWidth();
   if (sw == 480) {
     for (int i = 0; i < 4; i++) buttonPositions[i] = x4ButtonPositions[i];
-  } else if (sw == 528) {
-    for (int i = 0; i < 4; i++) buttonPositions[i] = x3ButtonPositions[i];
   } else {
     const int gap = (sw - 4 * buttonWidth) / 5;
     for (int i = 0; i < 4; i++) buttonPositions[i] = gap + i * (buttonWidth + gap);
@@ -214,7 +211,6 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
       const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, labels[i]);
       const int textX = x + (buttonWidth - 1 - textWidth) / 2;
       renderer.drawText(UI_10_FONT_ID, textX, stripY + textYOffset, labels[i]);
-      renderer.drawRect(x, stripY, buttonWidth, buttonHeight);
     }
   }
 
@@ -237,18 +233,6 @@ void BaseTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
   constexpr int buttonHeight = 80;                                       // Height on screen (width when rotated)
   constexpr int buttonMargin = 4;
 
-  // Panel -> drawing space. Upright, that is the identity; inverted, both axes mirror, and these
-  // three wrappers are the only place that has to know. Text is anchored at the left edge of its
-  // rotated column and at the END of the run (it extends upwards), so its anchor mirrors to the
-  // opposite corner of the box it occupies rather than point-for-point.
-  const auto mx = [&](const int x) { return inverted ? screenWidth - 1 - x : x; };
-  const auto my = [&](const int y) { return inverted ? screenHeight - 1 - y : y; };
-  const auto line = [&](const int x1, const int y1, const int x2, const int y2) {
-    renderer.drawLine(mx(x1), my(y1), mx(x2), my(y2));
-  };
-  const auto rect = [&](const int x, const int y, const int w, const int h) {
-    renderer.drawRect(inverted ? screenWidth - x - w : x, inverted ? screenHeight - y - h : y, w, h);
-  };
   const auto textCW = [&](const int x, const int y, const char* text) {
     const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, text);
     const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
@@ -260,22 +244,6 @@ void BaseTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
   constexpr int topButtonY = 345;
   const char* labels[] = {upBtn, downBtn};
   const int x = screenWidth - buttonMargin - buttonWidth;
-
-  if (upBtn != nullptr && upBtn[0] != '\0') {
-    line(x, topButtonY, x + buttonWidth - 1, topButtonY);
-    line(x, topButtonY, x, topButtonY + buttonHeight - 1);
-    line(x + buttonWidth - 1, topButtonY, x + buttonWidth - 1, topButtonY + buttonHeight - 1);
-  }
-
-  if ((upBtn != nullptr && upBtn[0] != '\0') || (downBtn != nullptr && downBtn[0] != '\0')) {
-    line(x, topButtonY + buttonHeight, x + buttonWidth - 1, topButtonY + buttonHeight);
-  }
-
-  if (downBtn != nullptr && downBtn[0] != '\0') {
-    line(x, topButtonY + buttonHeight, x, topButtonY + 2 * buttonHeight - 1);
-    line(x + buttonWidth - 1, topButtonY + buttonHeight, x + buttonWidth - 1, topButtonY + 2 * buttonHeight - 1);
-    line(x, topButtonY + 2 * buttonHeight - 1, x + buttonWidth - 1, topButtonY + 2 * buttonHeight - 1);
-  }
 
   for (int i = 0; i < 2; i++) {
     if (labels[i] != nullptr && labels[i][0] != '\0') {

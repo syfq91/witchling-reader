@@ -415,18 +415,14 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
   constexpr int buttonWidth = 80;
-  constexpr int smallButtonHeight = 15;
   constexpr int buttonHeight = LyraMetrics::values.buttonHintsHeight;
   constexpr int buttonY = LyraMetrics::values.buttonHintsHeight;  // Distance from bottom
   constexpr int textYOffset = 7;                                  // Distance from top of button to text baseline
   constexpr int x4ButtonPositions[] = {58, 146, 254, 342};
-  constexpr int x3ButtonPositions[] = {65, 157, 291, 383};
   int buttonPositions[4];
   const int sw = renderer.getScreenWidth();
   if (sw == 480) {
     for (int i = 0; i < 4; i++) buttonPositions[i] = x4ButtonPositions[i];
-  } else if (sw == 528) {
-    for (int i = 0; i < 4; i++) buttonPositions[i] = x3ButtonPositions[i];
   } else {
     const int gap = (sw - 4 * buttonWidth) / 5;
     for (int i = 0; i < 4; i++) buttonPositions[i] = gap + i * (buttonWidth + gap);
@@ -436,29 +432,14 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   // Inverted flips both axes: the strip's panel-bottom band becomes the top one and each slot
   // mirrors across the width, which is what carries every box back to its own button.
   const int fullY = inverted ? 0 : pageHeight - buttonY;
-  const int smallY = inverted ? 0 : pageHeight - smallButtonHeight;
-  // Only three sides are stroked: the edge that sits on the panel border is left open. Mirroring
-  // the box mirrors which edge that is, so the corner flags (which also gate the straight edges)
-  // have to flip too — otherwise inverted strokes the screen edge and leaves the content-facing
-  // side of the box unpainted.
-  const bool roundTop = !inverted;
-  const bool roundBottom = inverted;
 
   for (int i = 0; i < 4; i++) {
     const int x = inverted ? pageWidth - buttonPositions[i] - buttonWidth : buttonPositions[i];
     if (labels[i] != nullptr && labels[i][0] != '\0') {
-      // Draw the filled background and border for a FULL-sized button
       renderer.fillRoundedRect(x, fullY, buttonWidth, buttonHeight, cornerRadius, Color::White);
       const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
       const int textX = x + (buttonWidth - 1 - textWidth) / 2;
       renderer.drawText(SMALL_FONT_ID, textX, fullY + textYOffset, labels[i]);
-      renderer.drawRoundedRect(x, fullY, buttonWidth, buttonHeight, 1, cornerRadius, roundTop, roundTop, roundBottom,
-                               roundBottom, true);
-    } else {
-      // Draw the filled background and border for a SMALL-sized button
-      renderer.fillRoundedRect(x, smallY, buttonWidth, smallButtonHeight, cornerRadius, Color::White);
-      renderer.drawRoundedRect(x, smallY, buttonWidth, smallButtonHeight, 1, cornerRadius, roundTop, roundTop,
-                               roundBottom, roundBottom, true);
     }
   }
 
@@ -477,15 +458,7 @@ void LyraTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
   const int screenHeight = renderer.getScreenHeight();
   constexpr int buttonWidth = LyraMetrics::values.sideButtonHintsWidth;  // Width on screen (height when rotated)
   constexpr int buttonHeight = 78;                                       // Height on screen (width when rotated)
-  constexpr int buttonMargin = 0;
 
-  const auto roundedRect = [&](const int x, const int y, const int w, const int h, const bool topLeft,
-                               const bool topRight, const bool bottomLeft, const bool bottomRight) {
-    // Mirroring the box mirrors which of its corners are the rounded ones too.
-    renderer.drawRoundedRect(inverted ? screenWidth - x - w : x, inverted ? screenHeight - y - h : y, w, h, 1,
-                             cornerRadius, inverted ? bottomRight : topLeft, inverted ? bottomLeft : topRight,
-                             inverted ? topRight : bottomLeft, inverted ? topLeft : bottomRight, true);
-  };
   const auto textCW = [&](const int x, const int y, const char* text) {
     const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, text);
     const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
@@ -496,14 +469,6 @@ void LyraTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
   // X4 layout: Both buttons stacked on right side
   const char* labels[] = {upBtn, downBtn};
   const int x = screenWidth - buttonWidth;
-
-  if (upBtn != nullptr && upBtn[0] != '\0') {
-    roundedRect(x, topHintButtonY, buttonWidth, buttonHeight, true, false, true, false);
-  }
-
-  if (downBtn != nullptr && downBtn[0] != '\0') {
-    roundedRect(x, topHintButtonY + buttonHeight + 5, buttonWidth, buttonHeight, true, false, true, false);
-  }
 
   for (int i = 0; i < 2; i++) {
     if (labels[i] != nullptr && labels[i][0] != '\0') {
