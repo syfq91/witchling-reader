@@ -157,14 +157,12 @@ class HalDisplay {
   // refresh more thoroughly (and more slowly) than `refreshMode` asked for.
   void displayGray8Canvas(RefreshMode refreshMode, bool turnOffScreen = false);
 
-  // Returns true when the device is an X3 (X4 returns false).
-  bool deviceIsX3() const;
+  // Device identity (false on X4)
+  bool deviceIsX3() const { return false; }
 
-  // X3-only knob: pick between the OEM 53-frame grayscale LUT (default, slow
-  // and accurate) and the 7-frame community LUT (fast, slightly darker
-  // mid-tones). No effect on X4. See EInkDisplay::setFastGrayscaleLut.
-  void setFastGrayscaleLut(bool fast);
-  bool getFastGrayscaleLut() const;
+  // Grayscale LUT stub (no-op on X4)
+  void setFastGrayscaleLut(bool) {}
+  bool getFastGrayscaleLut() const { return false; }
 
   // Runtime geometry passthrough
   uint16_t getDisplayWidth() const;
@@ -174,7 +172,6 @@ class HalDisplay {
 
  private:
   EInkDisplay einkDisplay;
-  uint8_t pendingX3SettlePasses = 0;
   RefreshMode lastRefreshMode = RefreshMode::FAST_REFRESH;
   uint8_t lastDisplayModeByte = 0x0C;  // default to fast refresh mode byte
 };

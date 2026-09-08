@@ -308,7 +308,7 @@ class GfxRenderer {
   // Keep fast differential alive (X4) after releaseSecondaryBuffer() by diffing
   // against the controller's retained baseline. See HalDisplay::setSingleBufferFastDiff.
   void setSingleBufferFastDiff(bool enabled) const { display.setSingleBufferFastDiff(enabled); }
-  bool isX3() const { return display.deviceIsX3(); }
+  bool isX3() const { return false; }
 
   // True when triggerDisplayAsync() genuinely overlaps the waveform on this
   // panel. Ask this before spending the async gap on work; see

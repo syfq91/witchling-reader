@@ -20,18 +20,18 @@ struct Theme {
 constexpr Theme kClassic{5, 45, 10, 40, 30};
 constexpr Theme kLyra{5, 84, 16, 40, 30};  // the default theme, and the one with the tall header
 
-CoverGridLayout::Input portrait(int panelW, int panelH, const Theme& t, bool isX3) {
-  const int contentWidth = panelW - (isX3 ? 2 * t.sideHints : t.sideHints);
+CoverGridLayout::Input portrait(int panelW, int panelH, const Theme& t) {
+  const int contentWidth = panelW - t.sideHints;
   const int contentTop = t.topPadding + t.header + t.spacing;
   const int contentHeight = (panelH - t.buttonHints) - contentTop - t.spacing;
-  return {contentWidth, contentHeight, isX3 ? 12 : 24, kMaxCell};
+  return {contentWidth, contentHeight, 24, kMaxCell};
 }
 
 }  // namespace
 
 TEST(CoverGridLayout, X4PortraitIsTwoByTwoWithFullSizeCells) {
   for (const auto& theme : {kClassic, kLyra}) {
-    const auto l = CoverGridLayout::compute(portrait(480, 800, theme, /*isX3=*/false));
+    const auto l = CoverGridLayout::compute(portrait(480, 800, theme));
     EXPECT_EQ(l.cols, 2);
     EXPECT_EQ(l.rows, 2);
     EXPECT_EQ(l.cellWidth, 210);
@@ -39,29 +39,18 @@ TEST(CoverGridLayout, X4PortraitIsTwoByTwoWithFullSizeCells) {
   }
 }
 
-TEST(CoverGridLayout, X3PortraitIsTwoByTwoWithFullSizeCells) {
-  for (const auto& theme : {kClassic, kLyra}) {
-    const auto l = CoverGridLayout::compute(portrait(528, 792, theme, /*isX3=*/true));
-    EXPECT_EQ(l.cols, 2);
-    EXPECT_EQ(l.rows, 2);
-    EXPECT_EQ(l.cellWidth, 219);
-    EXPECT_EQ(l.cellHeight, kMaxCell);
-  }
-}
-
 TEST(CoverGridLayout, EveryPageFitsTheContentArea) {
   for (const auto& theme : {kClassic, kLyra}) {
-    for (const auto& in : {portrait(480, 800, theme, false), portrait(528, 792, theme, true)}) {
-      const auto l = CoverGridLayout::compute(in);
-      EXPECT_LE(l.rows * l.rowStride, in.contentHeight - in.bottomReserve);
-      EXPECT_LE((l.cols + 1) * CoverGridLayout::kMargin + l.cols * l.cellWidth, in.contentWidth);
-    }
+    const auto in = portrait(480, 800, theme);
+    const auto l = CoverGridLayout::compute(in);
+    EXPECT_LE(l.rows * l.rowStride, in.contentHeight - in.bottomReserve);
+    EXPECT_LE((l.cols + 1) * CoverGridLayout::kMargin + l.cols * l.cellWidth, in.contentWidth);
   }
 }
 
 TEST(CoverGridLayout, HigherResolutionPanelGetsMoreCellsNotBiggerOnes) {
   // A 1072x1448 300 dpi panel: nothing changes but the numbers handed in.
-  const auto l = CoverGridLayout::compute(portrait(1072, 1448, kLyra, /*isX3=*/false));
+  const auto l = CoverGridLayout::compute(portrait(1072, 1448, kLyra));
   EXPECT_EQ(l.cols, 4);
   EXPECT_EQ(l.rows, 4);
   EXPECT_EQ(l.cellHeight, kMaxCell);  // still capped by the stored thumbnail
@@ -70,7 +59,7 @@ TEST(CoverGridLayout, HigherResolutionPanelGetsMoreCellsNotBiggerOnes) {
 
 TEST(CoverGridLayout, ColumnsNeverDropBelowTheMinimumCellWidth) {
   for (int panelW = 300; panelW <= 2000; panelW += 7) {
-    const auto l = CoverGridLayout::compute(portrait(panelW, 1000, kClassic, /*isX3=*/false));
+    const auto l = CoverGridLayout::compute(portrait(panelW, 1000, kClassic));
     EXPECT_GE(l.cellWidth, CoverGridLayout::kMinCellWidth) << "panel width " << panelW;
   }
 }
@@ -112,7 +101,7 @@ constexpr int kOriginX = 0;
 constexpr int kOriginY = 100;
 
 // The real X4 portrait grid: 2 columns, full-size cells.
-CoverGridLayout::Layout x4Grid() { return CoverGridLayout::compute(portrait(480, 800, kLyra, /*isX3=*/false)); }
+CoverGridLayout::Layout x4Grid() { return CoverGridLayout::compute(portrait(480, 800, kLyra)); }
 
 // Centre of the cell at (row, col) on the current page, in the frame hitTest expects.
 void cellCentre(const CoverGridLayout::Layout& l, int row, int col, int& x, int& y) {

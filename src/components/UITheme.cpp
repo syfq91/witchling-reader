@@ -121,39 +121,19 @@ Rect UITheme::getContentRect(const GfxRenderer& renderer, bool hasBottomHints, b
   switch (renderer.getOrientation()) {
     case GfxRenderer::Portrait:
       bottom = bh;
-      if (gpio.deviceIsX3() && hasSideHints) {
-        left = sw;
-        right = sw;
-      } else {
-        right = sw;
-      }
+      right = sw;
       break;
     case GfxRenderer::PortraitInverted:
       top = bh;
-      if (gpio.deviceIsX3() && hasSideHints) {
-        left = sw;
-        right = sw;
-      } else {
-        left = sw;
-      }
+      left = sw;
       break;
     case GfxRenderer::LandscapeClockwise:
       left = bh;
-      if (gpio.deviceIsX3() && hasSideHints) {
-        top = sw;
-        bottom = sw;
-      } else {
-        bottom = sw;
-      }
+      bottom = sw;
       break;
     case GfxRenderer::LandscapeCounterClockwise:
       right = bh;
-      if (gpio.deviceIsX3() && hasSideHints) {
-        top = sw;
-        bottom = sw;
-      } else {
-        top = sw;
-      }
+      top = sw;
       break;
   }
 

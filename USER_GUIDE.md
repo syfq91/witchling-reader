@@ -35,7 +35,7 @@ Welcome to **Witchling Reader** firmware. This guide outlines the hardware contr
 
 ## 1. Hardware Overview
 
-The device utilises the standard buttons on the Xteink X3 and X4 (in the same layout as the manufacturer firmware, by default):
+The device utilises the standard buttons on the Xteink X4 (in the same layout as the manufacturer firmware, by default):
 
 ### Button Layout
 | Location        | Buttons                                              |
@@ -162,7 +162,6 @@ The Settings screen allows you to configure the device's behavior.
 - **Font Family**: Font used for EPUB reading. Includes built-in fonts (Bookerly, Noto Sans) plus any fonts installed on the SD card.
 - **Font Size**: "Tiny", "Small", "Medium" (default), "Large", "X Large"
 - **Text Anti-Aliasing**: Smooth grey edges on text. Slows page turns slightly. "ON" / "OFF"
-- **Fast AA** *(X3 only)*: Swaps the slow 53-frame grayscale waveform for a fast 7-frame LUT (~130 ms). Mid-tones appear slightly darker. "ON" / "OFF"
 - **Text Darkness**: Ink density for rendered text: "Normal" (default), "Dark", "Extra Dark", "Max Dark"
 
 **Layout** (submenu):
@@ -189,10 +188,6 @@ The Settings screen allows you to configure the device's behavior.
 - **Remap Front Buttons**: Reassign the physical function of each bottom-edge button.
 - **Button Actions** (submenus — one per logical button: Back, Confirm, Left, Right, Up/Page Back, Down/Page Forward, Power): For each button, independently configure the **Short Press**, **Double Press**, and **Long Press** action. Available actions include: page forward/back, skip 10 pages, go home, sleep, force refresh, force fast refresh, open TOC, open bookmarks, star page, footnotes, next/previous chapter, exit reader, open reader menu, toggle bionic reading, sync progress, cycle font size, cycle orientation, quick overrides, and ignore.
 - **Button Actions Overview**: A read-only overview screen showing the current short/double/long press mapping for every button at a glance.
-- **Tilt Page Turn** *(X3 only)*: Use the tilt sensor to turn pages by tilting the device. Sub-settings:
-  - **Enable Tilt Page Turn**: "ON" / "OFF"
-  - **Tilt Right action**: "None", "Next Page", "Prev Page"
-  - **Tilt Left action**: "None", "Next Page", "Prev Page"
 
 #### 3.7.4 System
 

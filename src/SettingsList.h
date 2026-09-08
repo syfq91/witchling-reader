@@ -176,14 +176,6 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Toggle(StrId::STR_TEXT_AA, &CrossPointSettings::textAntiAliasing, "textAntiAliasing",
                                          StrId::STR_CAT_READER)
                          .withSubmenu(StrId::STR_MENU_READER_FONT));
-  // X3-only fast AA LUT toggle. Swaps the 53-frame OEM grayscale waveform
-  // (~2.4 s panel time, X4-accurate grays) for the 7-frame community LUT
-  // (~130 ms, mid-tones slightly darker). See freeink-sdk
-  // FreeInkDisplay::setFastGrayscaleLut for trade-offs.
-  settings.push_back(SettingInfo::Toggle(StrId::STR_FAST_AA, &CrossPointSettings::fastAntiAliasing,
-                                         "fastAntiAliasingV2", StrId::STR_CAT_READER)
-                         .withSubmenu(StrId::STR_MENU_READER_FONT)
-                         .requiring(SettingRequires::SelectableGrayscaleLut));
   settings.push_back(SettingInfo::Enum(StrId::STR_TEXT_DARKNESS, &CrossPointSettings::textDarkness,
                                        {StrId::STR_NORMAL, StrId::STR_DARK, StrId::STR_EXTRA_DARK, StrId::STR_MAX_DARK},
                                        "textDarkness", StrId::STR_CAT_READER)
@@ -354,21 +346,6 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Enum(StrId::STR_BTN_LONG_PRESS, &CrossPointSettings::btnLongPower,
                                        {StrId::STR_BTN_DEF_SLEEP}, "btnLongPower", StrId::STR_CAT_CONTROLS)
                          .withSubmenu(StrId::STR_BTN_POWER));
-  // Tilt page turn (X3-only)
-  settings.push_back(SettingInfo::Toggle(StrId::STR_TILT_PAGE_TURN, &CrossPointSettings::tiltPageTurn, "tiltPageTurn",
-                                         StrId::STR_CAT_CONTROLS)
-                         .withSubmenu(StrId::STR_TILT_PAGE_TURN)
-                         .requiring(SettingRequires::TiltSensor));
-  settings.push_back(SettingInfo::Enum(StrId::STR_DIR_RIGHT, &CrossPointSettings::tiltPositiveAction,
-                                       {StrId::STR_NONE_OPT, StrId::STR_NEXT_PAGE, StrId::STR_PREV_PAGE},
-                                       "tiltPositiveAction", StrId::STR_CAT_CONTROLS)
-                         .withSubmenu(StrId::STR_TILT_PAGE_TURN)
-                         .requiring(SettingRequires::TiltSensor));
-  settings.push_back(SettingInfo::Enum(StrId::STR_DIR_LEFT, &CrossPointSettings::tiltNegativeAction,
-                                       {StrId::STR_NONE_OPT, StrId::STR_NEXT_PAGE, StrId::STR_PREV_PAGE},
-                                       "tiltNegativeAction", StrId::STR_CAT_CONTROLS)
-                         .withSubmenu(StrId::STR_TILT_PAGE_TURN)
-                         .requiring(SettingRequires::TiltSensor));
   // --- System ---
   settings.push_back(SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles,
                                          "showHiddenFiles", StrId::STR_CAT_SYSTEM)
@@ -446,22 +423,4 @@ inline std::vector<SettingInfo> buildSettingsList() {
 
 }  // namespace SettingsListDetail
 
-inline std::vector<SettingInfo> getSettingsList() {
-  std::vector<SettingInfo> settings = SettingsListDetail::buildSettingsList();
-  const auto boardHas = [](const SettingRequires capability) {
-    switch (capability) {
-      case SettingRequires::Nothing:
-        return true;
-      case SettingRequires::TiltSensor:
-        return BoardConfig::ACTIVE.sensors.imuType != BoardConfig::ImuType::None;
-      case SettingRequires::SelectableGrayscaleLut:
-        return BoardConfig::ACTIVE.displayController != BoardConfig::DisplayController::SSD1677;
-    }
-    return true;
-  };
-  settings.erase(
-      std::remove_if(settings.begin(), settings.end(),
-                     [&boardHas](const SettingInfo& setting) { return !boardHas(setting.requiredCapability); }),
-      settings.end());
-  return settings;
-}
+inline std::vector<SettingInfo> getSettingsList() { return SettingsListDetail::buildSettingsList(); }

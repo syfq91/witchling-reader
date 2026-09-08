@@ -1,5 +1,8 @@
 # E-Ink Controller Reference: SSD1677 (X4) and UC8179 (X3)
 
+> [!NOTE]
+> Witchling Reader targets the **Xteink X4** (SSD1677) exclusively. UC8179 details are preserved below for technical and historical reference.
+
 Technical reference for the two e-paper display controllers used in the CrossPoint and WitchHunt readers. Covers architecture, RAM model, sleep/wake RAM retention, differential refresh, and features that are available in the hardware but not yet exploited by the firmware.
 
 ---

@@ -19,26 +19,7 @@ HalPowerManager powerManager;  // Singleton instance
 static constexpr gpio_num_t GPIO_BATTERY_LATCH = GPIO_NUM_13;
 
 void HalPowerManager::begin() {
-  if (HalCapabilities::hasI2cFuelGauge()) {
-    // Boards with an I2C fuel gauge read charge over the bus rather than from an
-    // ADC divider (X3 has a BQ27220 at 0x55, X4 Pro a CW2017 at 0x63, T5S3 a
-    // BQ27220 at 0x55; X4 has none and uses its ADC pin).
-    //
-    // We do NOT start the bus here. That is HalI2cBus::ensureBusStarted()'s job:
-    // the gauge is one peripheral on a shared bus, not its owner, and on a touch
-    // board the SDK's InputManager has already started it. main.cpp calls the
-    // owner after gpio.begin() so the touch driver gets first claim.
-    //
-    // NOTE the gauge PROTOCOL is still BQ27220-specific (I2C_ADDR_BQ27220 and
-    // the BQ27220_*_REG offsets below). X4 Pro's CW2017 answers at a different
-    // address with different registers, so it needs its own read path -- taking
-    // the address from the profile alone would talk BQ27220 registers to a
-    // CW2017, the same trap as DS3231-vs-BM8563 in HalClock. T5S3's gauge is a
-    // BQ27220, so this path suits it as-is.
-    _batteryUseI2C = true;
-  } else if (HalCapabilities::hasAdcBattery()) {
-    pinMode(BoardConfig::ACTIVE.batteryAdc, INPUT);
-  }
+  pinMode(BoardConfig::ACTIVE.batteryAdc, INPUT);
   normalFreq = getCpuFrequencyMhz();
   modeMutex = xSemaphoreCreateMutex();
   assert(modeMutex != nullptr);
@@ -336,114 +317,39 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, bool keepClockAlive) const {
   // When keepClockAlive is false (default): GPIO13 goes LOW, the MCU is
   // completely powered off during sleep (including the LP timer / RTC memory).
   // When keepClockAlive is true: GPIO13 stays HIGH, the MCU remains powered
-  // at ~3-4 mA so the LP timer keeps running and RTC memory is preserved.
+  // GPIO13 controls the battery-latch MOSFET on X4 (active-high).
+  // When keepClockAlive is true (the normal sleep path), we drive it HIGH to keep
+  // the 3.3V rail powered at ~3-4 mA so the LP timer keeps running and RTC memory is preserved.
   // This allows HalClock to accurately compute elapsed sleep time on wake.
-  //
-  // X3 does NOT share this meaning: there GPIO13 is the SD rail's power enable
-  // (active-high), declared as sd.powerEnable in the XTEINK_X3 board profiles.
-  // X3 keeps time on a battery-backed DS3231 (I2C 0x68), so it never needs the
-  // LP timer held alive across sleep — main.cpp forces keepLpAlive=false on X3
-  // for exactly that reason. So on X3 we hand the pin to the SDK's rail teardown
-  // (which cuts the card's power and latches it off) instead of treating it as a
-  // latch; SDCardManager::begin() releases that hold and re-powers on the next
-  // boot. Doing both would make us a second, independent writer of the pin.
-  //
-  // Non-Xteink boards share neither meaning and take the rail-teardown path too:
-  // GPIO13 is an ordinary signal there — SPI MOSI on the LilyGo T5S3
-  // (BoardT5S3Pins.h), display chip select on the X4 Pro — so driving it as an
-  // output and pad-holding it would clobber a live bus.
-  // Those boards also ignore keepClockAlive: nothing cuts MCU power there, so
-  // the LP timer and RTC memory survive deep sleep either way.
-  // Ported from crosspoint-reader PR #2998 ("fix: Guard GPIO13 power control for
-  // Xteink C3 boards only", Justin Mitchell / @itsthisjustin). His fix guards
-  // lightSleep()/onEinkBusyWaitSlice(), which this fork does not have; here the
-  // same predicate guards the one place we touch GPIO13.
-  const bool gpio13IsBatteryLatch = gpio.isXteinkDevice() && !gpio.deviceIsX3();
-  if (gpio13IsBatteryLatch) {
-    constexpr gpio_num_t GPIO_SPIWP = GPIO_NUM_13;
-    // Release any GPIO hold from a previous sleep cycle (keepClockAlive=true leaves GPIO13 held after wake).
-    // Without this, gpio_set_level() below silently fails and GPIO13 is stuck in its prior state,
-    // causing the device to enter a sleep/wake loop that requires a hardware reset to escape.
-    gpio_hold_dis(GPIO_SPIWP);
-    gpio_deep_sleep_hold_dis();
-    gpio_set_direction(GPIO_SPIWP, GPIO_MODE_OUTPUT);
-    gpio_set_level(GPIO_SPIWP, keepClockAlive ? 1 : 0);
-    esp_sleep_config_gpio_isolate();
-    gpio_deep_sleep_hold_en();
-    gpio_hold_en(GPIO_SPIWP);
-  } else {
-    // Same release, for the boards that reach GPIO13 through the SDK's rail teardown
-    // instead of the latch branch above. It matters on X3: lightSleep() re-holds GPIO13
-    // HIGH on every idle slice for ALL Xteink C3 boards (isXteinkDevice()), but only the
-    // X4 branch above released it — so powerDownRailsForSleep() could not drive the X3's
-    // SD rail enable LOW and the card stayed powered through deep sleep, draining the
-    // battery. Guarded to Xteink C3 for the same reason the branch above is: elsewhere
-    // GPIO13 is an ordinary bus signal (SPI MOSI on the T5S3, display CS on the X4 Pro)
-    // that nothing has held and that we must not touch.
-    if (gpio.isXteinkDevice()) {
-      gpio_hold_dis(GPIO_NUM_13);
-    }
-    gpio_deep_sleep_hold_dis();
+  constexpr gpio_num_t GPIO_SPIWP = GPIO_NUM_13;
+  // Release any GPIO hold from a previous sleep cycle (keepClockAlive=true leaves GPIO13 held after wake).
+  // Without this, gpio_set_level() below silently fails and GPIO13 is stuck in its prior state,
+  // causing the device to enter a sleep/wake loop that requires a hardware reset to escape.
+  gpio_hold_dis(GPIO_SPIWP);
+  gpio_deep_sleep_hold_dis();
+  gpio_set_direction(GPIO_SPIWP, GPIO_MODE_OUTPUT);
+  gpio_set_level(GPIO_SPIWP, keepClockAlive ? 1 : 0);
+  esp_sleep_config_gpio_isolate();
+  gpio_deep_sleep_hold_en();
+  gpio_hold_en(GPIO_SPIWP);
 
-    // Hold every configured power-latch pin HIGH through deep sleep. These are keep-alive
-    // enables — the X4 Pro's master peripheral rail on GPIO1 — and
-    // esp_sleep_config_gpio_isolate() below strips the output driver off any pad without an
-    // armed hold. holdPowerRails() asserts the latches at boot but arms no sleep hold, so
-    // the X4 Pro's latch drops the moment external power leaves and the next power-button
-    // press cold-boots (~8-15 s) instead of fast-waking (~1-2 s).
-    //
-    // Ported from crosspoint-reader PR #3215 ("fix(x4pro): hold power-latch pins HIGH
-    // through deep sleep", Antoine Aflalo / @Belphemur), filed against upstream issue #2863.
-    //
-    // ORDER OF OPERATIONS, and it is not optional: holding the rail up means the panel keeps
-    // its VCC through sleep, so the panel MUST actually be parked or its charge pump stays
-    // biased and draws mA — the exact regression #3215 exposed. The driver-side half is
-    // freeink-sdk 7f541f3, which makes deepSleep() always emit POF before DSLP instead of
-    // gating it on an _isScreenOn flag that an AA pass desynchronises. Both halves are in
-    // this tree as of the SDK bump to 1be4233; do NOT bring this loop forward past that.
-    //
-    // The loop is unreachable on the C3 anyway (gpio13IsBatteryLatch takes the branch above
-    // on X4, and on X3 latch0 is unassigned), but skip GPIO13 explicitly rather than rely on
-    // that: it IS power.latch0 on the C3 Xteink boards, where LOW is a deliberate battery
-    // power-off and driving it HIGH here would be the opposite of what the caller asked for.
-    for (const int8_t latchPin : {BoardConfig::ACTIVE.power.latch0, BoardConfig::ACTIVE.power.latch1}) {
-      if (latchPin < 0 || static_cast<gpio_num_t>(latchPin) == GPIO_BATTERY_LATCH) continue;
-      const auto latch = static_cast<gpio_num_t>(latchPin);
-      // Release any surviving pad hold first: a held pad silently ignores the drive below,
-      // the same trap the GPIO13 branch above documents.
-      gpio_hold_dis(latch);
-      gpio_set_level(latch, 1);
-      gpio_set_direction(latch, GPIO_MODE_OUTPUT);
-      gpio_hold_en(latch);
-    }
-
-    freeink::PowerManager::powerDownRailsForSleep();
-    esp_sleep_config_gpio_isolate();
-    gpio_deep_sleep_hold_en();
-  }
   pinMode(InputManager::POWER_BUTTON_PIN, INPUT_PULLUP);
-  if (sleepStepHook_) sleepStepHook_(SleepStep::RailsConfigured, 0, false, gpio13IsBatteryLatch);
+  if (sleepStepHook_) sleepStepHook_(SleepStep::RailsConfigured, 0, false, true);
 
   // Now wait for the power button to be fully released before arming the wakeup
   // trigger and entering sleep — prevents immediate re-wake from a held button.
   // Bounded (see waitForStablePowerRelease): a pin stuck LOW used to freeze the device
   // here with the sleep screen displayed and no watchdog covering this task.
-  if (sleepStepHook_) sleepStepHook_(SleepStep::AwaitingRelease, 0, false, gpio13IsBatteryLatch);
+  if (sleepStepHook_) sleepStepHook_(SleepStep::AwaitingRelease, 0, false, true);
   const unsigned long releaseWaitMs = gpio.waitForStablePowerRelease();
   const bool releaseTimedOut = releaseWaitMs >= HalGPIO::POWER_RELEASE_TIMEOUT_MS;
-  if (sleepStepHook_) sleepStepHook_(SleepStep::ReleaseDone, releaseWaitMs, releaseTimedOut, gpio13IsBatteryLatch);
+  if (sleepStepHook_) sleepStepHook_(SleepStep::ReleaseDone, releaseWaitMs, releaseTimedOut, true);
 
   // Arm the wakeup trigger *after* the button is released
   // Note: when keepClockAlive is false, this is only useful for waking up on USB power. On battery, the MCU will be
   // completely powered off, so the power button is hard-wired to briefly provide power to the MCU, waking it up
   // regardless of the wakeup source configuration.
   // When keepClockAlive is true, this is the actual wakeup mechanism since the MCU stays powered.
-  //
-  // The wake source itself is chip-family specific, so this branches on SoC
-  // capability rather than on a board or device name: the C3 has no RTC IO mux
-  // and uses the dedicated deep-sleep GPIO path, while the S3 wakes from EXT1
-  // over its RTC GPIOs (the X4 Pro power key is GPIO3, which is RTC-capable).
-  // Both boards' power keys are active-LOW, matching the level used here.
   constexpr uint64_t powerPinMask = 1ULL << InputManager::POWER_BUTTON_PIN;
 #if SOC_PM_SUPPORT_EXT1_WAKEUP
   esp_sleep_enable_ext1_wakeup_io(powerPinMask, ESP_EXT1_WAKEUP_ANY_LOW);
@@ -452,35 +358,13 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, bool keepClockAlive) const {
 #else
 #error "No deep-sleep wake source available for this target — add one before enabling this board."
 #endif
-  if (sleepStepHook_) sleepStepHook_(SleepStep::WakeArmed, releaseWaitMs, releaseTimedOut, gpio13IsBatteryLatch);
+  if (sleepStepHook_) sleepStepHook_(SleepStep::WakeArmed, releaseWaitMs, releaseTimedOut, true);
   // Enter Deep Sleep
   esp_deep_sleep_start();
 }
 
 uint16_t HalPowerManager::getBatteryPercentage() const {
-  // Guard against an X3 board mistakenly taking the ADC path: BAT_GPIO0 is
-  // reused as X3_I2C_SCL on X3, so reading it as ADC would collide with the
-  // fuel-gauge bus. _batteryUseI2C must match the detected device type.
-  assert(_batteryUseI2C == HalCapabilities::hasI2cFuelGauge());
-  if (_batteryUseI2C) {
-    const unsigned long now = millis();
-    if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
-      return _batteryCachedPercent;
-    }
-
-    // Read SOC from the I2C fuel gauge via the shared helper so the transaction
-    // shape stays consistent with other BQ27220/DS3231/QMI8658 reads.
-    // On I2C error, keep last known value to avoid UI jitter/slowdowns.
-    uint16_t soc = 0;
-    if (X3GPIO::readI2CReg16LE(I2C_ADDR_BQ27220, BQ27220_SOC_REG, &soc)) {
-      _batteryCachedPercent = soc > 100 ? 100 : soc;
-    }
-    _batteryLastPollMs = now;
-    return _batteryCachedPercent;
-  }
-  // ADC pin from the profile. Only reached when hasI2cFuelGauge() was false, so
-  // hasAdcBattery() holds and batteryAdc is a real pin -- the same gate that
-  // decides whether gpio.begin() configures it as an input.
+  // ADC pin from the profile for X4.
   static const BatteryMonitor battery = BatteryMonitor(BoardConfig::ACTIVE.batteryAdc);
 
   // Smooth the battery % with a 1/10-weight IIR. The cache stores the value

@@ -7,7 +7,6 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <Wire.h>  // Needed for I2C communication with the RTC
 #include <esp_private/esp_clk.h>
 #include <esp_sntp.h>
 #include <sys/time.h>
@@ -15,45 +14,6 @@
 
 #include <cmath>
 #include <cstdlib>
-
-#include "HalI2cBus.h"
-
-// ---- RTC / I2C configuration ----------------------------------------------
-// Pins for ESP32-C3 (according to https://gist.github.com/CrazyCoder/1c5f846adee18e21f91e264601a6ddce)
-// The DS3231's own I2C address. Read from the board profile rather than
-// hardcoded, but note the guard in initExternalRTC() is rtcType() == Ds3231, so
-// this is only ever used on a board that actually has one -- it is not a generic
-// "the RTC" address. A BM8563 answers at 0x51 with different registers and needs
-// its own driver, not this one with a different constant.
-static uint8_t ds3231Address() { return BoardConfig::ACTIVE.sensors.rtcAddr; }
-// static constexpr int I2C_SDA = 8;
-// static constexpr int I2C_SCL = 9;
-static uint8_t bin2bcd(uint8_t val) { return val + 6 * (val / 10); }
-static uint8_t bcd2bin(uint8_t val) { return val - 6 * (val >> 4); }
-
-/**
- * Convert struct tm (interpreted as UTC) to Unix epoch seconds.
- * Replaces mktime(), as mktime considers the local timezone (TZ).
- */
-static time_t timegm_compat(const struct tm* tm) {
-  int32_t year = tm->tm_year + 1900;
-  int32_t month = tm->tm_mon;  // 0-11
-
-  // Helper calculation: days since the beginning of the year
-  static const uint16_t days_before_month[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
-
-  // Days since 1970 (considering leap years)
-  time_t days = (year - 1970) * 365 + (year - 1969) / 4;
-  days += days_before_month[month];
-
-  // Leap year correction for the current year (no extra day before March)
-  if (month > 1 && (year % 4 == 0)) {
-    days++;
-  }
-  days += tm->tm_mday - 1;
-
-  return days * 86400 + tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec;
-}
 
 // ---- RTC-memory state (survives deep sleep, not cold boot) ----------------
 
@@ -104,8 +64,7 @@ static bool clockStaleRestore = false;
 
 // How long the deep sleep that this boot woke from lasted, in seconds; 0 when it
 // cannot be established. Set once by restore(), reported on the System Information
-// screen. Only the two authoritative restore paths can produce it: the DS3231 and
-// the LP-timer correction both give a wall clock derived independently of the
+// screen. The LP-timer correction gives a wall clock derived independently of the
 // sleep-entry epoch, so the difference between them is real elapsed time. The
 // cold-boot NVS path sets the clock FROM that same epoch, so its difference is
 // zero by construction and tells us nothing.
@@ -274,100 +233,7 @@ static time_t nvsReadSyncTime() {
 
 // ---- internal helpers -----------------------------------------------------
 
-static bool initExternalRTC();
-static float readExternalTemp();
-
-static float readChipTemperatureC() {
-  // ESP32 and ESP32-C3 use the internal ADC temperature sensor.
-  // The DS3231 carries a temperature register at 0x11.
-  if (HalCapabilities::rtcType() == BoardConfig::RtcType::Ds3231 && initExternalRTC()) {
-    return readExternalTemp();
-  }
-  return (float)temperatureRead();
-}
-
-// ---- New internal helpers for DS3231 ---------------------------------------
-
-static bool initExternalRTC() {
-  static bool initialized = false;
-  static bool exists = false;
-  if (initialized) return exists;
-  initialized = true;
-
-  if (HalCapabilities::rtcType() != BoardConfig::RtcType::Ds3231) {
-    LOG_DBG("CLK", "Skipping external RTC init: board profile declares none");
-    return false;
-  }
-
-  HalI2cBus::Lock i2cLock;
-  Wire.beginTransmission(ds3231Address());
-  if (Wire.endTransmission() == 0) {
-    exists = true;
-    LOG_INF("CLK", "DS3231 Hardware via I2C found.");
-  } else {
-    LOG_INF("CLK", "No DS3231 found.");
-  }
-  return exists;
-}
-
-// Write full date+time to the external RTC (DS3231 inline, operated in UTC).
-static void writeExternalRTC(time_t t) {
-  struct tm timeinfo;
-  gmtime_r(&t, &timeinfo);  // DS3231 is usually operated in UTC
-
-  HalI2cBus::Lock i2cLock;
-  Wire.beginTransmission(ds3231Address());
-  Wire.write(0x00);                             // Start at register 0x00 (seconds)
-  Wire.write(bin2bcd(timeinfo.tm_sec));         // 0x00: Seconds
-  Wire.write(bin2bcd(timeinfo.tm_min));         // 0x01: Minutes
-  Wire.write(bin2bcd(timeinfo.tm_hour));        // 0x02: Hours (24h mode)
-  Wire.write(bin2bcd(timeinfo.tm_wday + 1));    // 0x03: Day of week (1-7)
-  Wire.write(bin2bcd(timeinfo.tm_mday));        // 0x04: Date (01-31)
-  Wire.write(bin2bcd(timeinfo.tm_mon + 1));     // 0x05: Month (01-12, century bit 0 = 20xx)
-  Wire.write(bin2bcd(timeinfo.tm_year - 100));  // 0x06: Year (00-99 = 2000-2099)
-  Wire.endTransmission();
-}
-
-// Read time from the external RTC. Returns 0 when the time cannot be trusted.
-static time_t readExternalRTC() {
-  HalI2cBus::Lock i2cLock;
-  Wire.beginTransmission(ds3231Address());
-  Wire.write(0x00);
-  if (Wire.endTransmission() != 0) return 0;
-
-  Wire.requestFrom(ds3231Address(), (uint8_t)7);
-  if (Wire.available() < 7) return 0;
-
-  struct tm timeinfo = {};
-  timeinfo.tm_sec = bcd2bin(Wire.read() & 0x7F);
-  timeinfo.tm_min = bcd2bin(Wire.read());
-  timeinfo.tm_hour = bcd2bin(Wire.read() & 0x3F);
-  Wire.read();  // Wochentag überspringen
-  timeinfo.tm_mday = bcd2bin(Wire.read());
-  timeinfo.tm_mon = bcd2bin(Wire.read()) - 1;
-  timeinfo.tm_year = bcd2bin(Wire.read()) + 100;
-  timeinfo.tm_isdst = 0;
-
-  return timegm_compat(&timeinfo);
-}
-
-// Read temperature (Register 0x11)
-static float readExternalTemp() {
-  Wire.beginTransmission(ds3231Address());
-  Wire.write(0x11);
-  if (Wire.endTransmission() != 0) {
-    return 0.0f;
-  }
-
-  int count = Wire.requestFrom(ds3231Address(), (uint8_t)2);
-  if (count < 2) {
-    return 0.0f;
-  }
-
-  int8_t msb = Wire.read();
-  uint8_t lsb = Wire.read();
-  return (float)msb + (lsb >> 6) * 0.25f;
-}
+static float readChipTemperatureC() { return (float)temperatureRead(); }
 
 // ----
 
@@ -480,10 +346,6 @@ static double computeCorrectedElapsedSec(uint64_t lpNow, float tempNow) {
 /// `lpContinuous`: will the LP timer keep running until the next restore()? See the flag.
 static void capture(bool lpContinuous) {
   rtcEpoch = time(nullptr);
-  // Update DS3231 only when the current time is authoritative.
-  if (initExternalRTC() && !clockApproximate) {
-    writeExternalRTC(rtcEpoch);
-  }
   rtcLpTimeUs = esp_clk_rtc_time();
   rtcSlowCal = esp_clk_slowclk_cal_get();
   rtcTemperatureC = readChipTemperatureC();
@@ -729,7 +591,7 @@ bool syncNtp(char* errorBuf, size_t errorBufSize, const char* preferredServer) {
     }
   }
 
-  // NTP sync yields authoritative time; allow DS3231 to be updated.
+  // NTP sync yields authoritative time.
   clockApproximate = false;
   clockStaleRestore = false;
   // true, not false: nothing is going to sleep here. What follows a sync is either a reboot --
@@ -814,26 +676,6 @@ void restore() {
   // sleep can turn it into a duration; the rest just consume it so a later boot
   // cannot report a stale one.
   const time_t sleepEntryEpoch = nvsTakeSleepMark();
-
-  // PRIORITY 1: DS3231 (Hardware-RTC)
-  if (initExternalRTC()) {
-    time_t rtcTime = readExternalRTC();
-    if (rtcTime > 1577836800) {  // Check if time is after 2020 (plausible timestamp)
-      // The DS3231 ran through the sleep, so the difference against the marker
-      // capture() persisted on the way in is the sleep duration. The marker is
-      // zero on any boot that did not follow a sleep (a reflash, a reset), which
-      // is what keeps this from reporting time-since-last-sleep instead.
-      const double slept = static_cast<double>(rtcTime - sleepEntryEpoch);
-      if (sleepEntryEpoch > 0 && slept > 0.0 && slept < MAX_PLAUSIBLE_SLEEP_S) {
-        lastSleepSec = static_cast<uint32_t>(slept);
-      }
-      setSystemClock(rtcTime);
-      rtcEpoch = rtcTime;
-      clockApproximate = false;
-      LOG_INF("CLK", "Got time from hardware RTC. Last deep sleep %us", lastSleepSec);
-      return;
-    }
-  }
 
   rtcDriftScale = nvsReadDriftScale();
   const bool lpValid = (rtcClockFlags & CLOCK_RTC_FLAG_LP_CONTINUOUS) != 0;
@@ -935,21 +777,6 @@ time_t now() {
 }
 
 void updatePeriodic() {
-  // DS3231 (if present) has priority, synchronize the system time
-  // every 10 minutes directly against the RTC, instead of calculating.
-  if (initExternalRTC()) {
-    unsigned long nowMs = millis();
-    if (nowMs - lastPeriodicUpdateMs >= PERIODIC_UPDATE_INTERVAL_MS) {
-      time_t rtcTime = readExternalRTC();
-      if (rtcTime > 1577836800) {  // Check if time is after 2020 (plausible timestamp)
-        lastPeriodicUpdateMs = nowMs;
-        setSystemClock(rtcTime);
-        LOG_DBG("CLK", "Systemtime has been taken from the hardware RTC");
-      }
-    }
-    return;
-  }
-
   if (!isSynced()) {
     return;
   }
@@ -1131,12 +958,6 @@ bool applyClientTime(time_t timestamp) {
   clockApproximate = false;
   rtcEpoch = timestamp;
   LOG_INF("CLK", "Applied client time: %lld", (long long)timestamp);
-
-  // Persist to RTC if available (X3 only)
-  if (initExternalRTC()) {
-    writeExternalRTC(timestamp);
-    LOG_DBG("CLK", "Persisted client time to the hardware RTC");
-  }
 
   // Also persist to NVS
   nvsWrite(timestamp);

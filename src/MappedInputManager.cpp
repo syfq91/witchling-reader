@@ -196,4 +196,3 @@ int MappedInputManager::getPressedFrontButton() const {
   }
   return -1;
 }
-

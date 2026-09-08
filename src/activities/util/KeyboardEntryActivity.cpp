@@ -360,7 +360,7 @@ void KeyboardEntryActivity::loop() {
 void KeyboardEntryActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
-  const Rect contentRect = UITheme::getContentRect(renderer, true, gpio.deviceIsX3());
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
   const int pageWidth = contentRect.width;
   const int pageHeight = contentRect.height;
   const int contentX = contentRect.x;

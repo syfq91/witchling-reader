@@ -30,16 +30,6 @@ static BootHeapProbe s_probePostDisplay(1);
 // and immune to static-init order — but its VALUE is the default, not the
 // detection result. Anything that differs per board within a binary must be
 // read in begin(), not here.
-#if FREEINK_DEVICE_X3 && FREEINK_DEVICE_X4
-static_assert(BoardConfig::XTEINK_X3.display.sclk == BoardConfig::XTEINK_X4.display.sclk &&
-                  BoardConfig::XTEINK_X3.display.mosi == BoardConfig::XTEINK_X4.display.mosi &&
-                  BoardConfig::XTEINK_X3.display.cs == BoardConfig::XTEINK_X4.display.cs &&
-                  BoardConfig::XTEINK_X3.display.dc == BoardConfig::XTEINK_X4.display.dc &&
-                  BoardConfig::XTEINK_X3.display.rst == BoardConfig::XTEINK_X4.display.rst &&
-                  BoardConfig::XTEINK_X3.display.busy == BoardConfig::XTEINK_X4.display.busy,
-              "X3 and X4 ship in one binary but disagree on display pins; HalDisplay's constructor "
-              "runs before selectDevice() and would latch the wrong ones");
-#endif
 
 HalDisplay::HalDisplay()
     : einkDisplay(BoardConfig::ACTIVE.display.sclk, BoardConfig::ACTIVE.display.mosi, BoardConfig::ACTIVE.display.cs,
@@ -48,11 +38,6 @@ HalDisplay::HalDisplay()
 HalDisplay::~HalDisplay() {}
 
 void HalDisplay::begin(bool seamless) {
-  // Set X3-specific panel mode before initializing.
-  if (gpio.deviceIsX3()) {
-    einkDisplay.setDisplayX3();
-  }
-
   // Drop the CPU clock while the render task sleeps out a waveform (any BUSY
   // wait that proves long — the SDK's bus fires the hooks around the ISR sleep
   // or the poll loop) and restore it before the post-waveform SPI work. Policy
@@ -112,11 +97,7 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
   }
 }
 
-void HalDisplay::requestResync(uint8_t settlePasses) {
-  if (HalCapabilities::panelNeedsHalfRefreshSettle() && settlePasses > pendingX3SettlePasses) {
-    pendingX3SettlePasses = settlePasses;
-  }
-}
+void HalDisplay::requestResync(uint8_t /*settlePasses*/) {}
 
 // Every path that reaches the panel logs one line with a shared sequence number.
 // Only displayBuffer() used to log, so a second refresh arriving through
@@ -131,13 +112,6 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
 
   lastRefreshMode = mode;
   lastDisplayModeByte = refreshModeToByte(mode);
-
-  if (HalCapabilities::panelNeedsHalfRefreshSettle() && mode == RefreshMode::HALF_REFRESH) {
-    einkDisplay.requestResync(pendingX3SettlePasses > 1 ? pendingX3SettlePasses : 1);
-  } else if (pendingX3SettlePasses > 0) {
-    einkDisplay.requestResync(pendingX3SettlePasses);
-  }
-  pendingX3SettlePasses = 0;
 
   // Panel time, measured at the one place every paint funnels through. The boot trace
   // (main.cpp) shows the splash costing seconds; without this the host-side compose and
@@ -167,8 +141,7 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
   // question is about the display path, and asking it by board name answers "no" on every S3
   // board by construction, so an X4 Pro promoted to the same driver would log the misleading
   // line this exists to prevent.
-  if (mode == RefreshMode::FAST_REFRESH && !deviceIsX3() && !einkDisplay.hasSecondaryBuffer() &&
-      !einkDisplay.singleBufferFastDiff()) {
+  if (mode == RefreshMode::FAST_REFRESH && !einkDisplay.hasSecondaryBuffer() && !einkDisplay.singleBufferFastDiff()) {
     LOG_DBG("DISP",
             "#%lu displayBuffer mode=%s took %lu ms (no diff baseline: secondary=0 fastDiff=0 -> driver runs HALF)",
             seq, modeName, refreshMs);
@@ -182,13 +155,6 @@ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen
 
   lastRefreshMode = mode;
   lastDisplayModeByte = refreshModeToByte(mode);
-
-  if (HalCapabilities::panelNeedsHalfRefreshSettle() && mode == RefreshMode::HALF_REFRESH) {
-    einkDisplay.requestResync(pendingX3SettlePasses > 1 ? pendingX3SettlePasses : 1);
-  } else if (pendingX3SettlePasses > 0) {
-    einkDisplay.requestResync(pendingX3SettlePasses);
-  }
-  pendingX3SettlePasses = 0;
 
   const unsigned long refreshStart = millis();
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
@@ -425,12 +391,6 @@ void HalDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, b
   LOG_DBG("DISP", "#%lu displayWindow x=%u y=%u w=%u h=%u", static_cast<unsigned long>(++panelSeq), x, y, w, h);
   einkDisplay.displayWindow(x, y, w, h, turnOffScreen);
 }
-
-bool HalDisplay::deviceIsX3() const { return einkDisplay.isX3Mode(); }
-
-void HalDisplay::setFastGrayscaleLut(bool fast) { einkDisplay.setFastGrayscaleLut(fast); }
-
-bool HalDisplay::getFastGrayscaleLut() const { return einkDisplay.getFastGrayscaleLut(); }
 
 uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
 

@@ -13,149 +13,11 @@
 // Global HalGPIO instance
 HalGPIO gpio;
 
-namespace X3GPIO {
-
-bool readI2CReg16LE(uint8_t addr, uint8_t reg, uint16_t* outValue) {
-  // Held across the whole repeated-start transaction: a touch read interleaving
-  // between endTransmission(false) and requestFrom() would break it. Runs on the
-  // loop task; touch runs on the sampler. No-op on non-touch boards.
-  HalI2cBus::Lock i2cLock;
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) {
-    return false;
-  }
-  if (Wire.requestFrom(addr, static_cast<uint8_t>(2), static_cast<uint8_t>(true)) < 2) {
-    while (Wire.available()) {
-      Wire.read();
-    }
-    return false;
-  }
-  const uint8_t lo = Wire.read();
-  const uint8_t hi = Wire.read();
-  *outValue = (static_cast<uint16_t>(hi) << 8) | lo;
-  return true;
-}
-
-bool readBQ27220CurrentMA(int16_t* outCurrent) {
-  uint16_t raw = 0;
-  if (!readI2CReg16LE(I2C_ADDR_BQ27220, BQ27220_CUR_REG, &raw)) {
-    return false;
-  }
-  *outCurrent = static_cast<int16_t>(raw);
-  return true;
-}
-
-}  // namespace X3GPIO
-
-namespace {
-constexpr char HW_NAMESPACE[] = "cphw";
-constexpr char NVS_KEY_DEV_OVERRIDE[] = "dev_ovr";  // 0=auto, 1=x4, 2=x3
-constexpr char NVS_KEY_DEV_CACHED[] = "dev_det";    // 0=unknown, 1=x4, 2=x3
-
-enum class NvsDeviceValue : uint8_t { Unknown = 0, X4 = 1, X3 = 2 };
-
-NvsDeviceValue readNvsDeviceValue(const char* key, NvsDeviceValue defaultValue) {
-  Preferences prefs;
-  if (!prefs.begin(HW_NAMESPACE, true)) {
-    return defaultValue;
-  }
-  const uint8_t raw = prefs.getUChar(key, static_cast<uint8_t>(defaultValue));
-  prefs.end();
-  if (raw > static_cast<uint8_t>(NvsDeviceValue::X3)) {
-    return defaultValue;
-  }
-  return static_cast<NvsDeviceValue>(raw);
-}
-
-void writeNvsDeviceValue(const char* key, NvsDeviceValue value) {
-  Preferences prefs;
-  if (!prefs.begin(HW_NAMESPACE, false)) {
-    return;
-  }
-  prefs.putUChar(key, static_cast<uint8_t>(value));
-  prefs.end();
-}
-
-HalGPIO::DeviceType nvsToDeviceType(NvsDeviceValue value) {
-  return value == NvsDeviceValue::X3 ? HalGPIO::DeviceType::X3 : HalGPIO::DeviceType::X4;
-}
-
-// True when this binary targets one of the Xteink C3 variants. A binary holds
-// exactly one MCU family — BoardConfig enforces that with an #error — so
-// DEFAULT_DEVICE settles the question at compile time.
-constexpr bool buildTargetsXteinkC3() {
-  return BoardConfig::DEFAULT_DEVICE.board == BoardConfig::Board::XteinkX4 ||
-         BoardConfig::DEFAULT_DEVICE.board == BoardConfig::Board::XteinkX3 ||
-         BoardConfig::DEFAULT_DEVICE.board == BoardConfig::Board::XteinkX3Uc8279;
-}
-
-HalGPIO::DeviceType detectDeviceTypeWithFingerprint() {
-  // Explicit override for recovery/support:
-  // 0 = auto, 1 = force X4, 2 = force X3
-  const NvsDeviceValue overrideValue = readNvsDeviceValue(NVS_KEY_DEV_OVERRIDE, NvsDeviceValue::Unknown);
-  if (overrideValue == NvsDeviceValue::X3 || overrideValue == NvsDeviceValue::X4) {
-    LOG_INF("HW", "Device override active: %s", overrideValue == NvsDeviceValue::X3 ? "X3" : "X4");
-    return nvsToDeviceType(overrideValue);
-  }
-
-  const NvsDeviceValue cachedValue = readNvsDeviceValue(NVS_KEY_DEV_CACHED, NvsDeviceValue::Unknown);
-  if (cachedValue == NvsDeviceValue::X3 || cachedValue == NvsDeviceValue::X4) {
-    LOG_INF("HW", "Using cached device type: %s", cachedValue == NvsDeviceValue::X3 ? "X3" : "X4");
-    return nvsToDeviceType(cachedValue);
-  }
-
-  // No cache yet: use FreeInk's canonical two-pass X3 fingerprint and persist
-  // only confirmed results. Inconclusive probes deliberately remain uncached.
-  uint8_t score1 = 0;
-  uint8_t score2 = 0;
-  const freeink::XteinkVerdict verdict = freeink::detectXteinkVerdict(&score1, &score2);
-  LOG_INF("HW", "Xteink probe scores: pass1=%u pass2=%u verdict=%u", score1, score2, static_cast<unsigned>(verdict));
-
-  if (verdict == freeink::XteinkVerdict::X3Confirmed) {
-    writeNvsDeviceValue(NVS_KEY_DEV_CACHED, NvsDeviceValue::X3);
-    return HalGPIO::DeviceType::X3;
-  }
-
-  if (verdict == freeink::XteinkVerdict::X4Confirmed) {
-    writeNvsDeviceValue(NVS_KEY_DEV_CACHED, NvsDeviceValue::X4);
-    return HalGPIO::DeviceType::X4;
-  }
-
-  // Conservative fallback for first boot with inconclusive probes.
-  return HalGPIO::DeviceType::X4;
-}
-
-}  // namespace
-
 void HalGPIO::begin() {
-  // Both probes below poke C3 hardware — the X3/X4 fingerprint reads C3 pins and
-  // applyXteinkDisplayController() drives the Xteink display bus — so they must
-  // not run on another board. BoardConfig::ACTIVE would survive them intact
-  // (selectDevice() returns false for a board this binary was not built with,
-  // leaving the profile the build's own FREEINK_DEVICE_* flag chose), but the
-  // probes themselves would still touch pins that mean something else there.
-  if constexpr (buildTargetsXteinkC3()) {
-    _deviceType = detectDeviceTypeWithFingerprint();
-    BoardConfig::selectDevice(deviceIsX3() ? BoardConfig::Board::XteinkX3 : BoardConfig::Board::XteinkX4);
+  _deviceType = DeviceType::X4;
+  BoardConfig::selectDevice(BoardConfig::Board::XteinkX4);
+  freeink::applyXteinkDisplayController();
 
-    // Resolve the per-batch controller before SPI owns the display pins. FreeInk
-    // checks the OEM hw_calib/screenType value first, then falls back to its
-    // two-pass display-bus probe. X3's facade keys panel selection off the sibling
-    // board profile, so preserve a detected UC8279 through setDisplayX3().
-    freeink::applyXteinkDisplayController();
-    if (deviceIsX3() && BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8279) {
-      BoardConfig::selectDevice(BoardConfig::Board::XteinkX3Uc8279);
-    }
-  }
-
-  // All board-generic now: inputMgr.begin() already read BoardConfig::ACTIVE.input,
-  // and the bus/pin setup below reads the active profile rather than the C3
-  // Xteink macros in HalGPIO.h. Verified pin-for-pin against the X3/X4 profiles
-  // before converting, so the C3 drives exactly the pins it always did:
-  //   EPD_SCLK 8 = display.sclk, EPD_MOSI 10 = display.mosi, EPD_CS 21 =
-  //   display.cs, SPI_MISO 7 = sd.miso, BAT_GPIO0 0 = batteryAdc,
-  //   UART0_RXD 20 = usbDetect.
   inputMgr.begin();
 
   // Pre-claim the shared SPI bus with the C3's display + SD pins.
@@ -195,8 +57,6 @@ void HalGPIO::begin() {
     pinMode(usbDetect, INPUT);
   }
 }
-
-
 
 // Push one debounced edge into the loop-drained FIFO. Caller holds inputMux_.
 // Drops the newest edge if the ring is full — a full ring means the loop task
@@ -318,11 +178,8 @@ void HalGPIO::update() {
 
 void HalGPIO::updateUsbState(const unsigned long now) {
   usbHostLinkActive = isUsbHostLinkActive();
-
-  if (usbLastPollMs == 0 || !deviceIsX3() || now - usbLastPollMs >= USB_POLL_X3_MS) {
-    usbLastPollMs = now;
-    usbElectricalConnected = isUsbElectricalConnected();
-  }
+  usbLastPollMs = now;
+  usbElectricalConnected = isUsbElectricalConnected();
   const bool connected = usbHostLinkActive || usbElectricalConnected;
   usbStateChanged = (connected != lastUsbConnected);
   lastUsbConnected = connected;
@@ -547,48 +404,6 @@ bool HalGPIO::isUsbConnected() const {
 }
 
 bool HalGPIO::isUsbElectricalConnected() const {
-  if (deviceIsX3()) {
-    // X3: GPIO20 is repurposed as I2C SDA, so the X4 pin-level USB detect is
-    // unusable here — the I2C pull-ups would always report HIGH. Probe the
-    // BQ27220 fuel gauge instead. Charge inference misses a data-only cable and
-    // any cable once the battery is full; the host-link check in
-    // updateUsbState() covers those.
-    //
-    // Current() is the ONLY signal trusted here: it is signed, and current
-    // flowing INTO the battery (positive, above a noise floor) only happens on a
-    // charger.
-    //
-    // Neither resting flag can be used. DSG=0 means "charging OR merely at
-    // rest", so treating it as charger-present latched the charging bolt after
-    // unplugging and never recovered (issue #86). FC was then kept as a
-    // secondary signal on the theory that it only latches while topped off on a
-    // charger — it does not. A detached, fully-charged, idle device reads FC=1
-    // with DSG=0 (idle draw sits under the gauge's discharge-detection
-    // threshold) and so reported USB permanently connected. That was merely a
-    // wrong battery icon until HalPowerManager::lightSleep() started gating on
-    // this verdict, at which point it disabled idle light sleep outright —
-    // device-observed on an X3 at 100% with no cable attached.
-    //
-    // The case FC was meant to catch — a cable to a computer with the battery
-    // already full — is now covered properly by the host-link check in
-    // updateUsbState(), which sees the enumerated link itself rather than
-    // inferring it from charge state. The one remaining gap is a dumb wall charger with a
-    // full battery: no charge current and no SOF, so no charging indication.
-    // That is the honest reading ("charged", not "charging"), and light sleep is
-    // safe there because there is no CDC link to lose.
-    for (uint8_t attempt = 0; attempt < 2; ++attempt) {
-      int16_t currentMa = 0;
-      if (X3GPIO::readBQ27220CurrentMA(&currentMa)) {
-        return currentMa > USB_CHARGE_CURRENT_MIN_MA;
-      }
-      delay(2);
-    }
-    return false;
-  }
-  // Boards without a gauge read a plain GPIO instead: it goes HIGH when USB is
-  // connected (X4: U0RXD/GPIO20). Pin from the profile. Unassigned means the
-  // board has no electrical detect, so report not-connected and let the SOF path
-  // in updateUsbState() be the sole source of truth (X4 Pro today).
   const int8_t usbDetect = BoardConfig::ACTIVE.usbDetect;
   if (usbDetect == BoardConfig::PIN_UNASSIGNED) return false;
   return digitalRead(usbDetect) == HIGH;
@@ -597,22 +412,6 @@ bool HalGPIO::isUsbElectricalConnected() const {
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   const auto wakeupCause = esp_sleep_get_wakeup_cause();
   const auto resetReason = esp_reset_reason();
-
-  // X3: a POWERON reset can come from either a power-button press (battery-latch
-  // MOSFET closes) OR from USB VBUS supplying power to the MCU through a path
-  // that bypasses the latch — notably after a Quick Resume sleep, where GPIO13
-  // is driven LOW so the MCU is otherwise unpowered. Disambiguate by reading
-  // the pulled-up power-button pin directly: GPIO3 reads LOW only while the
-  // button is held. If it's not held, treat a USB-connected POWERON as
-  // AfterUSBPower so the early handler in setup() puts the device straight
-  // back to sleep, matching X4. inputMgr.begin() in gpio.begin() has already
-  // configured INPUT_PULLUP on POWER_BUTTON_PIN by the time we're called.
-  if (deviceIsX3() && wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON) {
-    if (digitalRead(InputManager::POWER_BUTTON_PIN) == LOW) {
-      return WakeupReason::PowerButton;
-    }
-    return isUsbConnected() ? WakeupReason::AfterUSBPower : WakeupReason::PowerButton;
-  }
 
   const bool usbConnected = isUsbConnected();
   LOG_DBG("GPIO", "getWakeupReason: wakeupCause=%d, resetReason=%d, usbConnected=%d", static_cast<int>(wakeupCause),

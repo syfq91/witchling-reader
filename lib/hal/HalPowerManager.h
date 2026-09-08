@@ -19,10 +19,8 @@ class HalPowerManager {
   int normalFreq = 0;  // MHz
   bool isLowPower = false;
 
-  // I2C fuel gauge configuration for X3 battery monitoring
-  bool _batteryUseI2C = false;                   // True if using I2C fuel gauge (X3), false for ADC (X4)
-  mutable int _batteryCachedPercent = 0;         // Last read battery percentage — X3: 0-100, X4: 0-1000 (scaled)
-  mutable bool _batterySeeded = false;           // True once the smoothing filter has a first real sample (X4)
+  mutable int _batteryCachedPercent = 0;         // Last read battery percentage — 0-1000 (scaled x10)
+  mutable bool _batterySeeded = false;           // True once the smoothing filter has a first real sample
   mutable unsigned long _batteryLastPollMs = 0;  // Timestamp of last battery read in milliseconds
 
   enum LockMode { None, NormalSpeed };

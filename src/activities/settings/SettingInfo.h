@@ -27,10 +27,7 @@ enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING };
 // board profile in getSettingsList(). Add a value when a setting needs
 // something no existing one covers — never a board name.
 enum class SettingRequires : uint8_t {
-  Nothing,     // always visible
-  TiltSensor,  // an IMU for tilt page turning (sensors.imuType != None)
-  // The panel builds grayscale from a swappable LUT (X3 UC8253).
-  SelectableGrayscaleLut,
+  Nothing,  // always visible
 };
 
 enum class SettingAction {

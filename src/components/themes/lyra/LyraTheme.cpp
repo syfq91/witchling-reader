@@ -493,41 +493,23 @@ void LyraTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
                                  inverted ? screenHeight - 1 - y + textWidth : y, text);
   };
 
-  if (gpio.deviceIsX3()) {
-    // X3 layout: Up on left side, Down on right side, positioned higher
-    constexpr int x3ButtonY = 155;
+  // X4 layout: Both buttons stacked on right side
+  const char* labels[] = {upBtn, downBtn};
+  const int x = screenWidth - buttonWidth;
 
-    if (upBtn != nullptr && upBtn[0] != '\0') {
-      roundedRect(buttonMargin, x3ButtonY, buttonWidth, buttonHeight, false, true, false, true);
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, upBtn);
-      textCW(buttonMargin, x3ButtonY + (buttonHeight + textWidth) / 2, upBtn);
-    }
+  if (upBtn != nullptr && upBtn[0] != '\0') {
+    roundedRect(x, topHintButtonY, buttonWidth, buttonHeight, true, false, true, false);
+  }
 
-    if (downBtn != nullptr && downBtn[0] != '\0') {
-      const int rightX = screenWidth - buttonWidth;
-      roundedRect(rightX, x3ButtonY, buttonWidth, buttonHeight, true, false, true, false);
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, downBtn);
-      textCW(rightX, x3ButtonY + (buttonHeight + textWidth) / 2, downBtn);
-    }
-  } else {
-    // X4 layout: Both buttons stacked on right side
-    const char* labels[] = {upBtn, downBtn};
-    const int x = screenWidth - buttonWidth;
+  if (downBtn != nullptr && downBtn[0] != '\0') {
+    roundedRect(x, topHintButtonY + buttonHeight + 5, buttonWidth, buttonHeight, true, false, true, false);
+  }
 
-    if (upBtn != nullptr && upBtn[0] != '\0') {
-      roundedRect(x, topHintButtonY, buttonWidth, buttonHeight, true, false, true, false);
-    }
-
-    if (downBtn != nullptr && downBtn[0] != '\0') {
-      roundedRect(x, topHintButtonY + buttonHeight + 5, buttonWidth, buttonHeight, true, false, true, false);
-    }
-
-    for (int i = 0; i < 2; i++) {
-      if (labels[i] != nullptr && labels[i][0] != '\0') {
-        const int y = topHintButtonY + (i * buttonHeight) + 5;
-        const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
-        textCW(x, y + (buttonHeight + textWidth) / 2, labels[i]);
-      }
+  for (int i = 0; i < 2; i++) {
+    if (labels[i] != nullptr && labels[i][0] != '\0') {
+      const int y = topHintButtonY + (i * buttonHeight) + 5;
+      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
+      textCW(x, y + (buttonHeight + textWidth) / 2, labels[i]);
     }
   }
 

@@ -256,54 +256,33 @@ void BaseTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
                                  inverted ? screenHeight - 1 - y + textWidth : y, text);
   };
 
-  if (gpio.deviceIsX3()) {
-    // X3 layout: Up on left side, Down on right side, positioned higher
-    constexpr int x3ButtonY = 155;
+  // X4 layout: Both buttons stacked on right side
+  constexpr int topButtonY = 345;
+  const char* labels[] = {upBtn, downBtn};
+  const int x = screenWidth - buttonMargin - buttonWidth;
 
-    if (upBtn != nullptr && upBtn[0] != '\0') {
-      const int leftX = buttonMargin;
-      rect(leftX, x3ButtonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, upBtn);
+  if (upBtn != nullptr && upBtn[0] != '\0') {
+    line(x, topButtonY, x + buttonWidth - 1, topButtonY);
+    line(x, topButtonY, x, topButtonY + buttonHeight - 1);
+    line(x + buttonWidth - 1, topButtonY, x + buttonWidth - 1, topButtonY + buttonHeight - 1);
+  }
+
+  if ((upBtn != nullptr && upBtn[0] != '\0') || (downBtn != nullptr && downBtn[0] != '\0')) {
+    line(x, topButtonY + buttonHeight, x + buttonWidth - 1, topButtonY + buttonHeight);
+  }
+
+  if (downBtn != nullptr && downBtn[0] != '\0') {
+    line(x, topButtonY + buttonHeight, x, topButtonY + 2 * buttonHeight - 1);
+    line(x + buttonWidth - 1, topButtonY + buttonHeight, x + buttonWidth - 1, topButtonY + 2 * buttonHeight - 1);
+    line(x, topButtonY + 2 * buttonHeight - 1, x + buttonWidth - 1, topButtonY + 2 * buttonHeight - 1);
+  }
+
+  for (int i = 0; i < 2; i++) {
+    if (labels[i] != nullptr && labels[i][0] != '\0') {
+      const int y = topButtonY + i * buttonHeight;
+      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
       const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
-      textCW(leftX + (buttonWidth - textHeight) / 2, x3ButtonY + (buttonHeight + textWidth) / 2, upBtn);
-    }
-
-    if (downBtn != nullptr && downBtn[0] != '\0') {
-      const int rightX = screenWidth - buttonMargin - buttonWidth;
-      rect(rightX, x3ButtonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, downBtn);
-      const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
-      textCW(rightX + (buttonWidth - textHeight) / 2, x3ButtonY + (buttonHeight + textWidth) / 2, downBtn);
-    }
-  } else {
-    // X4 layout: Both buttons stacked on right side
-    constexpr int topButtonY = 345;
-    const char* labels[] = {upBtn, downBtn};
-    const int x = screenWidth - buttonMargin - buttonWidth;
-
-    if (upBtn != nullptr && upBtn[0] != '\0') {
-      line(x, topButtonY, x + buttonWidth - 1, topButtonY);
-      line(x, topButtonY, x, topButtonY + buttonHeight - 1);
-      line(x + buttonWidth - 1, topButtonY, x + buttonWidth - 1, topButtonY + buttonHeight - 1);
-    }
-
-    if ((upBtn != nullptr && upBtn[0] != '\0') || (downBtn != nullptr && downBtn[0] != '\0')) {
-      line(x, topButtonY + buttonHeight, x + buttonWidth - 1, topButtonY + buttonHeight);
-    }
-
-    if (downBtn != nullptr && downBtn[0] != '\0') {
-      line(x, topButtonY + buttonHeight, x, topButtonY + 2 * buttonHeight - 1);
-      line(x + buttonWidth - 1, topButtonY + buttonHeight, x + buttonWidth - 1, topButtonY + 2 * buttonHeight - 1);
-      line(x, topButtonY + 2 * buttonHeight - 1, x + buttonWidth - 1, topButtonY + 2 * buttonHeight - 1);
-    }
-
-    for (int i = 0; i < 2; i++) {
-      if (labels[i] != nullptr && labels[i][0] != '\0') {
-        const int y = topButtonY + i * buttonHeight;
-        const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
-        const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
-        textCW(x + (buttonWidth - textHeight) / 2, y + (buttonHeight + textWidth) / 2, labels[i]);
-      }
+      textCW(x + (buttonWidth - textHeight) / 2, y + (buttonHeight + textWidth) / 2, labels[i]);
     }
   }
 

@@ -61,8 +61,7 @@ struct GridLayout {
 // come off a resistor ladder, not GPIOs — so a pin-presence predicate reads false on
 // the very boards that do draw the hint.
 //
-// Until then it is at least wrong in exactly one place instead of three.
-bool gridShowsGestureHint() { return !gpio.deviceIsX3(); }
+bool gridShowsGestureHint() { return true; }
 
 GridLayout computeGridLayout(const GfxRenderer& renderer) {
   const auto& metrics = UITheme::getInstance().getMetrics();

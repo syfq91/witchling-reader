@@ -19,35 +19,6 @@
 
 #define UART0_RXD 20  // Used for USB connection detection
 
-// Xteink X3 Hardware
-#define X3_I2C_SDA 20
-#define X3_I2C_SCL 0
-#define X3_I2C_FREQ 400000
-
-// TI BQ27220 Fuel gauge I2C
-#define I2C_ADDR_BQ27220 0x55    // Fuel gauge I2C address
-#define BQ27220_SOC_REG 0x2C     // StateOfCharge() command code (%)
-#define BQ27220_CUR_REG 0x0C     // Current() command code (signed mA)
-#define BQ27220_VOLT_REG 0x08    // Voltage() command code (mV)
-#define BQ27220_FLAGS_REG 0x0A   // BatteryStatus() / Flags() command code (bit0=DSG, bit9=FC)
-#define BQ27220_FLAG_DSG 0x0001  // DSG bit: 1 = discharging, 0 = charging OR merely at rest
-#define BQ27220_FLAG_FC 0x0200   // FC bit: 1 = fully charged (only latches while on the charger)
-// Minimum Current() reading (mA, positive = into the battery) that counts as
-// "on the charger". A small guard band above 0 keeps gauge noise around rest
-// from being read as charging.
-#define USB_CHARGE_CURRENT_MIN_MA 5
-
-// QST QMI8658 IMU I2C
-#define I2C_ADDR_QMI8658 0x6B        // IMU I2C address
-#define I2C_ADDR_QMI8658_ALT 0x6A    // IMU I2C fallback address
-#define QMI8658_WHO_AM_I_REG 0x00    // WHO_AM_I command code
-#define QMI8658_WHO_AM_I_VALUE 0x05  // WHO_AM_I expected value
-
-namespace X3GPIO {
-// Read a 16-bit little-endian I2C register. Returns false on bus error.
-bool readI2CReg16LE(uint8_t addr, uint8_t reg, uint16_t* outValue);
-}  // namespace X3GPIO
-
 class HalGPIO {
 #if CROSSPOINT_EMULATED == 0
   InputManager inputMgr;
@@ -58,38 +29,23 @@ class HalGPIO {
   unsigned long usbLastPollMs = 0;
   bool usbElectricalConnected = false;  // last result of the per-device electrical/charge check
 
-  // X3 USB detection is a BQ27220 I2C read (~0.3-1 ms of awake CPU per call);
-  // polled every loop it costs a few percent of the light-sleep idle floor for
-  // nothing. At >=1 s intervals the energy cost is unmeasurable, so 1 s is
-  // chosen for prompt plug/unplug UX (battery icon, the light-sleep USB guard).
-  // X4 detection is a single digitalRead and stays per-loop.
-  static constexpr unsigned long USB_POLL_X3_MS = 1000;
-
   // Live USB host link, straight from the IDF's SOF monitor
   // (usb_serial_jtag_is_connected(), maintained by a FreeRTOS tick hook that
   // watches the SOF interrupt bit with a 3 ms no-SOF tolerance). Catches what
-  // the charge-based X3 check misses: a data-only cable, and any cable once the
-  // battery is full (charge current ~0). Both matter for
-  // HalPowerManager::lightSleep(), which must not halt the chip out from under
-  // an enumerated CDC link — and for main.cpp, which only opens the serial log
-  // when a host is present.
-  //
-  // This used to be sampled here by diffing USB_SERIAL_JTAG.fram_num: that index
-  // is 11 bits and wraps every 2.048 s, so any sampling cadence landing on a
-  // multiple of that read two equal values and reported "no host" while a
-  // monitor was attached. The IDF hook has no such blind spot and costs nothing
-  // to read.
+  // the electrical check misses: a data-only cable, and any cable once the
+  // battery is full. Both matter for HalPowerManager::lightSleep(), which must
+  // not halt the chip out from under an enumerated CDC link — and for main.cpp,
+  // which only opens the serial log when a host is present.
   bool usbHostLinkActive = false;
 
-  // Per-device electrical/charge-inference USB check (fresh read; X3 = BQ27220
-  // charge current over I2C, X4 = VBUS-driven level on GPIO20).
+  // Electrical USB check (VBUS-driven level on GPIO20).
   bool isUsbElectricalConnected() const;
 
-  // SOF sampling + throttled electrical check + combined-verdict edge tracking.
+  // SOF sampling + electrical check + combined-verdict edge tracking.
   void updateUsbState(unsigned long now);
 
  public:
-  enum class DeviceType : uint8_t { X4, X3 };
+  enum class DeviceType : uint8_t { X4 };
 
   // A single debounced button transition captured by the background sampler.
   // `button` is a raw BTN_* index; `pressed` is true for a press edge, false for
@@ -102,7 +58,7 @@ class HalGPIO {
     uint32_t timeMs = 0;
   };
 
-  private:
+ private:
   DeviceType _deviceType = DeviceType::X4;
 
   // ---- Background button sampler (see HalGPIO.cpp) ----------------------------
@@ -139,8 +95,8 @@ class HalGPIO {
   HalGPIO() = default;
 
   // Inline device type helpers for cleaner downstream checks
-  inline bool deviceIsX3() const { return _deviceType == DeviceType::X3; }
-  inline bool deviceIsX4() const { return _deviceType == DeviceType::X4; }
+  inline bool deviceIsX3() const { return false; }
+  inline bool deviceIsX4() const { return true; }
 
   // True on the Xteink C3 boards (X3, X3/UC8279, X4).
   bool isXteinkDevice() const { return true; }

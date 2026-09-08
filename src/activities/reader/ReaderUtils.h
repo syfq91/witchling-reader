@@ -98,27 +98,7 @@ struct PageTurnResult {
 // took the queue path (they carry a double-click action by default, which suppressed the
 // wasReleased branch) while Up/Down took the snapshot path — the two behaved visibly
 // differently under fast repeated presses. One path for all four keeps them identical.
-inline PageTurnResult detectTiltPageTurn() {
-  using TA = CrossPointSettings::TILT_GESTURE_ACTION;
-  const bool tiltNegative = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedForward();
-  const bool tiltPositive = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedBack();
-  bool tiltPrev = false;
-  bool tiltNext = false;
-  auto applyTiltAction = [&](uint8_t action) {
-    if (action == TA::TILT_ACT_NEXT_PAGE) {
-      tiltNext = true;
-    } else if (action == TA::TILT_ACT_PREV_PAGE) {
-      tiltPrev = true;
-    }
-  };
-  if (tiltPositive) {
-    applyTiltAction(SETTINGS.tiltPositiveAction);
-  }
-  if (tiltNegative) {
-    applyTiltAction(SETTINGS.tiltNegativeAction);
-  }
-  return {tiltPrev, tiltNext};
-}
+inline PageTurnResult detectTiltPageTurn() { return {false, false}; }
 
 inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh) {
   const int freq = SETTINGS.getRefreshFrequency();

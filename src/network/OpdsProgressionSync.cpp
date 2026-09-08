@@ -245,7 +245,7 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
 
   JsonObject dev = putDoc["device"].to<JsonObject>();
   dev["id"] = "witchreader-" + WiFi.macAddress();
-  dev["name"] = "Witch(hunt) Reader " + std::string(gpio.deviceIsX3() ? "X3" : "X4");
+  dev["name"] = "Witch(hunt) Reader X4";
 
   std::string putBody;
   serializeJson(putDoc, putBody);
