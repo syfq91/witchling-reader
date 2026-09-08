@@ -23,11 +23,8 @@ jobs:
       matrix:
         include:
           - env: gh_release
-            label: X3/X4
+            label: X4
             asset: firmware.bin
-          - env: lilygo_gh_release
-            label: LilyGo T5S3
-            asset: firmware-lilygo.bin
     steps:
       - uses: actions/checkout@v6
         with:

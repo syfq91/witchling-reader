@@ -35,17 +35,14 @@ cd witchling-reader
 # Enable repo-managed git hooks (once per clone)
 git config core.hooksPath .githooks && chmod +x .githooks/pre-commit
 
-# Build (default = debug build with serial logging)
+# Build firmware
 pio run
 
-# Build a release build
+# Build release binary
 pio run -e gh_release
 
 # Flash to the device (USB-C)
 pio run --target upload
-
-# Serial monitor
-pio device monitor   # or: python3 scripts/debugging_monitor.py
 ```
 
 For device documentation, hardware specifications, and troubleshooting, refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme) and the `docs/` directory.

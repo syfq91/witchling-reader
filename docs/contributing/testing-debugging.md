@@ -13,26 +13,16 @@ pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
 pio run
 ```
 
-## Flash and monitor
+## Flash firmware
 
-Flash firmware:
+Flash firmware via USB-C:
 
 ```sh
 pio run --target upload
 ```
 
-Open serial monitor:
-
-```sh
-pio device monitor
-```
-
-Optional enhanced monitor:
-
-```sh
-python3 -m pip install pyserial colorama matplotlib
-python3 scripts/debugging_monitor.py
-```
+> [!NOTE]
+> Serial monitoring and logging are compiled out by default to optimize boot times, flash storage, and battery consumption.
 
 ## Test release workflows locally with `act`
 

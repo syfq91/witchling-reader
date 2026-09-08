@@ -1255,6 +1255,7 @@ void loop() {
     lastMemPrint = millis();
   }
 
+#ifdef ENABLE_SERIAL_LOG
   // Handle incoming serial commands,
   // nb: we use logSerial from logging to avoid deprecation warnings.
   // Skip while an activity owns the serial input (e.g. the USB serial
@@ -1285,6 +1286,7 @@ void loop() {
       }
     }
   }
+#endif
 
   // Check for any user activity (button press or release, screen touch) or
   // active background work.
