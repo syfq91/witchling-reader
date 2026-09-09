@@ -310,10 +310,8 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, bool keepClockAlive) const {
   // When keepClockAlive is false (default): GPIO13 goes LOW, the MCU is
   // completely powered off during sleep (including the LP timer / RTC memory).
   // When keepClockAlive is true: GPIO13 stays HIGH, the MCU remains powered
-  // GPIO13 controls the battery-latch MOSFET on X4 (active-high).
-  // When keepClockAlive is true (the normal sleep path), we drive it HIGH to keep
+  // When keepClockAlive is true, we drive it HIGH to keep
   // the 3.3V rail powered at ~3-4 mA so the LP timer keeps running and RTC memory is preserved.
-  // This allows HalClock to accurately compute elapsed sleep time on wake.
   constexpr gpio_num_t GPIO_SPIWP = GPIO_NUM_13;
   // Release any GPIO hold from a previous sleep cycle (keepClockAlive=true leaves GPIO13 held after wake).
   // Without this, gpio_set_level() below silently fails and GPIO13 is stuck in its prior state,

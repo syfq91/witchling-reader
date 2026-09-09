@@ -96,7 +96,6 @@ void CrossPointSettings::loadStartupFromNvs() {
   nvs.begin("Crosspoint", true);  // read-only
   btnShortPower = nvs.getUChar("bSPwr", BTN_DEFAULT);
   btnDoublePower = nvs.getUChar("bDPwr", BTN_DEFAULT);
-  useClock = nvs.getUChar("useClk", 0);
   nvs.end();
 }
 
@@ -105,7 +104,6 @@ void CrossPointSettings::saveStartupToNvs() const {
   nvs.begin("Crosspoint", false);  // read-write
   nvs.putUChar("bSPwr", btnShortPower);
   nvs.putUChar("bDPwr", btnDoublePower);
-  nvs.putUChar("useClk", useClock);
   nvs.end();
 }
 

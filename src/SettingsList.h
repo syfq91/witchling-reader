@@ -371,22 +371,6 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Enum(StrId::STR_OPDS_FILENAME_FORMAT, &CrossPointSettings::opdsFilenameFormat,
                                        {StrId::STR_FMT_AUTHOR_TITLE, StrId::STR_FMT_TITLE_AUTHOR, StrId::STR_FMT_TITLE},
                                        "opdsFilenameFormat"));
-  // Will be dealt with separately, so these receive none of the main categories and
-  // are visible in the web UI but not the device UI.
-  settings.push_back(
-      SettingInfo::Toggle(StrId::STR_USE_CLOCK, &CrossPointSettings::useClock, "useClock", StrId::STR_CLOCK));
-  settings.push_back(SettingInfo::Enum(StrId::STR_CLOCK_FORMAT, &CrossPointSettings::clockFormat12h,
-                                       {StrId::STR_24H, StrId::STR_12H}, "clockFormat12h", StrId::STR_CLOCK));
-  settings.push_back(
-      SettingInfo::Enum(StrId::STR_TIMEZONE, &CrossPointSettings::timeZone,
-                        {StrId::STR_TZ_UTC, StrId::STR_TZ_CET, StrId::STR_TZ_EET, StrId::STR_TZ_MSK,
-                         StrId::STR_TZ_UTC_PLUS4, StrId::STR_TZ_IST, StrId::STR_TZ_UTC_PLUS7, StrId::STR_TZ_UTC_PLUS8,
-                         StrId::STR_TZ_UTC_PLUS9, StrId::STR_TZ_AEST, StrId::STR_TZ_NZST, StrId::STR_TZ_UTC_MINUS3,
-                         StrId::STR_TZ_EST, StrId::STR_TZ_CST, StrId::STR_TZ_MST, StrId::STR_TZ_PST},
-                        "timeZone", StrId::STR_CLOCK)
-          .withSelectorActivity());
-  settings.push_back(SettingInfo::String(StrId::STR_NTP_SERVER, SETTINGS.ntpServer, sizeof(SETTINGS.ntpServer),
-                                         "ntpServer", StrId::STR_CLOCK));
 
   // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
   settings.push_back(SettingInfo::Enum(StrId::STR_UPPER_PROGRESS_BAR, &CrossPointSettings::statusBarUpperProgressBar,
@@ -411,11 +395,6 @@ inline std::vector<SettingInfo> buildSettingsList() {
                                        StrId::STR_CUSTOMISE_STATUS_BAR));
   settings.push_back(SettingInfo::Toggle(StrId::STR_BATTERY, &CrossPointSettings::statusBarBattery, "statusBarBattery",
                                          StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Toggle(StrId::STR_CLOCK, &CrossPointSettings::statusBarClock, "statusBarClock",
-                                         StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Enum(StrId::STR_CLOCK_POSITION, &CrossPointSettings::statusBarClockPosition,
-                                       {StrId::STR_ALIGN_LEFT, StrId::STR_ALIGN_RIGHT}, "statusBarClockPosition",
-                                       StrId::STR_CUSTOMISE_STATUS_BAR));
   settings.push_back(SettingInfo::Enum(StrId::STR_LOWER_PROGRESS_BAR, &CrossPointSettings::statusBarLowerProgressBar,
                                        {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE},
                                        "statusBarLowerProgressBar", StrId::STR_CUSTOMISE_STATUS_BAR));

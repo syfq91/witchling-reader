@@ -4,8 +4,6 @@
 #include "ButtonActionsOverviewActivity.h"
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
-#include "ClockSettingsActivity.h"
-#include "DetectTimezoneActivity.h"
 #include "DictionarySelectionActivity.h"
 #include "EnumSelectionActivity.h"
 #include "FontDownloadActivity.h"
@@ -17,7 +15,6 @@
 #include "SdCardFontGlobals.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "StatusBarSettingsActivity.h"
-#include "SyncTimeActivity.h"
 #include "SystemInformationActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 
@@ -32,8 +29,6 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<StatusBarSettingsActivity>(renderer, mappedInput);
     case SettingAction::DownloadFonts:
       return std::make_unique<FontDownloadActivity>(renderer, mappedInput);
-    case SettingAction::ClockSettings:
-      return std::make_unique<ClockSettingsActivity>(renderer, mappedInput);
     case SettingAction::OPDSBrowser:
       return std::make_unique<OpdsServerListActivity>(renderer, mappedInput);
     case SettingAction::Network:
@@ -52,10 +47,6 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<SystemInformationActivity>(renderer, mappedInput);
     case SettingAction::BootDiagnostics:
       return std::make_unique<BootDiagnosticsActivity>(renderer, mappedInput);
-    case SettingAction::SyncTime:
-      return std::make_unique<SyncTimeActivity>(renderer, mappedInput);
-    case SettingAction::DetectTimezone:
-      return std::make_unique<DetectTimezoneActivity>(renderer, mappedInput);
     case SettingAction::DictionarySelect:
       return std::make_unique<DictionarySelectionActivity>(renderer, mappedInput);
     case SettingAction::Submenu:

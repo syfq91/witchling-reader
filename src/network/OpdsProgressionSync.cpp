@@ -3,7 +3,6 @@
 #include <ArduinoJson.h>
 #include <CrossPointRoots.h>
 #include <FsHelpers.h>
-#include <HalClock.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <SecureHttpClient.h>
@@ -42,7 +41,6 @@ time_t parseIso8601(const std::string& iso) {
 }
 
 std::string formatIso8601(time_t t) {
-  if (t == 0) t = HalClock::now();
   if (t == 0) t = time(nullptr);
   struct tm tmUtc{};
   gmtime_r(&t, &tmUtc);
@@ -156,12 +154,10 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
     return {SyncStatus::NO_WIFI, {}, "WiFi not connected"};
   }
 
-  const bool clockUsable = HalClock::ensureUsableForTls(SETTINGS.ntpServer);
-
   crosspoint::SecureHttpClient client;
   client.setTimeout(15000);
   client.setCACert(CROSSPOINT_ROOTS_PEM);
-  client.setAllowCertificateDateErrors(!clockUsable);
+  client.setAllowCertificateDateErrors(true);
   client.setAllowInsecureFallback(SETTINGS.skipHttpsValidation != 0);
 
   const OpdsServer* creds = findServerCredentials(config.serverUrl, config.progressionUrl);
@@ -230,7 +226,7 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
   }
 
   // Local is newer: push local progress to server via PUT
-  const std::string nowIso = formatIso8601(HalClock::now());
+  const std::string nowIso = formatIso8601(0);
 
   JsonDocument putDoc;
   putDoc["progression"] = localProgression;

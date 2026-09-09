@@ -1,7 +1,6 @@
 #include "SettingsActivity.h"
 
 #include <GfxRenderer.h>
-#include <HalClock.h>
 #include <HalDisplay.h>
 #include <HalGPIO.h>
 #include <Logging.h>
@@ -78,11 +77,6 @@ void SettingsActivity::onEnter() {
 
   for (const auto& setting : getSettingsList()) {
     if (setting.category == StrId::STR_NONE_OPT) continue;
-    if (setting.category == StrId::STR_CAT_SYSTEM &&
-        (setting.nameId == StrId::STR_USE_CLOCK || setting.nameId == StrId::STR_CLOCK_FORMAT ||
-         setting.nameId == StrId::STR_TIMEZONE)) {
-      continue;
-    }
     // Enrich font-family entries with SD card families discovered at boot.
     // The list itself is a namespace-static; we only mutate our local copy here.
     SettingInfo enriched = setting;
@@ -143,9 +137,6 @@ void SettingsActivity::onEnter() {
   addToMoved(systemSettings, lastSystemSub,
              std::move(SettingInfo::Action(StrId::STR_OPDS_BROWSER, SettingAction::OPDSBrowser)
                            .withSubcategory(StrId::STR_MENU_SYS_NETWORK)));
-  addToMoved(systemSettings, lastSystemSub,
-             std::move(SettingInfo::Action(StrId::STR_CLOCK_SETTINGS, SettingAction::ClockSettings)
-                           .withSubcategory(StrId::STR_MENU_SYS_TOOLS)));
   addToMoved(systemSettings, lastSystemSub,
              std::move(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache)
                            .withSubcategory(StrId::STR_MENU_SYS_SYSTEM)));

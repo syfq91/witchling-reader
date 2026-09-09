@@ -2,7 +2,6 @@
 
 #include <Arduino.h>
 #include <CrossPointRoots.h>
-#include <HalClock.h>
 #include <Logging.h>
 #include <SecureHttpClient.h>
 #include <base64.h>
@@ -32,13 +31,6 @@ std::string extractHostFromUrl(const std::string& url) {
   return url.substr(hostStart, hostEnd - hostStart);
 }
 
-// Clock guard for TLS. The plausibility window and the SNTP retry policy now live in
-// HalClock (isPlausibleForTls / ensureUsableForTls) so every TLS entry point shares one rule —
-// this used to be a private copy here, which is why the KOReader paths never got it. Returns
-// whether full certificate date validation is possible; false means the caller should tolerate
-// date errors (and only date errors) for this request.
-bool ensureClockForTls() { return HalClock::ensureUsableForTls(SETTINGS.ntpServer); }
-
 // Per-request timeout handed to SecureHttpClient::setTimeout(). 60s gives slow
 // servers room to send their first headers; SecureHttpClient reuses it as the
 // idle deadline for each body read. The response body streams in
@@ -58,16 +50,10 @@ bool isRedirect(int status) {
 }
 
 // Runs once per http call (or once per session for reused sessions): logs
-// heap stats and ensures the wall clock is set so TLS cert-date validation
-// can succeed. Shared by both TLS backends. Returns false when https was requested and the
-// clock could not be established — the caller then permits date errors alone.
-bool logPreCallContext(const std::string& url) {
+// heap stats.
+void logPreCallContext() {
   LOG_DBG("HTTP", "Heap free: %u, largest block: %u", esp_get_free_heap_size(),
           heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
-  if (url.compare(0, 8, "https://") == 0) {
-    return ensureClockForTls();
-  }
-  return true;
 }
 
 // Does this transfer verify the peer? Resolves the caller's policy against the
@@ -92,7 +78,8 @@ bool verificationRequested(HttpDownloader::TlsPolicy tls) {
 // peer fails to verify.
 HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
                                            const std::string& password, Sink& sink, HttpDownloader::TlsPolicy tls) {
-  const bool clockReady = logPreCallContext(url);
+  (void)url;
+  logPreCallContext();
   const unsigned long startMs = millis();
   LOG_DBG("HTTP", "Phase start @%lums heap=%u largest=%u", millis() - startMs, esp_get_free_heap_size(),
           heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
@@ -103,7 +90,7 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   http.setCACert(verificationRequested(tls) ? CROSSPOINT_ROOTS_PEM : nullptr);
   // Never retry unverified behind the caller's back; see TlsPolicy.
   http.setAllowInsecureFallback(false);
-  http.setAllowCertificateDateErrors(!clockReady);
+  http.setAllowCertificateDateErrors(true);
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.setUserAgent("WitchReader-ESP32-" CROSSPOINT_VERSION);
   if (!username.empty() && !password.empty()) {
@@ -179,12 +166,11 @@ namespace {
 // back-to-back files on the same host share a single handshake (the Session
 // heap win). Cross-host requests transparently reopen inside SecureHttpClient.
 HttpDownloader::DownloadError runGetSecureOnSession(HttpDownloader::Session& session, const std::string& url,
-                                                    const std::string& username, const std::string& password,
-                                                    Sink& sink, HttpDownloader::TlsPolicy tls) {
+                                                     const std::string& username, const std::string& password,
+                                                     Sink& sink, HttpDownloader::TlsPolicy tls) {
+  (void)url;
   auto* impl = session.impl();
-  // Evaluated on every call, not just when the session is created: a session opened before the
-  // clock was set must not keep that verdict for the rest of its life (nor the reverse).
-  const bool clockReady = logPreCallContext(url);
+  logPreCallContext();
   if (!impl->http) {
     impl->http = std::make_unique<crosspoint::SecureHttpClient>();
     impl->http->setTimeout(HTTP_TIMEOUT_MS);
@@ -194,7 +180,7 @@ HttpDownloader::DownloadError runGetSecureOnSession(HttpDownloader::Session& ses
   // single request and must not carry a previous caller's policy.
   impl->http->setCACert(verificationRequested(tls) ? CROSSPOINT_ROOTS_PEM : nullptr);
   impl->http->setAllowInsecureFallback(false);
-  impl->http->setAllowCertificateDateErrors(!clockReady);
+  impl->http->setAllowCertificateDateErrors(true);
   impl->http->clearHeaders();
   if (!username.empty() && !password.empty()) {
     impl->http->setBasicAuth(username, password);

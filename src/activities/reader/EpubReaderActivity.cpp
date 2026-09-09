@@ -27,7 +27,6 @@
 #include <FontDecompressor.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
-#include <HalClock.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -5007,12 +5006,6 @@ void EpubReaderActivity::renderStatusBar() const {
 
   lastStatusBarPage = currentPage;
   lastStatusBarBattery = SETTINGS.statusBarBattery ? static_cast<int>(powerManager.getBatteryPercentage()) : -1;
-  if (SETTINGS.useClock && SETTINGS.statusBarClock && HalClock::isSynced()) {
-    const time_t now = HalClock::now();
-    lastStatusBarClockMinute = now > 0 ? static_cast<int>(now / 60) : -1;
-  } else {
-    lastStatusBarClockMinute = -1;
-  }
 }
 
 void EpubReaderActivity::renderBackgroundDebugOverlay() const {
@@ -5067,11 +5060,6 @@ bool EpubReaderActivity::shouldSkipPeriodicUpdate() const {
   if (currentPage != lastStatusBarPage) return false;
   if (SETTINGS.statusBarBattery) {
     if (static_cast<int>(powerManager.getBatteryPercentage()) != lastStatusBarBattery) return false;
-  }
-  if (SETTINGS.useClock && SETTINGS.statusBarClock && HalClock::isSynced()) {
-    const time_t now = HalClock::now();
-    const int minute = now > 0 ? static_cast<int>(now / 60) : -1;
-    if (minute != lastStatusBarClockMinute) return false;
   }
   return true;
 }

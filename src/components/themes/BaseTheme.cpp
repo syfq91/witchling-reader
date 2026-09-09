@@ -1,7 +1,6 @@
 #include "BaseTheme.h"
 
 #include <GfxRenderer.h>
-#include <HalClock.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -494,12 +493,6 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
                    Rect{batteryX, rect.y + 5, BaseMetrics::values.batteryWidth, BaseMetrics::values.batteryHeight},
                    showBatteryPercentage);
 
-  // Draw clock in header
-  if (SETTINGS.useClock) {
-    char clockStr[16];
-    HalClock::formatTime(clockStr, sizeof(clockStr), !SETTINGS.clockFormat12h);
-    renderer.drawText(SMALL_FONT_ID, rect.x + BaseMetrics::values.contentSidePadding, rect.y + 5, clockStr);
-  }
 
   if (title) {
     int padding = rect.width - batteryX + BaseMetrics::values.batteryWidth;
@@ -944,7 +937,7 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   const bool hasProgressText = SETTINGS.statusBarBookProgressPercentage || SETTINGS.statusBarChapterPageCount;
   const bool hasStatusItems = hasProgressText || SETTINGS.statusBarBattery || !title.empty() ||
                               SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE ||
-                              (SETTINGS.useClock && SETTINGS.statusBarClock) || !printedPageLabel.empty();
+                              !printedPageLabel.empty();
   if (!hasStatusItems) {
     return;
   }
@@ -964,17 +957,6 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
 
   constexpr int statusItemGap = 8;  // gap between adjacent items within one cluster
   constexpr int starGap = 6;        // the star sits tighter against the progress text
-
-  // Resolve the clock before anything is placed: whichever end it sits on has to reserve its width
-  // before the title is centred in what is left over.
-  char clockStr[16] = "";
-  int clockTextWidth = 0;
-  if (SETTINGS.useClock && SETTINGS.statusBarClock) {
-    HalClock::formatTime(clockStr, sizeof(clockStr), !SETTINGS.clockFormat12h);
-    clockTextWidth = renderer.getTextWidth(SMALL_FONT_ID, clockStr);
-  }
-  const bool clockOnRight =
-      SETTINGS.statusBarClockPosition == CrossPointSettings::STATUS_BAR_CLOCK_POSITION::STATUS_BAR_CLOCK_RIGHT;
 
   int progressTextWidth = 0;
   const int printedLabelWidth =
@@ -1020,32 +1002,18 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
                              metrics.batteryHeight},
                         showBatteryPercentage);
     // Measure the drawn footprint instead of estimating it: a three digit percentage ("100%")
-    // is wider than a fixed guess, and the clock/title placed to the right would overlap it.
+    // is wider than a fixed guess, and the title placed to the right would overlap it.
     // The leading 1 is the icon's own inset from the horizontal margin, above.
     batterySize = 1 + statusBarBatteryWidth(renderer, metrics, showBatteryPercentage);
   }
 
-  // Right cluster, laid out from the right edge inwards: progress text (already drawn), then the
-  // star, then the clock when it is right-positioned.
+  // Right cluster, laid out from the right edge inwards: progress text (already drawn), then the star.
   const int rightEdge = screenWidth - metrics.statusBarHorizontalMargin - orientedMarginRight;
   const int starWidth = isStarred ? renderer.getTextWidth(SMALL_FONT_ID, "*") : 0;
   const int starReserve = isStarred ? starWidth + (progressTextWidth > 0 ? starGap : 0) : 0;
   int rightClusterWidth = progressTextWidth + starReserve;
 
-  // Draw Clock at whichever end it was assigned. Left: just past the battery. Right: just past the
-  // star / progress text, so it can never land on top of either.
   int leftClusterWidth = batterySize;
-  if (clockTextWidth > 0) {
-    int clockX;
-    if (clockOnRight) {
-      rightClusterWidth += (rightClusterWidth > 0 ? statusItemGap : 0) + clockTextWidth;
-      clockX = rightEdge - rightClusterWidth;
-    } else {
-      clockX = metrics.statusBarHorizontalMargin + orientedMarginLeft + leftClusterWidth + statusItemGap;
-      leftClusterWidth += statusItemGap + clockTextWidth;
-    }
-    renderer.drawText(SMALL_FONT_ID, clockX, textY, clockStr);
-  }
 
   // Draw Title
   if (SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE && !title.empty()) {

@@ -1,7 +1,6 @@
 #include "Logging.h"
 
 #include <BoardConfig.h>
-#include <HalClock.h>
 #include <esp_rom_sys.h>
 
 #include <algorithm>
@@ -52,17 +51,10 @@ void logPrintf(const char* level, const char* origin, const char* format, ...) {
   va_start(args, format);
   char buf[MAX_ENTRY_LEN];
   char* c = buf;
-  // add timestamp, wall clock, level and origin
+  // add timestamp, level and origin
   {
     unsigned long ms = millis();
-    char wallClock[12];
-    HalClock::formatLogTime(wallClock, sizeof(wallClock));
-    int len;
-    if (wallClock[0] != '\0') {
-      len = snprintf(c, sizeof(buf), "[%lu %s] [%s] [%s] ", ms, wallClock, level, origin);
-    } else {
-      len = snprintf(c, sizeof(buf), "[%lu] [%s] [%s] ", ms, level, origin);
-    }
+    int len = snprintf(c, sizeof(buf), "[%lu] [%s] [%s] ", ms, level, origin);
     // error while writing => return
     if (len < 0) {
       va_end(args);

@@ -11,7 +11,6 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 
-#include "HalClock.h"
 #include "HalGPIO.h"
 #include "HalPowerManager.h"
 
@@ -83,8 +82,7 @@ struct SystemStatus {
   // Power behaviour since boot. lightSleepSeconds is time the chip was actually
   // halted by the idle light-sleep path; lightSleepPercent is that as a share of
   // uptime, which is the readable proxy for average current. deepSleepSeconds is
-  // the length of the sleep this boot woke from (0 when it cannot be established
-  // — see HalClock::lastSleepSeconds).
+  // the length of the sleep this boot woke from (0 when it cannot be established).
   uint32_t lightSleepSeconds;
   uint8_t lightSleepPercent;
   uint32_t lightSleepSlices;
@@ -144,7 +142,7 @@ struct SystemStatus {
     // a far higher sleep share than the battery actually sees.
     const uint32_t uptimeMs = millis();
     s.lightSleepPercent = uptimeMs > 0 ? static_cast<uint8_t>((sleepStats.sleptMs * 100ULL) / uptimeMs) : 0;
-    s.deepSleepSeconds = HalClock::lastSleepSeconds();
+    s.deepSleepSeconds = 0;
     s.macAddress = WiFi.macAddress().c_str();
     s.sdTotalBytes = 0;
     s.sdUsedBytes = 0;

@@ -77,14 +77,6 @@ class CrossPointSettings {
     STATUS_BAR_ITEMS_POSITION_COUNT
   };
 
-  // Which end of the status-item lane the clock sits on. There is deliberately no centre option:
-  // the middle of the lane is the title's slot, so a centred clock would either displace the title
-  // or collide with it.
-  enum STATUS_BAR_CLOCK_POSITION {
-    STATUS_BAR_CLOCK_LEFT = 0,
-    STATUS_BAR_CLOCK_RIGHT = 1,
-    STATUS_BAR_CLOCK_POSITION_COUNT
-  };
 
   enum ORIENTATION {
     PORTRAIT = 0,       // 480x800 logical coordinates (current default)
@@ -217,29 +209,6 @@ class CrossPointSettings {
   enum IMAGE_DITHERING { IMAGE_DITHER_BAYER = 0, IMAGE_DITHERING_COUNT };
 #endif
 
-  // Timezone options (POSIX TZ rules for DST support)
-  enum TIMEZONE {
-    TZ_UTC = 0,
-    TZ_CET = 1,
-    TZ_EET = 2,
-    TZ_MSK = 3,
-    TZ_UTC_PLUS4 = 4,
-    TZ_IST = 5,
-    TZ_UTC_PLUS7 = 6,
-    TZ_UTC_PLUS8 = 7,
-    TZ_UTC_PLUS9 = 8,
-    TZ_AEST = 9,
-    TZ_NZST = 10,
-    TZ_UTC_MINUS3 = 11,
-    TZ_EST = 12,
-    TZ_CST = 13,
-    TZ_MST = 14,
-    TZ_PST = 15,
-    TZ_AST_ADT = 16,
-    TZ_ACST_ACDT = 17,
-    TZ_AKST_AKDT = 18,
-    TIMEZONE_COUNT
-  };
 
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
@@ -392,21 +361,6 @@ class CrossPointSettings {
   uint8_t moveFinishedBooksToCompleted = 0;
   // Remove finished book from Recent Books when the end-of-book screen action is selected.
   uint8_t removeFinishedBooksFromRecents = 0;
-  // Show clock in the reader status bar
-  uint8_t statusBarClock = 0;
-  // Which end of the status-item lane the clock is drawn at (see STATUS_BAR_CLOCK_POSITION).
-  uint8_t statusBarClockPosition = STATUS_BAR_CLOCK_LEFT;
-  // Clock format: 0 = 24h (14:00), 1 = 12h (2:00pm)
-  uint8_t clockFormat12h = 0;
-  // Timezone selection (applies POSIX TZ rules for DST)
-  uint8_t timeZone = TZ_UTC;
-  // Preferred NTP server (host or IP). Empty = use built-in servers only
-  // (Cloudflare anycast IP + pool.ntp.org). When set, it is polled first, with
-  // the built-ins kept as fallbacks. Passed into HalClock::syncNtp() by callers.
-  char ntpServer[64] = "";
-  // Use clock and keep the LP timer running during deep sleep (GPIO13 HIGH)
-  // so time can be accurately restored on wake. Increases sleep current by ~3-4 mA.
-  uint8_t useClock = 0;
   // Include release candidate builds when checking for OTA updates.
   uint8_t includeBetaUpdates = 0;
   // Accept any TLS certificate on https requests (1 = skip validation).

@@ -74,7 +74,7 @@ Upon turning the device on for the first time, you will be placed on the **[Home
 
 ### 3.1 Home Screen
 
-The Home screen is the main entry point to the firmware. It shows the most recently read book as a cover thumbnail and provides navigation to **[Reading Mode](#4-reading-mode)**, the **[Browse Files](#33-browse-files-screen)** screen, the **[Recent Books](#34-recent-books-screen)** screen, the **[File Transfer](#36-file-transfer-screen)** screen, and **[Settings](#37-settings)**. A clock is also accessible from the Home screen when configured.
+The Home screen is the main entry point to the firmware. It shows the most recently read book as a cover thumbnail and provides navigation to **[Reading Mode](#4-reading-mode)**, the **[Browse Files](#33-browse-files-screen)** screen, the **[Recent Books](#34-recent-books-screen)** screen, the **[File Transfer](#36-file-transfer-screen)** screen, and **[Settings](#37-settings)**.
 
 ### 3.2 Reading Mode
 
@@ -181,7 +181,7 @@ The Settings screen allows you to configure the device's behavior.
 - **Bionic Reading**: Bold the first half of each word to guide the eye. "ON" / "OFF"
 - **Guide Dots**: Draw a small dot centered in the space between words to guide the eye along the line (idea borrowed from [CrossInk](https://github.com/uxjulia/CrossInk)). "ON" / "OFF"
 - **Synthetic TOC Fallback**: Generate a table of contents from headings when the EPUB has an invalid or missing TOC. "ON" / "OFF"
-- **Customise Status Bar**: Opens a submenu to configure every element of the reading status bar individually: upper and lower progress bars (Book / Chapter / Hidden, with thickness), status item position (Top / Bottom), chapter page count, book progress percentage, title display (Book / Chapter / Hidden), battery, and clock.
+- **Customise Status Bar**: Opens a submenu to configure every element of the reading status bar individually: upper and lower progress bars (Book / Chapter / Hidden, with thickness), status item position (Top / Bottom), chapter page count, book progress percentage, title display (Book / Chapter / Hidden), and battery.
 
 #### 3.7.3 Controls
 
@@ -198,14 +198,6 @@ The Settings screen allows you to configure the device's behavior.
 **Network**:
 - **WiFi Networks**: Add, remove, and connect to WiFi networks.
 - **OPDS Servers**: Manage OPDS libraries. See [OPDS Servers (Multiple Libraries)](#375-opds-servers-multiple-libraries).
-
-**Tools**:
-- **Clock Settings** (submenu):
-  - **Use Clock**: Enable the software clock. "ON" / "OFF"
-  - **Clock Format**: "24h" / "12h"
-  - **Timezone**: Select from a list of supported timezones (UTC, CET, EET, MSK, IST, AEST, EST, CST, MST, PST, and more)
-  - **Detect Timezone**: Auto-detect timezone via IP geolocation (requires WiFi).
-  - **Sync Time**: Sync the clock via NTP (requires WiFi).
 
 **System**:
 - **Clear Reading Cache**: Clear the internal SD card cache.

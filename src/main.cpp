@@ -7,7 +7,6 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalCapabilities.h>
-#include <HalClock.h>
 #include <HalDisplay.h>
 #include <HalGPIO.h>
 #include <HalI2cBus.h>
@@ -149,9 +148,6 @@ RTC_NOINIT_ATTR uint32_t heapCorruptionBootLatch;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
-// Boot into the clock settings screen after a timezone-detection WiFi session
-// (WiFi teardown fragments the heap; need a clean reboot before re-entering the UI).
-constexpr uint32_t SILENT_REBOOT_TARGET_CLOCK_SETTINGS = 3;
 // Sleep was requested while the display framebuffers were released (web server
 // session frees both for WiFi heap). SleepActivity cannot render without a
 // framebuffer, so reboot to reestablish it and finish the sleep transition right
@@ -201,15 +197,6 @@ void silentRestartToReader() {
   silentRebootTarget = SILENT_REBOOT_TARGET_READER;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_DBG("MAIN", "Silent restart (target=reader)");
-  delay(50);
-  ESP.restart();
-}
-
-void silentRestartToClockSettings() {
-  if (deepSleepInProgress) return;
-  silentRebootTarget = SILENT_REBOOT_TARGET_CLOCK_SETTINGS;
-  silentRebootMagic = SILENT_REBOOT_MAGIC;
-  LOG_DBG("MAIN", "Silent restart (target=clock-settings)");
   delay(50);
   ESP.restart();
 }
@@ -370,25 +357,6 @@ static void serviceBootPowerRelease() {
   }
 }
 
-// Whether GPIO13 (the X4 battery latch) stays HIGH through deep sleep, keeping the MCU
-// powered at ~3-4 mA so the LP timer keeps running and RTC memory survives.
-//
-// Every path that sleeps must agree on this. It used to be computed only inside
-// enterDeepSleep(), so the two early-boot "go straight back to sleep" paths took
-// startDeepSleep()'s keepClockAlive=false default instead: one short tap on a sleeping
-// device (or any spurious wake) was enough to have the wake gate reject the press and put
-// the device back down with the battery latch CUT, converting "asleep, wakes on a tap"
-// into "powered off, needs a hold long enough to carry the whole boot" — and losing the
-// clock with it, because those paths also never called HalClock::saveBeforeSleep().
-//
-// Any board with a battery-backed RTC is excluded: it keeps time independently, so it
-// never needs the LP timer held alive, and paying deep-sleep current to preserve one is
-// pure waste. This was `!gpio.deviceIsX3()`, i.e. "the X3 is the only board with an RTC"
-// — true while the X3 and X4 were the only two, and wrong the moment a third arrived.
-// The X4 Pro's BM8563 and the T5S3's PCF8563 both answer yes here; on the X3 the answer
-// is unchanged (DS3231), so the C3 keeps its existing behaviour byte for byte.
-static bool keepClockAliveForSleep() { return SETTINGS.useClock && !HalCapabilities::hasHardwareRtc(); }
-
 // Translate HalPowerManager's report of its own last steps into breadcrumb stages. The
 // HAL cannot call BootDiag directly (it must not depend on app code), and startDeepSleep()
 // does not return, so this is the only point at which "we got as far as arming the wake
@@ -435,7 +403,7 @@ void enterDeepSleep(bool fromTimeout = false, BootDiag::SleepTrigger trigger = B
     silentRestartToSleep(fromTimeout);
     return;  // not reached — silentRestartToSleep() restarts the chip
   }
-  BootDiag::beginSleep(fromTimeout ? BootDiag::SleepTrigger::Timeout : trigger, keepClockAliveForSleep(),
+  BootDiag::beginSleep(fromTimeout ? BootDiag::SleepTrigger::Timeout : trigger, false,
                        activityManager.isReaderActivity());
   // Stop the background sampler before tearing down the display/power rails so no
   // ADC read races with that teardown. From here sleep prep reads the power pin
@@ -443,8 +411,6 @@ void enterDeepSleep(bool fromTimeout = false, BootDiag::SleepTrigger trigger = B
   gpio.stopInputSampler();
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
-  const bool keepLpAlive = keepClockAliveForSleep();
-  HalClock::saveBeforeSleep(keepLpAlive);
   // If sleeping from a running reader the book loaded successfully, so the boot-loop
   // guard count is no longer needed. Reset it now because onExit() is never called
   // on the reader activity during a sleep transition (only queued as a pending action).
@@ -518,7 +484,7 @@ void enterDeepSleep(bool fromTimeout = false, BootDiag::SleepTrigger trigger = B
   LOG_DBG("MAIN", "Entering deep sleep (powerBtn isPressed=%d, rawPin=%d)", gpio.isPressed(HalGPIO::BTN_POWER),
           digitalRead(InputManager::POWER_BUTTON_PIN) == LOW);
 
-  powerManager.startDeepSleep(gpio, keepLpAlive);
+  powerManager.startDeepSleep(gpio, false);
 }
 
 void setupDisplayAndFonts(bool seamless = false, bool skipSdFontDiscovery = false) {
@@ -746,17 +712,12 @@ void setup() {
     // If USB power caused a cold boot, go back to sleep immediately without initializing subsystems
     LOG_DBG("MAIN", "Wakeup reason: After USB Power => Deep sleep");
     halTiltSensor.deepSleep();
-    // Same policy the device slept under, not startDeepSleep()'s default — see
-    // keepClockAliveForSleep(). saveBeforeSleep() no-ops when the clock was never
-    // restored (it returns early on !isSynced()), which is the case this early in boot.
-    const bool keepLpAlive = keepClockAliveForSleep();
     // This boot is being abandoned before Storage.begin(), so it writes no boot record,
     // and on an X4 sleeping with the latch cut the breadcrumb dies with the rail. Count it
     // in NVS instead — otherwise a run of these is invisible and the device just looks dead.
     BootDiag::noteAbortedBoot(BootDiag::SleepTrigger::UsbPowerBoot, BootDiag::wakeCheck().verdict);
-    BootDiag::beginSleep(BootDiag::SleepTrigger::UsbPowerBoot, keepLpAlive, /*fromReader=*/false);
-    HalClock::saveBeforeSleep(keepLpAlive);
-    powerManager.startDeepSleep(gpio, keepLpAlive);
+    BootDiag::beginSleep(BootDiag::SleepTrigger::UsbPowerBoot, false, /*fromReader=*/false);
+    powerManager.startDeepSleep(gpio, false);
     return;
   }
 
@@ -814,20 +775,13 @@ void setup() {
     LOG_INF("BOOT", "Wake gate rejected the press (%s), returning to deep sleep",
             HalGPIO::wakeVerdictName(BootDiag::wakeCheck().verdict));
     halTiltSensor.deepSleep();
-    // Go back down under the SAME policy the device slept under. Rejecting a press is a
-    // "nothing happened" answer, so it must not change the power state: with the default
-    // keepClockAlive=false this branch cut the X4 battery latch, so a single too-short tap
-    // silently downgraded a sleeping device to a powered-off one (see
-    // keepClockAliveForSleep()).
-    const bool keepLpAlive = keepClockAliveForSleep();
     // Same as the USB path above, and this is the one that matters: a device waking,
     // refusing the press and sleeping again — several times a minute, leaving the panel
     // untouched — is indistinguishable from a dead one unless the aborts are counted
     // somewhere that survives the rail.
     BootDiag::noteAbortedBoot(BootDiag::SleepTrigger::WakeGateRejected, BootDiag::wakeCheck().verdict);
-    BootDiag::beginSleep(BootDiag::SleepTrigger::WakeGateRejected, keepLpAlive, /*fromReader=*/false);
-    HalClock::saveBeforeSleep(keepLpAlive);
-    powerManager.startDeepSleep(gpio, keepLpAlive);
+    BootDiag::beginSleep(BootDiag::SleepTrigger::WakeGateRejected, false, /*fromReader=*/false);
+    powerManager.startDeepSleep(gpio, false);
     return;
   }
 
@@ -882,7 +836,6 @@ void setup() {
 
   HalSystem::checkPanic();
   HalSystem::clearPanic();  // TODO: move this to an activity when we have one to display the panic info
-  HalClock::applyTimezone(SETTINGS.timeZone);
   I18N.loadSettings();
   OPDS_STORE.loadFromFile();
   UITheme::getInstance().reload();
@@ -990,7 +943,6 @@ void setup() {
   // kind, which is what makes the gap back to `gate` the number that matters.
   BootDiag::markPhase(BootPhase::FirstPaint);
 
-  HalClock::restore();
   // Split checkpoints: two boots of the same firmware differed by 14780 B of free heap and, far
   // more importantly, by largest8 65524 vs 26612 at after_activity_route — and the only thing
   // that differed was the reading-stats file (1 book / 110 s vs 36 books / 100788 s). Boot min
@@ -1020,8 +972,6 @@ void setup() {
   } else if (resume == BootResume::Silent && silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_READER &&
              !APP_STATE.openEpubPath.empty()) {
     activityManager.goToReader(APP_STATE.openEpubPath);
-  } else if (resume == BootResume::Silent && silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_CLOCK_SETTINGS) {
-    activityManager.goToClockSettings();
   } else if (resume == BootResume::Silent) {
     // target == home (or reader with no open book): land on home — don't fall
     // through to the sleep-wake "resume reader" logic, which fires on stale
@@ -1080,7 +1030,6 @@ void loop() {
 
   // Must follow the drain above and precede every power consumer below.
   serviceBootPowerRelease();
-  HalClock::updatePeriodic();
   halTiltSensor.update(static_cast<CrossPointTiltPageTurn::Value>(SETTINGS.tiltPageTurn),
                        static_cast<CrossPointOrientation::Value>(SETTINGS.orientation),
                        activityManager.isReaderActivity());

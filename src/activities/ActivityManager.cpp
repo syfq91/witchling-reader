@@ -1,7 +1,6 @@
 #include "ActivityManager.h"
 
 #include <Arduino.h>
-#include <HalClock.h>
 #include <HalPowerManager.h>
 #include <Logging.h>
 #include <Memory.h>  // makeUniqueNoThrow
@@ -22,7 +21,6 @@
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
-#include "settings/ClockSettingsActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
@@ -201,20 +199,6 @@ void ActivityManager::loop() {
     currentActivity->loop();
   }
 
-  if (SETTINGS.useClock && HalClock::isSynced()) {
-    time_t now = HalClock::now();
-    if (now > 0) {
-      static time_t lastMinute = -1;
-      time_t minute = now / 60;
-      if (minute != lastMinute) {
-        lastMinute = minute;
-        if (!currentActivity || !currentActivity->shouldSkipPeriodicUpdate()) {
-          requestUpdate();
-        }
-      }
-    }
-  }
-
   while (pendingAction != PendingAction::None) {
     if (pendingAction == PendingAction::Pop) {
       // Exclusive: this branch destroys currentActivity, so it must also outwait an
@@ -376,10 +360,6 @@ void ActivityManager::goToFileTransfer() {
 }
 
 void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
-
-void ActivityManager::goToClockSettings() {
-  replaceActivity(std::make_unique<ClockSettingsActivity>(renderer, mappedInput));
-}
 
 void ActivityManager::goToFileBrowser(std::string path, std::string focusName) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path), std::move(focusName)));

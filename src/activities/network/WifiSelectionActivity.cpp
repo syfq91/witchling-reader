@@ -2,7 +2,6 @@
 
 #include <GfxRenderer.h>
 #include <HTTPClient.h>
-#include <HalClock.h>
 #include <HalPowerManager.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -601,10 +600,8 @@ void WifiSelectionActivity::checkConnectionStatus() {
         const uint8_t gwBytes[4] = {gw[0], gw[1], gw[2], gw[3]};
         const uint8_t maskBytes[4] = {mask[0], mask[1], mask[2], mask[3]};
         const uint8_t dnsBytes[4] = {dns[0], dns[1], dns[2], dns[3]};
-        const time_t nowEpoch = HalClock::now();
         WIFI_STORE.updateConnectionCache(selectedSSID, actualBssid, static_cast<uint8_t>(actualChannel), ipBytes,
-                                         gwBytes, maskBytes, dnsBytes,
-                                         nowEpoch > 0 ? static_cast<uint32_t>(nowEpoch) : 0u);
+                                         gwBytes, maskBytes, dnsBytes, 0u);
       }
     }
 

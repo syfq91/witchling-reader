@@ -699,12 +699,11 @@ class EpubReaderActivity final : public Activity {
   // Debug overlay: draws the background-work indicators (A: '.'/'x', B: section build %)
   // in a status-bar corner. Compiled to a no-op unless DEBUG_BACKGROUND_WORK is set.
   void renderBackgroundDebugOverlay() const;
-  // Snapshot of the three status-bar signals that can change while a page is otherwise idle.
-  // Compared in shouldSkipPeriodicUpdate() to suppress no-op minute-tick re-renders that on
+  // Snapshot of the status-bar signals that can change while a page is otherwise idle.
+  // Compared in shouldSkipPeriodicUpdate() to suppress no-op re-renders that on
   // X3 panels accumulate visible speckle via repeated no-diff FAST refreshes.
   mutable int lastStatusBarPage = -1;
   mutable int lastStatusBarBattery = -1;
-  mutable int lastStatusBarClockMinute = -1;
   bool maybeRestartForFragmentedHeap(uint32_t freeHeap, uint32_t contigHeap);
   void saveProgress(int spineIndex, int currentPage, int pageCount);
   // Writes the canonical EPUB progress.bin layout: spine(2) + page(2) + pageCount(2) + percent(1).

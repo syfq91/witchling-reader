@@ -286,7 +286,7 @@ int UITheme::getStatusBarTopHeight(const bool forceStatusItems) {
   const bool showStatusItems = forceStatusItems || SETTINGS.statusBarChapterPageCount ||
                                SETTINGS.statusBarBookProgressPercentage ||
                                SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE ||
-                               SETTINGS.statusBarBattery || (SETTINGS.useClock && SETTINGS.statusBarClock);
+                               SETTINGS.statusBarBattery;
   const uint8_t statusBarItemsPosition = normalizeStatusBarItemsPosition(SETTINGS.statusBarItemsPosition);
   const bool statusItemsAtTop =
       statusBarItemsPosition == CrossPointSettings::STATUS_BAR_ITEMS_POSITION::STATUS_BAR_ITEMS_TOP;
@@ -299,7 +299,7 @@ int UITheme::getStatusBarBottomHeight(const bool forceStatusItems) {
   const bool showStatusItems = forceStatusItems || SETTINGS.statusBarChapterPageCount ||
                                SETTINGS.statusBarBookProgressPercentage ||
                                SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE ||
-                               SETTINGS.statusBarBattery || (SETTINGS.useClock && SETTINGS.statusBarClock);
+                               SETTINGS.statusBarBattery;
   const uint8_t statusBarItemsPosition = normalizeStatusBarItemsPosition(SETTINGS.statusBarItemsPosition);
   const bool statusItemsAtBottom =
       statusBarItemsPosition == CrossPointSettings::STATUS_BAR_ITEMS_POSITION::STATUS_BAR_ITEMS_BOTTOM;
