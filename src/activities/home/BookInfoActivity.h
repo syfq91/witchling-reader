@@ -6,12 +6,8 @@
 #include <vector>
 
 #include "../Activity.h"
-#include "ReadingStats.h"
 
 class BookInfoActivity final : public Activity {
-  // findBook() below needs the history; hold it for this screen only.
-  ReadingStatsStore::ScopedLoad statsLoad_;
-
   const std::string filePath;
 
   // Metadata populated in onEnter
@@ -24,12 +20,6 @@ class BookInfoActivity final : public Activity {
   std::string loadError;
   bool loadSucceeded = false;
   size_t fileSizeBytes = 0;
-
-  // Reading stats snapshot, populated in loadData() when this book has history.
-  bool hasReadingStats = false;
-  uint32_t statTotalSeconds = 0;
-  uint8_t statProgress = 0;
-  time_t statLastReadEpoch = 0;
 
   // Description paging (populated lazily on first render)
   std::vector<std::string> descLines;

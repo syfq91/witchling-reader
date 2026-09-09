@@ -353,8 +353,6 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
       SettingInfo::Action(StrId::STR_SYNC_PROGRESS, SettingAction::None).withSubmenu(StrId::STR_READER_TOOLS));
   menuItems.push_back(
       SettingInfo::Action(StrId::STR_BOOK_INFO, SettingAction::None).withSubmenu(StrId::STR_READER_TOOLS));
-  menuItems.push_back(SettingInfo::Action(StrId::STR_READING_STATS_FOR_THIS_BOOK, SettingAction::None)
-                          .withSubmenu(StrId::STR_READER_TOOLS));
   menuItems.push_back(
       SettingInfo::Action(StrId::STR_MARK_AS_READ, SettingAction::None).withSubmenu(StrId::STR_READER_TOOLS));
   menuItems.push_back(
@@ -410,8 +408,6 @@ EpubReaderMenuActivity::MenuAction EpubReaderMenuActivity::actionForNameId(StrId
       return MenuAction::RENDER_BENCHMARK;
     case StrId::STR_GO_HOME_BUTTON:
       return MenuAction::GO_HOME;
-    case StrId::STR_READING_STATS_FOR_THIS_BOOK:
-      return MenuAction::READING_STATS_FOR_BOOK;
     case StrId::STR_BOOK_INFO:
       return MenuAction::BOOK_INFO;
     case StrId::STR_SYNC_PROGRESS:

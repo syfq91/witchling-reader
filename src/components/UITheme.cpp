@@ -15,7 +15,6 @@
 #include <string>
 
 #include "MappedInputManager.h"
-#include "ReadingStats.h"
 #include "RecentBooksStore.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
@@ -40,35 +39,6 @@ uint8_t normalizeProgressBarThickness(const uint8_t thickness) {
 uint8_t normalizeStatusBarItemsPosition(const uint8_t position) {
   return position < CrossPointSettings::STATUS_BAR_ITEMS_POSITION_COUNT ? position
                                                                         : CrossPointSettings::STATUS_BAR_ITEMS_BOTTOM;
-}
-
-// Compact "hours/minutes" formatter for progress status lines, e.g. "1h 20m"
-// or "45m". Never shows "0m" — a sub-minute estimate rounds up to "1m".
-std::string formatEtaShort(uint32_t totalSeconds) {
-  const uint32_t h = totalSeconds / 3600;
-  const uint32_t m = (totalSeconds % 3600) / 60;
-  char buf[16];
-  if (h > 0) {
-    snprintf(buf, sizeof(buf), "%uh %02um", h, m);
-  } else {
-    snprintf(buf, sizeof(buf), "%um", m > 0 ? m : 1u);
-  }
-  return buf;
-}
-
-// Pace-based "time to finish" suffix for a book, e.g. "~45m". Empty when the
-// book is finished, has no progress data, or has too little history to estimate.
-std::string bookEtaSuffix(const RecentBook& book, int progressPercent) {
-  if (progressPercent < 0 || progressPercent >= 100) {
-    return {};
-  }
-  const std::string docId = calculateBookId(book.path);
-  const uint32_t etaSeconds =
-      READING_STATS.estimateRemainingSeconds(docId, 100.0f - static_cast<float>(progressPercent));
-  if (etaSeconds == 0) {
-    return {};
-  }
-  return "~" + formatEtaShort(etaSeconds);
 }
 }  // namespace
 
@@ -250,38 +220,27 @@ void UITheme::drawCoverProgressIndicator(const GfxRenderer& renderer, Rect cover
   }
 }
 
-std::string UITheme::formatBookProgressStatus(const RecentBook& book, int progressPercent) {
+std::string UITheme::formatBookProgressStatus(const RecentBook& /*book*/, int progressPercent) {
   if (progressPercent < 0) {
     return {};
   }
-  std::string line = std::to_string(progressPercent) + "%";
-  const std::string eta = bookEtaSuffix(book, progressPercent);
-  if (!eta.empty()) {
-    line += " · " + eta;
-  }
-  return line;
+  return std::to_string(progressPercent) + "%";
 }
 
-void UITheme::drawCoverProgressBadge(const GfxRenderer& renderer, Rect coverRect, const RecentBook& book,
+void UITheme::drawCoverProgressBadge(const GfxRenderer& renderer, Rect coverRect, const RecentBook& /*book*/,
                                      int progressPercent) {
   if (progressPercent < 0) {
     return;
   }
-  // Stacked pill: percent on the first line, pace-based ETA on the second (when
-  // available). Two short lines read narrower than one long "62% · ~45m" string.
   const std::string line1 = std::to_string(progressPercent) + "%";
-  const std::string line2 = bookEtaSuffix(book, progressPercent);
 
   constexpr int inset = 6;  // clear the cover's rounded corner + selection ring
   constexpr int padX = 6;
   constexpr int padY = 3;
-  constexpr int lineGap = 1;
   const int textH = renderer.getLineHeight(SMALL_FONT_ID);
   const int w1 = renderer.getTextWidth(SMALL_FONT_ID, line1.c_str());
-  const int w2 = line2.empty() ? 0 : renderer.getTextWidth(SMALL_FONT_ID, line2.c_str());
-  const int lineCount = line2.empty() ? 1 : 2;
-  const int badgeW = std::max(w1, w2) + 2 * padX;
-  const int badgeH = textH * lineCount + lineGap * (lineCount - 1) + 2 * padY;
+  const int badgeW = w1 + 2 * padX;
+  const int badgeH = textH + 2 * padY;
   const int badgeX = coverRect.x + coverRect.width - badgeW - inset;
   const int badgeY = coverRect.y + inset;
 
@@ -291,9 +250,6 @@ void UITheme::drawCoverProgressBadge(const GfxRenderer& renderer, Rect coverRect
   renderer.fillRoundedRect(badgeX, badgeY, badgeW, badgeH, 4, Color::White);
   renderer.drawRoundedRect(badgeX, badgeY, badgeW, badgeH, 1, 4, true);
   renderer.drawText(SMALL_FONT_ID, badgeX + (badgeW - w1) / 2, badgeY + padY, line1.c_str(), true);
-  if (!line2.empty()) {
-    renderer.drawText(SMALL_FONT_ID, badgeX + (badgeW - w2) / 2, badgeY + padY + textH + lineGap, line2.c_str(), true);
-  }
 }
 
 UIIcon UITheme::getFileIcon(const std::string& filename) {

@@ -12,7 +12,6 @@
 
 #include "../Activity.h"
 #include "./FileBrowserActivity.h"
-#include "ReadingStats.h"
 #include "activities/reader/ReaderActivity.h"
 #include "components/UITheme.h"
 #include "util/ButtonNavigator.h"
@@ -120,12 +119,6 @@ class HomeActivity final : public Activity {
         focusSelectorIndex(focusSelectorIndex) {}
   void onEnter() override;
   void onExit() override;
-
- private:
-  // Bound to the time Home is displayed, not to the object: Home outlives its own visibility
-  // when the reader is pushed on top, and the whole point is that the reader runs without the
-  // history resident. Optional rather than a plain member for exactly that reason.
-  std::optional<ReadingStatsStore::ScopedLoad> statsLoad_;
 
  public:
   void loop() override;

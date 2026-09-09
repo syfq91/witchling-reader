@@ -48,7 +48,6 @@ enum class SettingAction {
   BootDiagnostics,
   DetectTimezone,
   SyncTime,
-  ReadingStats,
   DictionarySelect,
   SleepTimeoutPicker,
   RefreshFrequencyPicker,

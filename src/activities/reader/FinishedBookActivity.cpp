@@ -24,7 +24,6 @@
 
 #include "OpdsServerStore.h"
 #include "ReaderActivity.h"
-#include "ReadingSessionTracker.h"
 #include "RecentBooksStore.h"
 #include "activities/ActivityManager.h"
 #include "activities/home/RecentBooksActivity.h"
@@ -480,9 +479,6 @@ void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputMa
           hostPtr->requestUpdate();
           return;
         }
-        // User confirmed they're done with this book — credit a finish to the
-        // in-flight session before any tear-down side effects.
-        globalReadingSessionTracker().markFinished();
         const auto& menuResult = std::get<MenuResult>(result.data);
         const bool goHome = menuResult.action == static_cast<int>(FinishedBookAction::GoHome);
         const bool openNext =

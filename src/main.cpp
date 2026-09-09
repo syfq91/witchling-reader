@@ -34,8 +34,6 @@
 #include "GlobalBookmarkIndex.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
-#include "ReadingSessionTracker.h"
-#include "ReadingStats.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
@@ -191,9 +189,6 @@ static bool deepSleepInProgress = false;
 
 void silentRestart() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
-  // ESP.restart() bypasses activity onExit(), so flush any in-flight reading
-  // session manually — otherwise a heap-defrag reboot mid-read loses the session.
-  globalReadingSessionTracker().end();
   silentRebootTarget = SILENT_REBOOT_TARGET_HOME;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_DBG("MAIN", "Silent restart (target=home)");
@@ -203,7 +198,6 @@ void silentRestart() {
 
 void silentRestartToReader() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
-  globalReadingSessionTracker().end();
   silentRebootTarget = SILENT_REBOOT_TARGET_READER;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_DBG("MAIN", "Silent restart (target=reader)");
@@ -213,7 +207,6 @@ void silentRestartToReader() {
 
 void silentRestartToClockSettings() {
   if (deepSleepInProgress) return;
-  globalReadingSessionTracker().end();
   silentRebootTarget = SILENT_REBOOT_TARGET_CLOCK_SETTINGS;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_DBG("MAIN", "Silent restart (target=clock-settings)");
@@ -228,7 +221,6 @@ bool trySilentRestartToReaderForHeapRecovery() {
     return false;
   }
   heapRecoveryRestartLatch = HEAP_RECOVERY_RESTART_LATCH_MAGIC;
-  globalReadingSessionTracker().end();
   silentRebootTarget = SILENT_REBOOT_TARGET_READER;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_ERR("MAIN", "Silent restart (target=reader, heap recovery)");
@@ -242,7 +234,6 @@ bool trySilentRestartToReaderForHeapRecovery() {
 // deepSleepInProgress guard — this restart IS the sleep path, not a competing
 // heap-defrag reboot.
 static void silentRestartToSleep(bool fromTimeout) {
-  globalReadingSessionTracker().end();
   silentRebootTarget = fromTimeout ? SILENT_REBOOT_TARGET_SLEEP_TIMEOUT : SILENT_REBOOT_TARGET_SLEEP;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_INF("MAIN", "Silent restart (target=sleep, framebuffers released, fromTimeout=%d)", fromTimeout ? 1 : 0);
@@ -1011,11 +1002,6 @@ void setup() {
   logStartupMemory("after_recent_books");
   GLOBAL_BOOKMARKS.load();
   logStartupMemory("after_bookmarks");
-  // READING_STATS is deliberately NOT loaded here. Nothing on the reading path needs the history
-  // — the session tracker accumulates in its own members and only touches the store at book exit
-  // — while keeping it resident cost, measured on X4 with 36 books, ~15 KB of heap and dropped
-  // largest8 from 65524 to 26612 before the first book was even opened. Consumers load it for
-  // the duration they need it (ReadingStatsStore::ScopedLoad) and release it after.
   BootDiag::markPhase(BootPhase::StoreLoad);
 
   if (recoveryFirmwareMode) {

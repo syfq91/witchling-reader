@@ -22,8 +22,6 @@
 #include "OpdsProgressionSyncActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
-#include "ReadingSessionTracker.h"
-#include "ReadingStats.h"
 #include "RecentBooksStore.h"
 #include "XtcReaderChapterSelectionActivity.h"
 #include "components/UITheme.h"
@@ -52,19 +50,12 @@ void XtcReaderActivity::onEnter() {
   RECENT_BOOKS.addBook(xtc->getPath(), xtc->getTitle(), xtc->getAuthor(), "",
                        ReaderActivity::coverThumbPlaceholder(xtc->getPath()));
 
-  // Start the reading-stats session. XTC has real title/author from the
-  // file header so the per-book screen will look nicer than TXT/MD.
-  globalReadingSessionTracker().begin(calculateBookId(xtc->getPath()), xtc->getTitle(), xtc->getAuthor());
-
   // Trigger first update
   requestUpdate();
 }
 
 void XtcReaderActivity::onExit() {
   Activity::onExit();
-
-  // Flush stats session before tearing down the XTC reader.
-  globalReadingSessionTracker().end();
 
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
@@ -178,12 +169,10 @@ void XtcReaderActivity::loop() {
   if (prevTriggered) {
     if (currentPage > 0) {
       currentPage--;
-      globalReadingSessionTracker().onPageTurn();
       requestUpdate();
     }
   } else if (nextTriggered) {
     currentPage++;
-    globalReadingSessionTracker().onPageTurn();
     requestUpdate();
   }
 }
@@ -341,7 +330,6 @@ void XtcReaderActivity::saveProgress() const {
     data[4] = percent;
     f.write(data, 5);
     f.close();
-    globalReadingSessionTracker().updateProgress(percent);
   }
 }
 
@@ -427,32 +415,22 @@ void XtcReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION a
     case BA::BTN_PAGE_FORWARD:
       if (currentPage + 1 < pageCount) {
         currentPage++;
-        globalReadingSessionTracker().onPageTurn();
         requestUpdate();
       }
       break;
     case BA::BTN_PAGE_BACK:
       if (currentPage > 0) {
         currentPage--;
-        globalReadingSessionTracker().onPageTurn();
         requestUpdate();
       }
       break;
     case BA::BTN_PAGE_FORWARD_10: {
-      const uint32_t prevPage = currentPage;
       currentPage = (currentPage + 10 < pageCount) ? currentPage + 10 : pageCount - 1;
-      if (currentPage != prevPage) {
-        globalReadingSessionTracker().onPageTurn();
-      }
       requestUpdate();
       break;
     }
     case BA::BTN_PAGE_BACK_10: {
-      const uint32_t prevPage = currentPage;
       currentPage = (currentPage >= 10) ? currentPage - 10 : 0;
-      if (currentPage != prevPage) {
-        globalReadingSessionTracker().onPageTurn();
-      }
       requestUpdate();
       break;
     }
@@ -463,7 +441,6 @@ void XtcReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION a
                                      [this](const auto& ch) { return ch.startPage > currentPage; });
         if (it != chapters.end()) {
           currentPage = it->startPage;
-          globalReadingSessionTracker().onPageTurn();
           requestUpdate();
         }
       }
@@ -476,7 +453,6 @@ void XtcReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION a
 
         if (prevChapter != chapters.rend()) {
           currentPage = prevChapter->startPage;
-          globalReadingSessionTracker().onPageTurn();
           requestUpdate();
         }
       }
