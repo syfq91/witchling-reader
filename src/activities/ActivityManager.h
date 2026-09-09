@@ -176,11 +176,6 @@ class ActivityManager {
   bool isReaderActivity() const;
   bool skipLoopDelay() const;
 
-  // True while the current activity owns the raw serial input stream (see
-  // Activity::ownsSerialInput()). main.cpp consults this to suppress its
-  // line-based `CMD:` serial reader so it doesn't steal protocol bytes.
-  bool currentOwnsSerialInput() const;
-
   // Forward to the current activity so it can redraw the visible screen into the frame
   // buffer before a raw capture (e.g. a screenshot). See Activity::prepareFramebufferForCapture().
   void prepareFramebufferForCapture();

@@ -7,7 +7,6 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <XteinkDetect.h>
-#include <driver/usb_serial_jtag.h>
 #include <esp_sleep.h>
 
 // Global HalGPIO instance
@@ -177,10 +176,9 @@ void HalGPIO::update() {
 }
 
 void HalGPIO::updateUsbState(const unsigned long now) {
-  usbHostLinkActive = isUsbHostLinkActive();
   usbLastPollMs = now;
   usbElectricalConnected = isUsbElectricalConnected();
-  const bool connected = usbHostLinkActive || usbElectricalConnected;
+  const bool connected = usbElectricalConnected;
   usbStateChanged = (connected != lastUsbConnected);
   lastUsbConnected = connected;
 }
@@ -393,15 +391,7 @@ HalGPIO::WakeCheck HalGPIO::verifyPowerButtonWakeup(WakeGestures gestures, uint1
   }
 }
 
-bool HalGPIO::isUsbHostLinkActive() const { return usb_serial_jtag_is_connected(); }
-
-bool HalGPIO::isUsbConnected() const {
-  // An enumerated host counts regardless of what the electrical check says. Read
-  // the IDF monitor directly rather than the cached member: callers can reach
-  // this before the first update() (main.cpp opens the serial log right after
-  // gpio.begin()), and the cached value would still be its false initializer.
-  return isUsbHostLinkActive() || isUsbElectricalConnected();
-}
+bool HalGPIO::isUsbConnected() const { return isUsbElectricalConnected(); }
 
 bool HalGPIO::isUsbElectricalConnected() const {
   const int8_t usbDetect = BoardConfig::ACTIVE.usbDetect;

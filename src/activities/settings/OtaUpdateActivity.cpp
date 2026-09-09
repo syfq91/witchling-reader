@@ -174,7 +174,7 @@ void OtaUpdateActivity::render(RenderLock&&) {
         reason = "No firmware asset found";
         break;
       case OtaUpdater::VALIDATE_FAILED:
-        reason = "Bootloader incompatible - reflash via USB with PlatformIO";
+        reason = "Bootloader incompatible - reflash via SD card (update.bin)";
         break;
       case OtaUpdater::WRONG_DEVICE_ERROR:
         reason = tr(STR_FIRMWARE_WRONG_DEVICE);

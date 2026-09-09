@@ -29,19 +29,10 @@ class HalGPIO {
   unsigned long usbLastPollMs = 0;
   bool usbElectricalConnected = false;  // last result of the per-device electrical/charge check
 
-  // Live USB host link, straight from the IDF's SOF monitor
-  // (usb_serial_jtag_is_connected(), maintained by a FreeRTOS tick hook that
-  // watches the SOF interrupt bit with a 3 ms no-SOF tolerance). Catches what
-  // the electrical check misses: a data-only cable, and any cable once the
-  // battery is full. Both matter for HalPowerManager::lightSleep(), which must
-  // not halt the chip out from under an enumerated CDC link — and for main.cpp,
-  // which only opens the serial log when a host is present.
-  bool usbHostLinkActive = false;
-
   // Electrical USB check (VBUS-driven level on GPIO20).
   bool isUsbElectricalConnected() const;
 
-  // SOF sampling + electrical check + combined-verdict edge tracking.
+  // Electrical check + edge tracking.
   void updateUsbState(unsigned long now);
 
  public:
@@ -219,14 +210,7 @@ class HalGPIO {
   // Check if USB is connected
   bool isUsbConnected() const;
 
-  // Enumerated USB host link only (SOF activity), with no charge-state
-  // inference mixed in. Separated out so a caller that needs to know *why* the
-  // verdict came out the way it did — the serial-log gate's diagnostic — can
-  // report the two terms apart.
-  bool isUsbHostLinkActive() const;
-
-  // USB state as sampled by the last update() call. Prefer this in per-loop
-  // polling: isUsbConnected() performs a fresh I2C read on X3.
+  // USB state as sampled by the last update() call. Prefer this in per-loop polling.
   bool isUsbConnectedCached() const { return lastUsbConnected; }
 
   // Returns true once per edge (plug or unplug) since the last update()

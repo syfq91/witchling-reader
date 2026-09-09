@@ -18,7 +18,7 @@ This fork prioritizes physical button navigation, standard protocols, minimal me
 - **Lyra Sole Theme**: Standardized on Lyra as the sole UI theme and removed Classic, Lyra 3 Covers, and Carousel variants along with the theme selection menu to reduce firmware footprint and simplify the UI.
 - **Removed Legacy Sync & Proprietary Protocols**: Dropped legacy KOReader sync and Calibre SmartDevice wireless transfer in favor of standard OPDS catalog downloads and OPDS Progression sync.
 - **Removed Weather Integration**: Stripped Open-Meteo weather polling, home screen widgets, and weather icons to eliminate background network wakeups and save RAM.
-- **Removed USB Serial File Transfer Protocol**: Removed custom binary serial transfer handling to keep serial output strictly dedicated to debugging.
+- **Removed USB Serial & Host Communication**: Removed all USB serial logging, CDC initialization, host link polling, and serial command parsing. On locked X4 hardware, the USB port functions strictly for charging; removing USB serial features eliminates dead code and speeds up boot time.
 - **Lightweight Reading Stats**: Standalone book ID generation without KOReader hashing dependencies, preserving reading history and pacing analytics.
 
 ---

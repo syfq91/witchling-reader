@@ -516,8 +516,6 @@ bool ActivityManager::isReaderActivity() const {
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
 
-bool ActivityManager::currentOwnsSerialInput() const { return currentActivity && currentActivity->ownsSerialInput(); }
-
 void ActivityManager::prepareFramebufferForCapture() {
   if (currentActivity) {
     currentActivity->prepareFramebufferForCapture();

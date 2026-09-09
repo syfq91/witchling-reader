@@ -303,13 +303,6 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, bool keepClockAlive) const {
   LOG_DBG("PWR", "startDeepSleep: isPressed=%d, rawPin=%d, keepClock=%d", gpio.isPressed(HalGPIO::BTN_POWER),
           digitalRead(InputManager::POWER_BUTTON_PIN) == LOW, keepClockAlive);
 
-#ifdef ENABLE_SERIAL_LOG
-  // Tear down HWCDC so the host sees a clean disconnect and the peripheral
-  // doesn't hold power domains that interfere with USB-powered GPIO wake.
-  // logSerial is the raw HWCDC reference; Serial is the MySerialImpl proxy
-  // (which doesn't expose end()).
-  logSerial.end();
-#endif
   // Perform all hardware preparation immediately (while the button may still be held)
   // so the user gets instant visual feedback (display already off). Only block for
   // button release at the very end, right before entering sleep.

@@ -647,66 +647,6 @@ static HalGPIO::WakeGestures wakeGestureFromSettings() {
   return gestures;
 }
 
-#ifdef ENABLE_SERIAL_LOG
-// Open the USB-CDC log wire when a host is actually on the other end.
-//
-// This is the ONLY HWCDC::begin() in the firmware. -DARDUINO_USB_MODE=1 compiles
-// out the core's CDC-on-boot begin() (cores/esp32/main.cpp guards it with
-// !ARDUINO_USB_MODE; HWCDC.cpp only instantiates the object), so skipping this
-// call leaves HWCDC with no TX ring buffer and no ISR — nothing can ever set its
-// "connected" flag, `if (logSerial)` in logPrintf() stays false, and every LOG_*
-// line is dropped for the rest of the session while still filling the RTC ring.
-//
-// Gated rather than unconditional because begin() allocates the 4 KB RX + 8 KB TX
-// buffers below, which are pure waste on a device running from battery.
-//
-// The gate has to be the enumerated host link, not the charge state. X3 has no
-// pin-level USB detect (GPIO20 is I2C SDA there), so its electrical check infers
-// a cable from BQ27220 charge current — which reads false on a full battery or a
-// data-only cable. That is how an X3 with a serial monitor attached could stay
-// mute for a whole session while X4, which reads VBUS off a pin, never did.
-// isUsbConnected() now leads with the IDF's SOF-based host-link flag, and the
-// call is retried on USB state changes so a cable plugged after boot still gets
-// a log.
-static bool serialLogOpen = false;
-
-static bool openSerialLogIfHostPresent() {
-  if (serialLogOpen) return false;
-
-  // The host link is the signal that matters; the charge inference behind
-  // isUsbConnected() is only consulted when there is none, since on X3 it costs
-  // an I2C read and can only add a (harmless) false positive here.
-  const bool hostLink = gpio.isUsbHostLinkActive();
-  if (!hostLink && !gpio.isUsbConnected()) {
-    // Ring-buffer only — the wire is closed by definition. Surfaces in the crash
-    // report's "Last logs", so a session that produced no serial output at all
-    // can still be explained after the fact.
-    LOG_INF("MAIN", "Serial log not opened: no USB host link, no charge-inferred cable");
-    return false;
-  }
-
-  // Enlarge the USB-CDC RX buffer from the 256-byte default before begin().
-  // The serial file-transfer protocol receives 2048-byte chunks in bursts; a
-  // 256-byte ring drops bytes whenever the byte-by-byte drain stalls briefly,
-  // which surfaces as "Timeout waiting for ACK" / failed uploads. 4096 matches
-  // MicroReader's usb_serial_jtag rx_buffer_size.
-  logSerial.setRxBufferSize(4096);
-  // Enlarge the TX buffer too (default 256) so file downloads stream out in
-  // larger bursts without the device having to block mid-chunk on a full ring
-  // (a full ring that doesn't drain within HWCDC's tx timeout flips the link
-  // to "disconnected" and silently drops TX).
-  logSerial.setTxBufferSize(8192);
-  Serial.begin(115200);
-  const unsigned long start = millis();
-  while (!Serial && (millis() - start) < 500) {
-    delay(10);
-  }
-  serialLogOpen = true;
-  LOG_INF("MAIN", "Serial log opened (%s)", hostLink ? "enumerated host link" : "charge-inferred cable");
-  return true;
-}
-#endif
-
 void setup() {
   // FIRST statement, ahead of the NVS read and the wake gate: on the X4 the battery
   // MOSFET is gated by GPIO13 (BoardProfile power.latch0), and BoardConfig documents a
@@ -733,40 +673,6 @@ void setup() {
   // unit the rail must already be held before anything blocks for that long.
   BoardConfig::holdPowerRails();
 
-#ifdef ENABLE_SERIAL_LOG
-  // Earliest possible Serial setup, and UNCONDITIONAL — see the isUsbConnected()
-  // gate further down, which sizes the transfer buffers but must NOT gate this.
-  // A board with no usbDetect pin (T5S3: usbDetect = PIN_UNASSIGNED) can never
-  // satisfy that gate from electrical detection, so Serial.begin() never ran
-  // there and no log line could reach the host however the transport was set.
-  //
-  // The 250 ms stall lets the USB Serial/JTAG peripheral finish power-on and the
-  // host complete enumeration before we touch CDC state; without it a cold boot
-  // races and the board has to be physically replugged before logs flow (a warm
-  // reboot hides this, because USB is already enumerated). Ported from
-  // upstream/feat-touch, which carries the same reasoning.
-  delay(250);
-  Serial.begin(115200);
-#endif
-#if defined(ENABLE_SERIAL_LOG) && defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
-  // FIRST STATEMENT IN setup(), AND LOAD-BEARING. Do not move it later or raise
-  // the value.
-  //
-  // HWCDC's default TX timeout is 100 ms, and a log write blocks for it whenever
-  // no host is draining the endpoint. On a transport that writes unconditionally
-  // (FREEINK_LOG_TRANSPORT_USB_CDC_WRITE — the T5S3, where HWCDC's `operator
-  // bool` reads false under a monitor, so the readiness guard cannot be used),
-  // that is per log line. A boot's worth of them blocks long enough to trip the
-  // INTERRUPT watchdog: TG1WDT_SYS_RST before one line reaches the wire.
-  //
-  // This previously sat ~126 lines into setup(), after gpio.begin() and several
-  // BootDiag::markPhase()/LOG_ calls — i.e. after the damage was already done, which is
-  // exactly how it looked like a hang rather than a logging problem. It is also
-  // deliberately outside the isUsbConnected() gate further down: the T5S3 has no
-  // usbDetect pin, so that gate can read false precisely when this matters.
-  // CDC_ON_BOOT means the core has already begun Serial, so this is valid here.
-  logSerial.setTxTimeoutMs(1);
-#endif
   BootDiag::markPhase(BootPhase::SetupEntry);
   // Load just the settings we need before any other init, so the wake gesture mirrors
   // whichever press type(s) the user configured to put the device to sleep.
@@ -862,12 +768,6 @@ void setup() {
     powerManager.startDeepSleep(gpio, keepLpAlive);
     return;
   }
-
-#ifdef ENABLE_SERIAL_LOG
-  if (openSerialLogIfHostPresent()) {
-    BootDiag::markPhase(BootPhase::SerialUp);
-  }
-#endif
 
   // Same fix as SystemStatus::collectFast(): the old deviceIsX3() ternary logged
   // "X4" on every S3 board, because deviceIsX3() is false there by construction.
@@ -1189,8 +1089,6 @@ void setup() {
 void loop() {
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
-  static unsigned long lastMemPrint = 0;
-
   gpio.update();
   buttonEventManager.update();
 
@@ -1203,90 +1101,6 @@ void loop() {
 
   renderer.setFadingFix(SETTINGS.fadingFix);
   renderer.setTextDarkness(SETTINGS.textDarkness);
-
-  // Re-emit the boot summary when the serial link comes up. A power-up from deep sleep
-  // re-enumerates USB, so a monitor attached across the wake misses everything setup()
-  // printed — including the trace itself, which is the one line worth having.
-  //
-  // Strictly bounded, because `Serial` is not a reliable connect signal: HWCDC flips
-  // itself to "disconnected" whenever its TX ring doesn't drain within the tx timeout
-  // (see the buffer-sizing comment in setup()), which on a busy boot flaps several times
-  // a second and once produced eight copies of this summary. The cap keeps a flapping
-  // link from spamming the log while still catching a monitor attached late; anything
-  // later than that is what `CMD:BOOTLOG` is for.
-  {
-    // Seeded true because setup() just emitted the summary: if the link was already up
-    // then, this must not fire again on the first tick. A battery boot clears it on that
-    // same tick (Serial is false), so a cable plugged in later still produces the edge.
-    static bool serialWasUp = true;
-    static uint8_t bootSummaryRepeats = 0;
-    constexpr uint8_t MAX_BOOT_SUMMARY_REPEATS = 2;
-    const bool serialIsUp = static_cast<bool>(Serial);
-    if (serialIsUp && !serialWasUp && bootSummaryRepeats < MAX_BOOT_SUMMARY_REPEATS) {
-      bootSummaryRepeats++;
-      BootDiag::logSummary();
-    }
-    serialWasUp = serialIsUp;
-  }
-
-  if (Serial && millis() - lastMemPrint >= 10000) {
-    // Keep runtime log lightweight: ESP.getMaxAllocHeap() walks heap metadata
-    // and has triggered interrupt WDTs under heavy allocation churn.
-    // CPU MHz included so the power-saving state (10 = idle low-power /
-    // waveform wait, 160 = normal) is visible in a steady-state log.
-    LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, CPU: %lu MHz", ESP.getFreeHeap(),
-            ESP.getHeapSize(), ESP.getMinFreeHeap(), static_cast<unsigned long>(getCpuFrequencyMhz()));
-    // Right-sizing aid for the background button sampler task (2 KB allocated).
-    // High-water is the min free stack ever seen; shrink the xTaskCreate size if
-    // this stays comfortably high across a session.
-    LOG_INF("MEM", "btnSampler stack high-water=%u bytes free (min ever)",
-            static_cast<unsigned>(gpio.samplerStackHighWater()));
-#ifdef ENABLE_BOOT_HEAP_DIAGNOSTICS
-    // loop() runs on the Arduino loopTask (8 KB stack), which also drives the reader's
-    // sliced background section builds (serviceBackgroundWork → createSectionFile /
-    // HTML parse / image dimension reads). That task is NOT covered by the render-task
-    // stack instrumentation, yet is an equally plausible source of a stack-into-heap
-    // spill (the original crash SP sat against SOC_ROM_STACK_START). High-water is the
-    // minimum free stack ever seen by this task (bytes); a small/shrinking value here
-    // would point the finger at the loop task rather than the render task.
-    LOG_INF("MEM", "loopTask stack high-water=%u bytes free (min ever)",
-            static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
-#endif
-    lastMemPrint = millis();
-  }
-
-#ifdef ENABLE_SERIAL_LOG
-  // Handle incoming serial commands,
-  // nb: we use logSerial from logging to avoid deprecation warnings.
-  // Skip while an activity owns the serial input (e.g. the USB serial
-  // file-transfer activity): it drives a binary protocol on logSerial and this
-  // line reader would otherwise steal bytes from its stream.
-  if (logSerial.available() > 0 && !activityManager.currentOwnsSerialInput()) {
-    String line = logSerial.readStringUntil('\n');
-    if (line.startsWith("CMD:")) {
-      String cmd = line.substring(4);
-      cmd.trim();
-      if (cmd == "SCREENSHOT") {
-        uint8_t* buf = display.getFrameBuffer();
-        if (buf) {
-          const uint16_t width = display.getDisplayWidth();
-          const uint16_t height = display.getDisplayHeight();
-          const uint32_t bufferSize = display.getBufferSize();
-          logSerial.printf("SCREENSHOT_START:%d:%d:%d\n", width, height, bufferSize);
-          logSerial.write(buf, bufferSize);
-          logSerial.printf("SCREENSHOT_END\n");
-        } else {
-          // Framebuffers are released during the web server session — nothing to send.
-          logSerial.printf("SCREENSHOT_ERROR:framebuffer released\n");
-        }
-      } else if (cmd == "BOOTLOG") {
-        // On-demand replay of this session's boot summary, for when the monitor was
-        // attached too late to catch it and the automatic repeats are used up.
-        BootDiag::logSummary();
-      }
-    }
-  }
-#endif
 
   // Check for any user activity (button press or release, screen touch) or
   // active background work.
@@ -1375,11 +1189,6 @@ void loop() {
   // Refresh the battery icon when USB is plugged or unplugged.
   // Placed after sleep guards so we never queue a render that won't be processed.
   if (gpio.wasUsbStateChanged()) {
-#ifdef ENABLE_SERIAL_LOG
-    // A cable (or a host) that arrived after boot: open the log wire now rather
-    // than staying mute until the next reboot. No-op once it is open.
-    openSerialLogIfHostPresent();
-#endif
     activityManager.requestUpdate();
   }
 

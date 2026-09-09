@@ -216,7 +216,6 @@ The Settings screen allows you to configure the device's behavior.
 - **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi.
 - **Include Beta Updates**: Whether to include release-candidate builds in update checks. "ON" / "OFF"
 - **SD Firmware Update**: Flash a firmware `.bin` file from the SD card.
-- **Switch to USB Drive**: Reboot the device into USB mass-storage mode to access the SD card directly from a computer.
 
 #### 3.7.5 OPDS Servers (Multiple Libraries)
 
@@ -360,6 +359,5 @@ If an issue or crash is encountered while using Witchling Reader:
 
 - If the device is stuck in a bootloop, press and release the Reset button. Then, press and hold on to the configured Back button and the Power Button to boot cleanly to the Home Screen.
 - If there are issues with broken cache or corrupted configuration, delete the `.crosspoint` directory on your SD card (or consider deleting only `settings.json`, `state.json`, or `epub_*` cache directories inside `.crosspoint/`).
-- Serial logging and monitoring are disabled in the firmware to maximize boot speed, minimize flash usage, and ensure battery efficiency.
+- For locked X4 hardware, the USB port operates purely for power/charging; flashing is performed via SD card (`update.bin`) or Wi-Fi OTA. USB serial data connection, logging, and monitoring are stripped from the firmware to maximize boot speed, eliminate background overhead, and save power.
 
-There can be issues with broken cache or config. In this case, delete the `.crosspoint` directory on your SD card (or consider deleting only `settings.json`, `state.json`, or `epub_*` cache directories in the `.crosspoint/` folder).
