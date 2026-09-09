@@ -73,6 +73,18 @@ void XtcReaderActivity::onExit() {
   xtc.reset();
 }
 
+bool XtcReaderActivity::openChapterSelection() {
+  if (!xtc || !xtc->hasChapters() || xtc->getChapters().empty()) return false;
+  ReaderUtils::enforceExitFullRefresh(renderer);
+  startActivityForResult(std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
+                         [this](const ActivityResult& result) {
+                           if (!result.isCancelled) {
+                             currentPage = std::get<PageResult>(result.data).page;
+                           }
+                         });
+  return true;
+}
+
 void XtcReaderActivity::loop() {
   if (inputDrainGuard.shouldDrain(mappedInput)) {
     buttonEvents.drain();
@@ -86,17 +98,7 @@ void XtcReaderActivity::loop() {
   ButtonEventManager::ButtonEvent ev;
   while (buttonEvents.consumeEvent(ev)) {
     if (ev.button == MappedInputManager::Button::Confirm && ev.type == ButtonEventManager::PressType::Short) {
-      if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
-        ReaderUtils::enforceExitFullRefresh(renderer);
-        startActivityForResult(
-            std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
-            [this](const ActivityResult& result) {
-              if (!result.isCancelled) {
-                currentPage = std::get<PageResult>(result.data).page;
-              }
-            });
-        return;
-      }
+      if (openChapterSelection()) return;
     }
 
     if (ev.button == MappedInputManager::Button::Back) {
@@ -482,6 +484,13 @@ void XtcReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION a
     case BA::BTN_EXIT_READER:
       ReaderUtils::enforceExitFullRefresh(renderer);
       finish();
+      break;
+    // The chapter list is the whole of this reader's navigation, so it answers both names: a
+    // gesture bound to "Table of contents" and one bound to "Reader menu" find the same thing,
+    // rather than one of them silently doing nothing here.
+    case BA::BTN_OPEN_TOC:
+    case BA::BTN_READER_MENU:
+      openChapterSelection();
       break;
     case BA::BTN_SYNC_PROGRESS: {
       const float progress = pageCount > 0 ? static_cast<float>(currentPage) / static_cast<float>(pageCount) : 0.0f;

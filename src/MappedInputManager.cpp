@@ -196,3 +196,6 @@ int MappedInputManager::getPressedFrontButton() const {
   }
   return -1;
 }
+void MappedInputManager::injectRawPress(const uint8_t rawButtonIndex, const bool longPress) const {
+  gpio.injectPress(rawButtonIndex, longPress);
+}

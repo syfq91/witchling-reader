@@ -641,7 +641,15 @@ void EpubReaderActivity::onExit() {
   //
   // Only when anti-aliasing actually ran: a plain B/W page leaves the panel on
   // its rails already, and a clean-bank refresh costs about a second and a half.
-  if (getEffectiveTextAntiAliasing()) {
+  //
+  // ...except where that premise does not hold. It is a statement about the X3/X4
+  // controllers, whose B/W path drives to the rails. On the LGFX panels -- the ones that
+  // answer supportsGrayFrame(), i.e. the T5 S3 -- EVERY push goes through the same graded
+  // canvas, and FAST maps to a differential bank that deliberately skips the eraser
+  // (LgfxEpdDriver::epdModeFor). So a B/W page leaves the canvas holding the page just as a
+  // grey one does, and the home screen's FAST diff runs against it. Reported from hardware
+  // as the last reader page and the home screen superimposed, settling a refresh later.
+  if (getEffectiveTextAntiAliasing() || renderer.supportsGrayFrame()) {
     ReaderUtils::enforceExitFullRefresh(renderer);
   }
 
@@ -2921,6 +2929,17 @@ std::vector<std::string> EpubReaderActivity::footnotePreviewsForCurrentPage() {
   if (!epub) {
     return previews;
   }
+  // Under the render lock because resolving a cross-file note href walks the spine through
+  // BookMetadataCache, which seeks and reads a book.bin handle whose position is SHARED with
+  // renderStatusBar() on the render task (calculateProgress -> getSpineItem -> getSpineEntry).
+  // This runs from the reader-menu result handler, which the ActivityManager dispatches with
+  // the lock released, so without this the two interleave on one file position and a spine
+  // entry comes back as whatever the other task had seeked to. Cheap to hold: Lookup memoises
+  // the path, so a page's notes cost one spine walk, not one per note.
+  //
+  // Taken here rather than by the callers because both of them (the menu item and the
+  // BTN_FOOTNOTES button action) reach this on the loop task with no lock held.
+  RenderLock lock(*this);
   // Purely a read. Whatever the reader has walked through has already resolved its notes at
   // build time, so the entries for this page are in the store; a link the store does not know
   // renders as its plain marker and stays navigable.
@@ -5395,18 +5414,23 @@ void EpubReaderActivity::openReaderMenu() {
         // the page it was computed for.
         pendingGrayscale_ = {};
 
-        // And repaint. Every other sub-activity handler here already requests an
-        // update (book info, reading stats, chapter selection); the menu's did not,
-        // so a plain Back left the menu on screen until something else happened to
-        // trigger a render.
+        // Arm a HALF for the resumed page, then repaint. Every other sub-activity handler
+        // here already requests an update (book info, reading stats, chapter selection);
+        // the menu's did not, so a plain Back left the menu on screen until something
+        // else happened to trigger a render.
         //
-        // Note this repaint goes out on the normal refresh cycle, usually FAST. The
-        // enforceExitFullRefresh() above does NOT cover it: that override is one-shot
-        // and the menu's own first paint consumes it on the way in, which is what it
-        // is there for. Coming back from a full-screen menu to text on a fast LUT is
-        // the ghosting-prone direction, so arming a second HALF here is defensible --
-        // held off because a HALF costs ~1.5 s on the 960x540 panel and no ghosting
-        // has actually been reported on this transition.
+        // The enforceExitFullRefresh() before the launch does NOT cover this: the override
+        // is one-shot and the menu's own first paint consumes it on the way IN, which is
+        // what it is there for. So the return repaint went out on the normal cycle, usually
+        // FAST -- and a full-screen menu back to text is the worst case for a differential
+        // bank, which cannot drive every changed pixel in one fast pass.
+        //
+        // This was left out on the argument that a HALF costs ~1.5 s and no ghosting had
+        // been reported here. It has now: on the T5 S3 the transition shows the menu and the
+        // page superimposed, then settles a refresh later. That is not even a saving -- the
+        // reader was paying for a bad differential plus whatever repaired it. The chapter
+        // selection handler below arms exactly this, for exactly this reason.
+        ReaderUtils::enforceExitFullRefresh(renderer);
         requestUpdate();
       });
 }

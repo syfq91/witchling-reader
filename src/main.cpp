@@ -1101,6 +1101,9 @@ void loop() {
 
   renderer.setFadingFix(SETTINGS.fadingFix);
   renderer.setTextDarkness(SETTINGS.textDarkness);
+  // Extra clearance from the panel edge, on top of the board profile's own inset. Pushed here
+  // rather than once at boot so the Settings screen takes effect on the next render.
+  renderer.setViewablePadding(SETTINGS.getEdgeMarginPadding());
 
   // Check for any user activity (button press or release, screen touch) or
   // active background work.

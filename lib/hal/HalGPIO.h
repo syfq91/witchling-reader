@@ -97,6 +97,13 @@ class HalGPIO {
 
   // Button input methods
   void update();
+  // Synthesize a complete press+release of a raw button from something that is not a
+  // button -- currently a tap on the on-screen hint strip, which is the only way to
+  // reach Back/Confirm on a board whose nav cluster is PIN_UNASSIGNED.
+  void injectPress(uint8_t buttonIndex, bool longPress = false);
+
+  // How far back an injected long press dates its press edge.
+  static constexpr uint32_t INJECTED_LONG_PRESS_MS = 1500;
   bool isPressed(uint8_t buttonIndex) const;
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;
