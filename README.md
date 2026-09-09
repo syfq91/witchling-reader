@@ -18,8 +18,8 @@ This fork prioritizes physical button navigation, standard protocols, minimal me
 - **Lyra Sole Theme**: Standardized on Lyra as the sole UI theme and removed Classic, Lyra 3 Covers, and Carousel variants along with the theme selection menu to reduce firmware footprint and simplify the UI.
 - **Removed Legacy Sync & Proprietary Protocols**: Dropped legacy KOReader sync and Calibre SmartDevice wireless transfer in favor of standard OPDS catalog downloads and OPDS Progression sync.
 - **Removed Weather Integration**: Stripped Open-Meteo weather polling, home screen widgets, and weather icons to eliminate background network wakeups and save RAM.
-- **Removed USB Serial & Host Communication**: Removed all USB serial logging, CDC initialization, host link polling, and serial command parsing. On locked X4 hardware, the USB port functions strictly for charging; removing USB serial features eliminates dead code and speeds up boot time.
-- **Lightweight Reading Stats**: Standalone book ID generation without KOReader hashing dependencies, preserving reading history and pacing analytics.
+- **Removed USB Serial, Flashing & Host Communication**: On locked X4 hardware, the USB port is strictly wired for power/charging and does not support USB data, serial communication, or flashing. Removed all USB serial logging, CDC initialization, host link polling, and serial command parsing to eliminate dead code and speed up boot times.
+- **Removed Reading Statistics**: Stripped the reading stats tracker, history screens, and web dashboard to eliminate dynamic heap allocations/fragmentation and unnecessary SD card writes, reducing flash footprint and speeding up book exit/sleep transitions.
 
 ---
 
@@ -35,14 +35,21 @@ cd witchling-reader
 # Enable repo-managed git hooks (once per clone)
 git config core.hooksPath .githooks && chmod +x .githooks/pre-commit
 
-# Build firmware
+# Build firmware binary (.pio/build/x4/firmware.bin)
 pio run
 
 # Build release binary
 pio run -e gh_release
-
-# Flash to the device (USB-C)
-pio run --target upload
 ```
+
+## Installing Firmware
+
+> [!NOTE]
+> Locked X4 hardware does not support flashing over USB (`pio run --target upload` will not work). The USB-C port is strictly power/charging.
+
+To install or update firmware on the device:
+
+- **SD Card Update**: Copy the compiled binary (`.pio/build/x4/firmware.bin`) to the SD card root as `update.bin`, or navigate to any `.bin` file in the device file browser, long-press **Confirm**, and select **Flash**. Alternatively, navigate to **Settings -> System -> SD Firmware Update**.
+- **Wi-Fi OTA / Web Server**: Upload the `.bin` file via the built-in web server or check for updates wirelessly in **Settings -> System -> Check for Updates**.
 
 For device documentation, hardware specifications, and troubleshooting, refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme) and the `docs/` directory.

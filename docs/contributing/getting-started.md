@@ -66,11 +66,12 @@ chmod +x .githooks/pre-commit
 pio run
 ```
 
-## Flash
-
-```sh
-pio run --target upload
-```
+## Install Firmware
+ 
+Locked X4 hardware does not support flashing over USB (`pio run --target upload`). To install the compiled firmware (`.pio/build/x4/firmware.bin`):
+- Copy to the SD card root as `update.bin`
+- Or use **Settings -> System -> SD Firmware Update** (or flash from the file browser)
+- Or update wirelessly via Wi-Fi OTA / local web interface
 
 ## First checks before opening a PR
 

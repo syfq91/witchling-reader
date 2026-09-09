@@ -102,7 +102,7 @@ The Recent Books screen shows recently opened books as a **cover grid**, display
 
 ### 3.5 Book Info Screen
 
-The Book Info screen shows full metadata for a book: cover image, title, author, description (paged if long), and reading statistics. It is accessible from the context menu in Browse Files or from the reader menu while reading.
+The Book Info screen shows full metadata for a book: cover image, title, author, and description (paged if long). It is accessible from the context menu in Browse Files or from the reader menu while reading.
 
 ### 3.6 File Transfer Screen
 
@@ -210,7 +210,6 @@ The Settings screen allows you to configure the device's behavior.
 **System**:
 - **Clear Reading Cache**: Clear the internal SD card cache.
 - **System Information**: Display device info (firmware version, hardware, memory, SD card).
-- **Reading Statistics**: View reading stats (streaks, time read, pages/min, per-book ETA, sparkline history).
 
 **Firmware Update**:
 - **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi.
@@ -320,7 +319,7 @@ This feature can be disabled in the **[Controls Settings](#373-controls)** to he
 ### System Navigation
 * **Return to Home:** Press the **Back** button to close the book and return to the **[Home](#31-home-screen)** screen.
 * **Return to Browse Files:** Press and hold the **Back** button to close the book and return to the **[Browse Files](#33-browse-files-screen)** screen.
-* **Reader Menu:** Press **Confirm** to open the reader menu, which includes: **[Table of Contents](#6-chapter-selection-screen)**, bookmarks, sync progress, reading statistics, quick per-book overrides (font, images, hyphenation, bionic reading…), take screenshot, and more.
+* **Reader Menu:** Press **Confirm** to open the reader menu, which includes: **[Table of Contents](#6-chapter-selection-screen)**, bookmarks, sync progress, quick per-book overrides (font, images, hyphenation, bionic reading…), take screenshot, and more.
 
 ### Supported Languages
 

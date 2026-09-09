@@ -13,16 +13,14 @@ pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
 pio run
 ```
 
-## Flash firmware
+## Install firmware
 
-Flash firmware via USB-C:
+Locked X4 hardware does not support flashing over USB (`pio run --target upload` is not supported).
 
-```sh
-pio run --target upload
-```
-
-> [!NOTE]
-> Serial monitoring and logging are compiled out by default to optimize boot times, flash storage, and battery consumption.
+To update firmware:
+- Copy the compiled binary (`.pio/build/x4/firmware.bin`) to the SD card root as `update.bin`
+- Or use **Settings -> System -> SD Firmware Update** (or flash from the file browser context menu)
+- Or update wirelessly via Wi-Fi OTA / local web interface
 
 ## Test release workflows locally with `act`
 
