@@ -105,6 +105,7 @@ inline std::vector<SettingInfo> buildSettingsList() {
 
   // --- Display ---
   settings.push_back(SettingInfo::Action(StrId::STR_TIME_TO_SLEEP, SettingAction::SleepTimeoutPicker)
+                         .persisting(&CrossPointSettings::sleepTimeoutMinutes, "sleepTimeoutMinutes", 60)
                          .withDisplayGetter(getSleepTimeoutDisplay)
                          .withCategory(StrId::STR_CAT_DISPLAY));
   settings.push_back(
@@ -143,6 +144,7 @@ inline std::vector<SettingInfo> buildSettingsList() {
                                        "hideBatteryPercentage", StrId::STR_CAT_DISPLAY)
                          .withSubcategory(StrId::STR_MENU_DISP_BATTERY));
   settings.push_back(SettingInfo::Action(StrId::STR_REFRESH_FREQ, SettingAction::RefreshFrequencyPicker)
+                         .persisting(&CrossPointSettings::refreshFrequencyPages, "refreshFrequencyPages", 60)
                          .withDisplayGetter(getRefreshFrequencyDisplay)
                          .withCategory(StrId::STR_CAT_DISPLAY)
                          .withSubmenu(StrId::STR_MENU_DISP_REFRESH)
@@ -154,6 +156,7 @@ inline std::vector<SettingInfo> buildSettingsList() {
                          .withSubcategory(StrId::STR_MENU_DISP_REFRESH));
   settings.push_back(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                                          StrId::STR_CAT_DISPLAY));
+
 
   // --- Reader ---
   // General reader settings
@@ -371,6 +374,7 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Enum(StrId::STR_OPDS_FILENAME_FORMAT, &CrossPointSettings::opdsFilenameFormat,
                                        {StrId::STR_FMT_AUTHOR_TITLE, StrId::STR_FMT_TITLE_AUTHOR, StrId::STR_FMT_TITLE},
                                        "opdsFilenameFormat"));
+
 
   // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
   settings.push_back(SettingInfo::Enum(StrId::STR_UPPER_PROGRESS_BAR, &CrossPointSettings::statusBarUpperProgressBar,

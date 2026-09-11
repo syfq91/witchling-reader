@@ -72,8 +72,19 @@ constexpr size_t PARSE_BUFFER_SIZE = 1024;
 // keep per-chapter counts lower still. Raise it when a real book is found that needs it -- and
 // give getPageForAnchor an index first if the number goes far past this.
 constexpr size_t MAX_ANCHORS_PER_CHAPTER = 1024;
+// The bound when anchors could NOT be spilled and are being held in RAM instead. Much lower than
+// the spilled cap on purpose: the resident path exists only for a chapter whose spill file would
+// not open, which means the SD is already unhappy -- and holding 1024 std::pairs (28.7 KB, the
+// exact allocation the spill was introduced to remove, on a plain vector whose push_back aborts
+// under -fno-exceptions) is the worst possible response to that. 256 keeps a chapter's early
+// anchors navigable for ~7 KB; the rest degrade the same way they do past any cap.
+constexpr size_t MAX_RESIDENT_ANCHORS = 256;
 // Write buffer for the anchor spill; see the emplace site in setup().
 constexpr size_t ANCHOR_SPILL_BUFFER_BYTES = 512;
+// Anchors that may wait for their first line at once. One per id'd element that has produced no
+// text yet; more than a couple means a run of empty anchored elements, and the excess is recorded
+// at the current page rather than held.
+constexpr size_t MAX_ANCHORS_AWAITING_LINE = 16;
 
 // Image extraction is now deferred to render time (ImageBlock::ensureExtracted).
 // No heap guard needed at parse time — only a ZIP header read (~4 KB buffer on stack in
@@ -508,6 +519,23 @@ void ChapterHtmlSlimParser::applySupSubDefaultSize(StyleStackEntry& entry) {
   if ((entry.hasSup && entry.sup) || (entry.hasSub && entry.sub)) {
     entry.hasFontSize = true;
     entry.fontSizePct = kSupSubDefaultSizePct;
+  }
+}
+
+void ChapterHtmlSlimParser::applyVerticalAlignToEntry(StyleStackEntry& entry, const CssStyle& cssStyle) {
+  if (!cssStyle.hasVerticalAlign()) return;
+  if (cssStyle.verticalAlign == CssVerticalAlign::Super) {
+    entry.hasSup = true;
+    entry.sup = true;
+  } else if (cssStyle.verticalAlign == CssVerticalAlign::Sub) {
+    entry.hasSub = true;
+    entry.sub = true;
+  } else {
+    // baseline: explicitly cancel any inherited sup/sub
+    entry.hasSup = true;
+    entry.sup = false;
+    entry.hasSub = true;
+    entry.sub = false;
   }
 }
 
@@ -1152,7 +1180,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
             emitPage(lastBodyChildByteOffset);
           }
         }
-        recordAnchor(std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount));
+        queueAnchorForNextLine(std::move(pendingAnchorId));
         pendingAnchorId.clear();
       }
       wordsExtractedInBlock = 0;
@@ -1175,9 +1203,10 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       emitPage(lastBodyChildByteOffset);
     }
   }
-  // Record deferred anchor after previous block is flushed (and any TOC page break)
+  // Queue the deferred anchor now that the previous block is flushed (and any TOC page break has
+  // happened); its PAGE is settled by addLineToPage, once this block's first line is placed.
   if (!pendingAnchorId.empty()) {
-    recordAnchor(std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount));
+    queueAnchorForNextLine(std::move(pendingAnchorId));
     pendingAnchorId.clear();
   }
   // Apply pending inline image: attach float zone and place image on current page.
@@ -1290,7 +1319,7 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
   if (!isPageBreakMarker && !idAttr.empty()) {
     const bool isTocAnchor =
         std::find(self->tocAnchors.begin(), self->tocAnchors.end(), idAttr) != self->tocAnchors.end();
-    if (isTocAnchor || (!isNonNavigableInlineElement(name) && self->anchorCount < MAX_ANCHORS_PER_CHAPTER)) {
+    if (isTocAnchor || (!isNonNavigableInlineElement(name) && self->anchorCount < self->anchorLimit())) {
       self->pendingAnchorId = idAttr;
     }
   }
@@ -1304,24 +1333,41 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
   CssStyle cssStyle;
   if (self->cssParser) {
     {
-      // ID-bearing elements are uncommon; only include idAttr in the cache key when
-      // present, so the common case (no id) stays as the minimal "tag|class" key.
-      std::string cacheKey(name);
-      cacheKey += '|';
-      cacheKey += classAttr;
-      if (!idAttr.empty()) {
-        cacheKey += '|';
-        cacheKey += idAttr;
-      }
-      auto it = self->cssStyleCache_.find(cacheKey);
-      if (it != self->cssStyleCache_.end()) {
-        cssStyle = it->second;
+      // An element with an id is resolved but NOT cached. The key would have to carry the id --
+      // the style can legitimately differ per id, that is what a #id selector is for -- and an id
+      // is unique in a document, so such an entry can never be hit again. It is pure cost.
+      //
+      // "ID-bearing elements are uncommon" was the assumption here, and it is wrong of exactly
+      // the documents that can least afford it. A converted book's endnotes chapter carries one
+      // generated id per note: 349 of them in the chapter this was measured on, each adding a
+      // ~40-char key plus a 116-byte CssStyle plus a map node to a cache that is unbounded and
+      // never evicted. That is ~70 KB held for the whole build, with a zero percent hit rate,
+      // and it was the single largest thing in a build that then ran out of heap and truncated
+      // the chapter at page 31 of 90 -- which silently cost the anchor map, and with it every
+      // footnote jump into the second half of the chapter.
+      //
+      // Skipping the cache costs nothing it was buying: unique keys never hit. Elements without
+      // an id are unaffected and still share entries by tag|class, which is where the hits are.
+      // An id only affects the answer when some rule matches on one. When none does -- neither of
+      // this book's stylesheets has a single # selector, nor the other edition's -- the id is
+      // dropped from the key entirely and the element shares the tag|class entry, so a chapter of
+      // uniquely-id'd notes gets cache HITS instead of a re-resolve (and its SD reads) per note.
+      if (!idAttr.empty() && self->cssParser->hasIdSelectors()) {
+        cssStyle = self->cssParser->resolveStyle(name, classAttr, idAttr);
       } else {
-        CssStyle resolved = self->cssParser->resolveStyle(name, classAttr, idAttr);
-        if (resolved.defined.anySet())
-          cssStyle = self->cssStyleCache_.emplace(cacheKey, resolved).first->second;
-        else
-          cssStyle = resolved;  // transient fallback: skip cache so future calls can re-resolve
+        std::string cacheKey(name);
+        cacheKey += '|';
+        cacheKey += classAttr;
+        auto it = self->cssStyleCache_.find(cacheKey);
+        if (it != self->cssStyleCache_.end()) {
+          cssStyle = it->second;
+        } else {
+          CssStyle resolved = self->cssParser->resolveStyle(name, classAttr, idAttr);
+          if (resolved.defined.anySet())
+            cssStyle = self->cssStyleCache_.emplace(cacheKey, resolved).first->second;
+          else
+            cssStyle = resolved;  // transient fallback: skip cache so future calls can re-resolve
+        }
       }
     }
     if (!styleAttr.empty()) {
@@ -1977,10 +2023,24 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
       entry.depth = self->depth;
       entry.hasUnderline = true;
       entry.underline = true;
+      // The generic inline path below never runs for an internal link, so vertical-align has to be
+      // folded in here or it is lost. Publishers mark footnote references as
+      // `a { vertical-align: super }` at least as often as they wrap them in <sup>, and those
+      // references were rendering full-size on the baseline.
+      // Ported from crosspoint-reader PR #3355 (Julia <julia@uxj.io>). Their fix extracts the same
+      // helper; ours additionally honours `baseline` as an explicit cancel, which our inline path
+      // already did and theirs does not.
+      applyVerticalAlignToEntry(entry, cssStyle);
+      // Not upstream's: they raise the reference but leave it full-size, which does not match the
+      // <sup> path three branches down. These two are documented as a pair -- the default first so
+      // publisher CSS on the link (`a.fn { font-size: 0.7em }`) still wins over the 50% default.
+      // applyCssFontSizeToEntry is a no-op unless the link itself carries a font-size.
+      applySupSubDefaultSize(entry);
+      applyCssFontSizeToEntry(entry, cssStyle);
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
 
-      // Skip CSS resolution — we already handled styling for this <a> tag
+      // Skip the rest of CSS resolution — the styling this <a> needs is applied above
       self->depth += 1;
       return;
     }
@@ -2354,21 +2414,7 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
           }
         }
       }
-      if (cssStyle.hasVerticalAlign()) {
-        if (cssStyle.verticalAlign == CssVerticalAlign::Super) {
-          entry.hasSup = true;
-          entry.sup = true;
-        } else if (cssStyle.verticalAlign == CssVerticalAlign::Sub) {
-          entry.hasSub = true;
-          entry.sub = true;
-        } else {
-          // baseline: explicitly cancel any inherited sup/sub
-          entry.hasSup = true;
-          entry.sup = false;
-          entry.hasSub = true;
-          entry.sub = false;
-        }
-      }
+      applyVerticalAlignToEntry(entry, cssStyle);
       if (cssStyle.hasSmallCaps()) {
         entry.hasSmallCaps = true;
         entry.smallCaps = cssStyle.smallCaps;
@@ -2920,6 +2966,30 @@ void ChapterHtmlSlimParser::endElement(void* userData, const char* name) {
 
 ChapterHtmlSlimParser::~ChapterHtmlSlimParser() = default;
 
+size_t ChapterHtmlSlimParser::anchorLimit() const {
+  return anchorSpillWriter.has_value() ? MAX_ANCHORS_PER_CHAPTER : MAX_RESIDENT_ANCHORS;
+}
+
+void ChapterHtmlSlimParser::flushAnchorsAwaitingLine() {
+  if (anchorsAwaitingLine_.empty()) return;
+  for (auto& id : anchorsAwaitingLine_) {
+    recordAnchor(std::move(id), static_cast<uint16_t>(completedPageCount));
+  }
+  anchorsAwaitingLine_.clear();
+}
+
+void ChapterHtmlSlimParser::queueAnchorForNextLine(std::string id) {
+  if (id.empty()) return;
+  // Bounded: an id'd element that never produces a line leaves its entry queued, so a run of them
+  // would grow this. Past the cap they are recorded at the current page instead -- the behaviour
+  // this replaced, applied only where holding on would cost memory.
+  if (anchorsAwaitingLine_.size() >= MAX_ANCHORS_AWAITING_LINE) {
+    recordAnchor(std::move(id), static_cast<uint16_t>(completedPageCount));
+    return;
+  }
+  anchorsAwaitingLine_.push_back(std::move(id));
+}
+
 void ChapterHtmlSlimParser::recordAnchor(std::string id, const uint16_t page) {
   // The on-disk anchor map counts with a uint16_t, so that is the hard ceiling whatever
   // MAX_ANCHORS_PER_CHAPTER says. Silently dropping past it is the same degradation as the cap:
@@ -2944,7 +3014,7 @@ void ChapterHtmlSlimParser::recordAnchor(std::string id, const uint16_t page) {
     anchorCount++;
     return;
   }
-  if (anchorSpillFailed || anchorCount >= MAX_ANCHORS_PER_CHAPTER) {
+  if (anchorSpillFailed || anchorCount >= MAX_RESIDENT_ANCHORS) {
     return;
   }
   // Counts UP rather than being assigned anchorData.size(), so that a resident anchor recorded
@@ -3121,6 +3191,10 @@ bool ChapterHtmlSlimParser::finalize() {
     currentTextBlock.reset();
   }
 
+  // Anything still waiting on a line never got one -- an id'd element with no text of its own.
+  // Record those at the last page reached, which is where they sit, before the spill closes.
+  flushAnchorsAwaitingLine();
+
   // Close the anchor spill LAST. The trailing-anchor recording just above is the final call into
   // recordAnchor, and closing before it would send that one anchor down the resident fallback --
   // which is how the whole map was lost once: the fallback took over for that single anchor and
@@ -3200,6 +3274,10 @@ ParsedText::LineProcessResult ChapterHtmlSlimParser::addLineToPage(std::shared_p
             linePreview.c_str());
     return ParsedText::LineProcessResult::RetryWithoutHyphenation;
   }
+
+  // Every emitPage() that this line could trigger is above, so completedPageCount is now the page
+  // the line is going on: the page any anchor waiting on it should name.
+  flushAnchorsAwaitingLine();
 
   // Capture first-line flag before incrementing wordsExtractedInBlock.
   const bool isFirstLineOfBlock = (wordsExtractedInBlock == 0);
@@ -3522,6 +3600,13 @@ void ChapterHtmlSlimParser::commitPendingRow() {
   tr.cells = std::move(lr.cells);
   t.packer.rows.push_back(std::move(tr));
   t.packer.height += rowContrib;
+
+  // A grid row never reaches addLineToPage, so this is the table path's equivalent: the row is
+  // now committed and every emitPage() it could have forced is above, making completedPageCount
+  // the page it lands on. Without this an anchor on a <table> or a <tr> whose rows all lay out as
+  // a grid waited for the next ordinary paragraph instead -- measured ten pages later on a book
+  // whose notes are one long table.
+  flushAnchorsAwaitingLine();
 
   // Free the row's words. Everything above exists to make this possible one row at a time.
   t.pendingRow.cells.clear();

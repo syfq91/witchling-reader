@@ -24,6 +24,7 @@
 #include "../reader/XtcReaderActivity.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
@@ -244,21 +245,12 @@ bool renderPngSleepScreen(const std::string& filename, GfxRenderer& renderer, co
     int textBlockHeight = 0;
     if (!overlayInfo.title.empty()) {
       textBlockHeight += lineHeight12;
-      if (!overlayInfo.author.empty()) {
-        textBlockHeight += lineSpacing;
-      } else if (!overlayInfo.progressText.empty()) {
-        textBlockHeight += sectionSpacing;
-      }
+      textBlockHeight += overlayInfo.author.empty() ? sectionSpacing : lineSpacing;
     }
     if (!overlayInfo.author.empty()) {
-      textBlockHeight += lineHeight10;
-      if (!overlayInfo.progressText.empty()) {
-        textBlockHeight += sectionSpacing;
-      }
+      textBlockHeight += lineHeight10 + sectionSpacing;
     }
-    if (!overlayInfo.progressText.empty()) {
-      textBlockHeight += lineHeight10;
-    }
+    textBlockHeight += lineHeight10;
 
     const int overlayY = pageHeight - textBlockHeight - (lineHeight12 / 3) - (lineHeight10 * 2 / 3);
     int y = overlayY + (lineHeight12 / 3);
@@ -266,25 +258,15 @@ bool renderPngSleepScreen(const std::string& filename, GfxRenderer& renderer, co
       const std::string title = renderer.truncatedText(BOOKERLY_12_FONT_ID, overlayInfo.title.c_str(), maxTextWidth);
       renderer.drawText(BOOKERLY_12_FONT_ID, 10, y, title.c_str(), true);
       y += lineHeight12;
-      if (!overlayInfo.author.empty()) {
-        y += lineSpacing;
-      } else if (!overlayInfo.progressText.empty()) {
-        y += sectionSpacing;
-      }
+      y += overlayInfo.author.empty() ? sectionSpacing : lineSpacing;
     }
     if (!overlayInfo.author.empty()) {
       const std::string author = renderer.truncatedText(UI_10_FONT_ID, overlayInfo.author.c_str(), maxTextWidth);
       renderer.drawText(UI_10_FONT_ID, 10, y, author.c_str(), true);
-      y += lineHeight10;
-      if (!overlayInfo.progressText.empty()) {
-        y += sectionSpacing;
-      }
+      y += lineHeight10 + sectionSpacing;
     }
-    if (!overlayInfo.progressText.empty()) {
-      const std::string progress =
-          renderer.truncatedText(UI_10_FONT_ID, overlayInfo.progressText.c_str(), maxTextWidth);
-      renderer.drawText(UI_10_FONT_ID, 10, y, progress.c_str(), true);
-    }
+    const std::string progress = renderer.truncatedText(UI_10_FONT_ID, overlayInfo.progressText.c_str(), maxTextWidth);
+    renderer.drawText(UI_10_FONT_ID, 10, y, progress.c_str(), true);
   };
 
   PngToFramebufferConverter decoder;
@@ -451,6 +433,21 @@ size_t pickSleepImageIndex(size_t numFiles) {
   return idx;
 }
 
+// True when renderCoverSleepScreen() is about to BUILD this book's sleep cover rather than just
+// stream the one already on the SD card. Constructing the book object only hashes its path (the
+// cache path is derived in the constructor), so this answers before any load() — which is the
+// point: the answer decides whether the user is left staring at an unchanged screen.
+//
+// A book whose cover turns out to be missing altogether answers true as well. Nothing cheaper can
+// tell "this will take seconds" from "this will fail immediately", and announcing an attempt that
+// then falls back to the default sleep screen is the lesser wrong.
+bool sleepCoverNeedsPreparing(const std::string& bookPath, bool cropped) {
+  if (FsHelpers::hasXtcExtension(bookPath)) return !Xtc(bookPath, "/.crosspoint").coverBmpReady();
+  if (FsHelpers::hasTxtExtension(bookPath)) return !Txt(bookPath, "/.crosspoint").coverBmpReady();
+  if (FsHelpers::hasEpubExtension(bookPath)) return !Epub(bookPath, "/.crosspoint").coverBmpReady(cropped);
+  return false;  // not a format with a cover: nothing to prepare, so nothing to announce
+}
+
 }  // namespace
 
 void SleepActivity::onEnter() {
@@ -470,6 +467,8 @@ void SleepActivity::onEnter() {
 
   // No "Entering sleep..." popup here: it shipped a full extra refresh (~500 ms on X3)
   // before the sleep screen's own refresh; the sleep screen appearing is the feedback.
+  // The one exception is a cover that still has to be built — renderCoverSleepScreen()
+  // puts the popup up there, because that path is seconds away from its own refresh.
   // The renderers below all expect portrait: the cover BMP is generated portrait-sized
   // (getDisplayHeight x getDisplayWidth) and the custom/default screens are laid out
   // portrait. A timeout sleep bypasses the reader's onExit() orientation reset, so force
@@ -873,6 +872,18 @@ void SleepActivity::renderCoverSleepScreen() const {
   std::string coverBmpPath;
   const bool cropped = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
 
+  // onEnter() skips the "going to sleep" popup because the sleep screen itself is the feedback,
+  // one refresh away. That reasoning does not survive a first-time cover: extracting it from the
+  // book and running the full-size PNG/JPEG decoder takes seconds, during which the screen still
+  // shows the last page and the device looks ignored. So announce it — but only then.
+  const bool coverNeedsPreparing = sleepCoverNeedsPreparing(APP_STATE.openEpubPath, cropped);
+  if (coverNeedsPreparing) {
+    // Grab the on-screen frame while it is still reachable: it lives in the secondary buffer, and
+    // the release below frees exactly that. drawPopup() then composes the box onto the copy
+    // (overlayDisplayedFrame = false) instead of doing a sync that would by then be a no-op.
+    renderer.syncWriteBufferFromDisplayed();
+  }
+
   // generateCoverBmp() runs the full-size PNG/JPEG decoder, whose inflate ring and pixel buffers
   // need a large contiguous block; on a big cover (e.g. a 1200x1848 PNG) that malloc fails under
   // sleep-time heap pressure and the cover silently falls back to /sleep.bmp. Free the ~52 KB
@@ -880,6 +891,16 @@ void SleepActivity::renderCoverSleepScreen() const {
   // sleep render below draws via the grayscale planes / controller RAM, not the secondary buffer,
   // and enterDeepSleep() tears everything down (chip reset on wake) immediately after.
   if (renderer.hasSecondaryBuffer()) renderer.releaseSecondaryBuffer();
+
+  if (coverNeedsPreparing) {
+    // Ship the popup without waiting out its waveform. The panel repaints from the controller's
+    // own RAM, and the cover build below is pure SD -> SD streaming that never reads or writes the
+    // framebuffer, so the two overlap: the popup costs the moment it takes to push the frame, not
+    // the ~600 ms it takes to appear. Arming it only AFTER the release is deliberate —
+    // releaseSecondaryBuffer() frees without draining a refresh in flight, and X3 re-reads that
+    // buffer for its post-waveform sync. finishDisplayAsync() below closes the window again.
+    GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP), /*overlayDisplayedFrame=*/false, PopupShip::Async);
+  }
 
   if (FsHelpers::hasXtcExtension(APP_STATE.openEpubPath)) {
     Xtc lastXtc(APP_STATE.openEpubPath, "/.crosspoint");
@@ -897,6 +918,10 @@ void SleepActivity::renderCoverSleepScreen() const {
       LOG_ERR("SLP", "Failed to load/generate EPUB cover bmp");
     }
   }
+
+  // Everything below writes the framebuffer or drives the panel, so the overlapped popup refresh
+  // has to be finished first.
+  if (coverNeedsPreparing) renderer.finishDisplayAsync();
 
   if (coverBmpPath.empty()) {
     return (this->*renderNoCoverSleepScreen)();

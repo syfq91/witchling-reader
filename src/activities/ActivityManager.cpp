@@ -396,16 +396,20 @@ void ActivityManager::goToBrowserWithSearch(std::string query) {
 }
 
 void ActivityManager::goToReader(std::string path) {
-  RenderLock lock;
-  ensureSdFontLoadedForPath(path.c_str());
+  {
+    RenderLock lock;
+    ensureSdFontLoadedForPath(path.c_str());
+  }
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
 }
 
 void ActivityManager::replaceWithReader(std::string path, ReturnHint hint) {
   returnHint = std::move(hint);
   hasReturnHint = true;
-  RenderLock lock;
-  ensureSdFontLoadedForPath(path.c_str());
+  {
+    RenderLock lock;
+    ensureSdFontLoadedForPath(path.c_str());
+  }
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
 }
 

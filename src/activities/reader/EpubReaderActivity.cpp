@@ -1930,15 +1930,17 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     case EpubReaderMenuActivity::MenuAction::FOOTNOTES: {
       // Show each entry's note text when the book-level cache can supply it — see
       // footnotePreviewsForCurrentPage() for when opening the list may gather it.
-      startActivityForResult(std::make_unique<EpubReaderFootnotesActivity>(renderer, mappedInput, currentPageFootnotes,
-                                                                           footnotePreviewsForCurrentPage()),
-                             [this](const ActivityResult& result) {
-                               if (!result.isCancelled) {
-                                 const auto& footnoteResult = std::get<FootnoteResult>(result.data);
-                                 navigateToHref(footnoteResult.href, true);
-                               }
-                               requestUpdate();
-                             });
+      auto linkInfo = pageLinkInfoForCurrentPage();
+      startActivityForResult(
+          std::make_unique<EpubReaderFootnotesActivity>(renderer, mappedInput, currentPageFootnotes,
+                                                        std::move(linkInfo.previews), std::move(linkInfo.isNote)),
+          [this](const ActivityResult& result) {
+            if (!result.isCancelled) {
+              const auto& footnoteResult = std::get<FootnoteResult>(result.data);
+              navigateToHref(footnoteResult.href, true);
+            }
+            requestUpdate();
+          });
       break;
     }
     case EpubReaderMenuActivity::MenuAction::GO_TO_PERCENT: {
@@ -2526,6 +2528,17 @@ void EpubReaderActivity::NavigationTarget::resolveInto(Section& sec, int spineIn
       if (const auto p = sec.getPageForAnchor(anchorStr)) {
         sec.currentPage = *p;
         LOG_DBG("ERS", "Resolved anchor '%s' -> page %d", anchorStr.c_str(), *p);
+      } else if (sec.isTruncatedCache()) {
+        // The chapter did not finish building, so its anchor map stops where the parse stopped and
+        // a miss says nothing about whether the id exists. Distinct log level because the two
+        // cases want opposite fixes: a genuine miss is a bad href in the book, this one is the
+        // build running out of heap -- and the destination below is then meaningless rather than
+        // merely approximate. Device 2026-09-09: a note 46% into a 90-page notes chapter that had
+        // built 31 pages landed the reader on page 0.
+        LOG_ERR("ERS", "Anchor '%s' missing from a TRUNCATED spine cache (%u pages built); the jump is a guess",
+                anchorStr.c_str(), static_cast<uint32_t>(sec.pageCount));
+        sec.currentPage = fallbackPage;
+        isEstimate = true;
       } else {
         LOG_DBG("ERS", "Anchor '%s' not found; using fallback page %d", anchorStr.c_str(), fallbackPage);
         sec.currentPage = fallbackPage;
@@ -2797,9 +2810,12 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     // lock, then re-check the condition under it — the render task may have invalidated the
     // pre-render between the unlocked test above and the lock.
     RenderLock lock;
-    // cppcheck-suppress knownConditionTrueFalse ; render task mutates these concurrently
+    // The single-line form lands on the `if` only; cppcheck reports the sub-expression on the
+    // continuation line below, so the suppression has to span the whole condition.
+    // cppcheck-suppress-begin knownConditionTrueFalse ; render task mutates these concurrently
     if (!(section && preRenderedPage.ready && preRenderedPage.spineIndex == currentSpineIndex &&
           preRenderedPage.pageIndex == section->currentPage + 1)) {
+      // cppcheck-suppress-end knownConditionTrueFalse
       lock.unlock();
       if (!stepPageState(isForwardTurn)) {
         return;
@@ -2896,10 +2912,15 @@ bool EpubReaderActivity::reallocSecondaryEvictingCaches() {
   return false;
 }
 
-std::vector<std::string> EpubReaderActivity::footnotePreviewsForCurrentPage() {
-  std::vector<std::string> previews(currentPageFootnotes.size());
+EpubReaderActivity::PageLinkInfo EpubReaderActivity::pageLinkInfoForCurrentPage() {
+  PageLinkInfo info;
+  info.previews.resize(currentPageFootnotes.size());
+  // Everything is a note until the store says otherwise: a book with no store must look exactly
+  // as it did before any of this. The distinction only groups the list -- following a link always
+  // saves a return position either way (see navigateToHref).
+  info.isNote.assign(currentPageFootnotes.size(), 1);
   if (!epub) {
-    return previews;
+    return info;
   }
   // Under the render lock because resolving a cross-file note href walks the spine through
   // BookMetadataCache, which seeks and reads a book.bin handle whose position is SHARED with
@@ -2915,13 +2936,22 @@ std::vector<std::string> EpubReaderActivity::footnotePreviewsForCurrentPage() {
   // Purely a read. Whatever the reader has walked through has already resolved its notes at
   // build time, so the entries for this page are in the store; a link the store does not know
   // renders as its plain marker and stays navigable.
-  FootnotePreviews::Lookup previewLookup;
-  if (previewLookup.open(epub->getCachePath(), epub.get(), currentSpineIndex)) {
-    for (size_t i = 0; i < currentPageFootnotes.size(); ++i) {
-      previewLookup.find(currentPageFootnotes[i].href, previews[i]);
-    }
+  //
+  // The same lookup answers both questions, because they are the same question: the store holds
+  // a note's text keyed by its caller's href, so a hit IS "this is a note" and the text is the
+  // preview. A miss on a spine the store HAS scanned means the link is navigation -- a contents
+  // link, a cross-reference -- and the list groups it separately.
+  if (!FootnotePreviews::spineResolved(epub->getCachePath(), currentSpineIndex)) {
+    return info;
   }
-  return previews;
+  FootnotePreviews::Lookup previewLookup;
+  if (!previewLookup.open(epub->getCachePath(), epub.get(), currentSpineIndex)) {
+    return info;
+  }
+  for (size_t i = 0; i < currentPageFootnotes.size(); ++i) {
+    info.isNote[i] = previewLookup.find(currentPageFootnotes[i].href, info.previews[i]) ? 1 : 0;
+  }
+  return info;
 }
 
 void EpubReaderActivity::recoverSecondaryBufferIfNeeded() {
@@ -3590,9 +3620,7 @@ bool EpubReaderActivity::buildSection(const RenderLayout& layout) {
           renderer.clearRefreshOverride();  // discard the armed HALF -> popup paints FAST
         }
         GUI.drawPopup(renderer, tr(STR_INDEXING));  // immediate feedback before the first page lands
-      }
 
-      if (mode == SectionBuildMode::IncrementalReleased) {
         // Tight heap: free the secondary buffer (~48–52 KB) for the build. AA is off until the
         // build ends and recoverSecondaryBufferIfNeeded() reallocates it (marked via
         // secondaryBufferDegraded_); mid-build draws are BW.
@@ -5425,14 +5453,16 @@ void EpubReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION 
         if (currentPageFootnotes.size() == 1) {
           navigateToHref(currentPageFootnotes[0].href, true);
         } else {
-          startActivityForResult(std::make_unique<EpubReaderFootnotesActivity>(
-                                     renderer, mappedInput, currentPageFootnotes, footnotePreviewsForCurrentPage()),
-                                 [this](const ActivityResult& result) {
-                                   if (!result.isCancelled) {
-                                     const auto& footnoteResult = std::get<FootnoteResult>(result.data);
-                                     navigateToHref(footnoteResult.href, true);
-                                   }
-                                 });
+          auto linkInfo = pageLinkInfoForCurrentPage();
+          startActivityForResult(
+              std::make_unique<EpubReaderFootnotesActivity>(renderer, mappedInput, currentPageFootnotes,
+                                                            std::move(linkInfo.previews), std::move(linkInfo.isNote)),
+              [this](const ActivityResult& result) {
+                if (!result.isCancelled) {
+                  const auto& footnoteResult = std::get<FootnoteResult>(result.data);
+                  navigateToHref(footnoteResult.href, true);
+                }
+              });
         }
       }
       break;

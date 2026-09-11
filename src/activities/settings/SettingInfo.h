@@ -261,6 +261,30 @@ struct SettingInfo {
     return s;
   }
 
+  // Where this row's value LIVES, for rows whose UI type does not carry a field pointer of its
+  // own: a slider ACTION, chiefly, which is edited through SliderSetting rather than by toggling.
+  //
+  // Deliberately not `valuePtr`. That member means "the UI reads and writes this directly", and
+  // getDisplayValue()/toggleValue() prefer it over a row's getter — so putting a field there
+  // would shadow the live value of a dynamic row. This one is about storage only.
+  //
+  // Rows that declare it are saved and loaded by the generic loop in JsonSettingsIO like any
+  // other field. Rows that do not, are not — which is how five slider rows came to need
+  // hand-written serialisation lines, and how two of them (the frontlight levels) ended up with
+  // none at all: they worked for a session and reset at the next boot.
+  uint8_t CrossPointSettings::* persistPtr = nullptr;
+  // Inclusive upper bound for a loaded value. Above it the compiled default is used instead,
+  // which is the same protection the generic loop gives an ENUM via its option count.
+  uint8_t persistMax = 100;
+
+  // Declares where this row's value is stored and under what key. See persistPtr.
+  SettingInfo& persisting(uint8_t CrossPointSettings::* field, const char* storageKey, const uint8_t maxValue = 100) {
+    persistPtr = field;
+    key = storageKey;
+    persistMax = maxValue;
+    return *this;
+  }
+
   bool isSeparator = false;
   bool usesSelectorActivity = false;        // Confirm opens a full-screen selector instead of inline cycling
   StrId subcategory = StrId::STR_NONE_OPT;  // Triggers a separator row on first use and on change
@@ -364,6 +388,7 @@ inline void SettingInfo::prepareSubmenus(std::vector<SettingInfo>& items,
 
   std::vector<SettingInfo> preparedItems;
   std::vector<SubmenuData> preparedSubmenus;
+  std::vector<size_t> placeholderAt;  // parallel to preparedSubmenus: where its row landed
   preparedItems.reserve(items.size());
 
   for (auto& item : items) {
@@ -375,9 +400,8 @@ inline void SettingInfo::prepareSubmenus(std::vector<SettingInfo>& items,
     auto it = std::find_if(preparedSubmenus.begin(), preparedSubmenus.end(),
                            [&item](const SubmenuData& d) { return d.id == item.submenu; });
     if (it == preparedSubmenus.end()) {
-      auto placeholder = SettingInfo::SubmenuEntry(item.submenu);
-      placeholder.subcategory = item.subcategory;  // inherit so addTo inserts the separator
-      preparedItems.push_back(std::move(placeholder));
+      preparedItems.push_back(SettingInfo::SubmenuEntry(item.submenu));
+      placeholderAt.push_back(preparedItems.size() - 1);
       preparedSubmenus.push_back({item.submenu, {}});
       it = preparedSubmenus.end() - 1;
     }
@@ -386,15 +410,37 @@ inline void SettingInfo::prepareSubmenus(std::vector<SettingInfo>& items,
 
   items.swap(preparedItems);
 
-  for (auto& submenu : preparedSubmenus) {
+  for (size_t s = 0; s < preparedSubmenus.size(); ++s) {
+    auto& submenu = preparedSubmenus[s];
+
+    // The placeholder takes a subcategory only when EVERY row behind it agrees on one -- the
+    // shape of "Refresh" or "Front light", where the submenu name and the heading are the same
+    // word and the heading is really about the row itself.
+    //
+    // The gesture rows are the other shape: one submenu holding four groups (swipes, taps, long
+    // taps, multi-touch). Inheriting from the first of them put a "Swipes" heading over a row
+    // that leads to all twenty gestures, and left the other three headings behind in the parent
+    // tab with nothing under them once their rows had moved into the submenu. The grouping
+    // describes the children, so it belongs to the submenu, not to the row that opens it.
+    const StrId first = submenu.items.empty() ? StrId::STR_NONE_OPT : submenu.items.front().subcategory;
+    const bool allAgree = std::all_of(submenu.items.begin(), submenu.items.end(),
+                                      [first](const SettingInfo& child) { return child.subcategory == first; });
+    items[placeholderAt[s]].subcategory = allAgree ? first : StrId::STR_NONE_OPT;
+
     auto it = std::find_if(submenuData.begin(), submenuData.end(),
                            [&submenu](const SubmenuData& d) { return d.id == submenu.id; });
     if (it == submenuData.end()) {
       submenuData.push_back(std::move(submenu));
+      it = submenuData.end() - 1;
     } else {
       it->items.insert(it->items.end(), std::make_move_iterator(submenu.items.begin()),
                        std::make_move_iterator(submenu.items.end()));
     }
+    // Carry the grouping INTO the submenu, which is the list the rows actually appear in.
+    // SettingsSubmenuActivity has always known how to draw separator rows; nothing ever put any
+    // in front of it. Re-running over a list that already has them is harmless: the pass tracks
+    // an existing separator as the running heading rather than adding a second one.
+    insertSubcategorySeparators(it->items);
   }
 }
 

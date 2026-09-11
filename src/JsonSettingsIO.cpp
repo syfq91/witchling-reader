@@ -152,8 +152,10 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
 
   for (const auto& info : settings) {
     if (!info.key) continue;
+    // persistPtr covers rows whose UI type carries no field pointer of its own (slider ACTIONs).
     // Dynamic entries are stored in their own files — skip.
-    if (!info.valuePtr && !info.stringOffset) continue;
+    const auto field = info.valuePtr ? info.valuePtr : info.persistPtr;
+    if (!field && !info.stringOffset) continue;
 
     if (info.stringOffset) {
       const char* strPtr = (const char*)&s + info.stringOffset;
@@ -163,7 +165,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
         doc[info.key] = strPtr;
       }
     } else {
-      doc[info.key] = s.*(info.valuePtr);
+      doc[info.key] = s.*field;
     }
   }
 
@@ -184,8 +186,6 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   }
   doc["moveFinishedBooksToCompleted"] = s.moveFinishedBooksToCompleted;
   doc["removeFinishedBooksFromRecents"] = s.removeFinishedBooksFromRecents;
-  doc["sleepTimeoutMinutes"] = s.sleepTimeoutMinutes;
-  doc["refreshFrequencyPages"] = s.refreshFrequencyPages;
 
   String json;
   serializeJson(doc, json);
@@ -242,10 +242,9 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
                                     CrossPointSettings::SLEEP_TIMEOUT_COUNT, CrossPointSettings::SLEEP_10_MIN);
     s.sleepTimeoutMinutes = kSleepMinutes[legacyIdx];
     if (needsResave) *needsResave = true;
-  } else {
-    const uint8_t v = doc["sleepTimeoutMinutes"] | s.sleepTimeoutMinutes;
-    s.sleepTimeoutMinutes = (v <= 60) ? v : 10;
   }
+  // No else: a file that already carries the key is read (and range-checked) by the generic loop,
+  // because the row declares where it is stored. Only the migration is special here.
 
   // Migrate legacy refreshFrequency enum → refreshFrequencyPages (pages, 0=never).
   if (doc["refreshFrequencyPages"].isNull()) {
@@ -254,17 +253,16 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
                                     CrossPointSettings::REFRESH_FREQUENCY_COUNT, CrossPointSettings::REFRESH_15);
     s.refreshFrequencyPages = kRefreshPages[legacyIdx];
     if (needsResave) *needsResave = true;
-  } else {
-    const uint8_t v = doc["refreshFrequencyPages"] | s.refreshFrequencyPages;
-    s.refreshFrequencyPages = (v <= 60) ? v : 15;
   }
+  // As above: only the legacy migration needs saying here.
 
   const auto settings = getSettingsList();
 
   for (const auto& info : settings) {
     if (!info.key) continue;
-    // Dynamic entries are stored in their own files — skip.
-    if (!info.valuePtr && !info.stringOffset) continue;
+    // See the matching comment in saveSettings.
+    const auto field = info.valuePtr ? info.valuePtr : info.persistPtr;
+    if (!field && !info.stringOffset) continue;
 
     if (info.stringOffset) {
       const char* strPtr = (const char*)&s + info.stringOffset;
@@ -298,9 +296,13 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
       strncpy(destPtr, val.c_str(), info.stringMaxLen - 1);
       destPtr[info.stringMaxLen - 1] = '\0';
     } else {
-      const uint8_t fieldDefault = s.*(info.valuePtr);  // struct-initializer default, read before we overwrite it
+      const uint8_t fieldDefault = s.*field;  // struct-initializer default, read before we overwrite it
       uint8_t v = doc[info.key] | fieldDefault;
-      if (info.type == SettingType::ENUM) {
+      if (info.persistPtr) {
+        // A slider's range is its own; anything past it falls back rather than driving the
+        // hardware (or the sleep timer) somewhere the UI would never have offered.
+        v = v <= info.persistMax ? v : fieldDefault;
+      } else if (info.type == SettingType::ENUM) {
         v = clamp(v, (uint8_t)info.enumValues.size(), fieldDefault);
       } else if (info.type == SettingType::TOGGLE) {
         v = clamp(v, (uint8_t)2, fieldDefault);
@@ -310,7 +312,7 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
         else if (v > info.valueRange.max)
           v = info.valueRange.max;
       }
-      s.*(info.valuePtr) = v;
+      s.*field = v;
     }
   }
 

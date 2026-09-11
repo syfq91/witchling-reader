@@ -546,7 +546,14 @@ class EpubReaderActivity final : public Activity {
   // Note text for each of currentPageFootnotes, for the footnote list activity (empty strings
   // where the store has no entry). A pure read: note text is resolved by the section build that
   // needs it, never by opening the list.
-  std::vector<std::string> footnotePreviewsForCurrentPage();
+  // Note text and kind for each of currentPageFootnotes, for the footnote list. One pass over one
+  // open store: a hit gives the preview AND says the link is a note, a miss on a scanned spine
+  // says it is navigation.
+  struct PageLinkInfo {
+    std::vector<std::string> previews;  // empty where the store has no text
+    std::vector<uint8_t> isNote;        // 1 = footnote, 0 = navigation
+  };
+  PageLinkInfo pageLinkInfoForCurrentPage();
   // Clamp currentSpineIndex into [0, spineCount]. spineCount itself is the finished-book sentinel.
   void clampSpineIndex(int spineCount);
   // Compute oriented + padded margins and the derived viewport for this render.
@@ -784,7 +791,18 @@ class EpubReaderActivity final : public Activity {
                                          unsigned long backwardMs) const;
 #endif  // ENABLE_BENCHMARKS
 
-  // Footnote navigation
+  // Footnote navigation.
+  //
+  // savePosition is TRUE for every link the reader follows, footnote or not. It was briefly
+  // conditional on the link being a real note -- the reasoning being that a contents link is
+  // navigation rather than a detour, so it should not push a position to return to. That is
+  // wrong about the consequence: the saved position is the ONLY thing Back has to return to, so
+  // a link that saves nothing leaves footnoteDepth at 0 and Back closes the book. Device log
+  // 2026-09-09: a note reference jumped to the notes chapter and Back went to the home screen.
+  //
+  // The two kinds are still told apart, but only where the distinction is harmless -- the
+  // footnote list groups them (see pageLinkInfoForCurrentPage). Following one always leaves a
+  // way back.
   void navigateToHref(const std::string& href, bool savePosition = false);
   void restoreSavedPosition();
 

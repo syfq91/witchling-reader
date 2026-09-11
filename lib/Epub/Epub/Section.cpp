@@ -31,7 +31,15 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 71;  // bumped: the packed word style byte now carries a
+constexpr uint8_t SECTION_FILE_VERSION = 73;  // bumped: an internal link honours CSS
+                                              // vertical-align, so footnote references marked
+                                              // `a { vertical-align: super }` are raised and
+                                              // shrunk. Word size/position are baked into layout
+                                              // v72: `!important` is now stripped from every
+                                              // CSS declaration value, so margins, text-align and
+                                              // text-indent that carry the marker take effect. Those
+                                              // feed layout, so a v71 cache holds the old geometry
+                                              // v71: the packed word style byte now carries a
                                               // per-word "continues the previous word" bit, so the
                                               // dictionary overlay can select a bionic-split or
                                               // hyphenated word as one word. A v70 cache reads the
@@ -304,31 +312,16 @@ std::string Section::getAnchorSpillPath() const {
 // own encoding, so this is a copy, not a re-serialisation -- which is the point: re-encoding
 // would mean reading the records back into memory, the exact cost the spill exists to avoid.
 //
-// The chunk is a fixed 512 B stack buffer: an anchor map is a few KB and this runs once per
-// build, so a bigger buffer would buy nothing, and asking the heap for one here -- at the end of
-// a parse, which is where contig is at its lowest -- is the last thing this path should do.
+// serialization::copyBytes is shared with the footnote preview store, which parks and splices its
+// hash index the same way and for the same reason.
 bool Section::copyAnchorSpill(FsFile& out, const std::string& spillPath) {
   FsFile in;
   if (!Storage.openFileForRead("SCT", spillPath, in)) {
     return false;
   }
-  uint8_t chunk[512];
-  size_t remaining = in.size();
-  while (remaining > 0) {
-    const size_t want = std::min(remaining, sizeof(chunk));
-    const int got = in.read(chunk, want);
-    if (got <= 0 || static_cast<size_t>(got) != want) {
-      in.close();
-      return false;
-    }
-    if (out.write(chunk, want) != want) {
-      in.close();
-      return false;
-    }
-    remaining -= want;
-  }
+  const bool ok = serialization::copyBytes(in, out, static_cast<uint32_t>(in.size()));
   in.close();
-  return true;
+  return ok;
 }
 
 // Deliberately carries NEITHER the spine index nor the layout property hash. What gets written
@@ -2190,6 +2183,10 @@ std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) con
     }
   }
 
+  // Say how big the map WAS on a miss. A miss can mean the id is simply not in this document, or
+  // that the chapter had more anchors than MAX_ANCHORS_PER_CHAPTER and this one fell off the end
+  // -- and those want opposite fixes. The count tells them apart: at the cap, suspect the cap.
+  LOG_DBG("SCT", "Anchor '%s' not in spine %d's map (%u entries)", anchor.c_str(), spineIndex, count);
   f.close();
   return std::nullopt;
 }
