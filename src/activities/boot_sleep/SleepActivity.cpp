@@ -443,7 +443,6 @@ size_t pickSleepImageIndex(size_t numFiles) {
 // then falls back to the default sleep screen is the lesser wrong.
 bool sleepCoverNeedsPreparing(const std::string& bookPath, bool cropped) {
   if (FsHelpers::hasXtcExtension(bookPath)) return !Xtc(bookPath, "/.crosspoint").coverBmpReady();
-  if (FsHelpers::hasTxtExtension(bookPath)) return !Txt(bookPath, "/.crosspoint").coverBmpReady();
   if (FsHelpers::hasEpubExtension(bookPath)) return !Epub(bookPath, "/.crosspoint").coverBmpReady(cropped);
   return false;  // not a format with a cover: nothing to prepare, so nothing to announce
 }
