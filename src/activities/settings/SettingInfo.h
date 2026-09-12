@@ -34,6 +34,7 @@ enum class SettingAction {
   None,
   RemapFrontButtons,
   ButtonActionsOverview,
+  GestureActionsOverview,
   CustomiseStatusBar,
   DownloadFonts,
   OPDSBrowser,
