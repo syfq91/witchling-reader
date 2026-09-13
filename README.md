@@ -23,7 +23,7 @@ Requires [PlatformIO Core](https://platformio.org/install/cli) (`pio`) — or VS
 
 ```sh
 # Clone with submodules (or run `git submodule update --init --recursive` after cloning without)
-git clone --recursive <repo-url> witchling-reader
+git clone https://github.com/syfq91/witchling-reader.git
 cd witchling-reader
 
 # Enable repo-managed git hooks (once per clone)
