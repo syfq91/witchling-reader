@@ -1,26 +1,20 @@
 # Witchling Reader
 
-A personal, streamlined fork of [jpirnay/witchhunt-reader](https://github.com/jpirnay/witchhunt-reader) (originally derived from [crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)) exclusively targeting the **Xteink X4** (ESP32-C3 architecture).
+A personal fork of [jpirnay/witchhunt-reader](https://github.com/jpirnay/witchhunt-reader) exclusively targeting the locked **Xteink X4**.
 
-For full device documentation, hardware specifications, and build guides, refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme).
+For full documentation refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme).
 
 ---
 
 ## Changes in this Fork
 
-This fork prioritizes physical button navigation, standard protocols, minimal memory overhead (~320KB RAM ceiling), and extended battery life:
-
-- **Exclusively Supports Xteink X4 (ESP32-C3)**: Removed builds and code for all other devices (Xteink X3, X4 Pro, LilyGo T5S3). Tailored specifically for the X4 hardware (SSD1677 e-ink panel, ADC battery monitoring, right-side stacked physical buttons).
-- **Physical Button Navigation Only**: Completely removed touchscreen drivers, gesture recognition, touch tap zones, touch bands, and on-screen button hint bloat.
-- **Removed USB Mass Storage (MSC) & Frontlight**: Removed TinyUSB MSC mode and frontlight controls to keep memory usage low and execution fast on ESP32-C3 hardware.
-- **OPDS Progression 1.0 Sync**: Standardized reading progress synchronization ([OPDS Progression 1.0](https://github.com/opds-community/drafts/blob/main/opds-progression-1.0.md)) across EPUB and XTC readers with on-demand sync (via Reader Menu or remappable button controls) and opportunistic sync when WiFi is connected.
-- **Removed TXT and Markdown Support**: Removed plain text and Markdown readers, parsers, and menus to concentrate firmware resources strictly on EPUB and XTC formats.
-- **Lyra Sole Theme**: Standardized on Lyra as the sole UI theme and removed Classic, Lyra 3 Covers, and Carousel variants along with the theme selection menu to reduce firmware footprint and simplify the UI.
-- **Removed Legacy Sync & Proprietary Protocols**: Dropped legacy KOReader sync and Calibre SmartDevice wireless transfer in favor of standard OPDS catalog downloads and OPDS Progression sync.
-- **Removed Weather Integration**: Stripped Open-Meteo weather polling, home screen widgets, and weather icons to eliminate background network wakeups and save RAM.
-- **Removed USB Serial, Flashing & Host Communication**: On locked X4 hardware, the USB port is strictly wired for power/charging and does not support USB data, serial communication, or flashing. Removed all USB serial logging, CDC initialization, host link polling, and serial command parsing to eliminate dead code and speed up boot times.
-- **Removed Reading Statistics**: Stripped the reading stats tracker, history screens, and web dashboard to eliminate dynamic heap allocations/fragmentation and unnecessary SD card writes, reducing flash footprint and speeding up book exit/sleep transitions.
-
+- [OPDS Progression 1.0](https://github.com/opds-community/drafts/blob/main/opds-progression-1.0.md) Sync
+- Removed TXT and Markdown Support
+- Lyra Sole Theme
+- Removed KOReader sync and Calibre wireless transfer
+- Removed Weather Integration
+- Removed USB Serial, Flashing & Host Communication
+- Removed Reading Statistics
 ---
 
 ## Building
@@ -45,11 +39,11 @@ pio run -e gh_release
 ## Installing Firmware
 
 > [!NOTE]
-> Locked X4 hardware does not support flashing over USB (`pio run --target upload` will not work). The USB-C port is strictly power/charging.
+> Locked X4 hardware does not support flashing over USB
 
 To install or update firmware on the device:
 
-- **SD Card Update**: Copy the compiled binary (`.pio/build/x4/firmware.bin`) to the SD card root as `update.bin`, or navigate to any `.bin` file in the device file browser, long-press **Confirm**, and select **Flash**. Alternatively, navigate to **Settings -> System -> SD Firmware Update**.
+- **SD Card Update**: Copy the compiled binary (`.pio/build/x4/firmware.bin`) to the SD card root as `update.bin`, or navigate to **Settings -> System -> SD Firmware Update**.
 - **Wi-Fi OTA / Web Server**: Upload the `.bin` file via the built-in web server or check for updates wirelessly in **Settings -> System -> Check for Updates**.
 
 For device documentation, hardware specifications, and troubleshooting, refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme) and the `docs/` directory.
