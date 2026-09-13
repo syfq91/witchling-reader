@@ -5,13 +5,13 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
+#include <HalSystem.h>  // feedWatchdog()
 #include <I18n.h>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
 #include <PngToBmpConverter.h>
 #include <SidecarFiles.h>
 #include <Xtc.h>
-#include <esp_task_wdt.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -332,7 +332,7 @@ std::string findSeriesSequel(const std::string& directory, const std::string& cu
     // folder is many seconds — feed the watchdog and let other tasks run between candidates. The
     // pre-fix scan full-loaded every EPUB (~2 s each) with no yield at all, the suspected cause of
     // the issue #104 reboot.
-    esp_task_wdt_reset();
+    HalSystem::feedWatchdog();
     yield();
 
     const std::string candidatePath = pathWithFilename(directory, fileName);

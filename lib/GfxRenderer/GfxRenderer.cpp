@@ -184,7 +184,17 @@ uint8_t* GfxRenderer::allocScaledGlyphMask(const void* fontData, const uint32_t 
   if (scaledGlyphCount_ >= SCALED_GLYPH_MAX_ENTRIES || scaledGlyphUsed_ + bytes > SCALED_GLYPH_ARENA_BYTES) {
     // Wholesale reset instead of LRU bookkeeping: the working set is one page's
     // distinct glyphs, so a reset costs at most one re-resample each.
-    LOG_DBG("GFX", "Scaled-glyph cache reset (%u entries, %u bytes used)", scaledGlyphCount_, scaledGlyphUsed_);
+    //
+    // TRC, not DBG, and deliberately not device-gated: this is a designed,
+    // cheap event that happens several times on a dense page (the 80-entry cap
+    // binds long before the 3584-byte arena does -- the X4 Pro hit it at ~1.9 KB
+    // used), so at DBG it is several lines per page turn reporting that the
+    // cache did exactly what it was built to do. It is not worth resizing
+    // either: the same page summaries measured glyphUs=1656 across 1120
+    // glyphCalls, i.e. ~1.5 us a call and under 2 ms of glyph work per page, so
+    // the re-resampling a reset causes is beneath notice. Rebuild with
+    // -DLOG_LEVEL=3 to watch it.
+    LOG_TRC("GFX", "Scaled-glyph cache reset (%u entries, %u bytes used)", scaledGlyphCount_, scaledGlyphUsed_);
     invalidateScaledGlyphCache();
   }
 
@@ -622,10 +632,33 @@ static inline uint8_t get2BitPixel(const uint8_t* const bitmap, const int stride
 //                      footprint to darkness=2 but driven harder, so
 //                      strokes look noticeably bolder/blacker on the
 //                      physical e-ink panel.
+//
+//   darkness=4  Lighter — both AA shades go to the LIGHT tone
+//     . . . ░ ●        raw=1 → (1,0) light gray (unchanged)
+//     . . ░ ● ░        raw=2 → (1,0) light gray (was dark gray)
+//     . ░ ● ░ .        The mirror of darkness=2: instead of collapsing
+//     ░ ● ░ . .        both fringes to the dark tone, both take the
+//     ● ░ . . .        light one. Thins the apparent stroke without
+//                      touching the panel waveform.
+//
+//     Numerically last because the value is PERSISTED (see
+//     CrossPointSettings::TEXT_DARKNESS) — inserting it at 0 would
+//     silently redefine every saved setting. It reads out of order in
+//     the menu; that is the price of not rewriting users' choices.
 // ───────────────────────────────────────────────────────────────────────────
+// Mirrors CrossPointSettings::DARKNESS_LIGHT. Spelled out here because this
+// library does not include the firmware's settings header.
+static constexpr uint8_t kDarknessLighter = 4;
+
 static inline uint8_t drawMaskFor2BitMode(const GfxRenderer::RenderMode mode, const uint8_t darkness) {
   if (mode == GfxRenderer::BW) return 0x0E;  // draw raw {1,2,3}
-  if (darkness >= 3) return 0x00;            // skip grayscale entirely (Maximum)
+  // Before the >= 3 test, which would otherwise swallow this as Maximum: the
+  // value sits past Maximum in the enum only because it is persisted.
+  if (darkness == kDarknessLighter) {
+    // Both AA shades take the light tone -> raw 1 and 2 both land on (1,0).
+    return (mode == GfxRenderer::GRAYSCALE_MSB) ? 0x06 : 0x00;
+  }
+  if (darkness >= 3) return 0x00;  // skip grayscale entirely (Maximum)
   if (mode == GfxRenderer::GRAYSCALE_MSB) {
     return (darkness == 0) ? 0x02 : 0x06;
   }

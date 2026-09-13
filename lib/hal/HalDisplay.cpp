@@ -5,6 +5,7 @@
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
 #include <Logging.h>
+#include <XteinkDetect.h>  // applyXteinkDisplayController() — see begin()
 #include <esp_heap_caps.h>
 
 #include "HalSpiBus.h"
@@ -38,6 +39,17 @@ HalDisplay::HalDisplay()
 HalDisplay::~HalDisplay() {}
 
 void HalDisplay::begin(bool seamless) {
+#if !FREEINK_MCU_C3
+  // Resolve which panel controller this unit actually carries, before
+  // einkDisplay.begin() picks a driver from it.
+  static bool controllerResolved = false;
+  if (!controllerResolved) {
+    controllerResolved = true;
+    if (freeink::applyXteinkDisplayController()) {
+      LOG_INF("DISP", "Panel controller: UltraChip UC81xx variant detected");
+    }
+  }
+#endif
   // Drop the CPU clock while the render task sleeps out a waveform (any BUSY
   // wait that proves long — the SDK's bus fires the hooks around the ISR sleep
   // or the poll loop) and restore it before the post-waveform SPI work. Policy

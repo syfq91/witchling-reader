@@ -1,5 +1,6 @@
 #include "HalPowerManager.h"
 
+#include <BatteryMonitor.h>
 #include <BoardConfig.h>
 #include <HalCapabilities.h>
 #include <Logging.h>
@@ -11,12 +12,46 @@
 #include <cassert>
 
 #include "HalGPIO.h"
+#include "HalI2cBus.h"
 
 HalPowerManager powerManager;  // Singleton instance
 
 // The C3 flash SPIWP pad, unused in these boards' DIO flash mode and rewired as a
 // power control on the Xteink C3 units (see lightSleep()).
 static constexpr gpio_num_t GPIO_BATTERY_LATCH = GPIO_NUM_13;
+
+// Whether this build is allowed to call setCpuFrequencyMhz() at all.
+//
+// On the ESP32-S3 the PSRAM clock is derived from the CPU/APB clock, so changing
+// the CPU frequency while anything is touching PSRAM corrupts those accesses. On
+// the T5S3 that is not a corner case: the 960x540 framebuffer lives in PSRAM, so
+// the render path is in it more or less continuously. It is no better on the X4
+// Pro, whose prebuilt Arduino variant sets CONFIG_SPIRAM_USE_MALLOC with
+// CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096 — every allocation over 4 KB lands in
+// PSRAM — and which runs that PSRAM octal at 80 MHz.
+//
+// Observed on T5S3 hardware as a TG1WDT_SYS_RST immediately after the "Going to
+// low-power mode" line, on four consecutive boots and then intermittently —
+// intermittent because it depends on what is mid-access when the switch happens,
+// which is exactly the signature of this hazard rather than of a logic bug.
+//
+// This started life as an #if inside setPowerSaving() alone (commit 0a0851eb),
+// which left the two waveform hooks below scaling the clock unguarded. That gap
+// was invisible on the T5S3 — its panel is LGFX/parallel and never reaches
+// EpdBus::waitBusy, so the hooks never fire there — but on the X4 Pro they fire
+// on EVERY refresh (EpdBus fires them above a 20 ms wait), which would have made
+// the hot path the one that breaks PSRAM. Hence a single named predicate: every
+// setCpuFrequencyMhz() call site in this file is gated on it.
+//
+// The cost is idle power on a board that has 8 MB of PSRAM and a wired USB port;
+// the alternative is random resets. Revisit if ESP-IDF's dynamic frequency
+// scaling is ever configured properly for this build (it needs the PSRAM-aware
+// DFS path, not a bare setCpuFrequencyMhz()).
+#if defined(BOARD_HAS_PSRAM) && BOARD_HAS_PSRAM
+static constexpr bool CPU_SCALING_ALLOWED = false;
+#else
+static constexpr bool CPU_SCALING_ALLOWED = true;
+#endif
 
 void HalPowerManager::begin() {
   pinMode(BoardConfig::ACTIVE.batteryAdc, INPUT);
@@ -29,6 +64,10 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   if (normalFreq <= 0) {
     return;  // invalid state
   }
+  if constexpr (!CPU_SCALING_ALLOWED) {
+    (void)enabled;
+    return;
+  }
 
   auto wifiMode = WiFi.getMode();
   if (wifiMode != WIFI_MODE_NULL) {
@@ -40,28 +79,6 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   // that just won the race will re-call setPowerSaving anyway), but we want
   // defined semantics rather than relying on compiler behavior for a plain int.
   const LockMode mode = currentLockMode.load(std::memory_order_relaxed);
-
-#if defined(BOARD_HAS_PSRAM) && BOARD_HAS_PSRAM
-  // CPU frequency scaling is disabled on PSRAM boards.
-  //
-  // On the ESP32-S3 the PSRAM clock is derived from the CPU/APB clock, so
-  // changing the CPU frequency while anything is touching PSRAM corrupts those
-  // accesses. On the T5S3 that is not a corner case: the 960x540 framebuffer
-  // lives in PSRAM, so the render path is in it more or less continuously.
-  //
-  // Observed on hardware as a TG1WDT_SYS_RST immediately after the
-  // "Going to low-power mode" line, on four consecutive boots and then
-  // intermittently -- intermittent because it depends on what is mid-access when
-  // the switch happens, which is exactly the signature of this hazard rather
-  // than of a logic bug.
-  //
-  // The cost is idle power on a board that has 8 MB of PSRAM and a wired USB
-  // port; the alternative is random resets. Revisit if ESP-IDF's dynamic
-  // frequency scaling is ever configured properly for this build (it needs the
-  // PSRAM-aware DFS path, not a bare setCpuFrequencyMhz()).
-  (void)enabled;
-  return;
-#endif
 
   if (mode == None && enabled && !isLowPower) {
     LOG_DBG("PWR", "Going to low-power mode");
@@ -86,6 +103,9 @@ void HalPowerManager::setPowerSaving(bool enabled) {
 void HalPowerManager::ensureFullSpeedForRadio() {
   if (normalFreq <= 0) {
     return;  // begin() not called yet — nothing to restore to
+  }
+  if constexpr (!CPU_SCALING_ALLOWED) {
+    return;  // nothing ever lowered the clock, so there is nothing to restore
   }
   // Clear BOTH downclock owners before touching the frequency. The idle governor
   // (isLowPower) and the waveform hook (waveformLowPower_) track their drops separately, and
@@ -116,6 +136,11 @@ void HalPowerManager::enterWaveformWait() {
   if (normalFreq <= 0) {
     return;  // begin() not called yet — nothing to restore to
   }
+  if constexpr (!CPU_SCALING_ALLOWED) {
+    // EpdBus fires this hook above a 20 ms busy wait, i.e. on every refresh.
+    // Scaling here would be the most frequent PSRAM-clock change in the build.
+    return;
+  }
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     return;  // WiFi requires the 80 MHz APB clock
   }
@@ -140,6 +165,9 @@ void HalPowerManager::enterWaveformWait() {
 }
 
 void HalPowerManager::exitWaveformWait() {
+  if constexpr (!CPU_SCALING_ALLOWED) {
+    return;  // enterWaveformWait() never lowered the clock; stay balanced with it
+  }
   xSemaphoreTake(modeMutex, portMAX_DELAY);
   if (waveformLowPower_) {
     waveformLowPower_ = false;
@@ -356,7 +384,7 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, bool keepClockAlive) const {
 
 uint16_t HalPowerManager::getBatteryPercentage() const {
   // ADC pin from the profile for X4.
-  static const BatteryMonitor battery = BatteryMonitor(BoardConfig::ACTIVE.batteryAdc);
+  static const BatteryMonitor battery;
 
   // Smooth the battery % with a 1/10-weight IIR. The cache stores the value
   // scaled ×10 so integer math keeps enough precision. Seed explicitly on the

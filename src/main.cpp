@@ -699,6 +699,21 @@ void setup() {
   // SD card, so no first-use allocation happens inside a refresh or read path.
   HalSpiBus::begin();
   HalI2cBus::begin();
+#if BOARD_SUPPORT_OWNS_BUSES
+  // One lock for one bus. The board-support layer drives the PCA9535 and the
+  // TPS65185 under a mutex of its own, and LovyanGFX's EPD panel task runs those
+  // helpers on EVERY refresh to raise the panel rails -- while the GT911 is
+  // polled from the input sampler and the RTC and gauge from this task, all
+  // under HalI2cBus. Two mutexes over one Wire serialise nothing, and the
+  // failure is not a bad register read: a collided power-up returns false,
+  // Panel_EPD's task ignores that, and the frame is clocked out with the
+  // high-voltage rails down -- a page that lands weakly or not at all, then gets
+  // repainted by the next refresh.
+  //
+  // Here rather than inside HalI2cBus because this is the one file that already
+  // knows which board it is; the HAL takes a handle and asks no questions.
+  HalI2cBus::adoptMutex(BoardT5S3::i2cMutexHandle());
+#endif
   gpio.begin();
   HalI2cBus::ensureBusStarted();
   powerManager.begin();
@@ -804,9 +819,14 @@ void setup() {
       gpio.update();
       delay(10);
     }
-    if (gpio.isHeldNow(HalGPIO::BTN_UP)) {
+    // Up normally, Down on a board that wires Up to the MCU's boot-mode strap.
+    // There, holding Up through the reset enters ROM download mode instead of
+    // running this firmware at all, so the combo could never fire and the user
+    // is left looking at a device that appears dead. See upKeyIsBootStrap().
+    const bool upIsStrap = HalCapabilities::upKeyIsBootStrap();
+    if (gpio.isHeldNow(upIsStrap ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP)) {
       recoveryFirmwareMode = true;
-      LOG_INF("MAIN", "Recovery firmware mode (UP + POWER held at boot)");
+      LOG_INF("MAIN", "Recovery firmware mode (%s + POWER held at boot)", upIsStrap ? "DOWN" : "UP");
     }
     BootDiag::markPhase(BootPhase::RecoverySettle);
   }

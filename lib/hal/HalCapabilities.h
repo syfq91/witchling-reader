@@ -74,6 +74,22 @@ inline bool hasBackAndConfirmButtons() { return true; }
 // The physical button topology.
 inline BoardConfig::InputStyle inputStyle() { return BoardConfig::ACTIVE.inputStyle; }
 
+// True when the SD card is reached over SPI (always true on X4).
+inline bool sdUsesSpi() { return true; }
+
+// The MCU pin the ROM samples at reset to choose boot vs. download mode. Holding
+// it LOW while the chip comes out of reset enters ROM download mode, so firmware
+// never runs and no boot-time key combo on that pin can ever be observed.
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32H2)
+inline constexpr int8_t BOOT_MODE_STRAP_PIN = 9;
+#else  // ESP32 / ESP32-S2 / ESP32-S3
+inline constexpr int8_t BOOT_MODE_STRAP_PIN = 0;
+#endif
+
+// True when this board wires its Up key to that strapping pin, so a boot-time
+// combo must use a different key. Always false on X4 (uses ADC ladder).
+inline bool upKeyIsBootStrap() { return false; }
+
 // Chrome scale factor for finger-sized targets. 1.0 on button boards.
 inline float uiScale() { return 1.0f; }
 

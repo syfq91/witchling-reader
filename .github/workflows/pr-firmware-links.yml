@@ -74,8 +74,7 @@ jobs:
             // listed here that the run does not produce suppresses the whole
             // comment, so the two lists have to move together.
             const builds = [
-              { name: 'firmware.bin', device: 'X3 / X4' },
-              { name: 'firmware-lilygo.bin', device: 'LilyGo T5S3' },
+              { name: 'firmware.bin', device: 'X4' },
             ];
             const { data: artifactResponse } =
               await github.rest.actions.listWorkflowRunArtifacts({

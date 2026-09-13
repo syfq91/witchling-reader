@@ -221,6 +221,9 @@ class HalGPIO {
   // Check if USB is connected
   bool isUsbConnected() const;
 
+  // Whether this board can observe a cable at all without an enumerated host.
+  bool canDetectUsbElectrically() const;
+
   // USB state as sampled by the last update() call. Prefer this in per-loop polling.
   bool isUsbConnectedCached() const { return lastUsbConnected; }
 
