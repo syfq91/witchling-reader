@@ -101,22 +101,19 @@ one and metadata corrections are lost.
 
 Who does this today:
 
-- **Move to `/COMPLETED`** (the optional finished-book action) moves the book
-  and every sidecar, resolving name collisions for each
-  (`moveSidecarFilesToCompleted`).
 - **The `organize-by-author` plugin** moves sidecars with the book — see
   [sd-plugins.md](sd-plugins.md).
 - **Manual moves** through the web File Manager or a script are your own
   responsibility: move `book.epub`, `book.jpg` and `book.opf` together.
 
 Adding another sidecar type means adding it to **one** place:
-`lib/FsHelpers/SidecarFiles.h`. Cover resolution, metadata resolution and the
+`lib/FsHelpers/SidecarFiles.h`. Cover resolution, metadata resolution and any
 move-with-the-book path all read those tables — `ReaderActivity::sidecarCoverPath`
 and `Epub::metadataSidecarPath` are one-line delegates that add only their own
 logging.
 
-This used to be three independent copies, which is exactly how `.opf` came to be
-readable by the reader but left behind when a finished book moved. The copies had
+This used to be multiple independent copies, which is how `.opf` came to be
+readable by the reader but left behind when a book moved. The copies had
 also drifted: the move path derived its base name without checking for a path
 separator, so a book with no extension inside a dotted folder (`/My.Books/untitled`)
 took the dot from the folder.

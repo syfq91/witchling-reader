@@ -184,7 +184,6 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   if (s.sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = s.sdFontFamilyName;
   }
-  doc["moveFinishedBooksToCompleted"] = s.moveFinishedBooksToCompleted;
   doc["removeFinishedBooksFromRecents"] = s.removeFinishedBooksFromRecents;
 
   String json;
@@ -338,7 +337,6 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(s.sdFontFamilyName, sfn, sizeof(s.sdFontFamilyName) - 1);
   s.sdFontFamilyName[sizeof(s.sdFontFamilyName) - 1] = '\0';
-  s.moveFinishedBooksToCompleted = doc["moveFinishedBooksToCompleted"] | (uint8_t)0;
   s.removeFinishedBooksFromRecents = doc["removeFinishedBooksFromRecents"] | (uint8_t)0;
 
   const uint8_t quickResumeBeforeNormalize = s.quickResumeSleepScreen;

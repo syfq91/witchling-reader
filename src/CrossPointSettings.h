@@ -77,7 +77,6 @@ class CrossPointSettings {
     STATUS_BAR_ITEMS_POSITION_COUNT
   };
 
-
   enum ORIENTATION {
     PORTRAIT = 0,       // 480x800 logical coordinates (current default)
     LANDSCAPE_CW = 1,   // 800x480 logical coordinates, rotated 180° (swap top/bottom)
@@ -214,7 +213,6 @@ class CrossPointSettings {
 #else
   enum IMAGE_DITHERING { IMAGE_DITHER_BAYER = 0, IMAGE_DITHERING_COUNT };
 #endif
-
 
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
@@ -363,8 +361,6 @@ class CrossPointSettings {
   uint8_t guideDots = 0;
   // Expand semantic EPUB footnote references with a short inline preview.
   uint8_t inlineFootnotePreviews = 0;
-  // Move finished book to /COMPLETED when the end-of-book screen action is selected.
-  uint8_t moveFinishedBooksToCompleted = 0;
   // Remove finished book from Recent Books when the end-of-book screen action is selected.
   uint8_t removeFinishedBooksFromRecents = 0;
   // Include release candidate builds when checking for OTA updates.

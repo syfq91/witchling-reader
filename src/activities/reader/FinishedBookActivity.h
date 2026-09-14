@@ -11,8 +11,6 @@ namespace BookFinished {
 std::string findNextBookInDirectory(const std::string& currentBookPath, const std::string& currentBookSeries,
                                     const std::string& currentBookSeriesIndex);
 
-bool moveFinishedBookToCompleted(const std::string& currentBookPath, std::string& outMovedPath);
-
 enum class FinishedBookAction {
   Stay = 0,
   GoHome = 1,
@@ -21,8 +19,8 @@ enum class FinishedBookAction {
 };
 
 // Launches the finished-book menu on top of `host` and handles its result:
-// credits a finish to the reading-stats session, applies the move-to-/COMPLETED
-// and remove-from-recents settings, then navigates home or to the next book.
+// credits a finish to the reading-stats session, applies the remove-from-recents
+// setting, then navigates home or to the next book.
 // On cancel/stay the host gets a requestUpdate() to re-render its last page.
 // The caller is responsible for persisting reading progress beforehand (the
 // progress formats differ per reader).
@@ -54,20 +52,20 @@ class FinishedBookActivity : public Activity {
   // mapped input state directly and is unaffected.
   ButtonNavigator buttonNavigator;
 
-  // The menu's rows are conditional (next-book, OPDS-search, and
-  // move-to-/COMPLETED each appear only when applicable), so the row count and every row's
-  // index depend on the same booleans. Those were previously re-derived independently in
-  // onEnter(), loop() and render(); any divergence between the count handed to GUI.drawList
-  // and the vectors its callbacks index is an out-of-bounds read. Building the model once per
-  // use keeps the count, the indices and the row content in sync by construction.
+  // The menu's rows are conditional (next-book and OPDS-search each appear only when
+  // applicable), so the row count and every row's index depend on the same booleans.
+  // Those were previously re-derived independently in onEnter(), loop() and render(); any
+  // divergence between the count handed to GUI.drawList and the vectors its callbacks index
+  // is an out-of-bounds read. Building the model once per use keeps the count, the indices
+  // and the row content in sync by construction.
   //
-  // Rows are single-line (title + right-aligned value, no subtitle): with up to six rows now
+  // Rows are single-line (title + right-aligned value, no subtitle): with up to five rows now
   // possible, the two-line "with subtitle" row height would push the list well past what fits
   // alongside the header and next-book preview. Anything a subtitle used to carry (next-book
   // author/series, which author an OPDS search) either duplicates the preview panel above or
   // fits in the title itself.
   struct RowModel {
-    enum class Action { GoHome, OpenNext, SearchOpds, ToggleMoveToCompleted, ToggleForget };
+    enum class Action { GoHome, OpenNext, SearchOpds, ToggleForget };
     std::vector<Action> actions;
     std::vector<std::string> titles;
     std::vector<std::string> values;
@@ -87,7 +85,6 @@ class FinishedBookActivity : public Activity {
   std::string nextBookCoverPath_;
   bool nextBookAvailable_ = false;
   bool nextBookMetadataLoaded_ = false;
-  bool moveFinishedBooksToCompleted_ = false;
   bool removeFinishedBooksFromRecents_ = false;
   int selectedIndex_ = 0;
 };

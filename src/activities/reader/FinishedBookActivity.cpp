@@ -10,7 +10,6 @@
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
 #include <PngToBmpConverter.h>
-#include <SidecarFiles.h>
 #include <Xtc.h>
 
 #include <algorithm>
@@ -49,25 +48,6 @@ std::string getFilename(const std::string& filePath) {
 
 static constexpr int kFinishedBookCoverHeight = RecentBooksActivity::GRID_THUMB_HEIGHT;
 static constexpr int kFinishedBookCoverMaxWidth = RecentBooksActivity::GRID_THUMB_WIDTH;
-
-std::string findUniquePathWithSuffix(const std::string& basePath) {
-  if (!Storage.exists(basePath.c_str())) {
-    return basePath;
-  }
-
-  const auto dotPos = basePath.find_last_of('.');
-  const std::string base = (dotPos == std::string::npos) ? basePath : basePath.substr(0, dotPos);
-  const std::string ext = (dotPos == std::string::npos) ? std::string() : basePath.substr(dotPos);
-  for (int suffix = 1; suffix < 1000; ++suffix) {
-    const std::string candidate = base + " (" + std::to_string(suffix) + ")" + ext;
-    if (!Storage.exists(candidate.c_str())) {
-      return candidate;
-    }
-  }
-  return {};
-}
-
-std::string findUniqueCompletedSidecarPath(const std::string& basePath) { return findUniquePathWithSuffix(basePath); }
 
 std::string convertSidecarToBmp(const std::string& cacheDir, const std::string& sidecarPath, int width, int height,
                                 const std::string& fileName) {
@@ -124,38 +104,6 @@ std::string getSidecarCoverBmpPath(const std::string& bookPath, int width, int h
 
   const std::string fileName = "thumb_" + std::to_string(width) + "x" + std::to_string(height) + ".bmp";
   return convertSidecarToBmp(ReaderActivity::bookCacheDir(bookPath), sidecarPath, width, height, fileName);
-}
-
-// A sidecar is bound to its book by filename, so every one of them has to
-// travel with it - a book that arrives in /COMPLETED without its sidecars
-// silently loses its cover and reverts to the metadata embedded in the EPUB.
-// Which extensions those are is SidecarFiles' business, not this function's.
-bool moveSidecarFilesToCompleted(const std::string& currentBookPath, const std::string& targetBookPath) {
-  const std::string srcBase = SidecarFiles::basePath(currentBookPath);
-  const std::string dstBase = SidecarFiles::basePath(targetBookPath);
-  if (srcBase.empty() || dstBase.empty()) {
-    return false;
-  }
-
-  bool success = true;
-  for (const char* ext : SidecarFiles::existingExtensions(currentBookPath)) {
-    const std::string srcSidecar = srcBase + ext;
-    std::string dstSidecar = dstBase + ext;
-    if (Storage.exists(dstSidecar.c_str())) {
-      dstSidecar = findUniqueCompletedSidecarPath(dstSidecar);
-      if (dstSidecar.empty()) {
-        LOG_ERR("FIN", "Failed to create unique sidecar target for %s", srcSidecar.c_str());
-        success = false;
-        continue;
-      }
-    }
-
-    if (!Storage.rename(srcSidecar.c_str(), dstSidecar.c_str())) {
-      LOG_ERR("FIN", "Failed to move sidecar %s -> %s", srcSidecar.c_str(), dstSidecar.c_str());
-      success = false;
-    }
-  }
-  return success;
 }
 
 struct NextBookMetadata {
@@ -400,17 +348,6 @@ std::string findNextAlphabeticalBook(const std::string& directory, const std::st
   if (best.empty()) return {};
   return pathWithFilename(directory, best);
 }
-
-bool pathIsInCompleted(const std::string& bookPath) {
-  return bookPath.rfind("/COMPLETED/", 0) == 0 || bookPath == "/COMPLETED";
-}
-
-std::string buildCompletedTargetPath(const std::string& currentBookPath) {
-  const std::string fileName = getFilename(currentBookPath);
-  return std::string("/COMPLETED/") + fileName;
-}
-
-std::string findUniqueCompletedPath(const std::string& basePath) { return findUniquePathWithSuffix(basePath); }
 }  // namespace
 
 namespace BookFinished {
@@ -428,40 +365,6 @@ std::string findNextBookInDirectory(const std::string& currentBookPath, const st
   }
 
   return findNextAlphabeticalBook(directory, currentFilename);
-}
-
-bool moveFinishedBookToCompleted(const std::string& currentBookPath, std::string& outMovedPath) {
-  if (pathIsInCompleted(currentBookPath)) {
-    outMovedPath = currentBookPath;
-    return true;
-  }
-
-  const std::string completedDir = "/COMPLETED";
-  if (!Storage.exists(completedDir.c_str()) && !Storage.mkdir(completedDir.c_str())) {
-    LOG_ERR("FIN", "Failed to create /COMPLETED directory");
-    return false;
-  }
-
-  std::string targetPath = buildCompletedTargetPath(currentBookPath);
-  if (Storage.exists(targetPath.c_str())) {
-    targetPath = findUniqueCompletedPath(targetPath);
-    if (targetPath.empty()) {
-      LOG_ERR("FIN", "Cannot resolve unique /COMPLETED filename");
-      return false;
-    }
-  }
-
-  if (!Storage.rename(currentBookPath.c_str(), targetPath.c_str())) {
-    LOG_ERR("FIN", "Failed to move book to /COMPLETED: %s -> %s", currentBookPath.c_str(), targetPath.c_str());
-    return false;
-  }
-
-  if (!moveSidecarFilesToCompleted(currentBookPath, targetPath)) {
-    LOG_ERR("FIN", "One or more sidecar files failed to move for %s", currentBookPath.c_str());
-  }
-
-  outMovedPath = targetPath;
-  return true;
 }
 
 void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -488,12 +391,6 @@ void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputMa
         if (!goHome && !openNext && !searchOpds) {
           hostPtr->requestUpdate();
           return;
-        }
-        // The move-to-/COMPLETED and forget-book settings apply no matter which of the three
-        // actions below was picked.
-        if (SETTINGS.moveFinishedBooksToCompleted) {
-          std::string movedPath;
-          moveFinishedBookToCompleted(bookPath, movedPath);
         }
         if (SETTINGS.removeFinishedBooksFromRecents) {
           RECENT_BOOKS.removeBook(bookPath);
@@ -543,12 +440,6 @@ FinishedBookActivity::RowModel FinishedBookActivity::buildRowModel() const {
     model.values.push_back(tr(STR_SEARCH));
   }
 
-  if (!pathIsInCompleted(currentBookPath_)) {
-    model.actions.push_back(RowModel::Action::ToggleMoveToCompleted);
-    model.titles.push_back(tr(STR_MOVE_FINISHED_TO_COMPLETED));
-    model.values.push_back(moveFinishedBooksToCompleted_ ? tr(STR_STATE_ON) : tr(STR_STATE_OFF));
-  }
-
   model.actions.push_back(RowModel::Action::ToggleForget);
   model.titles.push_back(tr(STR_FORGET_BOOK));
   model.values.push_back(removeFinishedBooksFromRecents_ ? tr(STR_STATE_ON) : tr(STR_STATE_OFF));
@@ -558,7 +449,6 @@ FinishedBookActivity::RowModel FinishedBookActivity::buildRowModel() const {
 
 void FinishedBookActivity::onEnter() {
   Activity::onEnter();
-  moveFinishedBooksToCompleted_ = SETTINGS.moveFinishedBooksToCompleted;
   removeFinishedBooksFromRecents_ = SETTINGS.removeFinishedBooksFromRecents;
   selectedIndex_ = std::clamp(selectedIndex_, 0, std::max(0, buildRowModel().count() - 1));
 
@@ -580,9 +470,9 @@ void FinishedBookActivity::onEnter() {
 
 void FinishedBookActivity::loop() {
   // Built ONCE per loop() rather than per event: the model depends only on member state, and
-  // constructing it allocates five rows of translated strings. Rebuilding it inside the event loop
+  // constructing it allocates four rows of translated strings. Rebuilding it inside the event loop
   // put that cost in front of every button press. Any handler below that changes what the rows say
-  // (the two toggles) returns immediately, so a single build stays consistent with the events it
+  // (the forget toggle) returns immediately, so a single build stays consistent with the events it
   // dispatches.
   const RowModel model = buildRowModel();
   const int optionCount = model.count();
@@ -621,12 +511,6 @@ void FinishedBookActivity::loop() {
           return;
         case RowModel::Action::SearchOpds:
           finishWith(BookFinished::FinishedBookAction::SearchOpdsForAuthor);
-          return;
-        case RowModel::Action::ToggleMoveToCompleted:
-          moveFinishedBooksToCompleted_ = !moveFinishedBooksToCompleted_;
-          SETTINGS.moveFinishedBooksToCompleted = moveFinishedBooksToCompleted_;
-          SETTINGS.saveToFile();
-          requestUpdate();
           return;
         case RowModel::Action::ToggleForget:
           removeFinishedBooksFromRecents_ = !removeFinishedBooksFromRecents_;

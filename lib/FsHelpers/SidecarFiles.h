@@ -8,9 +8,9 @@
 // "Some Book.opf" overrides its metadata (see docs/sidecar-files.md).
 //
 // This is the single definition of what counts as a sidecar. It used to be
-// spread across three places - the cover resolver, the metadata resolver and
-// the move-to-/COMPLETED extension list - which is precisely how .opf came to
-// be readable by the reader but left behind when a finished book moved.
+// spread across multiple places - the cover resolver, the metadata resolver
+// and file move routines - which is how .opf came to be readable by the
+// reader but left behind when a book moved.
 //
 // ADDING A NEW KIND OF SIDECAR MEANS ADDING IT HERE AND NOWHERE ELSE.
 namespace SidecarFiles {
