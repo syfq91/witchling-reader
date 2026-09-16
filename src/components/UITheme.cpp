@@ -1,13 +1,11 @@
 #include "UITheme.h"
 
-#include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
-#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
-#include <Xtc.h>
+
 
 #include <algorithm>
 #include <cstdio>
@@ -15,10 +13,9 @@
 #include <string>
 
 #include "MappedInputManager.h"
-#include "RecentBooksStore.h"
+
 #include "components/themes/BaseTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
-#include "fontIds.h"
 
 namespace {
 constexpr int SKIP_PAGE_MS = 700;
@@ -40,6 +37,7 @@ uint8_t normalizeStatusBarItemsPosition(const uint8_t position) {
   return position < CrossPointSettings::STATUS_BAR_ITEMS_POSITION_COUNT ? position
                                                                         : CrossPointSettings::STATUS_BAR_ITEMS_BOTTOM;
 }
+
 }  // namespace
 
 #include <BootHeapProbe.h>
@@ -143,114 +141,6 @@ std::string UITheme::getCoverThumbPath(std::string coverBmpPath, int width, int 
   return coverBmpPath;
 }
 
-int UITheme::getBookProgressPercent(const RecentBook& book) {
-  if (book.path.empty()) {
-    return -1;
-  }
-
-  std::string cachePath;
-  int percentByteOffset = 0;  // byte index of the percent field in progress.bin
-
-  if (FsHelpers::hasEpubExtension(book.path)) {
-    cachePath = Epub(book.path, "/.crosspoint").getCachePath();
-    percentByteOffset = 6;  // epub: [spineIdx(2), page(2), chapterPageCount(2), percent(1)]
-  } else if (FsHelpers::hasXtcExtension(book.path)) {
-    cachePath = Xtc(book.path, "/.crosspoint").getCachePath();
-    percentByteOffset = 4;  // xtc: [page(4), percent(1)]
-  } else {
-    return -1;
-  }
-
-  FsFile progressFile;
-  if (!Storage.openFileForRead("UIT", cachePath + "/progress.bin", progressFile)) {
-    return -1;
-  }
-
-  uint8_t data[7];
-  const int dataSize = progressFile.read(data, 7);
-  progressFile.close();
-
-  if (dataSize < percentByteOffset + 1) {
-    return -1;  // old format (or pre-render placeholder) without the percent byte
-  }
-
-  int percent = static_cast<int>(data[percentByteOffset]);
-  if (percent > 100) percent = 100;
-  return percent;
-}
-
-void UITheme::drawCoverProgressIndicator(const GfxRenderer& renderer, Rect coverRect, int progressPercent) {
-  if (progressPercent <= 0) {
-    return;  // unread or no data — no indicator
-  }
-
-  if (progressPercent >= 100) {
-    // Finished: a folded top-right corner. White backing wedge first so the
-    // fold reads over dark art, then the solid black fold on top.
-    constexpr int size = 18;
-    const int right = coverRect.x + coverRect.width - 2;  // stay inside the 1px cover border
-    const int top = coverRect.y + 1;
-    for (int i = 0; i <= size; ++i) {
-      const int haloW = size - i + 2;
-      renderer.fillRect(right - haloW + 1, top + i, haloW, 1, false);
-    }
-    for (int i = 0; i <= size; ++i) {
-      const int w = size - i;
-      if (w > 0) {
-        renderer.fillRect(right - w + 1, top + i, w, 1, true);
-      }
-    }
-    return;
-  }
-
-  // In progress: a bar along the bottom edge, black outline + black fill on a
-  // white halo so the empty portion stays visible over dark art.
-  constexpr int barH = 5;
-  const int barX = coverRect.x + 3;
-  const int barW = coverRect.width - 6;
-  const int barY = coverRect.y + coverRect.height - barH - 3;
-  if (barW < 6) {
-    return;
-  }
-  renderer.fillRect(barX - 1, barY - 1, barW + 2, barH + 2, false);
-  renderer.drawRect(barX, barY, barW, barH, true);
-  const int fillW = (barW - 2) * progressPercent / 100;
-  if (fillW > 0) {
-    renderer.fillRect(barX + 1, barY + 1, fillW, barH - 2, true);
-  }
-}
-
-std::string UITheme::formatBookProgressStatus(const RecentBook& /*book*/, int progressPercent) {
-  if (progressPercent < 0) {
-    return {};
-  }
-  return std::to_string(progressPercent) + "%";
-}
-
-void UITheme::drawCoverProgressBadge(const GfxRenderer& renderer, Rect coverRect, const RecentBook& /*book*/,
-                                     int progressPercent) {
-  if (progressPercent < 0) {
-    return;
-  }
-  const std::string line1 = std::to_string(progressPercent) + "%";
-
-  constexpr int inset = 6;  // clear the cover's rounded corner + selection ring
-  constexpr int padX = 6;
-  constexpr int padY = 3;
-  const int textH = renderer.getLineHeight(SMALL_FONT_ID);
-  const int w1 = renderer.getTextWidth(SMALL_FONT_ID, line1.c_str());
-  const int badgeW = w1 + 2 * padX;
-  const int badgeH = textH + 2 * padY;
-  const int badgeX = coverRect.x + coverRect.width - badgeW - inset;
-  const int badgeY = coverRect.y + inset;
-
-  // White fill + black frame + black text: self-contained contrast on any cover
-  // corner (the white background guarantees the black text stays legible, the
-  // frame separates the pill from light artwork).
-  renderer.fillRoundedRect(badgeX, badgeY, badgeW, badgeH, 4, Color::White);
-  renderer.drawRoundedRect(badgeX, badgeY, badgeW, badgeH, 1, 4, true);
-  renderer.drawText(SMALL_FONT_ID, badgeX + (badgeW - w1) / 2, badgeY + padY, line1.c_str(), true);
-}
 
 UIIcon UITheme::getFileIcon(const std::string& filename) {
   if (filename.back() == '/') {

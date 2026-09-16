@@ -20,6 +20,7 @@
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "activities/reader/ReaderActivity.h"
+#include "components/BookProgressPresentation.h"
 #include "components/CoverGridLayout.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -89,7 +90,7 @@ void RecentBooksActivity::loadRecentBooks() {
   // this activity, so the cache stays valid for the activity's lifetime.
   bookProgress.assign(recentBooks.size(), -1);
   for (size_t i = 0; i < recentBooks.size(); i++) {
-    bookProgress[i] = static_cast<int8_t>(UITheme::getBookProgressPercent(recentBooks[i]));
+    bookProgress[i] = static_cast<int8_t>(BookProgressPresentation::readPercent(recentBooks[i]));
   }
 }
 
@@ -598,7 +599,7 @@ void RecentBooksActivity::renderGridCell(int index, bool selected, int cellX, in
   // Reading-progress overlay on the cover: bottom-edge bar while in progress,
   // folded corner when finished, nothing for unread books.
   const int progressPercent = (index >= 0 && index < static_cast<int>(bookProgress.size())) ? bookProgress[index] : -1;
-  UITheme::drawCoverProgressIndicator(renderer, Rect{cellX, cellY, tw, th}, progressPercent);
+  BookProgressPresentation::drawIndicator(renderer, Rect{cellX, cellY, tw, th}, progressPercent);
 
   // Label: title line 1, author line 2; white text on black for selected, black on white otherwise
   const bool black = !selected;
