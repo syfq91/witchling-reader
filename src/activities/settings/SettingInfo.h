@@ -27,7 +27,33 @@ enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING };
 // board profile in getSettingsList(). Add a value when a setting needs
 // something no existing one covers — never a board name.
 enum class SettingRequires : uint8_t {
-  Nothing,  // always visible
+  Nothing,     // always visible
+  TouchPanel,  // a touch controller (BoardConfig touch.controller != None)
+  TiltSensor,  // an IMU for tilt page turning (sensors.imuType != None)
+  // The panel builds grayscale from a swappable LUT, so the fast/OEM waveform
+  // trade-off is a real choice. Controllers with a factory grayscale waveform
+  // (SSD1677) have nothing to swap. This is a genuine silicon difference, which
+  // B0 allows keying on the display controller — with a comment saying why,
+  // which is this one.
+  SelectableGrayscaleLut,
+  // A PWM frontlight/backlight the firmware can drive (BoardConfig frontlight
+  // config, or the PM1 PWM path). Answered through HalFrontlight so a board
+  // whose light is probed at runtime reports honestly. Named ReadingLight, not
+  // Frontlight: HalFrontlight.h defines `Frontlight` as a singleton macro, and
+  // a macro does not respect the enum's scope.
+  ReadingLight,
+  // A second (warm) light channel, so colour temperature is a real control.
+  // Sub-capability of Frontlight — the T5S3's single backlight channel has none.
+  WarmLight,
+  // A touch controller that reports more than one contact (GT911). Pinch and
+  // rotation can never fire without it. Sub-capability of TouchPanel.
+  MultiTouchPanel,
+  // The panel fades in direct sunlight unless powered down between refreshes,
+  // so the compensation is worth its cost here. Recorded per board
+  // (BoardProfile::panelFadesInSunlight) because it is a property of the glass
+  // and the enclosure: boards around the same controllers differ, so there is
+  // nothing to derive it from and nothing to probe.
+  SunlightFadingPanel,
 };
 
 enum class SettingAction {

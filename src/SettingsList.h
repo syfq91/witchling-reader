@@ -1,6 +1,6 @@
 #pragma once
 
-#include <BoardConfig.h>
+#include <HalCapabilities.h>
 #include <HalGPIO.h>
 #include <I18n.h>
 
@@ -154,8 +154,12 @@ inline std::vector<SettingInfo> buildSettingsList() {
                                          StrId::STR_CAT_DISPLAY)
                          .withSubmenu(StrId::STR_MENU_DISP_REFRESH)
                          .withSubcategory(StrId::STR_MENU_DISP_REFRESH));
+  // Offered only where the panel actually fades. It is not free when enabled: it forces
+  // turnOffScreen on every refresh on every path, which costs panel power-sequencing time per
+  // page. A board whose glass does not fade would pay that for nothing.
   settings.push_back(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
-                                         StrId::STR_CAT_DISPLAY));
+                                         StrId::STR_CAT_DISPLAY)
+                         .requiring(SettingRequires::SunlightFadingPanel));
 
 
   // --- Reader ---
@@ -413,4 +417,35 @@ inline std::vector<SettingInfo> buildSettingsList() {
 
 }  // namespace SettingsListDetail
 
-inline std::vector<SettingInfo> getSettingsList() { return SettingsListDetail::buildSettingsList(); }
+inline std::vector<SettingInfo> getSettingsList() {
+  std::vector<SettingInfo> settings = SettingsListDetail::buildSettingsList();
+  // Answer each capability ONCE here, from the HAL or the active board profile,
+  // so the rest of the codebase never has to ask "which board is this" to decide
+  // whether a setting is meaningful.
+  const auto boardHas = [](const SettingRequires capability) {
+    switch (capability) {
+      case SettingRequires::Nothing:
+        return true;
+      case SettingRequires::TouchPanel:
+        return false;
+      case SettingRequires::TiltSensor:
+        return false;
+      case SettingRequires::SelectableGrayscaleLut:
+        return false;
+      case SettingRequires::ReadingLight:
+        return false;
+      case SettingRequires::WarmLight:
+        return false;
+      case SettingRequires::MultiTouchPanel:
+        return false;
+      case SettingRequires::SunlightFadingPanel:
+        return HalCapabilities::panelFadesInSunlight();
+    }
+    return true;
+  };
+  settings.erase(
+      std::remove_if(settings.begin(), settings.end(),
+                     [&boardHas](const SettingInfo& setting) { return !boardHas(setting.requiredCapability); }),
+      settings.end());
+  return settings;
+}

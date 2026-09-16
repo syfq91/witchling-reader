@@ -60,6 +60,14 @@ inline bool panelNeedsHalfRefreshSettle() { return false; }
 // Grayscale from a swappable LUT (X4 does not use this).
 inline bool hasSelectableGrayscaleLut() { return false; }
 
+// The panel visibly fades in direct sunlight unless it is powered down between
+// refreshes, so the "sunlight fading fix" is worth offering here.
+//
+// Recorded per board rather than derived: it is a property of the glass and the
+// enclosure, not of the controller, and it is not something the firmware can
+// probe. Mirrors SettingRequires::SunlightFadingPanel.
+inline bool panelFadesInSunlight() { return BoardConfig::ACTIVE.panelFadesInSunlight; }
+
 // --- Input / chrome ----------------------------------------------------------
 
 // A touch panel is present (disabled for X4).

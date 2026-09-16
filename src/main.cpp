@@ -141,6 +141,15 @@ EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 // SilentRestart.h definitions. RTC_NOINIT survives ESP.restart() but not power loss.
 RTC_NOINIT_ATTR uint32_t silentRebootMagic;
 RTC_NOINIT_ATTR uint32_t silentRebootTarget;
+// Whether the light was actually lit when a silent reboot was armed.
+//
+// A silent reboot is the firmware's own decision, so the device must come back looking
+// exactly as it left -- and "was the light on" is a question only the hardware can answer.
+// SETTINGS.frontlightOn cannot: JsonSettingsIO saves it as a stored PREFERENCE that
+// deliberately survives a trip to a board with no light, so after a wake that left the light
+// off (Restore Light on Wake disabled) it still reads 1 while the panel is dark. Reading it
+// on the silent path turned the light on unasked at the next maintenance reboot.
+RTC_NOINIT_ATTR uint32_t silentRebootLightOn;
 RTC_NOINIT_ATTR uint32_t heapRecoveryRestartLatch;
 // Single-shot latch for the boot-time heap integrity recovery restart.
 // Prevents an infinite reset loop if the heap is still corrupt after one clean restart.
@@ -183,10 +192,17 @@ enum class BootResume : uint8_t {
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
 
+// Arms the RTC flags setup() reads back after a silent reboot. Single entry point so a new
+// restart target cannot forget to capture the live light state along with the destination.
+static void armSilentReboot(const uint32_t target) {
+  silentRebootTarget = target;
+  silentRebootLightOn = 0;
+  silentRebootMagic = SILENT_REBOOT_MAGIC;
+}
+
 void silentRestart() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
-  silentRebootTarget = SILENT_REBOOT_TARGET_HOME;
-  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  armSilentReboot(SILENT_REBOOT_TARGET_HOME);
   LOG_DBG("MAIN", "Silent restart (target=home)");
   delay(50);
   ESP.restart();
@@ -194,8 +210,7 @@ void silentRestart() {
 
 void silentRestartToReader() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
-  silentRebootTarget = SILENT_REBOOT_TARGET_READER;
-  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  armSilentReboot(SILENT_REBOOT_TARGET_READER);
   LOG_DBG("MAIN", "Silent restart (target=reader)");
   delay(50);
   ESP.restart();
@@ -208,8 +223,7 @@ bool trySilentRestartToReaderForHeapRecovery() {
     return false;
   }
   heapRecoveryRestartLatch = HEAP_RECOVERY_RESTART_LATCH_MAGIC;
-  silentRebootTarget = SILENT_REBOOT_TARGET_READER;
-  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  armSilentReboot(SILENT_REBOOT_TARGET_READER);
   LOG_ERR("MAIN", "Silent restart (target=reader, heap recovery)");
   delay(50);
   ESP.restart();
@@ -221,12 +235,12 @@ bool trySilentRestartToReaderForHeapRecovery() {
 // deepSleepInProgress guard — this restart IS the sleep path, not a competing
 // heap-defrag reboot.
 static void silentRestartToSleep(bool fromTimeout) {
-  silentRebootTarget = fromTimeout ? SILENT_REBOOT_TARGET_SLEEP_TIMEOUT : SILENT_REBOOT_TARGET_SLEEP;
-  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  armSilentReboot(fromTimeout ? SILENT_REBOOT_TARGET_SLEEP_TIMEOUT : SILENT_REBOOT_TARGET_SLEEP);
   LOG_INF("MAIN", "Silent restart (target=sleep, framebuffers released, fromTimeout=%d)", fromTimeout ? 1 : 0);
   delay(50);
   ESP.restart();
 }
+
 
 // ---- Retained-frame persistence across deep sleep ----
 //
@@ -687,8 +701,11 @@ void setup() {
   const bool isSilentReboot = (silentRebootMagic == SILENT_REBOOT_MAGIC);
   const uint32_t silentRebootTargetSnapshot =
       (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_MAX) ? silentRebootTarget : 0;
+  // Read-and-clear alongside the magic: a stale 1 here must not outlive the reboot that set it.
+  const bool lightWasOnAtSilentReboot = isSilentReboot && silentRebootLightOn == 1;
   silentRebootMagic = 0;
   silentRebootTarget = 0;
+  silentRebootLightOn = 0;
   if (!isSilentReboot) {
     heapRecoveryRestartLatch = 0;
   }
@@ -860,6 +877,7 @@ void setup() {
   OPDS_STORE.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
+
 
   // Navigation follows the screen, not the panel: rotating the device rotates which physical
   // button means "up". The input layer sits below the renderer and so cannot ask it directly —

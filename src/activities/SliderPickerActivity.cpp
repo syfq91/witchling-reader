@@ -38,11 +38,14 @@ void SliderPickerActivity::onEnter() {
 void SliderPickerActivity::onExit() { Activity::onExit(); }
 
 void SliderPickerActivity::adjustValue(const int delta) {
+  const int before = value;
   value += delta;
   if (value < cfg.minValue) value = cfg.minValue;
   if (value > cfg.maxValue) value = cfg.maxValue;
+  if (value != before && cfg.onPreview) cfg.onPreview(value);
   requestUpdate();
 }
+
 
 void SliderPickerActivity::loop() {
   ButtonEventManager::ButtonEvent ev;

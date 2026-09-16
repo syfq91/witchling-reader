@@ -10,6 +10,7 @@
 
 namespace SliderSetting {
 
+
 bool configFor(const SettingAction action, SliderPickerActivity::Config& cfg) {
   switch (action) {
     case SettingAction::SleepTimeoutPicker:
@@ -30,6 +31,7 @@ bool configFor(const SettingAction action, SliderPickerActivity::Config& cfg) {
              .suffix = tr(STR_PAGES_SUFFIX),
              .zeroLabel = tr(STR_NEVER)};
       return true;
+
     default:
       return false;
   }
@@ -63,5 +65,7 @@ void apply(const SettingAction action, const uint8_t value) {
       break;
   }
 }
+
+void cancel(const SettingAction /*action*/) {}
 
 }  // namespace SliderSetting
