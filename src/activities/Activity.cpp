@@ -2,7 +2,10 @@
 
 #include "ActivityManager.h"
 
-void Activity::onEnter() { LOG_DBG("ACT", "Entering activity: %s", name.c_str()); }
+void Activity::onEnter() {
+  listTapActivation.reset();
+  LOG_DBG("ACT", "Entering activity: %s", name.c_str());
+}
 
 void Activity::onExit() { LOG_DBG("ACT", "Exiting activity: %s", name.c_str()); }
 

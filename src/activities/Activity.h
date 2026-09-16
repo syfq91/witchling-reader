@@ -24,8 +24,11 @@ class Activity {
 
   ActivityResultHandler resultHandler;
   ActivityResult result;
+  ListRowTap::ActivationState listTapActivation;
 
  public:
+  enum class ListPageDirection : uint8_t { Back, Forward };
+
   explicit Activity(std::string name, GfxRenderer& renderer, MappedInputManager& mappedInput)
       : name(std::move(name)), renderer(renderer), mappedInput(mappedInput), buttonEvents(globalButtonEvents()) {}
   virtual ~Activity() = default;
@@ -51,6 +54,21 @@ class Activity {
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
+
+  // What a tap on the row at `index` should do, moving this screen's selection if it lands on a
+  // new row. See ListRowTap.h for the rule; most implementations are one call to
+  // ListRowTap::apply().
+  //
+  // `Selected` means the highlight moved; the dispatcher applies the user's tap preference and
+  // either repaints or arms the row for a second tap. `Activate` means the tapped row was already
+  // selected; it still requires a preceding tap in two-step mode because keyboard focus is not
+  // touch confirmation. Activation synthesizes Confirm so a tap runs the SAME handler the button
+  // does rather than a second copy that can drift.
+  virtual ListRowTap::Result selectListRow(int /*index*/) { return ListRowTap::Result::Rejected; }
+
+  // Handle a touch page gesture without translating it into a physical button. Activities whose
+  // Left/Right buttons mean something other than list paging override this boundary.
+  virtual bool pageList(ListPageDirection /*direction*/) { return false; }
 
   // Called before something captures the raw frame buffer (e.g. a screenshot) outside the
   // normal render flow. An activity that may leave content other than what is on screen in

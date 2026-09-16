@@ -3,10 +3,10 @@
 #include <GfxRenderer.h>
 
 #include <string>
+#include <vector>
 
-#include "../Activity.h"
 #include "SettingInfo.h"
-#include "util/ButtonNavigator.h"
+#include "activities/UiListActivity.h"
 
 class MappedInputManager;
 
@@ -26,7 +26,7 @@ class MappedInputManager;
 /// The activity does NOT persist settings itself — the caller's result handler is
 /// responsible for SETTINGS.saveToFile() and any dependent-setting normalisation,
 /// exactly as the previous font-selector call-sites already did.
-class EnumSelectionActivity final : public Activity {
+class EnumSelectionActivity final : public UiListActivity {
  public:
   // Optional per-index label override, used when the option labels are richer than
   // the SettingInfo's static enum labels (e.g. SD-card font families appended at
@@ -37,25 +37,31 @@ class EnumSelectionActivity final : public Activity {
 
   EnumSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const SettingInfo& setting,
                         LabelOverrideFn labelOverride = nullptr, uint8_t overrideCount = 0)
-      : Activity("EnumSelect", renderer, mappedInput),
+      : UiListActivity("EnumSelect", renderer, mappedInput),
         setting(setting),
         labelOverride(labelOverride),
         overrideCount(overrideCount) {}
 
   void onEnter() override;
+<<<<<<< HEAD
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+=======
+>>>>>>> ad38dbc8
 
  private:
   [[nodiscard]] uint8_t optionCount() const;
   [[nodiscard]] std::string optionLabel(uint8_t index) const;
-  void handleSelection();
+  int listCount() const override { return static_cast<int>(optionCount()); }
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  const char* headerTitle() const override;
 
   const SettingInfo& setting;
   LabelOverrideFn labelOverride;
   uint8_t overrideCount;
 
-  ButtonNavigator buttonNavigator;
-  int selectedIndex = 0;
+  std::vector<std::string> rowLabels;
+  std::vector<freeink::ui::ListItem> rowItems;
 };

@@ -5,6 +5,7 @@
 
 #include "SettingInfo.h"
 #include "activities/Activity.h"
+#include "components/themes/BaseTheme.h"
 #include "util/ButtonNavigator.h"
 
 class SettingsActivity final : public Activity {
@@ -29,6 +30,7 @@ class SettingsActivity final : public Activity {
 
   std::vector<SettingInfo::SubmenuData> submenuData;
   bool needsHalfRefresh = false;
+  ListViewState listView;
 
   void enterCategory(int categoryIndex);
   void toggleCurrentSetting();
@@ -39,6 +41,8 @@ class SettingsActivity final : public Activity {
       : Activity("Settings", renderer, mappedInput) {}
   void onEnter() override;
   void onExit() override;
+  ListRowTap::Result selectListRow(int index) override;
+  bool pageList(ListPageDirection direction) override;
   void loop() override;
   void render(RenderLock&&) override;
 };

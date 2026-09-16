@@ -2,27 +2,38 @@
 
 #include <GfxRenderer.h>
 
-#include "../Activity.h"
-#include "util/ButtonNavigator.h"
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "activities/UiListActivity.h"
+#include "activities/settings/SettingInfo.h"
 
 class MappedInputManager;
 
 /// Full-screen list of all reader fonts (built-in + SD card families).
 /// Replaces in-place enum cycling for the Reader Font Family setting.
-class FontSelectionActivity final : public Activity {
- public:
+class FontSelectionActivity final : public UiListActivity {
   explicit FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("FontSelect", renderer, mappedInput) {}
+      : UiListActivity("FontSelect", renderer, mappedInput) {}
+  FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const SettingInfo& overrideSetting)
+      : UiListActivity("FontSelect", renderer, mappedInput), overrideSetting(overrideSetting) {}
 
   void onEnter() override;
   void onExit() override;
-  void loop() override;
-  void render(RenderLock&&) override;
 
  private:
-  void handleSelection();
+  int listCount() const override { return static_cast<int>(rowItems.size()); }
+  const char* headerTitle() const override;
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  void onSelectionChanged(int index) override;
+  void updatePreviewFont(int index);
+  void updatePreviewFontLocked(int index);
+  int previewOptionIndex(int index) const;
+  uint8_t selectedFontSize() const;
 
-  ButtonNavigator buttonNavigator;
-  int selectedIndex = 0;
-  uint8_t fontCount = 0;
+  std::vector<std::string> rowLabels;
+  std::vector<freeink::ui::ListItem> rowItems;
+  std::optional<SettingInfo> overrideSetting;
 };

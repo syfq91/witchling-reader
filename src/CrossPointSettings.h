@@ -189,6 +189,13 @@ class CrossPointSettings {
     TILT_GESTURE_ACTION_COUNT
   };
 
+  // Whether a list-row tap activates immediately or first moves selection.
+  enum TOUCH_LIST_ACTIVATION {
+    TOUCH_LIST_SELECT_THEN_ACTIVATE = 0,
+    TOUCH_LIST_ACTIVATE_IMMEDIATELY = 1,
+    TOUCH_LIST_ACTIVATION_COUNT
+  };
+
   // Text darkness for AA glyph rendering (forwarded to GfxRenderer::setTextDarkness)
   enum TEXT_DARKNESS {
     DARKNESS_NORMAL = 0,      // true 4-level AA
@@ -352,6 +359,8 @@ class CrossPointSettings {
   uint8_t tiltPositiveAction = TILT_ACT_NEXT_PAGE;
   // Action when the computed tilt value crosses the negative threshold.
   uint8_t tiltNegativeAction = TILT_ACT_PREV_PAGE;
+  uint8_t touchListActivation = TOUCH_LIST_SELECT_THEN_ACTIVATE;
+
   // Enable synthetic TOC fallback for malformed/sparse TOC books (1 = enabled, 0 = disabled)
   uint8_t syntheticTocFallback = 1;
   // Default bionic reading in EPUB pages when no per-book override is set (1 = enabled, 0 = disabled)
