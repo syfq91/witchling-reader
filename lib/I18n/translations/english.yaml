@@ -193,6 +193,7 @@ STR_DST_INACTIVE: "DST: inactive"
 STR_DST_UNKNOWN: "DST: unknown"
 STR_REFRESH_FREQ: "Refresh Frequency"
 STR_REFRESH_AFTER_IMAGE_PAGES: "Refresh after image pages"
+STR_SYNC: "Sync"
 
 STR_SYSTEM_UPDATE: "System Update"
 STR_SYSTEM_UPDATE_TYPE1: "Witchling Reader Updates"

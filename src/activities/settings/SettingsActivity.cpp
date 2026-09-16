@@ -18,6 +18,8 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+namespace fui = freeink::ui;
+
 bool SettingsActivity::isListItemSelectable(int settingIdx) const {
   return settingIdx >= 0 && settingIdx < settingsCount && !(*currentSettings)[settingIdx].isSeparator;
 }
@@ -159,19 +161,21 @@ void SettingsActivity::onEnter() {
   SettingInfo::insertSubcategorySeparators(controlsSettings);
   SettingInfo::insertSubcategorySeparators(systemSettings);
 
-  // Reset selection to first category
-  selectedCategoryIndex = 0;
-  selectedSettingIndex = 0;
+  resetUi();
+  app.on(ACTION_TAB, &SettingsActivity::onTabEvent, this);
+  app.on(ACTION_ROW, &SettingsActivity::onRowEvent, this);
+  app.setScreen(&SettingsActivity::settingsScreen, this);
 
-  // Initialize with first category (Display)
-  currentSettings = &displaySettings;
-  settingsCount = static_cast<int>(displaySettings.size());
+  // Reset selection to the first category's tab.
+  selectedSettingIndex = 0;
+  enterCategory(0);
 
   // Trigger first update
   requestUpdate();
 }
 
 void SettingsActivity::onExit() {
+  closeRouting();
   Activity::onExit();
 
   UITheme::getInstance().reload();  // Re-apply theme in case it was changed
@@ -196,6 +200,7 @@ void SettingsActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     if (selectedSettingIndex > 0) {
       selectedSettingIndex = 0;
+      syncListSelection();
       requestUpdate();
     } else {
       SETTINGS.saveToFile();
@@ -204,16 +209,29 @@ void SettingsActivity::loop() {
     return;
   }
 
+  const auto route = routeTouch(mappedInput);
+  if (route.routed && app.invalidated()) requestUpdate();
+  if (route) return;
+
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
+    const int delta = swipe == MappedInputManager::SwipeDir::Up ? listNav.pageRows() : -listNav.pageRows();
+    if (listNav.scrollBy(delta, settingsCount)) requestUpdate();
+    return;
+  }
+
   // Handle navigation
   buttonNavigator.onNextRelease([this] {
     selectedSettingIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1,
                                                       [this](int i) { return i == 0 || isListItemSelectable(i - 1); });
+    syncListSelection();
     requestUpdate();
   });
 
   buttonNavigator.onPreviousRelease([this] {
     selectedSettingIndex = ButtonNavigator::previousIndex(
         selectedSettingIndex, settingsCount + 1, [this](int i) { return i == 0 || isListItemSelectable(i - 1); });
+    syncListSelection();
     requestUpdate();
   });
 
@@ -231,22 +249,67 @@ void SettingsActivity::loop() {
 
   if (hasChangedCategory) {
     selectedSettingIndex = (selectedSettingIndex == 0) ? 0 : 1;
-    switch (selectedCategoryIndex) {
-      case 0:
-        currentSettings = &displaySettings;
-        break;
-      case 1:
-        currentSettings = &readerSettings;
-        break;
-      case 2:
-        currentSettings = &controlsSettings;
-        break;
-      case 3:
-        currentSettings = &systemSettings;
-        break;
-    }
-    settingsCount = static_cast<int>(currentSettings->size());
+    enterCategory(selectedCategoryIndex);
   }
+}
+
+void SettingsActivity::enterCategory(const int categoryIndex) {
+  selectedCategoryIndex = categoryIndex;
+  switch (selectedCategoryIndex) {
+    case 0:
+      currentSettings = &displaySettings;
+      break;
+    case 1:
+      currentSettings = &readerSettings;
+      break;
+    case 2:
+      currentSettings = &controlsSettings;
+      break;
+    case 3:
+      currentSettings = &systemSettings;
+      break;
+  }
+  settingsCount = static_cast<int>(currentSettings->size());
+  listNav.reset(selectedSettingIndex - 1);
+  listTapActivation.reset();
+}
+
+void SettingsActivity::syncListSelection() {
+  listNav.selected = selectedSettingIndex - 1;
+  if (selectedSettingIndex > 0) listNav.follow(settingsCount);
+}
+
+void SettingsActivity::settingsScreen(UiScreen& screen, void* user) {
+  static_cast<SettingsActivity*>(user)->buildSettingsScreen(screen);
+}
+
+void SettingsActivity::onTabEvent(const fui::ActionEvent& event, void* user) {
+  auto* self = static_cast<SettingsActivity*>(user);
+  if (event.value < 0 || event.value >= categoryCount) return;
+  self->selectedSettingIndex = 0;
+  self->enterCategory(event.value);
+  self->app.clearTapFlash();
+  self->requestUpdate();
+}
+
+void SettingsActivity::onRowEvent(const fui::ActionEvent& event, void* user) {
+  auto* self = static_cast<SettingsActivity*>(user);
+  if (event.value < 0 || event.value >= self->settingsCount) return;
+  self->handleRowTouch(event.value);
+}
+
+void SettingsActivity::handleRowTouch(const int index) {
+  const auto result = listTapActivation.applyPreference(
+      index, selectListRow(index), SETTINGS.touchListActivation == CrossPointSettings::TOUCH_LIST_ACTIVATE_IMMEDIATELY);
+  if (result == ListRowTap::Result::Rejected) return;
+  syncListSelection();
+  if (result == ListRowTap::Result::Selected) {
+    requestUpdate();
+    return;
+  }
+  app.clearTapFlash();
+  toggleCurrentSetting();
+  requestUpdate();
 }
 
 void SettingsActivity::toggleCurrentSetting() {
@@ -324,6 +387,91 @@ void SettingsActivity::toggleCurrentSetting() {
   SETTINGS.saveToFile();
 }
 
+void SettingsActivity::materializeListWindow() {
+  windowFirst = static_cast<uint16_t>(std::max(0, std::min(listNav.top, settingsCount)));
+  windowCount = static_cast<uint16_t>(
+      std::min(static_cast<size_t>(settingsCount - windowFirst), static_cast<size_t>(LIST_WINDOW_CAPACITY)));
+  for (uint16_t offset = 0; offset < windowCount; ++offset) {
+    const size_t index = windowFirst + offset;
+    const auto& setting = (*currentSettings)[index];
+    windowLabels[offset] =
+        setting.isSeparator && setting.nameId != StrId::STR_NONE_OPT ? I18N.get(setting.nameId) : setting.getTitle();
+    windowValues[offset] = setting.getDisplayValue();
+    auto& row = windowItems[offset];
+    row = {};
+    row.label = windowLabels[offset].c_str();
+    row.value = windowValues[offset].empty() ? nullptr : windowValues[offset].c_str();
+    row.actionValue = static_cast<int16_t>(index);
+    row.enabled = !setting.isSeparator;
+    row.isHeader = setting.isSeparator;
+  }
+}
+
+void SettingsActivity::buildSettingsScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
+                  static_cast<int16_t>(contentRect.x)});
+
+  fui::TabItem tabs[categoryCount];
+  for (int i = 0; i < categoryCount; ++i) {
+    tabs[i].label = I18N.get(categoryNames[i]);
+    tabs[i].value = static_cast<int16_t>(i);
+    tabs[i].selected = selectedCategoryIndex == i;
+  }
+
+  fui::TabBarProps tabProps;
+  tabProps.tabs = tabs;
+  tabProps.count = categoryCount;
+  tabProps.action = ACTION_TAB;
+  tabProps.inputMask = fui::InputTouch;
+  tabProps.text = screen.theme().bodyText;
+  tabProps.tabInset = fui::Insets{};
+  tabProps.contentInset = fui::Insets{};
+
+  // Adapted from CrossInk's FreeInkUI SettingsActivity tab composition at
+  // commit cd4b122ef (MIT): https://github.com/uxjulia/crossink
+  fui::StyleSet tabStyles;
+  tabStyles.explicitlySet = true;
+  tabStyles.normal.background = fui::Paint::solid(fui::Color::White);
+  tabStyles.normal.foreground = fui::Paint::solid(fui::Color::Black);
+  tabStyles.normal.border = fui::Paint::solid(fui::Color::Black);
+  tabStyles.normal.borderWidth = 1;
+  tabStyles.selected.background =
+      selectedSettingIndex == 0 ? fui::Paint::solid(fui::Color::Black) : fui::Paint::dither(fui::Color::LightGray);
+  tabStyles.selected.foreground = fui::Paint::solid(selectedSettingIndex == 0 ? fui::Color::White : fui::Color::Black);
+  tabStyles.selected.border = fui::Paint::solid(fui::Color::Black);
+  tabStyles.selected.borderWidth = 1;
+  tabStyles.focused = tabStyles.selected;
+  tabStyles.active = tabStyles.selected;
+  tabProps.tabStyles = tabStyles;
+
+  fui::tabBar(screen.frame(), screen.takeTop(static_cast<int16_t>(metrics.tabBarHeight)), tabProps);
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+  fui::ListProps props;
+  props.count = static_cast<uint16_t>(settingsCount);
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;
+  props.labelText = screen.theme().bodyText;
+  props.labelText.maxLines = 2;
+  int16_t rowHeight = screen.theme().rowHeight;
+  if (!mappedInput.hasTouch()) {
+    rowHeight = static_cast<int16_t>(metrics.listRowHeight);
+    props.rowHeight = rowHeight;
+  }
+  listNav.selected = selectedSettingIndex - 1;
+  listNav.syncToProps(screen.body(), rowHeight, screen.theme().listRowGap, settingsCount, props);
+  materializeListWindow();
+  props.items = windowItems.data();
+  props.itemsWindowFirst = windowFirst;
+  props.itemsWindowCount = windowCount;
+  screen.list(props);
+}
+
 void SettingsActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
@@ -333,24 +481,13 @@ void SettingsActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
                  tr(STR_SETTINGS_TITLE), CROSSPOINT_VERSION);
 
-  std::vector<TabInfo> tabs;
-  tabs.reserve(categoryCount);
-  for (int i = 0; i < categoryCount; i++) {
-    tabs.push_back({I18N.get(categoryNames[i]), selectedCategoryIndex == i});
+  renderUi();
+  for (int pass = 0; listNav.consumeRebuildNeeded() && pass < 8; ++pass) {
+    renderer.clearScreen();
+    GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
+                   tr(STR_SETTINGS_TITLE), CROSSPOINT_VERSION);
+    renderUi();
   }
-  GUI.drawTabBar(
-      renderer, Rect{contentRect.x, metrics.topPadding + metrics.headerHeight, contentRect.width, metrics.tabBarHeight},
-      tabs, selectedSettingIndex == 0);
-
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
-  const auto& settings = *currentSettings;
-  GUI.drawList(
-      renderer,
-      Rect{contentRect.x, contentTop, contentRect.width,
-           contentRect.height -
-               (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing * 2)},
-      settingsCount, selectedSettingIndex - 1, [&settings](int index) { return settings[index].getTitle(); }, nullptr,
-      nullptr, [&settings](int i) { return settings[i].getDisplayValue(); }, true, &listView);
 
   // Draw help text
   const auto confirmLabel = (selectedSettingIndex == 0)
@@ -363,10 +500,18 @@ void SettingsActivity::render(RenderLock&&) {
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
+ListRowTap::Result SettingsActivity::selectListRow(const int index) {
+  // Compare in the list's zero-based frame; selectedSettingIndex reserves zero for tab focus.
+  int selection = selectedSettingIndex - 1;
+  const auto result = ListRowTap::apply(index, settingsCount, selection);
+  if (result != ListRowTap::Result::Rejected) selectedSettingIndex = selection + 1;
+  return result;
+}
+
 bool SettingsActivity::pageList(const ListPageDirection direction) {
   if (settingsCount <= 0) return false;
 
-  const int pageSize = listView.visibleRows > 0 ? listView.visibleRows : ButtonNavigator::defaultListPageSize;
+  const int pageSize = listNav.pageRowsFor(settingsCount);
   const int current = std::max(0, selectedSettingIndex - 1);
   int target = direction == ListPageDirection::Forward
                    ? ButtonNavigator::nextPageIndex(current, settingsCount, pageSize)
@@ -379,6 +524,7 @@ bool SettingsActivity::pageList(const ListPageDirection direction) {
   }
 
   selectedSettingIndex = target + 1;
+  syncListSelection();
   listTapActivation.reset();
   requestUpdate();
   return true;
