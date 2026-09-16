@@ -111,8 +111,6 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
   if (hasPrintedPages) {
     navigationItems.push_back(SettingInfo::Action(StrId::STR_GO_TO_PRINTED_PAGE, SettingAction::None));
   }
-  // Auto page turn: ACTION type with custom cycling in onActionSelected
-  navigationItems.push_back(SettingInfo::Action(StrId::STR_AUTO_TURN_PAGES_PER_MIN, SettingAction::None));
   navigationItems.push_back(SettingInfo::Action(StrId::STR_STAR_PAGE, SettingAction::None));
   if (hasStarredPages) {
     navigationItems.push_back(SettingInfo::Action(StrId::STR_STARRED_PAGES, SettingAction::None));
@@ -361,8 +359,6 @@ EpubReaderMenuActivity::MenuAction EpubReaderMenuActivity::actionForNameId(StrId
       return MenuAction::FOOTNOTES;
     case StrId::STR_DICTIONARY:
       return MenuAction::DICTIONARY;
-    case StrId::STR_AUTO_TURN_PAGES_PER_MIN:
-      return MenuAction::AUTO_PAGE_TURN;
     case StrId::STR_EMBEDDED_STYLE:
       return MenuAction::EMBEDDED_STYLE;
     case StrId::STR_IMAGES:
@@ -394,7 +390,6 @@ void EpubReaderMenuActivity::finishWithAction(MenuAction action) {
   MenuResult payload{static_cast<int>(action),
                      -1,
                      pendingOrientation,
-                     selectedPageTurnOption,
                      pendingEmbeddedStyleOverride,
                      pendingImageRenderingOverride,
                      pendingFontFamilyOverride,
@@ -416,13 +411,6 @@ void EpubReaderMenuActivity::finishWithAction(MenuAction action) {
 void EpubReaderMenuActivity::onActionSelected(int index) {
   const auto& item = activeMenuItems()[index];
 
-  // Auto page turn cycles locally (not a DynamicEnum because labels are raw strings)
-  if (item.nameId == StrId::STR_AUTO_TURN_PAGES_PER_MIN) {
-    selectedPageTurnOption = (selectedPageTurnOption + 1) % 5;
-    requestUpdate();
-    return;
-  }
-
   // All other ACTION items finish with a result
   finishWithAction(actionForNameId(item.nameId));
 }
@@ -437,7 +425,6 @@ void EpubReaderMenuActivity::onBackPressed() {
   MenuResult payload{-1,
                      -1,
                      pendingOrientation,
-                     selectedPageTurnOption,
                      pendingEmbeddedStyleOverride,
                      pendingImageRenderingOverride,
                      pendingFontFamilyOverride,
@@ -459,12 +446,6 @@ void EpubReaderMenuActivity::onBackPressed() {
 
 std::string EpubReaderMenuActivity::getItemValueString(int index) const {
   const auto& item = activeMenuItems()[index];
-
-  // Auto page turn: custom labels
-  if (item.nameId == StrId::STR_AUTO_TURN_PAGES_PER_MIN) {
-    if (selectedPageTurnOption == 0) return std::string(tr(STR_STATE_OFF));
-    return std::string(pageTurnLabels[selectedPageTurnOption]);
-  }
 
   // Star page: reflect current page's star state
   if (item.nameId == StrId::STR_STAR_PAGE) {

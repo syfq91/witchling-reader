@@ -167,14 +167,11 @@ class EpubReaderActivity final : public Activity {
   NavigationTarget navTarget;
   int pagesUntilFullRefresh =
       1;  // initialized to freq in onEnter(); 1 triggers HALF on first render if somehow not reset
-  unsigned long lastPageTurnTime = 0UL;
-  unsigned long pageTurnDuration = 0UL;
   // When the reader last put a page on screen, for ANY reason — a turn, the first page of a
   // freshly opened book, a jump, a rebuild. Background-B's borrow quiet period measures from
-  // here rather than from lastPageTurnTime, which is only stamped by actual page turns and so
-  // reads as "settled forever" until the reader turns for the first time. Device-observed
+  // here. Device-observed
   // (X3, 2026-08-11): B took the buffer 731 ms after a book's first page appeared and lost it
-  // 513 ms later, because millis() - lastPageTurnTime was still measured from 0.
+  // 513 ms later, because it wasn't measuring from the last frame time.
   unsigned long lastPageOnScreenMs_ = 0UL;
   bool pendingHalfRefreshAfterImagePage = false;
   // Force-refresh button: -1 = none, else a HalDisplay::RefreshMode to apply on the next
@@ -504,7 +501,6 @@ class EpubReaderActivity final : public Activity {
   int finishedBookSyncPage_ = 0;
   int finishedBookSyncPageCount_ = 0;
   ReaderUtils::InputDrainGuard inputDrainGuard;
-  bool automaticPageTurnActive = false;
   // -1 means use global SETTINGS value.
   int8_t bookEmbeddedStyleOverride = -1;
   int8_t bookImageRenderingOverride = -1;
@@ -761,8 +757,6 @@ class EpubReaderActivity final : public Activity {
   void applyPendingBookmarkJump();
   void applyOrientation(uint8_t orientation);
   void applyTextDarkness(uint8_t textDarkness);
-  void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
-  void stopAutomaticPageTurn();
   void applyBookReaderOverrides(int8_t embeddedStyleOverride, int8_t imageRenderingOverride, int8_t fontFamilyOverride,
                                 const std::string& sdFontFamilyOverride, int8_t fontSizeOverride,
                                 bool bionicReadingOverride, int8_t paragraphAlignmentOverride);

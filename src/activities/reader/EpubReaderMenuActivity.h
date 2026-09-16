@@ -23,7 +23,6 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
     TEXT_DARKNESS,
     GO_TO_PERCENT,
     GO_TO_PRINTED_PAGE,
-    AUTO_PAGE_TURN,
     ROTATE_SCREEN,
     DISPLAY_QR,
     GO_HOME,
@@ -105,7 +104,6 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
 
   // Pending state (mutated locally, returned to parent on finish)
   uint8_t pendingOrientation = 0;
-  uint8_t selectedPageTurnOption = 0;
   int8_t pendingEmbeddedStyleOverride = -1;
   int8_t pendingImageRenderingOverride = -1;
   int8_t pendingFontFamilyOverride = -1;
@@ -119,8 +117,6 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
   int8_t pendingHyphenationOverride = -1;
   int8_t pendingFontSizeNormalizationOverride = -1;
   int8_t pendingInlineFootnotePreviewsOverride = -1;
-
-  static constexpr const char* pageTurnLabels[] = {"", "1", "3", "6", "12"};
 
   std::string title = "Reader Menu";
   int currentPage = 0;

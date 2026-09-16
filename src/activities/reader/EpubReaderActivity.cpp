@@ -101,8 +101,8 @@ std::optional<int> parsePrintedPageLabel(const std::string& label) {
   }
   return value;
 }
-// pages per minute, first item is 1 to prevent division by zero if accessed
-constexpr int PAGE_TURN_LABELS[] = {1, 1, 3, 6, 12};
+
+
 
 // Pre-render of the next page within the current chapter only runs when heap is healthy.
 // 44 KB, derived from what the pass actually consumes rather than from what happens to be
@@ -767,28 +767,6 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  if (automaticPageTurnActive) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
-        mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      buttonEvents.drain();
-      stopAutomaticPageTurn();
-      // updates chapter title space to indicate page turn disabled
-      requestUpdate();
-      return;
-    }
-
-    // Skips page turn if renderingMutex is busy
-    if (RenderLock::peek()) {
-      lastPageTurnTime = millis();
-      return;
-    }
-
-    if ((millis() - lastPageTurnTime) >= pageTurnDuration) {
-      pageTurn(true);
-      return;
-    }
-  }
-
   bool buttonPrevTurn = false;
   bool buttonNextTurn = false;
   using BA = CrossPointSettings::BUTTON_ACTION;
@@ -1393,11 +1371,7 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
       // beginBackgroundBorrow() self-declines when there is no secondary buffer to lend (X3
       // baseline, or a Background-C build already holds it), so this needs no device split.
       // Settle check. Measured from the last page ON SCREEN, not the last page TURN:
-      // lastPageTurnTime is only stamped by turns, so before the reader's first turn it still
-      // holds 0 and the quiet period is vacuously satisfied — B would take the buffer moments
-      // after a book's first page appeared, which is precisely when the next turn is coming.
-      // max() of the two so an explicit turn still resets the window even if no render followed.
-      const unsigned long lastActivityMs = std::max(lastPageTurnTime, lastPageOnScreenMs_);
+      const unsigned long lastActivityMs = lastPageOnScreenMs_;
       // And do not start when a button edge is already queued: the borrow would be handed back
       // on the very next loop tick, wasting the slice AND burning one of the two attempts
       // BG_BUILD_MAX_PREEMPTIONS allows before B abandons the spine. This is the same predicate
@@ -2257,55 +2231,6 @@ void EpubReaderActivity::applyTextDarkness(const uint8_t textDarkness) {
   requestUpdate();
 }
 
-void EpubReaderActivity::stopAutomaticPageTurn() {
-  if (!automaticPageTurnActive) {
-    return;
-  }
-
-  automaticPageTurnActive = false;
-
-  if (UITheme::getStatusBarHeight(true) == UITheme::getStatusBarHeight()) {
-    return;
-  }
-
-  // Preserve current reading position so we can restore after reflow.
-  RenderLock lock(*this);
-  if (section) {
-    navTarget = NavigationTarget::makePage(section->currentPage);
-    navTarget.cachedPageCount = section->pageCount;
-    navTarget.cachedSpineIdx = currentSpineIndex;
-  }
-  pendingPreRender = false;
-  usePreRenderedBuffer = false;
-  preRenderedPage.ready = false;
-  preRenderedPlanesStaged_ = false;
-  pendingGrayscale_ = {};
-  section.reset();
-}
-
-void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption) {
-  if (selectedPageTurnOption == 0 || selectedPageTurnOption >= std::size(PAGE_TURN_LABELS)) {
-    stopAutomaticPageTurn();
-    return;
-  }
-
-  lastPageTurnTime = millis();
-  // calculates page turn duration by dividing by number of pages
-  pageTurnDuration = (1UL * 60 * 1000) / PAGE_TURN_LABELS[selectedPageTurnOption];
-  automaticPageTurnActive = true;
-
-  // Reset cached section when automatic page turn adds a forced status item band.
-  if (UITheme::getStatusBarHeight(true) != UITheme::getStatusBarHeight()) {
-    // Preserve current reading position so we can restore after reflow.
-    RenderLock lock(*this);
-    if (section) {
-      navTarget = NavigationTarget::makePage(section->currentPage);
-      navTarget.cachedPageCount = section->pageCount;
-      navTarget.cachedSpineIdx = currentSpineIndex;
-    }
-    section.reset();
-  }
-}
 
 void EpubReaderActivity::applyBookReaderOverrides(const int8_t embeddedStyleOverride,
                                                   const int8_t imageRenderingOverride, const int8_t fontFamilyOverride,
@@ -2746,7 +2671,6 @@ bool EpubReaderActivity::stepPageStateLocked(const bool isForwardTurn) {
       pendingProgressSave.pageCount = 0;
       pendingProgressSave.pending.store(true, std::memory_order_release);
     }
-    lastPageTurnTime = millis();
     forceLoadLargeImages = false;
     pageHasPlaceholders = false;
     return true;
@@ -2789,7 +2713,6 @@ bool EpubReaderActivity::stepPageStateLocked(const bool isForwardTurn) {
   // Only the within-section branches above reach here with a section still loaded; the
   // cross-spine branches set their own target and reset it, and this no-ops for them.
   anchorNavTargetToCurrentPage();
-  lastPageTurnTime = millis();
   forceLoadLargeImages = false;
   pageHasPlaceholders = false;
   return true;
@@ -2881,7 +2804,6 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     // buffer, and there the planes must go with it.
     preRenderedPage.ready = false;
     usePreRenderedBuffer = true;
-    lastPageTurnTime = millis();
     requestUpdate();
     return;
   }
@@ -3072,8 +2994,8 @@ EpubReaderActivity::RenderLayout EpubReaderActivity::computeRenderLayout() const
   int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
-  const int statusBarTopHeight = UITheme::getStatusBarTopHeight(automaticPageTurnActive);
-  const int statusBarBottomHeight = UITheme::getStatusBarBottomHeight(automaticPageTurnActive);
+  const int statusBarTopHeight = UITheme::getStatusBarTopHeight();
+  const int statusBarBottomHeight = UITheme::getStatusBarBottomHeight();
 
   const int bezelLeft = orientedMarginLeft, bezelRight = orientedMarginRight;
   orientedMarginTop += std::max(static_cast<int>(SETTINGS.screenMargin), statusBarTopHeight);
@@ -3482,7 +3404,7 @@ bool EpubReaderActivity::buildSection(const RenderLayout& layout) {
     LOG_ERR("ERS", "Render rejected invalid spine index %d (valid 0..%d)", currentSpineIndex, spineCount - 1);
     currentSpineIndex = 0;
     navTarget = NavigationTarget::makePage(0);
-    automaticPageTurnActive = false;
+
     requestUpdate();
     return false;
   }
@@ -3843,7 +3765,7 @@ void EpubReaderActivity::renderNormalPass(RenderLock& lock, const RenderLayout& 
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_EMPTY_CHAPTER), true, EpdFontFamily::BOLD);
     renderStatusBar();
     renderer.displayBuffer();
-    automaticPageTurnActive = false;
+
     return;
   }
 
@@ -3852,7 +3774,7 @@ void EpubReaderActivity::renderNormalPass(RenderLock& lock, const RenderLayout& 
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_OUT_OF_BOUNDS), true, EpdFontFamily::BOLD);
     renderStatusBar();
     renderer.displayBuffer();
-    automaticPageTurnActive = false;
+
     return;
   }
 
@@ -3874,7 +3796,7 @@ void EpubReaderActivity::renderNormalPass(RenderLock& lock, const RenderLayout& 
       } else {
         pageLoadFailStage_ = 3;
       }
-      automaticPageTurnActive = false;
+  
       if (pageLoadFailStage_ == 1) {
         // Transient hypothesis: hand back everything the reader is holding that nobody is
         // waiting on, then reload the section from the SAME cache file. The evictions are the
@@ -4042,7 +3964,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   const int spineCount = epub->getSpineItemsCount();
   if (spineCount <= 0) {
     LOG_ERR("ERS", "EPUB has no spine items, aborting render");
-    automaticPageTurnActive = false;
+
     return;
   }
 
@@ -4987,8 +4909,8 @@ void EpubReaderActivity::restoreCurrentPageToBufferIfPreRendered() {
   int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
-  const int statusBarTopHeight = UITheme::getStatusBarTopHeight(automaticPageTurnActive);
-  const int statusBarBottomHeight = UITheme::getStatusBarBottomHeight(automaticPageTurnActive);
+  const int statusBarTopHeight = UITheme::getStatusBarTopHeight();
+  const int statusBarBottomHeight = UITheme::getStatusBarBottomHeight();
   orientedMarginTop += std::max(static_cast<int>(SETTINGS.screenMargin), statusBarTopHeight);
   orientedMarginLeft += SETTINGS.screenMargin;
   orientedMarginRight += SETTINGS.screenMargin;
@@ -5019,9 +4941,7 @@ void EpubReaderActivity::renderStatusBar() const {
 
   std::string title;
 
-  if (automaticPageTurnActive) {
-    title = tr(STR_AUTO_TURN_ENABLED) + std::to_string(60 * 1000 / pageTurnDuration);
-  } else if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
+  if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
     const int tocIndex =
         section ? section->getTocIndexForPage(section->currentPage) : epub->getTocIndexForSpineIndex(currentSpineIndex);
     if (tocIndex == -1) {
@@ -5411,7 +5331,6 @@ void EpubReaderActivity::openReaderMenu() {
         const auto& menu = std::get<MenuResult>(result.data);
         applyOrientation(menu.orientation);
         applyTextDarkness(menu.textDarkness);
-        toggleAutoPageTurn(menu.pageTurnOption);
         applyBookReaderOverrides(
             menu.embeddedStyleOverride, menu.imageRenderingOverride, menu.fontFamilyOverride, menu.sdFontFamilyOverride,
             menu.fontSizeOverride, static_cast<bool>(menu.bionicReadingOverride), menu.paragraphAlignmentOverride,
