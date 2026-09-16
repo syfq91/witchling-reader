@@ -336,7 +336,6 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
   toolsItems.push_back(SettingInfo::Action(StrId::STR_BOOK_INFO, SettingAction::None));
   toolsItems.push_back(SettingInfo::Action(StrId::STR_MARK_AS_READ, SettingAction::None));
   toolsItems.push_back(SettingInfo::Action(StrId::STR_DELETE_CACHE, SettingAction::None));
-  toolsItems.push_back(SettingInfo::Action(StrId::STR_DISPLAY_QR, SettingAction::None));
   toolsItems.push_back(SettingInfo::Action(StrId::STR_GO_HOME_BUTTON, SettingAction::None));
 #if ENABLE_BENCHMARKS
   toolsItems.push_back(SettingInfo::Action(StrId::STR_RENDER_BENCHMARK, SettingAction::None));
@@ -367,8 +366,6 @@ EpubReaderMenuActivity::MenuAction EpubReaderMenuActivity::actionForNameId(StrId
       return MenuAction::TEXT_DARKNESS;
     case StrId::STR_ORIENTATION:
       return MenuAction::ROTATE_SCREEN;
-    case StrId::STR_DISPLAY_QR:
-      return MenuAction::DISPLAY_QR;
     case StrId::STR_MARK_AS_READ:
       return MenuAction::MARK_AS_READ;
     case StrId::STR_DELETE_CACHE:

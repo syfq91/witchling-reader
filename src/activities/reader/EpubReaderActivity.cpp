@@ -52,7 +52,6 @@
 #include "GlobalBookmarkIndex.h"
 #include "MappedInputManager.h"
 #include "OpdsProgressionSyncActivity.h"
-#include "QrDisplayActivity.h"
 #include "QuickOverridesActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
@@ -2038,39 +2037,6 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             }
             requestUpdate();
           });
-      break;
-    }
-    case EpubReaderMenuActivity::MenuAction::DISPLAY_QR: {
-      std::unique_ptr<Page> p;
-      {
-        RenderLock lock(*this);
-        if (section && section->currentPage >= 0 && section->currentPage < section->pageCount) {
-          p = section->loadPageFromSectionFile();
-        }
-      }
-      if (p) {
-        std::string fullText;
-        for (const auto& el : p->elements) {
-          if (el->getTag() == TAG_PageLine) {
-            const auto& line = static_cast<const PageLine&>(*el);
-            if (line.getBlock()) {
-              const auto& block = *line.getBlock();
-              const uint16_t wordCount = block.wordCount();
-              for (uint16_t i = 0; i < wordCount; ++i) {
-                if (!fullText.empty()) fullText += " ";
-                fullText += block.wordText(i);
-              }
-            }
-          }
-        }
-        if (!fullText.empty()) {
-          startActivityForResult(std::make_unique<QrDisplayActivity>(renderer, mappedInput, fullText),
-                                 [this](const ActivityResult& result) {});
-          break;
-        }
-      }
-      // If no text or page loading failed, just close menu
-      requestUpdate();
       break;
     }
     case EpubReaderMenuActivity::MenuAction::STAR_PAGE: {
