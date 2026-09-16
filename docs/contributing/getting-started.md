@@ -89,10 +89,11 @@ Linux and macOS are unaffected; their limits are orders of magnitude higher.
 
 ## Install Firmware
 
-Locked X4 hardware does not support flashing over USB (`pio run --target upload`). To install the compiled firmware (`.pio/build/x4/firmware.bin`):
+Locked X4 hardware does not support flashing over standard USB data (`pio run --target upload`). To install the compiled firmware (`.pio/build/default/firmware.bin`):
 - Copy to the SD card root as `update.bin`
 - Or use **Settings -> System -> SD Firmware Update** (or flash from the file browser)
 - Or update wirelessly via Wi-Fi OTA / local web interface
+- For development boards with serial/UART access: run `./bin/flash` (or `.\bin\flash.ps1`) to bypass PlatformIO's dependency re-scan and directly write the binary using `esptool`.
 
 ## First checks before opening a PR
 

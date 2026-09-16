@@ -119,7 +119,12 @@ See the [webserver docs](./docs/webserver.md) for more information on how to con
 
 ### 3.7 Settings
 
-The Settings screen allows you to configure the device's behavior.
+The Settings screen is organized into four top-level tabs: **[Display](#371-display)**, **[Reader](#372-reader)**, **[Controls](#373-controls)**, and **[System](#374-system)**.
+
+#### Tab Navigation
+- **Switch Between Tabs & List:** While browsing settings rows, pressing **Back** returns focus to the top tab bar.
+- **Change Tab:** With the tab bar focused, press **Confirm** to advance to the next tab, or use **Left** / **Right** (or side buttons, depending on orientation) to cycle between tabs.
+- **Enter Tab / Toggle Setting:** Pressing **Up** / **Down** steps from the tab bar down into the category's settings. Pressing **Confirm** on a setting row toggles its value or opens its dedicated picker/submenu.
 
 #### 3.7.1 Display
 
@@ -159,7 +164,7 @@ The Settings screen allows you to configure the device's behavior.
   - "Portrait" (default), "Landscape CW", "Inverted", "Landscape CCW"
 
 **EPUB Font** (submenu):
-- **Font Family**: Font used for EPUB reading. Includes built-in fonts (Bookerly, Noto Sans) plus any fonts installed on the SD card.
+- **Font Family**: Font used for EPUB reading. Includes built-in fonts (Bookerly, Noto Sans) plus any fonts installed on the SD card (which are memory-mapped directly from storage for minimal RAM usage).
 - **Font Size**: "Tiny", "Small", "Medium" (default), "Large", "X Large"
 - **Text Anti-Aliasing**: Smooth grey edges on text. Slows page turns slightly. "ON" / "OFF"
 - **Text Darkness**: Ink density for rendered text: "Normal" (default), "Dark", "Extra Dark", "Max Dark"
@@ -311,7 +316,7 @@ This feature can be disabled in the **[Controls Settings](#373-controls)** to he
 ### System Navigation
 * **Return to Home:** Press the **Back** button to close the book and return to the **[Home](#31-home-screen)** screen.
 * **Return to Browse Files:** Press and hold the **Back** button to close the book and return to the **[Browse Files](#33-browse-files-screen)** screen.
-* **Reader Menu:** Press **Confirm** to open the reader menu, which includes: **[Table of Contents](#6-chapter-selection-screen)**, bookmarks, sync progress, quick per-book overrides (font, images, hyphenation, bionic reading…), take screenshot, and more.
+* **Reader Menu:** Press **Confirm** to open the reader menu. The menu is organized into categorized tabs (**Navigation** and **Settings**), allowing quick access to the **[Table of Contents](#5-chapter-selection-screen)**, bookmarks, progression sync, per-book typography overrides (font, images, hyphenation, bionic reading…), screenshots, and reader settings.
 
 ### Supported Languages
 

@@ -9,8 +9,11 @@ For full documentation refer to the [upstream README](https://github.com/jpirnay
 ## Changes in this Fork
 
 - [OPDS Progression 1.0](https://github.com/opds-community/drafts/blob/main/opds-progression-1.0.md) Sync
-- Removed TXT and Markdown Support
-- Lyra Sole Theme
+- Removed TXT and Markdown Support (EPUB only)
+- Lyra Sole Theme (Classic, 3 Covers, and Carousel variants removed)
+- Tabbed Settings & Reader Menus (categorized into Display, Reader, Controls, System tabs)
+- Unified FreeInkUI List Framework across all pickers, file browser, and menus
+- SD Card Font Memory-Mapping (`mmap`) & Image Decoder Heap Recovery
 - Removed KOReader sync and Calibre wireless transfer
 - Removed Weather Integration
 - Removed USB Serial, Flashing & Host Communication
@@ -29,7 +32,7 @@ cd witchling-reader
 # Enable repo-managed git hooks (once per clone)
 git config core.hooksPath .githooks && chmod +x .githooks/pre-commit
 
-# Build firmware binary (.pio/build/x4/firmware.bin)
+# Build firmware binary (.pio/build/default/firmware.bin)
 pio run
 
 # Build release binary
@@ -39,11 +42,12 @@ pio run -e gh_release
 ## Installing Firmware
 
 > [!NOTE]
-> Locked X4 hardware does not support flashing over USB
+> Locked X4 hardware does not support flashing over standard USB data (`pio run --target upload` will not work). The USB-C port is strictly power/charging.
 
 To install or update firmware on the device:
 
-- **SD Card Update**: Copy the compiled binary (`.pio/build/x4/firmware.bin`) to the SD card root as `update.bin`, or navigate to **Settings -> System -> SD Firmware Update**.
+- **SD Card Update**: Copy the compiled binary (`.pio/build/default/firmware.bin`) to the SD card root as `update.bin`, or navigate to any `.bin` file in the device file browser, long-press **Confirm**, and select **Flash**. Alternatively, navigate to **Settings -> System -> SD Firmware Update**.
 - **Wi-Fi OTA / Web Server**: Upload the `.bin` file via the built-in web server or check for updates wirelessly in **Settings -> System -> Check for Updates**.
+- **Developer Direct Flash (UART/Headers)**: For development units with UART access, run `./bin/flash` (Linux/macOS) or `.\bin\flash.ps1` (Windows) to directly flash pre-built binaries via `esptool` without dependency rebuild overhead, preserving user settings at `0x9000`.
 
 For device documentation, hardware specifications, and troubleshooting, refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme) and the `docs/` directory.
