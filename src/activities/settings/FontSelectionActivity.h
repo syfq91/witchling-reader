@@ -14,6 +14,7 @@ class MappedInputManager;
 /// Full-screen list of all reader fonts (built-in + SD card families).
 /// Replaces in-place enum cycling for the Reader Font Family setting.
 class FontSelectionActivity final : public UiListActivity {
+ public:
   explicit FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : UiListActivity("FontSelect", renderer, mappedInput) {}
   FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const SettingInfo& overrideSetting)

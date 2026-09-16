@@ -6,6 +6,7 @@
 #include "CrossPointSettings.h"
 #include "I18nKeys.h"
 #include "MappedInputManager.h"
+#include "TouchUi.h"
 #include "components/UITheme.h"
 
 namespace fui = freeink::ui;
@@ -67,9 +68,13 @@ bool UiListActivity::handleButtons() {
 }
 
 bool UiListActivity::routeListTouch() {
+#if CP_TOUCH_UI
   const auto route = UiAppHost::routeTouch(mappedInput);
   if (route.routed && app.invalidated()) requestUpdate();
   return static_cast<bool>(route);
+#else
+  return false;
+#endif
 }
 
 void UiListActivity::moveSelectionTo(const int index) {
@@ -86,6 +91,7 @@ void UiListActivity::moveSelectionTo(const int index) {
 void UiListActivity::loop() {
   if (handleCustomInput()) return;
   if (handleButtons()) return;
+#if CP_TOUCH_UI
   if (routeListTouch()) return;
 
   const auto swipe = mappedInput.wasSwipe();
@@ -100,6 +106,7 @@ void UiListActivity::loop() {
     if (moved) requestUpdate();
     return;
   }
+#endif
 
   navigateButtons();
 }
@@ -121,11 +128,17 @@ void UiListActivity::navigateButtons() {
 
 void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, const bool hasSubtitle) {
   int16_t rowHeight = screen.theme().rowHeight;
+#if CP_TOUCH_UI
   if (!mappedInput.hasTouch()) {
     const auto& metrics = UITheme::getInstance().getMetrics();
     rowHeight = static_cast<int16_t>(hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight);
     props.rowHeight = rowHeight;
   }
+#else
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  rowHeight = static_cast<int16_t>(hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight);
+  props.rowHeight = rowHeight;
+#endif
   activeNav().syncToProps(screen.body(), rowHeight, screen.theme().listRowGap, listCount(), props);
 }
 

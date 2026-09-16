@@ -25,6 +25,7 @@
 #include "CrossPointState.h"
 #include "FileContextMenuActivity.h"
 #include "MappedInputManager.h"
+#include "TouchUi.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -150,7 +151,9 @@ bool FileBrowserActivity::handleCustomInput() {
           parent.replace(parent.find_last_of('/'), std::string::npos, "");
           // The rows are about to be replaced. Any contact still queued was aimed at the folder
           // we are leaving, and the list it would land in is a different one.
+#if CP_TOUCH_UI
           mappedInput.flushTouchEvents();
+#endif
           model.setPath(std::move(parent));  // empty -> "/"
           model.load();
           const auto pos = oldPath.find_last_of('/');
@@ -243,7 +246,9 @@ void FileBrowserActivity::activateSelected(const bool longPress) {
     if (child.back() != '/') child += "/";
     child += entry.substr(0, entry.length() - 1);
     // As in the Back branch: drop contacts aimed at the folder we are leaving.
+#if CP_TOUCH_UI
     mappedInput.flushTouchEvents();
+#endif
     model.setPath(std::move(child));
     model.load();
     resetNavigation();

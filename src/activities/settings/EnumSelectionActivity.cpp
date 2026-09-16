@@ -44,17 +44,12 @@ void EnumSelectionActivity::onEnter() {
   }
 }
 
-<<<<<<< HEAD
-void EnumSelectionActivity::handleSelection() {
-  setting.setEnumSelectedIndex(static_cast<uint8_t>(selectedIndex));
-=======
 const char* EnumSelectionActivity::headerTitle() const { return I18N.get(setting.nameId); }
 
 void EnumSelectionActivity::activateIndex(const int index) {
   app.clearTapFlash();
   nav.selected = index;
   setting.setEnumSelectedIndex(static_cast<uint8_t>(index));
->>>>>>> ad38dbc8
   finish();
 }
 

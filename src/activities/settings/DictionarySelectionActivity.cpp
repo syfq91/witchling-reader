@@ -66,24 +66,6 @@ void DictionarySelectionActivity::buildScreen(UiScreen& screen) {
                   static_cast<int16_t>(contentRect.x)});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-<<<<<<< HEAD
-  GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
-                 I18N.get(StrId::STR_DICTIONARY));
-
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = contentRect.height - contentTop - metrics.verticalSpacing;
-
-  const int active = activeIndex;
-  GUI.drawList(
-      renderer, Rect{contentRect.x, contentTop, contentRect.width, contentHeight}, static_cast<int>(optionCount()),
-      selectedIndex, [this](int index) { return optionLabel(index); }, nullptr, nullptr,
-      [active](int index) -> std::string { return index == active ? tr(STR_SELECTED) : ""; }, true);
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  renderer.displayBuffer();
-=======
   fui::ListProps props;
   props.items = rowItems.data();
   props.count = static_cast<uint16_t>(rowItems.size());
@@ -93,5 +75,4 @@ void DictionarySelectionActivity::buildScreen(UiScreen& screen) {
   props.labelText.maxLines = 2;
   syncListViewport(screen, props);
   screen.list(props);
->>>>>>> ad38dbc8
 }

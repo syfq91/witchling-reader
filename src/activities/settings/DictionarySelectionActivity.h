@@ -22,11 +22,6 @@ class DictionarySelectionActivity final : public UiListActivity {
       : UiListActivity("DictionarySelect", renderer, mappedInput) {}
 
   void onEnter() override;
-<<<<<<< HEAD
-  void loop() override;
-  void render(RenderLock&&) override;
-=======
->>>>>>> ad38dbc8
 
  private:
   // Index 0 is always "None"; entry i>0 is dictionaries[i-1].

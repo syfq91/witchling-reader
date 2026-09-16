@@ -43,12 +43,6 @@ class EnumSelectionActivity final : public UiListActivity {
         overrideCount(overrideCount) {}
 
   void onEnter() override;
-<<<<<<< HEAD
-  void onExit() override;
-  void loop() override;
-  void render(RenderLock&&) override;
-=======
->>>>>>> ad38dbc8
 
  private:
   [[nodiscard]] uint8_t optionCount() const;

@@ -11,6 +11,7 @@
 #include "ButtonEventManager.h"
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
+#include "ListRowTap.h"
 #include "RenderLock.h"
 
 class Activity {
