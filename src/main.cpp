@@ -43,7 +43,6 @@
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
 #include "util/ButtonNavigator.h"
-#include "util/ScreenshotUtil.h"
 #include "util/WakeTrace.h"
 
 #ifdef ENABLE_BOOT_HEAP_DIAGNOSTICS
@@ -1100,31 +1099,9 @@ void loop() {
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
 
-  // Power-hold timer for sleep. Hoisted above the screenshot block so the
-  // screenshot path can clear it and avoid a stale POWER press triggering sleep
-  // after the screenshot completes.
+  // Power-hold timer for sleep.
   static unsigned long powerHoldStart = 0;
 
-  static bool screenshotButtonsReleased = true;
-  if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
-    if (screenshotButtonsReleased) {
-      screenshotButtonsReleased = false;
-      {
-        RenderLock lock;
-        // The reader may have left a pre-rendered next page in the frame buffer; ask the
-        // current activity to redraw the visible page first so the screenshot matches the screen.
-        activityManager.prepareFramebufferForCapture();
-        ScreenshotUtil::takeScreenshot(renderer);
-      }
-      // Discard the POWER+DOWN presses so they don't fire Short/Long events
-      // (e.g. page turn, sleep) once the user releases the combo.
-      buttonEventManager.drain();
-      powerHoldStart = 0;
-    }
-    return;
-  } else {
-    screenshotButtonsReleased = true;
-  }
 
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
   if (millis() - lastActivityTime >= sleepTimeoutMs) {
@@ -1146,10 +1123,6 @@ void loop() {
   if (millis() >= allowSleepAt && gpio.isPressed(HalGPIO::BTN_POWER) && powerHoldStart > 0) {
     const unsigned long heldTime = millis() - powerHoldStart;
     if (heldTime > SETTINGS.getPowerButtonDuration()) {
-      // If the screenshot combination is potentially being pressed, don't sleep
-      if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
-        return;
-      }
       LOG_DBG("MAIN", "loop: power button held for %lu ms (> %u ms), entering deep sleep", heldTime,
               SETTINGS.getPowerButtonDuration());
       enterDeepSleep();

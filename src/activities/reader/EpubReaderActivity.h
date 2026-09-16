@@ -489,7 +489,6 @@ class EpubReaderActivity final : public Activity {
     int pageCount = 0;
   };
   PendingProgressSave pendingProgressSave;
-  bool pendingScreenshot = false;
   bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
   bool finishedBookActivityStarted_ = false;
   // Armed by renderFinishedBookPass() (render task), consumed by loop() (loop task). The launch
@@ -861,8 +860,7 @@ class EpubReaderActivity final : public Activity {
     return (section && section->hasActiveBuild()) || backgroundBuildState_ == BackgroundBuildState::Building;
   }
   // A pending pre-render leaves the *next* page in the frame buffer; redraw the current page
-  // so a screenshot (or any raw frame-buffer capture) matches what the user sees.
-  void prepareFramebufferForCapture() override { restoreCurrentPageToBufferIfPreRendered(); }
+  // so any raw frame-buffer capture matches what the user sees.
   bool shouldSkipPeriodicUpdate() const override;
   void onButtonAction(CrossPointSettings::BUTTON_ACTION action) override;
 

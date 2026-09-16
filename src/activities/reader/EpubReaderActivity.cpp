@@ -65,7 +65,6 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/OpdsProgressionSync.h"
-#include "util/ScreenshotUtil.h"
 #include "util/WakeTrace.h"
 
 // Defined further down (near the other font helpers); declared here because
@@ -2194,14 +2193,6 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 #endif  // ENABLE_BENCHMARKS
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::SCREENSHOT: {
-      {
-        RenderLock lock(*this);
-        pendingScreenshot = true;
-      }
-      requestUpdate();
-      break;
-    }
   }
 }
 
@@ -3991,13 +3982,6 @@ void EpubReaderActivity::renderNormalPass(RenderLock& lock, const RenderLayout& 
         lastRenderStats.fontCacheMisses, fontHitRatePct, lastRenderStats.fontGetBitmapCalls,
         lastRenderStats.fontGetBitmapTimeUs);
 
-    if (pendingScreenshot) {
-      // No restoreCurrentPageToBufferIfPreRendered() needed here: we are inside renderContents()
-      // right after a fresh full render of the current page, before any pre-render is re-armed,
-      // so the frame buffer already holds exactly what is on screen.
-      pendingScreenshot = false;
-      ScreenshotUtil::takeScreenshot(renderer);
-    }
 
     // Pre-render was already scheduled in renderContents() before the lock was
     // released, so the loop task could start it during the waveform wait.

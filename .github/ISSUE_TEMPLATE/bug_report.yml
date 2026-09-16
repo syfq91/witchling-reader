@@ -58,6 +58,6 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Relevant Log Output/Screenshots
+      label: Relevant Log Output/Photos
       description: If applicable, error messages, or log output to help explain your problem. You can drag and drop images here.
       render: shell

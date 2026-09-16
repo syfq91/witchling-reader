@@ -45,11 +45,6 @@ The device utilises the standard buttons on the Xteink X4 (in the same layout as
 
 Button layout can be customized in the **[Controls Settings](#373-controls)**.
 
-### Taking a Screenshot
-When the Power Button and Volume Down button are pressed at the same time, it will take a screenshot and save it in the folder `screenshots/`.
-
-Alternatively, while reading a book, press the **Confirm** button to open the reader menu and select **Take screenshot**.
-
 ---
 
 ## 2. Power & Startup
@@ -316,7 +311,7 @@ This feature can be disabled in the **[Controls Settings](#373-controls)** to he
 ### System Navigation
 * **Return to Home:** Press the **Back** button to close the book and return to the **[Home](#31-home-screen)** screen.
 * **Return to Browse Files:** Press and hold the **Back** button to close the book and return to the **[Browse Files](#33-browse-files-screen)** screen.
-* **Reader Menu:** Press **Confirm** to open the reader menu. The menu is organized into categorized tabs (**Navigation** and **Settings**), allowing quick access to the **[Table of Contents](#5-chapter-selection-screen)**, bookmarks, progression sync, per-book typography overrides (font, images, hyphenation, bionic reading…), screenshots, and reader settings.
+* **Reader Menu:** Press **Confirm** to open the reader menu. The menu is organized into categorized tabs (**Navigation** and **Settings**), allowing quick access to the **[Table of Contents](#5-chapter-selection-screen)**, bookmarks, progression sync, per-book typography overrides (font, images, hyphenation, bionic reading…), and reader settings.
 
 ### Supported Languages
 

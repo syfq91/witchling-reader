@@ -71,11 +71,6 @@ class Activity {
   // Left/Right buttons mean something other than list paging override this boundary.
   virtual bool pageList(ListPageDirection /*direction*/) { return false; }
 
-  // Called before something captures the raw frame buffer (e.g. a screenshot) outside the
-  // normal render flow. An activity that may leave content other than what is on screen in
-  // the frame buffer (e.g. the reader's pre-rendered next page) must redraw the visible page
-  // here so the capture matches the display. Default is a no-op.
-  virtual void prepareFramebufferForCapture() {}
 
   // Return true to suppress the minute-tick requestUpdate() from ActivityManager when nothing
   // status-bar-relevant has changed since the last render. Skipping avoids a no-op page render

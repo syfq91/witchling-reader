@@ -13,7 +13,7 @@
 #include "CrossPointSettings.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/ScreenshotUtil.h"
+#include "util/FramebufferUtil.h"
 
 namespace {
 constexpr const char* SLEEP_BMP_PATH = "/sleep.bmp";
@@ -346,7 +346,7 @@ void BmpViewerActivity::setAsSleepScreen() {
     const bool renderedForCapture = renderDecodedImage(false);
     if (renderedForCapture) {
       Storage.remove(SLEEP_BMP_TMP_PATH);
-      if (ScreenshotUtil::saveFramebufferAsBmp(SLEEP_BMP_TMP_PATH, renderer.getFrameBuffer(), display.getDisplayWidth(),
+      if (FramebufferUtil::saveFramebufferAsBmp(SLEEP_BMP_TMP_PATH, renderer.getFrameBuffer(), display.getDisplayWidth(),
                                                display.getDisplayHeight())) {
         success = replaceSleepBmpFromTemp();
       }

@@ -1,8 +1,6 @@
-#include "ScreenshotUtil.h"
+#include "FramebufferUtil.h"
 
 #include <Arduino.h>
-#include <BitmapHelpers.h>
-#include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
@@ -10,31 +8,7 @@
 
 #include "Bitmap.h"  // Required for BmpHeader struct definition
 
-void ScreenshotUtil::takeScreenshot(GfxRenderer& renderer) {
-  const uint8_t* fb = renderer.getFrameBuffer();
-  if (fb) {
-    String filename_str = "/screenshots/screenshot-" + String(millis()) + ".bmp";
-    if (ScreenshotUtil::saveFramebufferAsBmp(filename_str.c_str(), fb, renderer.getDisplayWidth(),
-                                             renderer.getDisplayHeight())) {
-      LOG_DBG("SCR", "Screenshot saved to %s", filename_str.c_str());
-    } else {
-      LOG_ERR("SCR", "Failed to save screenshot");
-    }
-  } else {
-    LOG_ERR("SCR", "Framebuffer not available");
-  }
-
-  // Display a border around the screen to indicate a screenshot was taken
-  if (renderer.storeBwBuffer()) {
-    renderer.drawRect(6, 6, renderer.getDisplayHeight() - 12, renderer.getDisplayWidth() - 12, 2, true);
-    renderer.displayBuffer();
-    delay(1000);
-    renderer.restoreBwBuffer();
-    renderer.displayBuffer(HalDisplay::RefreshMode::HALF_REFRESH);
-  }
-}
-
-bool ScreenshotUtil::saveFramebufferAsBmp(const char* filename, const uint8_t* framebuffer, int width, int height) {
+bool FramebufferUtil::saveFramebufferAsBmp(const char* filename, const uint8_t* framebuffer, int width, int height) {
   if (!framebuffer) {
     return false;
   }
@@ -56,7 +30,7 @@ bool ScreenshotUtil::saveFramebufferAsBmp(const char* filename, const uint8_t* f
 
   FsFile file;
   if (!Storage.openFileForWrite("SCR", filename, file)) {
-    LOG_ERR("SCR", "Failed to save screenshot");
+    LOG_ERR("SCR", "Failed to save framebuffer to BMP");
     return false;
   }
 

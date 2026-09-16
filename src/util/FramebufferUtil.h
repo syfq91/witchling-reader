@@ -1,8 +1,7 @@
 #pragma once
-#include <GfxRenderer.h>
+#include <cstdint>
 
-class ScreenshotUtil {
+class FramebufferUtil {
  public:
-  static void takeScreenshot(GfxRenderer& renderer);
   static bool saveFramebufferAsBmp(const char* filename, const uint8_t* framebuffer, int width, int height);
 };

@@ -25,7 +25,6 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
     GO_TO_PRINTED_PAGE,
     AUTO_PAGE_TURN,
     ROTATE_SCREEN,
-    SCREENSHOT,
     DISPLAY_QR,
     GO_HOME,
     STARRED_PAGES,
