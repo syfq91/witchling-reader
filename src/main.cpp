@@ -1318,9 +1318,7 @@ void loop() {
         case BA::BTN_READER_MENU:
           activityManager.dispatchButtonAction(BA::BTN_READER_MENU);
           break;
-        case BA::BTN_TOGGLE_BIONIC_READING:
-          activityManager.dispatchButtonAction(BA::BTN_TOGGLE_BIONIC_READING);
-          break;
+
         case BA::BTN_CYCLE_FONT_SIZE:
           activityManager.dispatchButtonAction(BA::BTN_CYCLE_FONT_SIZE);
           break;

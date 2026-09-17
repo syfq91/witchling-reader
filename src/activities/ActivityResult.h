@@ -28,7 +28,6 @@ struct MenuResult {
   std::string sdFontFamilyOverride;
   int8_t fontSizeOverride = -1;
   uint8_t textDarkness = 1;
-  uint8_t bionicReadingOverride = 0;
   int8_t paragraphAlignmentOverride = -1;
   int8_t textAntiAliasingOverride = -1;
   int8_t hyphenationOverride = -1;
@@ -42,7 +41,6 @@ struct MenuResult {
   uint8_t showFileExtensions = 0;
   // Also appended for positional-initialiser safety. Tri-state like the other
   // reader overrides: -1 = default, 0 = off, 1 = on.
-  int8_t guideDotsOverride = -1;
   int8_t inlineFootnotePreviewsOverride = -1;
 };
 

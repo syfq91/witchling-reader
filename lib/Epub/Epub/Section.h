@@ -46,7 +46,7 @@ class Section {
 
   void writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                               uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
-                              bool embeddedStyle, bool bionicReadingEnabled, uint8_t imageRendering);
+                              bool embeddedStyle, uint8_t imageRendering);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
   struct TocBoundary {
@@ -144,7 +144,6 @@ class Section {
     bool hyphenationEnabled = false;
     bool fontSizeNormalization = true;
     bool embeddedStyle = false;
-    bool bionicReadingEnabled = false;
     bool inlineFootnotePreviews = false;
     uint8_t imageRendering = 0;
     // Sibling-size ladder derived from the body font (see FontSizeLadder). Not part of the

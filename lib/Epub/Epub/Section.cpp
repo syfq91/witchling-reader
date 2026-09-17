@@ -30,7 +30,8 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 74;  // bumped: the HTML `hidden` attribute now
+constexpr uint8_t SECTION_FILE_VERSION = 75;  // bumped: removed bionic reading
+                                              // v74: the HTML `hidden` attribute now
                                               // suppresses an element, so a v73 cache still
                                               // holds the laid-out text it should have hidden
                                               // v73: an internal link honours CSS
@@ -43,8 +44,8 @@ constexpr uint8_t SECTION_FILE_VERSION = 74;  // bumped: the HTML `hidden` attri
                                               // feed layout, so a v71 cache holds the old geometry
                                               // v71: the packed word style byte now carries a
                                               // per-word "continues the previous word" bit, so the
-                                              // dictionary overlay can select a bionic-split or
-                                              // hyphenated word as one word. A v70 cache reads the
+                                              // dictionary overlay can select a hyphenated word
+                                              // as one word. A v70 cache reads the
                                               // bit as clear everywhere, i.e. keeps the old split
                                               // selection, so it has to be rebuilt
                                               // v70: a wrapper's horizontal inset reaches every
@@ -80,8 +81,7 @@ constexpr uint32_t kViewportWidth = kParagraphAlignment + sizeof(uint8_t);
 constexpr uint32_t kViewportHeight = kViewportWidth + sizeof(uint16_t);
 constexpr uint32_t kHyphenationEnabled = kViewportHeight + sizeof(uint16_t);
 constexpr uint32_t kEmbeddedStyle = kHyphenationEnabled + sizeof(bool);
-constexpr uint32_t kBionicReadingEnabled = kEmbeddedStyle + sizeof(bool);
-constexpr uint32_t kImageRendering = kBionicReadingEnabled + sizeof(bool);
+constexpr uint32_t kImageRendering = kEmbeddedStyle + sizeof(bool);
 constexpr uint32_t kParseComplete = kImageRendering + sizeof(uint8_t);
 constexpr uint32_t kPageCount = kParseComplete + sizeof(bool);
 constexpr uint32_t kPageLut = kPageCount + sizeof(uint16_t);
@@ -280,7 +280,6 @@ uint32_t Section::calculatePropertyHash(const BuildParams& p) {
   append(&p.hyphenationEnabled, sizeof(p.hyphenationEnabled));
   append(&p.fontSizeNormalization, sizeof(p.fontSizeNormalization));
   append(&p.embeddedStyle, sizeof(p.embeddedStyle));
-  append(&p.bionicReadingEnabled, sizeof(p.bionicReadingEnabled));
   append(&p.inlineFootnotePreviews, sizeof(p.inlineFootnotePreviews));
   if (p.inlineFootnotePreviews) {
     append(&INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION, sizeof(INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION));
@@ -475,8 +474,7 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
 void Section::writeSectionFileHeader(const int fontId, const float lineCompression, const bool extraParagraphSpacing,
                                      const uint8_t paragraphAlignment, const uint16_t viewportWidth,
                                      const uint16_t viewportHeight, const bool hyphenationEnabled,
-                                     const bool embeddedStyle, const bool bionicReadingEnabled,
-                                     const uint8_t imageRendering) {
+                                     const bool embeddedStyle, const uint8_t imageRendering) {
   if (!file) {
     LOG_DBG("SCT", "File not open for writing header");
     return;
@@ -484,7 +482,7 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
   static_assert(header::kSize == sizeof(SECTION_FILE_VERSION) + sizeof(fontId) + sizeof(lineCompression) +
                                      sizeof(extraParagraphSpacing) + sizeof(paragraphAlignment) +
                                      sizeof(viewportWidth) + sizeof(viewportHeight) + sizeof(hyphenationEnabled) +
-                                     sizeof(embeddedStyle) + sizeof(bionicReadingEnabled) + sizeof(imageRendering) +
+                                     sizeof(embeddedStyle) + sizeof(imageRendering) +
                                      sizeof(bool) + sizeof(pageCount) + sizeof(uint32_t) + sizeof(uint32_t) +
                                      sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
@@ -497,7 +495,6 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
   serialization::writePod(file, viewportHeight);
   serialization::writePod(file, hyphenationEnabled);
   serialization::writePod(file, embeddedStyle);
-  serialization::writePod(file, bionicReadingEnabled);
   serialization::writePod(file, imageRendering);
   serialization::writePod(file, false);      // Placeholder for parseComplete (patched later)
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
@@ -552,7 +549,6 @@ bool Section::loadSectionFile(const BuildParams& p) {
     uint8_t fileParagraphAlignment;
     bool fileHyphenationEnabled;
     bool fileEmbeddedStyle;
-    bool fileBionicReadingEnabled;
     uint8_t fileImageRendering;
     bool fileParseComplete;
     serialization::readPod(file, fileFontId);
@@ -563,7 +559,6 @@ bool Section::loadSectionFile(const BuildParams& p) {
     serialization::readPod(file, fileViewportHeight);
     serialization::readPod(file, fileHyphenationEnabled);
     serialization::readPod(file, fileEmbeddedStyle);
-    serialization::readPod(file, fileBionicReadingEnabled);
     serialization::readPod(file, fileImageRendering);
     serialization::readPod(file, fileParseComplete);
 
@@ -573,7 +568,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
         p.extraParagraphSpacing != fileExtraParagraphSpacing || p.paragraphAlignment != fileParagraphAlignment ||
         p.viewportWidth != fileViewportWidth || p.viewportHeight != fileViewportHeight ||
         p.hyphenationEnabled != fileHyphenationEnabled || !embeddedStyleMatches ||
-        p.bionicReadingEnabled != fileBionicReadingEnabled || p.imageRendering != fileImageRendering) {
+        p.imageRendering != fileImageRendering) {
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
       clearCache();  // closes file before removal
       return false;
@@ -913,7 +908,7 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
     return BuildPhaseResult::Failed;
   }
   writeSectionFileHeader(p.fontId, p.lineCompression, p.extraParagraphSpacing, p.paragraphAlignment, p.viewportWidth,
-                         p.viewportHeight, p.hyphenationEnabled, p.embeddedStyle, p.bionicReadingEnabled,
+                         p.viewportHeight, p.hyphenationEnabled, p.embeddedStyle,
                          p.imageRendering);
   st.lut.clear();
   // One u32 per page, appended by the completePageFn below across the whole parse. Pre-sized for
@@ -1001,7 +996,7 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   // so this reference is valid for the visitor's whole lifetime, including across slices.
   st.visitor = std::make_unique<ChapterHtmlSlimParser>(
       epub, renderer, p.fontId, p.lineCompression, p.extraParagraphSpacing, p.paragraphAlignment, p.viewportWidth,
-      p.viewportHeight, p.hyphenationEnabled, p.fontSizeNormalization, p.bionicReadingEnabled,
+      p.viewportHeight, p.hyphenationEnabled, p.fontSizeNormalization,
       [this, &st](std::unique_ptr<Page> page) { st.lut.emplace_back(this->onPageComplete(std::move(page))); },
       p.embeddedStyle, st.contentBase, st.imageBasePath, p.imageRendering, std::move(tocAnchors), st.progressFn,
       st.cssParser, epub->getImageManifest());

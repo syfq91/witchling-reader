@@ -1227,8 +1227,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   // The image's actual yPos will be fixed in addLineToPage once the baseline is known.
   BlockStyle blockStyleWithIndent = *effectiveBase;
   attachPendingFloatImage(blockStyleWithIndent);
-  currentTextBlock.reset(new (std::nothrow) ParsedText(extraParagraphSpacing, hyphenationEnabled, blockStyleWithIndent,
-                                                       bionicReadingEnabled));
+  currentTextBlock.reset(new (std::nothrow) ParsedText(extraParagraphSpacing, hyphenationEnabled, blockStyleWithIndent));
   wordsExtractedInBlock = 0;
 }
 

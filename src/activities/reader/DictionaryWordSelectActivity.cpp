@@ -50,7 +50,7 @@ bool isWordByte(const uint8_t c) { return c >= 0x80 || std::isalnum(c) != 0; }
 // dash stays with the LEFT piece so the pieces tile the token exactly (no gap to position) and
 // the dictionary's own edge-stripping takes it off the lookup.
 // A token with no word content of its own that carries an em or en dash separates the words on
-// either side of it exactly as a space does. Bionic reading produces these: it tokenizes
+// either side of it exactly as a space does. Inline styling produces these: it tokenizes
 // "swiftness-a" into a word span, the dash, and another word span, so the dash arrives as its
 // own token rather than inside one.
 bool isDashSeparatorToken(const char* text, const size_t length) {

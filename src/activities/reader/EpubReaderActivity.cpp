@@ -626,12 +626,10 @@ void EpubReaderActivity::onEnter() {
   bookFontFamilyOverride = currentBook.fontFamilyOverride;
   bookSdFontFamilyOverride = currentBook.sdFontFamilyOverride;
   bookFontSizeOverride = currentBook.fontSizeOverride;
-  bookBionicReadingOverride = currentBook.bionicReadingOverride;
   bookParagraphAlignmentOverride = currentBook.paragraphAlignmentOverride;
   bookTextAntiAliasingOverride = currentBook.textAntiAliasingOverride;
   bookHyphenationOverride = currentBook.hyphenationOverride;
   bookFontSizeNormalizationOverride = currentBook.fontSizeNormalizationOverride;
-  bookGuideDotsOverride = currentBook.guideDotsOverride;
   bookInlineFootnotePreviewsOverride = currentBook.inlineFootnotePreviewsOverride;
   logReaderMemSnapshot("onEnter_after_recent_books");
 
@@ -1042,7 +1040,6 @@ Section::BuildParams EpubReaderActivity::makeSectionBuildParams() const {
   p.hyphenationEnabled = getEffectiveHyphenation();
   p.fontSizeNormalization = getEffectiveFontSizeNormalization();
   p.embeddedStyle = lastRenderStats.embeddedStyle;
-  p.bionicReadingEnabled = getEffectiveBionicReading();
   // The SETTING, nothing else. Availability is guaranteed by construction: a preview-enabled
   // build resolves the note text its own spine needs before it lays out a single line (see
   // Section::resolveInlineFootnotePreviews), so this key can never describe a page cache that
@@ -2198,23 +2195,11 @@ void EpubReaderActivity::applyTextDarkness(const uint8_t textDarkness) {
 }
 
 
-void EpubReaderActivity::applyBookReaderOverrides(const int8_t embeddedStyleOverride,
-                                                  const int8_t imageRenderingOverride, const int8_t fontFamilyOverride,
-                                                  const std::string& sdFontFamilyOverride,
-                                                  const int8_t fontSizeOverride, const bool bionicReadingOverride,
-                                                  const int8_t paragraphAlignmentOverride) {
-  applyBookReaderOverrides(embeddedStyleOverride, imageRenderingOverride, fontFamilyOverride, sdFontFamilyOverride,
-                           fontSizeOverride, static_cast<int8_t>(bionicReadingOverride ? 1 : 0),
-                           paragraphAlignmentOverride, bookTextAntiAliasingOverride, bookHyphenationOverride,
-                           bookFontSizeNormalizationOverride, bookGuideDotsOverride,
-                           bookInlineFootnotePreviewsOverride);
-}
-
 void EpubReaderActivity::applyBookReaderOverrides(
     const int8_t embeddedStyleOverride, const int8_t imageRenderingOverride, const int8_t fontFamilyOverride,
-    const std::string& sdFontFamilyOverride, const int8_t fontSizeOverride, const int8_t bionicReadingOverride,
+    const std::string& sdFontFamilyOverride, const int8_t fontSizeOverride, 
     const int8_t paragraphAlignmentOverride, const int8_t textAntiAliasingOverride, const int8_t hyphenationOverride,
-    const int8_t fontSizeNormalizationOverride, const int8_t guideDotsOverride,
+    const int8_t fontSizeNormalizationOverride,
     const int8_t inlineFootnotePreviewsOverride) {
   if (!epub) {
     return;
@@ -2229,20 +2214,16 @@ void EpubReaderActivity::applyBookReaderOverrides(
     normalizedFontFamilyOverride = -1;
   }
 
-  // Guide dots are excluded from this comparison on purpose: they are render-time
-  // only (see TextBlock::setGuideDots), so a guide-dots-only change must not fall
-  // through to the section relayout below.
   const bool layoutOverridesUnchanged =
       bookEmbeddedStyleOverride == embeddedStyleOverride && bookImageRenderingOverride == imageRenderingOverride &&
       bookFontFamilyOverride == normalizedFontFamilyOverride &&
       bookSdFontFamilyOverride == normalizedSdFontFamilyOverride && bookFontSizeOverride == fontSizeOverride &&
-      bookBionicReadingOverride == bionicReadingOverride &&
       bookParagraphAlignmentOverride == paragraphAlignmentOverride &&
       bookTextAntiAliasingOverride == textAntiAliasingOverride && bookHyphenationOverride == hyphenationOverride &&
       bookFontSizeNormalizationOverride == fontSizeNormalizationOverride &&
       bookInlineFootnotePreviewsOverride == inlineFootnotePreviewsOverride;
 
-  if (layoutOverridesUnchanged && bookGuideDotsOverride == guideDotsOverride) {
+  if (layoutOverridesUnchanged) {
     return;
   }
 
@@ -2251,24 +2232,17 @@ void EpubReaderActivity::applyBookReaderOverrides(
   bookFontFamilyOverride = normalizedFontFamilyOverride;
   bookSdFontFamilyOverride = normalizedSdFontFamilyOverride;
   bookFontSizeOverride = fontSizeOverride;
-  bookBionicReadingOverride = bionicReadingOverride;
   bookParagraphAlignmentOverride = paragraphAlignmentOverride;
   bookTextAntiAliasingOverride = textAntiAliasingOverride;
   bookHyphenationOverride = hyphenationOverride;
   bookFontSizeNormalizationOverride = fontSizeNormalizationOverride;
-  bookGuideDotsOverride = guideDotsOverride;
   bookInlineFootnotePreviewsOverride = inlineFootnotePreviewsOverride;
   RECENT_BOOKS.setReaderOverrides(
       epub->getPath(), bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
-      bookSdFontFamilyOverride, bookFontSizeOverride, bookBionicReadingOverride, bookParagraphAlignmentOverride,
-      bookTextAntiAliasingOverride, bookHyphenationOverride, bookFontSizeNormalizationOverride, bookGuideDotsOverride,
+      bookSdFontFamilyOverride, bookFontSizeOverride, bookParagraphAlignmentOverride,
+      bookTextAntiAliasingOverride, bookHyphenationOverride, bookFontSizeNormalizationOverride,
       bookInlineFootnotePreviewsOverride);
 
-  if (layoutOverridesUnchanged) {
-    // Only guide dots changed: persisted above, and the repaint on resume picks
-    // the new value up in render(). No section relayout, no refresh override.
-    return;
-  }
 
   // A changed override forces a full section relayout (section.reset() below → rebuild with the
   // "Indexing…" popup). That popup FAST-refreshes against whatever is on the panel; when the change
@@ -2308,12 +2282,6 @@ bool EpubReaderActivity::getEffectiveEmbeddedStyle() const {
   return SETTINGS.embeddedStyle != 0;
 }
 
-bool EpubReaderActivity::getEffectiveBionicReading() const {
-  if (bookBionicReadingOverride >= 0) {
-    return bookBionicReadingOverride > 0;
-  }
-  return SETTINGS.bionicReading;
-}
 
 uint8_t EpubReaderActivity::getEffectiveImageRendering() const {
   if (bookImageRenderingOverride >= 0) {
@@ -2343,12 +2311,6 @@ bool EpubReaderActivity::getEffectiveFontSizeNormalization() const {
   return SETTINGS.fontSizeNormalization != 0;
 }
 
-bool EpubReaderActivity::getEffectiveGuideDots() const {
-  if (bookGuideDotsOverride >= 0) {
-    return bookGuideDotsOverride != 0;
-  }
-  return SETTINGS.guideDots != 0;
-}
 
 bool EpubReaderActivity::getEffectiveInlineFootnotePreviews() const {
   if (bookInlineFootnotePreviewsOverride >= 0) {
@@ -3943,10 +3905,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     return;
   }
 
-  // Push the render-time guide-dots option before any page draws (the scheduled
-  // pre-render also picks it up: it only runs after this). Unlike bionic reading
-  // this is not part of the section cache key, so toggling needs no rebuild.
-  TextBlock::setGuideDots(getEffectiveGuideDots());
+
 
   const RenderLayout layout = computeRenderLayout();
   lastRenderStats = {};
@@ -5095,8 +5054,7 @@ bool EpubReaderActivity::drawCurrentPageToBuffer(const std::string& filePath, Gf
   const bool effectiveFontSizeNormalization = currentBook.fontSizeNormalizationOverride >= 0
                                                   ? currentBook.fontSizeNormalizationOverride != 0
                                                   : SETTINGS.fontSizeNormalization != 0;
-  const bool effectiveBionicReading =
-      currentBook.bionicReadingOverride >= 0 ? currentBook.bionicReadingOverride != 0 : SETTINGS.bionicReading != 0;
+
   const bool effectiveInlineFootnotePreviews = currentBook.inlineFootnotePreviewsOverride >= 0
                                                    ? currentBook.inlineFootnotePreviewsOverride != 0
                                                    : SETTINGS.inlineFootnotePreviews != 0;
@@ -5205,7 +5163,7 @@ bool EpubReaderActivity::drawCurrentPageToBuffer(const std::string& filePath, Gf
   p.hyphenationEnabled = effectiveHyphenation;
   p.fontSizeNormalization = effectiveFontSizeNormalization;
   p.embeddedStyle = effectiveEmbeddedStyle;
-  p.bionicReadingEnabled = effectiveBionicReading;
+
   p.inlineFootnotePreviews = effectiveInlineFootnotePreviews;
   p.imageRendering = effectiveImageRendering;
   p.fontSizeLadder = buildReaderFontSizeLadder(effectiveFontId);
@@ -5241,16 +5199,16 @@ void EpubReaderActivity::openQuickOverrides() {
   startActivityForResult(
       std::make_unique<QuickOverridesActivity>(
           renderer, mappedInput, bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
-          bookSdFontFamilyOverride, bookFontSizeOverride, bookBionicReadingOverride, bookGuideDotsOverride,
+          bookSdFontFamilyOverride, bookFontSizeOverride, 
           bookParagraphAlignmentOverride, bookTextAntiAliasingOverride, bookHyphenationOverride,
           bookFontSizeNormalizationOverride, bookInlineFootnotePreviewsOverride),
       [this](const ActivityResult& result) {
         const auto& menu = std::get<MenuResult>(result.data);
         applyBookReaderOverrides(
             menu.embeddedStyleOverride, menu.imageRenderingOverride, menu.fontFamilyOverride, menu.sdFontFamilyOverride,
-            menu.fontSizeOverride, static_cast<int8_t>(menu.bionicReadingOverride), menu.paragraphAlignmentOverride,
+            menu.fontSizeOverride, menu.paragraphAlignmentOverride,
             menu.textAntiAliasingOverride, menu.hyphenationOverride, menu.fontSizeNormalizationOverride,
-            menu.guideDotsOverride, menu.inlineFootnotePreviewsOverride);
+            menu.inlineFootnotePreviewsOverride);
       });
 }
 
@@ -5289,8 +5247,8 @@ void EpubReaderActivity::openReaderMenu() {
       std::make_unique<EpubReaderMenuActivity>(
           renderer, mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent, SETTINGS.orientation,
           !currentPageFootnotes.empty(), bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
-          bookSdFontFamilyOverride, bookFontSizeOverride, SETTINGS.textDarkness, getEffectiveBionicReading(),
-          bookGuideDotsOverride, bookParagraphAlignmentOverride, bookTextAntiAliasingOverride, bookHyphenationOverride,
+          bookSdFontFamilyOverride, bookFontSizeOverride, SETTINGS.textDarkness,
+          bookParagraphAlignmentOverride, bookTextAntiAliasingOverride, bookHyphenationOverride,
           bookFontSizeNormalizationOverride, bookInlineFootnotePreviewsOverride, !bookmarkStore.isEmpty(),
           isCurrentPageStarred, hasPrintedPages),
       [this](const ActivityResult& result) {
@@ -5299,9 +5257,9 @@ void EpubReaderActivity::openReaderMenu() {
         applyTextDarkness(menu.textDarkness);
         applyBookReaderOverrides(
             menu.embeddedStyleOverride, menu.imageRenderingOverride, menu.fontFamilyOverride, menu.sdFontFamilyOverride,
-            menu.fontSizeOverride, static_cast<bool>(menu.bionicReadingOverride), menu.paragraphAlignmentOverride,
+            menu.fontSizeOverride, menu.paragraphAlignmentOverride,
             menu.textAntiAliasingOverride, menu.hyphenationOverride, menu.fontSizeNormalizationOverride,
-            menu.guideDotsOverride, menu.inlineFootnotePreviewsOverride);
+            menu.inlineFootnotePreviewsOverride);
         if (!result.isCancelled) {
           onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
         }
@@ -5487,22 +5445,16 @@ void EpubReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION 
         openReaderMenu();
       }
       break;
-    case BA::BTN_TOGGLE_BIONIC_READING:
-      if (epub) {
-        applyBookReaderOverrides(bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
-                                 bookSdFontFamilyOverride, bookFontSizeOverride, !getEffectiveBionicReading(),
-                                 bookParagraphAlignmentOverride);
-        requestUpdate();
-      }
-      break;
+
     case BA::BTN_CYCLE_FONT_SIZE:
       if (epub) {
         const uint8_t current =
             (bookFontSizeOverride >= 0) ? static_cast<uint8_t>(bookFontSizeOverride) : SETTINGS.fontSize;
         const int8_t next = static_cast<int8_t>((current + 1) % CrossPointSettings::FONT_SIZE_COUNT);
         applyBookReaderOverrides(bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
-                                 bookSdFontFamilyOverride, next, bookBionicReadingOverride,
-                                 bookParagraphAlignmentOverride);
+                                 bookSdFontFamilyOverride, next, bookParagraphAlignmentOverride,
+                                 bookTextAntiAliasingOverride, bookHyphenationOverride,
+                                 bookFontSizeNormalizationOverride, bookInlineFootnotePreviewsOverride);
         requestUpdate();
       }
     case BA::BTN_CYCLE_ORIENTATION:

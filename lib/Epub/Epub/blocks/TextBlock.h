@@ -106,11 +106,6 @@ class TextBlock final : public Block {
   };
   static ArenaOffsets arenaOffsets(uint16_t wordCount, bool hasSizes);
 
-  // Process-wide render option (see setGuideDots): set by the reader activity
-  // from settings before pages render. Not per-block state -- blocks are cached
-  // and shared across renders, and the aid applies uniformly to every line.
-  static bool guideDotsEnabled;
-
   TextBlock() = default;  // deserialize() fills the fields directly
   static size_t arenaSize(uint16_t wordCount, bool hasSizes, uint16_t textBytes);
   void bindArenaPointers();
@@ -212,14 +207,6 @@ class TextBlock final : public Block {
     float scale = 1.0f;
   };
   WordBox wordBox(const GfxRenderer& renderer, uint16_t i, int fontId, int x, int y) const;
-
-  // Guide dots reading aid: when enabled, render() draws a small dot centered in
-  // the empty space between adjacent words of a line -- never before the first
-  // word or after the last. Idea from CrossInk (https://github.com/uxjulia/CrossInk),
-  // reimplemented clean-room from its user-facing description. Render-time only:
-  // word layout is untouched, so the flag is NOT part of the section cache key
-  // and toggling it never triggers a section rebuild.
-  static void setGuideDots(const bool enabled) { guideDotsEnabled = enabled; }
 
   // given a renderer works out where to break the words into lines
   void render(const GfxRenderer& renderer, int fontId, int x, int y) const;

@@ -123,71 +123,6 @@ std::string buildLinePreview(const std::vector<std::string>& words, const std::v
   return preview;
 }
 
-constexpr int kBionicReadingMinCodepoints = 4;
-constexpr int kBionicReadingMinBoldPrefix = 1;
-constexpr int kBionicReadingBoldPrefixNumerator = 1;
-constexpr int kBionicReadingBoldPrefixDenominator = 2;
-
-struct TokenSpan {
-  size_t start;
-  size_t end;
-  bool isWord;
-};
-
-static int computeBionicBoldPrefixCount(const int codepointCount) {
-  return std::max(kBionicReadingMinBoldPrefix,
-                  (codepointCount * kBionicReadingBoldPrefixNumerator + kBionicReadingBoldPrefixDenominator - 1) /
-                      kBionicReadingBoldPrefixDenominator);
-}
-
-static bool isBionicWordCodepoint(const uint32_t cp) {
-  if (cp == 0) {
-    return false;
-  }
-  if (utf8IsCombiningMark(cp)) {
-    return true;
-  }
-  return isAlphabetic(cp) || isAsciiDigit(cp) || isApostrophe(cp);
-}
-
-// Split a word token into contiguous spans of "word-like" characters and non-word characters.
-// This avoids applying bionic bolding to punctuation, digits-only runs, or other separators.
-// Only spans marked as word-like are eligible for the bionic prefix transform.
-static std::vector<TokenSpan> tokenizeBionicWord(const std::string& word) {
-  std::vector<TokenSpan> spans;
-  spans.reserve(2);
-
-  const unsigned char* base = reinterpret_cast<const unsigned char*>(word.c_str());
-  const unsigned char* ptr = base;
-  const unsigned char* segmentStart = ptr;
-  bool currentIsWord = false;
-  bool haveCurrent = false;
-
-  while (true) {
-    const unsigned char* cpStart = ptr;
-    uint32_t cp = utf8NextCodepoint(&ptr);
-    if (cp == 0) {
-      break;
-    }
-
-    bool cpIsWord = isBionicWordCodepoint(cp);
-    if (!haveCurrent) {
-      currentIsWord = cpIsWord;
-      haveCurrent = true;
-    } else if (!utf8IsCombiningMark(cp) && cpIsWord != currentIsWord) {
-      spans.push_back({static_cast<size_t>(segmentStart - base), static_cast<size_t>(cpStart - base), currentIsWord});
-      segmentStart = cpStart;
-      currentIsWord = cpIsWord;
-    }
-  }
-
-  if (haveCurrent) {
-    spans.push_back({static_cast<size_t>(segmentStart - base), word.size(), currentIsWord});
-  }
-
-  return spans;
-}
-
 }  // namespace
 
 void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
@@ -269,14 +204,12 @@ void ParsedText::layoutAndExtractLines(
   std::vector<uint8_t> savedSizes;
   std::vector<bool> savedContinues;
   bool savedIsContinuation = false;
-  size_t savedBionicWatermark = 0;
   if (preserveSource) {
     savedWords = words;
     savedStyles = wordStyles;
     savedSizes = wordSizes;
     savedContinues = wordContinues;
     savedIsContinuation = isContinuation_;
-    savedBionicWatermark = bionicTransformedUpTo_;
   }
 
   // Heading blocks lay out (and below render) with a taller real font instead of scaling the
@@ -290,13 +223,6 @@ void ParsedText::layoutAndExtractLines(
   // Paragraph indent only applies to the first layout pass; skip on continuations.
   if (!isContinuation_) {
     applyParagraphIndent(renderer, fontId);
-  }
-  // Bionic transform is incremental: applyBionicReadingTransform() is a no-op
-  // for already-transformed words (bionicTransformedUpTo_ == words.size()) and
-  // only processes raw words appended since the last flush, so it is always safe
-  // to call regardless of isContinuation_.
-  if (bionicReadingEnabled) {
-    applyBionicReadingTransform();
   }
 
   // Ensure font glyph metrics are loaded before measuring word widths.
@@ -469,9 +395,6 @@ void ParsedText::layoutAndExtractLines(
     wordStyles.shrink_to_fit();
     wordContinues.shrink_to_fit();
     wordSizes.shrink_to_fit();
-    // All remaining words were already transformed before the flush; reset the
-    // watermark so that words appended by addWord() are processed next time.
-    bionicTransformedUpTo_ = words.size();
   }
   isContinuation_ = !includeLastLine;
 
@@ -481,7 +404,6 @@ void ParsedText::layoutAndExtractLines(
     wordSizes = std::move(savedSizes);
     wordContinues = std::move(savedContinues);
     isContinuation_ = savedIsContinuation;
-    bionicTransformedUpTo_ = savedBionicWatermark;
   }
 }
 
@@ -725,97 +647,6 @@ void ParsedText::applyParagraphIndent(const GfxRenderer& renderer, const int fon
   }
 }
 
-void ParsedText::applyBionicReadingTransform() {
-  // Only transform words that haven't been processed yet.  On a fresh block
-  // bionicTransformedUpTo_ == 0 so all words are processed.  After an
-  // intermediate flush, only the new raw words appended since the last flush
-  // (indices bionicTransformedUpTo_..words.size()-1) need transformation.
-  if (words.empty() || bionicTransformedUpTo_ >= words.size()) {
-    return;
-  }
-
-  const size_t suffixStart = bionicTransformedUpTo_;
-  std::vector<std::string> transformedSuffix;
-  std::vector<EpdFontFamily::Style> transformedSuffixStyles;
-  std::vector<bool> transformedSuffixContinues;
-  std::vector<uint8_t> transformedSuffixSizes;
-  transformedSuffix.reserve((words.size() - suffixStart) * 2);
-  transformedSuffixStyles.reserve(transformedSuffix.capacity());
-  transformedSuffixContinues.reserve(transformedSuffix.capacity());
-  transformedSuffixSizes.reserve(transformedSuffix.capacity());
-
-  for (size_t i = suffixStart; i < words.size(); ++i) {
-    std::string source = std::move(words[i]);
-    const auto originalStyle = wordStyles[i];
-    const bool originalAttachToPrevious = wordContinues[i];
-    const uint8_t originalSize = wordSizes[i];
-
-    const auto spans = tokenizeBionicWord(source);
-    if (spans.empty()) {
-      continue;
-    }
-
-    bool attachToPrevious = originalAttachToPrevious;
-    for (size_t spanIndex = 0; spanIndex < spans.size(); ++spanIndex) {
-      const TokenSpan span = spans[spanIndex];
-      const size_t spanLength = span.end - span.start;
-      std::string token = source.substr(span.start, spanLength);
-
-      if (span.isWord) {
-        const unsigned char* ptr = reinterpret_cast<const unsigned char*>(token.c_str());
-        int codepointCount = 0;
-        while (utf8NextCodepoint(&ptr)) {
-          codepointCount++;
-        }
-
-        if (codepointCount >= kBionicReadingMinCodepoints) {
-          const int boldPrefixCount = computeBionicBoldPrefixCount(codepointCount);
-          ptr = reinterpret_cast<const unsigned char*>(token.c_str());
-          const unsigned char* prefixEnd = ptr;
-          for (int j = 0; j < boldPrefixCount && *prefixEnd; ++j) {
-            utf8NextCodepoint(&prefixEnd);
-          }
-          const size_t prefixByteCount =
-              static_cast<size_t>(prefixEnd - reinterpret_cast<const unsigned char*>(token.c_str()));
-          if (prefixByteCount < token.size()) {
-            std::string suffix(reinterpret_cast<const char*>(prefixEnd), token.size() - prefixByteCount);
-            token.resize(prefixByteCount);
-            const auto boldStyle = static_cast<EpdFontFamily::Style>(originalStyle | EpdFontFamily::BOLD);
-            transformedSuffix.push_back(std::move(token));
-            transformedSuffixStyles.push_back(boldStyle);
-            transformedSuffixContinues.push_back(attachToPrevious);
-            transformedSuffixSizes.push_back(originalSize);
-
-            transformedSuffix.push_back(std::move(suffix));
-            transformedSuffixStyles.push_back(originalStyle);
-            transformedSuffixContinues.push_back(true);
-            transformedSuffixSizes.push_back(originalSize);
-            attachToPrevious = true;
-            continue;
-          }
-        }
-      }
-
-      transformedSuffix.push_back(std::move(token));
-      transformedSuffixStyles.push_back(originalStyle);
-      transformedSuffixContinues.push_back(attachToPrevious);
-      transformedSuffixSizes.push_back(originalSize);
-      attachToPrevious = true;
-    }
-  }
-
-  // Replace the (now move-emptied) suffix with the transformed version.
-  words.resize(suffixStart);
-  wordStyles.resize(suffixStart);
-  wordContinues.resize(suffixStart);
-  wordSizes.resize(suffixStart);
-  words.insert(words.end(), std::make_move_iterator(transformedSuffix.begin()),
-               std::make_move_iterator(transformedSuffix.end()));
-  wordStyles.insert(wordStyles.end(), transformedSuffixStyles.begin(), transformedSuffixStyles.end());
-  wordContinues.insert(wordContinues.end(), transformedSuffixContinues.begin(), transformedSuffixContinues.end());
-  wordSizes.insert(wordSizes.end(), transformedSuffixSizes.begin(), transformedSuffixSizes.end());
-  bionicTransformedUpTo_ = words.size();
-}
 
 // Builds break indices while opportunistically splitting the word that would overflow the current line.
 std::vector<size_t> ParsedText::computeHyphenatedLineBreaks(

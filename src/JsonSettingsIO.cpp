@@ -410,12 +410,10 @@ bool JsonSettingsIO::saveRecentBooks(const RecentBooksStore& store, const char* 
       obj["sdFontFamilyOverride"] = book.sdFontFamilyOverride;
     }
     obj["fontSizeOverride"] = book.fontSizeOverride;
-    obj["bionicReadingOverride"] = book.bionicReadingOverride;
     obj["paragraphAlignmentOverride"] = book.paragraphAlignmentOverride;
     obj["textAntiAliasingOverride"] = book.textAntiAliasingOverride;
     obj["hyphenationOverride"] = book.hyphenationOverride;
     obj["fontSizeNormalizationOverride"] = book.fontSizeNormalizationOverride;
-    obj["guideDotsOverride"] = book.guideDotsOverride;
     obj["inlineFootnotePreviewsOverride"] = book.inlineFootnotePreviewsOverride;
   }
 
@@ -459,13 +457,11 @@ bool JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) 
       book.fontFamilyOverride = -1;
     }
     book.fontSizeOverride = clampInt8(obj["fontSizeOverride"] | -1, -1, CrossPointSettings::FONT_SIZE_COUNT - 1, -1);
-    book.bionicReadingOverride = clampInt8(obj["bionicReadingOverride"] | -1, -1, 1, -1);
     book.paragraphAlignmentOverride =
         clampInt8(obj["paragraphAlignmentOverride"] | -1, -1, CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT - 1, -1);
     book.textAntiAliasingOverride = clampInt8(obj["textAntiAliasingOverride"] | -1, -1, 1, -1);
     book.hyphenationOverride = clampInt8(obj["hyphenationOverride"] | -1, -1, 1, -1);
     book.fontSizeNormalizationOverride = clampInt8(obj["fontSizeNormalizationOverride"] | -1, -1, 1, -1);
-    book.guideDotsOverride = clampInt8(obj["guideDotsOverride"] | -1, -1, 1, -1);
     book.inlineFootnotePreviewsOverride = clampInt8(obj["inlineFootnotePreviewsOverride"] | -1, -1, 1, -1);
     store.recentBooks.push_back(book);
   }

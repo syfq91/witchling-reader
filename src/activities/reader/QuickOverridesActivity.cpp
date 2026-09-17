@@ -13,7 +13,6 @@ QuickOverridesActivity::QuickOverridesActivity(
     GfxRenderer& renderer, MappedInputManager& mappedInput, const int8_t initialEmbeddedStyleOverride,
     const int8_t initialImageRenderingOverride, const int8_t initialFontFamilyOverride,
     const std::string& initialSdFontFamilyOverride, const int8_t initialFontSizeOverride,
-    const int8_t initialBionicReadingOverride, const int8_t initialGuideDotsOverride,
     const int8_t initialParagraphAlignmentOverride, const int8_t initialTextAntiAliasingOverride,
     const int8_t initialHyphenationOverride, const int8_t initialFontSizeNormalizationOverride,
     const int8_t initialInlineFootnotePreviewsOverride)
@@ -23,8 +22,6 @@ QuickOverridesActivity::QuickOverridesActivity(
       pendingFontFamilyOverride(initialFontFamilyOverride),
       pendingSdFontFamilyOverride(initialSdFontFamilyOverride),
       pendingFontSizeOverride(initialFontSizeOverride),
-      pendingBionicReadingOverride(initialBionicReadingOverride),
-      pendingGuideDotsOverride(initialGuideDotsOverride),
       pendingParagraphAlignmentOverride(initialParagraphAlignmentOverride),
       pendingTextAntiAliasingOverride(initialTextAntiAliasingOverride),
       pendingHyphenationOverride(initialHyphenationOverride),
@@ -116,26 +113,7 @@ void QuickOverridesActivity::buildMenuItems() {
         s->pendingFontSizeOverride = (v == 0) ? -1 : static_cast<int8_t>(v - 1);
       }));
 
-  // Bionic: default / on / off
-  menuItems.push_back(SettingInfo::DynamicEnumCtx(
-      StrId::STR_BIONIC_READING, {StrId::STR_DEFAULT_VALUE, StrId::STR_STATE_ON, StrId::STR_STATE_OFF}, self,
-      [](const void* ctx) -> uint8_t {
-        return threeStateSlotFromOverride(
-            static_cast<const QuickOverridesActivity*>(ctx)->pendingBionicReadingOverride);
-      },
-      [](void* ctx, uint8_t v) {
-        static_cast<QuickOverridesActivity*>(ctx)->pendingBionicReadingOverride = threeStateOverrideFromSlot(v);
-      }));
 
-  // Guide dots: default / on / off
-  menuItems.push_back(SettingInfo::DynamicEnumCtx(
-      StrId::STR_GUIDE_DOTS, {StrId::STR_DEFAULT_VALUE, StrId::STR_STATE_ON, StrId::STR_STATE_OFF}, self,
-      [](const void* ctx) -> uint8_t {
-        return threeStateSlotFromOverride(static_cast<const QuickOverridesActivity*>(ctx)->pendingGuideDotsOverride);
-      },
-      [](void* ctx, uint8_t v) {
-        static_cast<QuickOverridesActivity*>(ctx)->pendingGuideDotsOverride = threeStateOverrideFromSlot(v);
-      }));
 
   // Paragraph alignment: default(-1) + the 5 global options
   menuItems.push_back(SettingInfo::DynamicEnumCtx(
@@ -225,8 +203,7 @@ void QuickOverridesActivity::finishWithResult(bool cancelled) {
   payload.fontFamilyOverride = pendingFontFamilyOverride;
   payload.sdFontFamilyOverride = pendingSdFontFamilyOverride;
   payload.fontSizeOverride = pendingFontSizeOverride;
-  payload.bionicReadingOverride = (pendingBionicReadingOverride > 0) ? 1 : 0;
-  payload.guideDotsOverride = pendingGuideDotsOverride;
+
   payload.paragraphAlignmentOverride = pendingParagraphAlignmentOverride;
   payload.textAntiAliasingOverride = pendingTextAntiAliasingOverride;
   payload.hyphenationOverride = pendingHyphenationOverride;

@@ -427,7 +427,6 @@ class ChapterHtmlSlimParser final : public Print {
   std::string pendingInlineFootnotePreview;
   std::vector<std::pair<int, FootnoteEntry>> pendingFootnotes;  // <wordIndex, entry>
   int wordsExtractedInBlock = 0;
-  bool bionicReadingEnabled = false;
   bool layoutFailed = false;
 
   // Per-chapter caches: resolveStyle and parseInlineStyle are called for every HTML element;
@@ -539,7 +538,7 @@ class ChapterHtmlSlimParser final : public Print {
                                  const float lineCompression, const bool extraParagraphSpacing,
                                  const uint8_t paragraphAlignment, const uint16_t viewportWidth,
                                  const uint16_t viewportHeight, const bool hyphenationEnabled,
-                                 const bool fontSizeNormalization, const bool bionicReadingEnabled,
+                                 const bool fontSizeNormalization,
                                  const std::function<void(std::unique_ptr<Page>)>& completePageFn,
                                  const bool embeddedStyle, const std::string& contentBase,
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
@@ -565,8 +564,7 @@ class ChapterHtmlSlimParser final : public Print {
         imageRendering(imageRendering),
         contentBase(contentBase),
         imageBasePath(imageBasePath),
-        tocAnchors(std::move(tocAnchors)),
-        bionicReadingEnabled(bionicReadingEnabled) {}
+        tocAnchors(std::move(tocAnchors)) {}
 
   ~ChapterHtmlSlimParser() override;
 

@@ -16,7 +16,6 @@ The section cache filename is `{cachePath}/sections/{spineIndex}_{propertyHash:0
 | `viewportHeight` | `u16` | Page break positions |
 | `hyphenationEnabled` | `bool` | Hyphenation at line end |
 | `embeddedStyle` | `bool` | Whether book CSS is applied |
-| `bionicReadingEnabled` | `bool` | Bold-prefix word transform |
 | `imageRendering` | `u8` | Image scaling policy |
 
 Any change to a parameter produces a different hash and a new cache file. Old variants are kept up to `MAX_VARIANTS = 5` per chapter; the oldest are evicted along with their associated image files (see Variant Eviction below).
@@ -61,7 +60,6 @@ If either check fails the function calls itself recursively with `embeddedStyle=
   u16 viewportHeight
   bool hyphenationEnabled
   bool embeddedStyle
-  bool bionicReadingEnabled
   u8  imageRendering
   bool parseComplete
   u16 pageCount

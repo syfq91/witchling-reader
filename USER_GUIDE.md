@@ -178,15 +178,13 @@ The Settings screen is organized into four top-level tabs: **[Display](#371-disp
 
 - **Embedded Style**: Use the EPUB's own HTML/CSS styling. "ON" (default) / "OFF"
 - **Hyphenation**: Automatic hyphenation while reading. "ON" / "OFF"
-- **Bionic Reading**: Bold the first half of each word to guide the eye. "ON" / "OFF"
-- **Guide Dots**: Draw a small dot centered in the space between words to guide the eye along the line (idea borrowed from [CrossInk](https://github.com/uxjulia/CrossInk)). "ON" / "OFF"
 - **Synthetic TOC Fallback**: Generate a table of contents from headings when the EPUB has an invalid or missing TOC. "ON" / "OFF"
 - **Customise Status Bar**: Opens a submenu to configure every element of the reading status bar individually: upper and lower progress bars (Book / Chapter / Hidden, with thickness), status item position (Top / Bottom), chapter page count, book progress percentage, title display (Book / Chapter / Hidden), and battery.
 
 #### 3.7.3 Controls
 
 - **Remap Front Buttons**: Reassign the physical function of each bottom-edge button.
-- **Button Actions** (submenus — one per logical button: Back, Confirm, Left, Right, Up/Page Back, Down/Page Forward, Power): For each button, independently configure the **Short Press**, **Double Press**, and **Long Press** action. Available actions include: page forward/back, skip 10 pages, go home, sleep, force refresh, force fast refresh, open TOC, open bookmarks, star page, footnotes, next/previous chapter, exit reader, open reader menu, toggle bionic reading, sync progress, cycle font size, cycle orientation, quick overrides, and ignore.
+- **Button Actions** (submenus — one per logical button: Back, Confirm, Left, Right, Up/Page Back, Down/Page Forward, Power): For each button, independently configure the **Short Press**, **Double Press**, and **Long Press** action. Available actions include: page forward/back, skip 10 pages, go home, sleep, force refresh, force fast refresh, open TOC, open bookmarks, star page, footnotes, next/previous chapter, exit reader, open reader menu, sync progress, cycle font size, cycle orientation, quick overrides, and ignore.
 - **Button Actions Overview**: A read-only overview screen showing the current short/double/long press mapping for every button at a glance.
 
 #### 3.7.4 System
@@ -311,7 +309,7 @@ This feature can be disabled in the **[Controls Settings](#373-controls)** to he
 ### System Navigation
 * **Return to Home:** Press the **Back** button to close the book and return to the **[Home](#31-home-screen)** screen.
 * **Return to Browse Files:** Press and hold the **Back** button to close the book and return to the **[Browse Files](#33-browse-files-screen)** screen.
-* **Reader Menu:** Press **Confirm** to open the reader menu. The menu is organized into categorized tabs (**Navigation** and **Settings**), allowing quick access to the **[Table of Contents](#5-chapter-selection-screen)**, bookmarks, progression sync, per-book typography overrides (font, images, hyphenation, bionic reading…), and reader settings.
+* **Reader Menu:** Press **Confirm** to open the reader menu. The menu is organized into categorized tabs (**Navigation** and **Settings**), allowing quick access to the **[Table of Contents](#5-chapter-selection-screen)**, bookmarks, progression sync, per-book typography overrides (font, images, hyphenation…), and reader settings.
 
 ### Supported Languages
 

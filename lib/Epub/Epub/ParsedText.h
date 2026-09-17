@@ -45,12 +45,9 @@ class ParsedText {
   BlockStyle blockStyle;
   bool extraParagraphSpacing;
   bool hyphenationEnabled;
-  bool bionicReadingEnabled;
   bool isContinuation_ = false;       ///< true after an intermediate flush; suppresses re-applying paragraph indent
-  size_t bionicTransformedUpTo_ = 0;  ///< words[0..bionicTransformedUpTo_) have already been bionic-transformed
 
   void applyParagraphIndent(const GfxRenderer& renderer, int fontId);
-  void applyBionicReadingTransform();
   // Effective measurement scale of words[i]: the block-level multiplier combined
   // with the word's own inline size percentage.
   float wordScale(const size_t i) const { return blockStyle.fontSizeMultiplier * (wordSizes[i] / 100.0f); }
@@ -95,11 +92,10 @@ class ParsedText {
 
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool hyphenationEnabled = false,
-                      const BlockStyle& blockStyle = BlockStyle(), const bool bionicReadingEnabled = false)
+                      const BlockStyle& blockStyle = BlockStyle())
       : blockStyle(blockStyle),
         extraParagraphSpacing(extraParagraphSpacing),
-        hyphenationEnabled(hyphenationEnabled),
-        bionicReadingEnabled(bionicReadingEnabled) {}
+        hyphenationEnabled(hyphenationEnabled) {}
   ~ParsedText() = default;
 
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,
@@ -130,7 +126,7 @@ class ParsedText {
   // `preserveSource` snapshots the words on entry and restores them on return, so the caller gets
   // back exactly what it passed in. Suppressing the erase alone would not be enough: layout also
   // force-splits any word too wide for the line (inserting a hyphen), and applies the paragraph
-  // indent and bionic transform in place. It costs one copy of the word vectors for the duration
+  // indent in place. It costs one copy of the word vectors for the duration
   // of the call, so it is opt-in and only the table grid path uses it.
   void layoutAndExtractLines(
       const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,

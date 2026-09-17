@@ -80,7 +80,7 @@ inline std::vector<SettingInfo> buildSettingsList() {
                                                StrId::STR_BTN_ACT_PREV_SECTION,
                                                StrId::STR_BTN_ACT_EXIT_READER,
                                                StrId::STR_BTN_ACT_READER_MENU,
-                                               StrId::STR_BTN_ACT_TOGGLE_BIONIC_READING,
+                                               StrId::STR_NONE_OPT,
                                                StrId::STR_BTN_ACT_CYCLE_FONT_SIZE,
                                                StrId::STR_BTN_ACT_CYCLE_ORIENTATION,
                                                StrId::STR_BTN_ACT_QUICK_OVERRIDES,
@@ -238,12 +238,7 @@ inline std::vector<SettingInfo> buildSettingsList() {
                                          &CrossPointSettings::syntheticTocFallback, "syntheticTocFallback",
                                          StrId::STR_CAT_READER)
                          .withSubcategory(StrId::STR_MENU_READER_TWEAKS));
-  settings.push_back(SettingInfo::Toggle(StrId::STR_BIONIC_READING, &CrossPointSettings::bionicReading, "bionicReading",
-                                         StrId::STR_CAT_READER)
-                         .withSubmenu(StrId::STR_READING_AIDS));
-  settings.push_back(
-      SettingInfo::Toggle(StrId::STR_GUIDE_DOTS, &CrossPointSettings::guideDots, "guideDots", StrId::STR_CAT_READER)
-          .withSubmenu(StrId::STR_READING_AIDS));
+
   settings.push_back(SettingInfo::Toggle(StrId::STR_INLINE_FOOTNOTE_PREVIEWS,
                                          &CrossPointSettings::inlineFootnotePreviews, "inlineFootnotePreviews",
                                          StrId::STR_CAT_READER));

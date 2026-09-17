@@ -308,11 +308,6 @@ class CrossPointSettings {
 
   // Enable synthetic TOC fallback for malformed/sparse TOC books (1 = enabled, 0 = disabled)
   uint8_t syntheticTocFallback = 1;
-  // Default bionic reading in EPUB pages when no per-book override is set (1 = enabled, 0 = disabled)
-  uint8_t bionicReading = 0;
-  // Guide dots reading aid in EPUB pages: a small dot centered in each inter-word gap
-  // (1 = enabled, 0 = disabled). Idea from CrossInk (https://github.com/uxjulia/CrossInk).
-  uint8_t guideDots = 0;
   // Expand semantic EPUB footnote references with a short inline preview.
   uint8_t inlineFootnotePreviews = 0;
   // Remove finished book from Recent Books when the end-of-book screen action is selected.
@@ -357,7 +352,7 @@ class CrossPointSettings {
     BTN_PREV_SECTION,
     BTN_EXIT_READER,
     BTN_READER_MENU,
-    BTN_TOGGLE_BIONIC_READING,
+    BTN_UNUSED_BIONIC_READING,
     BTN_CYCLE_FONT_SIZE,
     BTN_CYCLE_ORIENTATION,
     BTN_QUICK_OVERRIDES,

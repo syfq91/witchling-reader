@@ -40,8 +40,7 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
                                   const int8_t initialEmbeddedStyleOverride, const int8_t initialImageRenderingOverride,
                                   const int8_t initialFontFamilyOverride,
                                   const std::string& initialSdFontFamilyOverride, const int8_t initialFontSizeOverride,
-                                  const uint8_t initialTextDarkness, const bool initialBionicReadingOverride,
-                                  const int8_t initialGuideDotsOverride, const int8_t initialParagraphAlignmentOverride,
+                                  const uint8_t initialTextDarkness, const int8_t initialParagraphAlignmentOverride,
                                   const int8_t initialTextAntiAliasingOverride, const int8_t initialHyphenationOverride,
                                   const int8_t initialFontSizeNormalizationOverride,
                                   const int8_t initialInlineFootnotePreviewsOverride, const bool hasStarredPages,
@@ -109,8 +108,6 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
   std::string pendingSdFontFamilyOverride;
   int8_t pendingFontSizeOverride = -1;
   uint8_t pendingTextDarkness = 1;
-  bool pendingBionicReading = false;
-  int8_t pendingGuideDotsOverride = -1;
   int8_t pendingParagraphAlignmentOverride = -1;
   int8_t pendingTextAntiAliasingOverride = -1;
   int8_t pendingHyphenationOverride = -1;
