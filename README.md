@@ -48,6 +48,5 @@ To install or update firmware on the device:
 
 - **SD Card Update**: Copy the compiled binary (`.pio/build/default/firmware.bin`) to the SD card root as `update.bin`, or navigate to any `.bin` file in the device file browser, long-press **Confirm**, and select **Flash**. Alternatively, navigate to **Settings -> System -> SD Firmware Update**.
 - **Wi-Fi OTA / Web Server**: Upload the `.bin` file via the built-in web server or check for updates wirelessly in **Settings -> System -> Check for Updates**.
-- **Developer Direct Flash (UART/Headers)**: For development units with UART access, run `./bin/flash` (Linux/macOS) or `.\bin\flash.ps1` (Windows) to directly flash pre-built binaries via `esptool` without dependency rebuild overhead, preserving user settings at `0x9000`.
 
 For device documentation, hardware specifications, and troubleshooting, refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme) and the `docs/` directory.
