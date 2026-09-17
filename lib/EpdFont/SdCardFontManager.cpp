@@ -45,15 +45,24 @@ static bool writeFamily(const SdCardFontFamilyInfo& family, uint8_t requestedPoi
   std::sort(sizes.begin(), sizes.end());
 
   // Check whether the whole family fits.
-  // FlashFontPartition::beginWrite erases the full partition, so we compute
-  // the total first without writing.
+  // FlashFontPartition::beginWrite erases everything below the language slot,
+  // so we compute the total first without writing.
   {
     // Rough total: sum all file sizes + HEADER_BYTES overhead.
     size_t total = FlashFontPartition::HEADER_BYTES;
     bool allFit = true;
-    // We can't read partition size here directly, but 3.47 MB is the known
-    // value. Use a conservative 3.3 MB cap to leave room for alignment padding.
-    static constexpr size_t PARTITION_CAP = 3300 * 1024;
+    // Budget against the partition's real ceiling rather than a hardcoded
+    // figure. This used to be a conservative 3300 KB constant with a comment
+    // saying the partition size could not be read here; fontUsableSize() now
+    // reports it, and crucially it EXCLUDES the language pack slot at the tail
+    // — a constant would have to be remembered and re-tuned whenever that
+    // reservation changes.
+    //
+    // No extra slack is needed: the running total starts at the 4-byte-aligned
+    // HEADER_BYTES and adds each file rounded up to 4, which is exactly what
+    // appendFile() consumes. A missing partition reports 0 and nothing fits,
+    // which correctly drops through to the single-file path below.
+    const size_t partitionCap = FlashFontPartition::fontUsableSize();
     for (uint8_t sz : sizes) {
       const SdCardFontFileInfo* fi = family.findFile(sz);
       if (!fi) continue;
@@ -61,7 +70,7 @@ static bool writeFamily(const SdCardFontFamilyInfo& family, uint8_t requestedPoi
       if (!Storage.openFileForRead("FFP", fi->path.c_str(), f) || !f) continue;
       total += (f.fileSize() + 3) & ~static_cast<size_t>(3);  // 4-byte align
       f.close();
-      if (total > PARTITION_CAP || static_cast<uint8_t>(sizes.size()) > FlashFontPartition::MAX_ENTRIES) {
+      if (total > partitionCap || static_cast<uint8_t>(sizes.size()) > FlashFontPartition::MAX_ENTRIES) {
         allFit = false;
         break;
       }
@@ -103,7 +112,7 @@ static bool writeFamily(const SdCardFontFamilyInfo& family, uint8_t requestedPoi
 }
 
 bool SdCardFontManager::loadFamily(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t targetPtSize,
-                                   const std::function<void()>& onColdLoad) {
+                                   const std::function<void()>& onColdLoad, const FlashCachePolicy policy) {
   if (!renderer_) renderer_ = &renderer;
   if (!loadedFamilyName_.empty()) unloadAll(renderer);
 
@@ -129,7 +138,14 @@ bool SdCardFontManager::loadFamily(const SdCardFontFamilyInfo& family, GfxRender
     const bool alreadyCached = FlashFontPartition::hasEntry(family.name.c_str(), selected->pointSize);
 
     bool readyToMmap = alreadyCached;
-    if (!alreadyCached) {
+    if (!alreadyCached && policy == FlashCachePolicy::ReadOnly) {
+      // Transient load (font preview): beginWrite() erases the whole partition
+      // and writeFamily() copies every size back from SD, so caching a font the
+      // reader may never use would cost seconds and a flash erase cycle each
+      // time. Read the one file from SD instead and leave the partition alone.
+      LOG_DBG("SDMGR", "Flash cache miss for %s@%u; loading from SD (read-only policy)", family.name.c_str(),
+              selected->pointSize);
+    } else if (!alreadyCached) {
       // Genuine first load: writing the family into the flash partition takes
       // a noticeable moment — let the caller advertise it before we start.
       if (onColdLoad) onColdLoad();
