@@ -4885,19 +4885,15 @@ void EpubReaderActivity::renderStatusBar() const {
   const float sectionChapterProg = (pageCount > 0) ? (static_cast<float>(currentPage) / pageCount) : 0;
   const float bookProgress = epub->calculateProgress(currentSpineIndex, sectionChapterProg) * 100;
 
-  std::string title;
-
-  if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
-    const int tocIndex =
-        section ? section->getTocIndexForPage(section->currentPage) : epub->getTocIndexForSpineIndex(currentSpineIndex);
-    if (tocIndex == -1) {
-      title = tr(STR_UNNAMED);
-    } else {
-      const auto tocItem = epub->getTocItem(tocIndex);
-      title = tocItem.title;
-    }
-  } else if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE) {
-    title = epub->getTitle();
+  const std::string bookTitle = epub ? epub->getTitle() : "";
+  std::string chapterTitle;
+  const int tocIndex =
+      section ? section->getTocIndexForPage(section->currentPage) : (epub ? epub->getTocIndexForSpineIndex(currentSpineIndex) : -1);
+  if (tocIndex == -1) {
+    chapterTitle = tr(STR_UNNAMED);
+  } else {
+    const auto tocItem = epub->getTocItem(tocIndex);
+    chapterTitle = tocItem.title;
   }
 
   const bool isStarred = section && bookmarkStore.has(static_cast<uint16_t>(currentSpineIndex),
@@ -4914,15 +4910,19 @@ void EpubReaderActivity::renderStatusBar() const {
       printedPageLabel = std::string("(") + *nearest + ")";
     }
   }
-  GUI.drawStatusBar(renderer, bookProgress, currentPage, displayPageCount, title, 0, isStarred, printedPageLabel,
-                    /*fillMargin=*/true, /*pageCountApproximate=*/building);
+  GUI.drawStatusBar(renderer, bookProgress, currentPage, displayPageCount, bookTitle, chapterTitle, 0, isStarred,
+                    printedPageLabel, /*fillMargin=*/true, /*pageCountApproximate=*/building);
 
 #if DEBUG_BACKGROUND_WORK
   renderBackgroundDebugOverlay();
 #endif
 
+  const bool hasBattery =
+      (SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+       SETTINGS.statusBarMiddle == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+       SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY);
   lastStatusBarPage = currentPage;
-  lastStatusBarBattery = SETTINGS.statusBarBattery ? static_cast<int>(powerManager.getBatteryPercentage()) : -1;
+  lastStatusBarBattery = hasBattery ? static_cast<int>(powerManager.getBatteryPercentage()) : -1;
 }
 
 void EpubReaderActivity::renderBackgroundDebugOverlay() const {
@@ -4975,7 +4975,11 @@ bool EpubReaderActivity::shouldSkipPeriodicUpdate() const {
   if (lastStatusBarPage < 0) return false;  // no baseline yet — let the first render happen
   const int currentPage = section ? section->currentPage + 1 : -1;
   if (currentPage != lastStatusBarPage) return false;
-  if (SETTINGS.statusBarBattery) {
+  const bool hasBattery =
+      (SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+       SETTINGS.statusBarMiddle == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+       SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY);
+  if (hasBattery) {
     if (static_cast<int>(powerManager.getBatteryPercentage()) != lastStatusBarBattery) return false;
   }
   return true;

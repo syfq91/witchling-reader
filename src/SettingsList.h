@@ -380,35 +380,27 @@ inline std::vector<SettingInfo> buildSettingsList() {
 
 
   // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
-  settings.push_back(SettingInfo::Enum(StrId::STR_UPPER_PROGRESS_BAR, &CrossPointSettings::statusBarUpperProgressBar,
-                                       {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE},
-                                       "statusBarUpperProgressBar", StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Enum(
-      StrId::STR_UPPER_PROGRESS_BAR_THICKNESS, &CrossPointSettings::statusBarUpperProgressBarThickness,
-      {StrId::STR_PROGRESS_BAR_THIN, StrId::STR_PROGRESS_BAR_MEDIUM, StrId::STR_PROGRESS_BAR_THICK},
-      "statusBarUpperProgressBarThickness", StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Enum(StrId::STR_STATUS_ITEMS_POSITION, &CrossPointSettings::statusBarItemsPosition,
-                                       {StrId::STR_TOP, StrId::STR_BOTTOM}, "statusBarItemsPosition",
+  settings.push_back(SettingInfo::Enum(StrId::STR_STATUS_BAR_LOCATION, &CrossPointSettings::statusBarPosition,
+                                       {StrId::STR_TOP, StrId::STR_BOTTOM}, "statusBarPosition",
                                        StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Toggle(StrId::STR_CHAPTER_PAGE_COUNT, &CrossPointSettings::statusBarChapterPageCount,
-                                         "statusBarChapterPageCount", StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Toggle(StrId::STR_PRINTED_PAGE_NUMBER, &CrossPointSettings::statusBarPrintedPage,
-                                         "statusBarPrintedPage", StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Toggle(StrId::STR_BOOK_PROGRESS_PERCENTAGE,
-                                         &CrossPointSettings::statusBarBookProgressPercentage,
-                                         "statusBarBookProgressPercentage", StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Enum(StrId::STR_TITLE, &CrossPointSettings::statusBarTitle,
-                                       {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE}, "statusBarTitle",
-                                       StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Toggle(StrId::STR_BATTERY, &CrossPointSettings::statusBarBattery, "statusBarBattery",
-                                         StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Enum(StrId::STR_LOWER_PROGRESS_BAR, &CrossPointSettings::statusBarLowerProgressBar,
+  const std::vector<StrId> slotChoices = {
+      StrId::STR_HIDE,
+      StrId::STR_BATTERY,
+      StrId::STR_STATUS_BAR_PAGE_COUNT,
+      StrId::STR_STATUS_BAR_PERCENTAGE,
+      StrId::STR_STATUS_BAR_PAGE_AND_PERCENTAGE,
+      StrId::STR_STATUS_BAR_CHAPTER_TITLE,
+      StrId::STR_STATUS_BAR_BOOK_TITLE,
+  };
+  settings.push_back(SettingInfo::Enum(StrId::STR_STATUS_BAR_LEFT, &CrossPointSettings::statusBarLeft, slotChoices,
+                                       "statusBarLeft", StrId::STR_CUSTOMISE_STATUS_BAR));
+  settings.push_back(SettingInfo::Enum(StrId::STR_STATUS_BAR_MIDDLE, &CrossPointSettings::statusBarMiddle, slotChoices,
+                                       "statusBarMiddle", StrId::STR_CUSTOMISE_STATUS_BAR));
+  settings.push_back(SettingInfo::Enum(StrId::STR_STATUS_BAR_RIGHT, &CrossPointSettings::statusBarRight, slotChoices,
+                                       "statusBarRight", StrId::STR_CUSTOMISE_STATUS_BAR));
+  settings.push_back(SettingInfo::Enum(StrId::STR_PROGRESS_BAR, &CrossPointSettings::statusBarProgressBar,
                                        {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE},
-                                       "statusBarLowerProgressBar", StrId::STR_CUSTOMISE_STATUS_BAR));
-  settings.push_back(SettingInfo::Enum(
-      StrId::STR_LOWER_PROGRESS_BAR_THICKNESS, &CrossPointSettings::statusBarLowerProgressBarThickness,
-      {StrId::STR_PROGRESS_BAR_THIN, StrId::STR_PROGRESS_BAR_MEDIUM, StrId::STR_PROGRESS_BAR_THICK},
-      "statusBarLowerProgressBarThickness", StrId::STR_CUSTOMISE_STATUS_BAR));
+                                       "statusBarProgressBar", StrId::STR_CUSTOMISE_STATUS_BAR));
 
   return settings;
 }

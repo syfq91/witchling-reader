@@ -74,11 +74,12 @@ class UITheme {
     return width == COVER_PLACEHOLDER_DIM && height == COVER_PLACEHOLDER_DIM;
   }
   static UIIcon getFileIcon(const std::string& filename);
+  static bool hasStatusBarItems();
   static int getStatusBarTopHeight(bool forceStatusItems = false);
   static int getStatusBarBottomHeight(bool forceStatusItems = false);
   static int getStatusBarHeight(bool forceStatusItems = false);
   static int getStatusBarItemsHeight();
-  static int getProgressBarHeight(uint8_t progressBar, uint8_t thickness);
+  static int getProgressBarHeight(uint8_t progressBar, uint8_t thickness = CrossPointSettings::PROGRESS_BAR_THIN);
 
  private:
   const ThemeMetrics* currentMetrics;

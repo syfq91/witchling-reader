@@ -2,6 +2,12 @@
 
 User-facing changes only. Full commit history is in git log.
 
+## Unreleased
+
+### Reading status bar
+
+- **Simplified Customise Status Bar page.** Replaced the 10 separate status bar options with 5 streamlined settings: status bar location (Top / Bottom), configurable content slots for Left, Middle, and Right (Hide, Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title), and a single progress bar (Book / Chapter / Hide) that automatically follows the status bar location and always uses thin thickness. Existing user configurations are seamlessly migrated.
+
 ## 2.30 — 2026-09-16
 
 Everything since 2.26. Two new devices, touch control throughout, and a long run of fixes to the boot and sleep paths.

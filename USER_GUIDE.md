@@ -179,7 +179,7 @@ The Settings screen is organized into four top-level tabs: **[Display](#371-disp
 - **Embedded Style**: Use the EPUB's own HTML/CSS styling. "ON" (default) / "OFF"
 - **Hyphenation**: Automatic hyphenation while reading. "ON" / "OFF"
 - **Synthetic TOC Fallback**: Generate a table of contents from headings when the EPUB has an invalid or missing TOC. "ON" / "OFF"
-- **Customise Status Bar**: Opens a submenu to configure every element of the reading status bar individually: upper and lower progress bars (Book / Chapter / Hidden, with thickness), status item position (Top / Bottom), chapter page count, book progress percentage, title display (Book / Chapter / Hidden), and battery.
+- **Customise Status Bar**: Opens a submenu to configure the reading status bar: location (Top / Bottom), content slots for Left, Middle, and Right (Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title, or Hide), and a single progress bar (Book / Chapter / Hide) that sits at the selected status bar edge.
 
 #### 3.7.3 Controls
 

@@ -33,9 +33,13 @@ uint8_t normalizeProgressBarThickness(const uint8_t thickness) {
              : CrossPointSettings::PROGRESS_BAR_NORMAL;
 }
 
+uint8_t normalizeStatusBarPosition(const uint8_t position) {
+  return position < CrossPointSettings::STATUS_BAR_POSITION_COUNT ? position
+                                                                  : CrossPointSettings::STATUS_BAR_BOTTOM;
+}
+
 uint8_t normalizeStatusBarItemsPosition(const uint8_t position) {
-  return position < CrossPointSettings::STATUS_BAR_ITEMS_POSITION_COUNT ? position
-                                                                        : CrossPointSettings::STATUS_BAR_ITEMS_BOTTOM;
+  return normalizeStatusBarPosition(position);
 }
 
 }  // namespace
@@ -172,29 +176,31 @@ int UITheme::getStatusBarItemsHeight() {
                   metrics.batteryHeight + (STATUS_BAR_ITEM_PADDING * 2) + STATUS_BAR_DESCENDER_CLEARANCE);
 }
 
+bool UITheme::hasStatusBarItems() {
+  return SETTINGS.statusBarLeft != CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE ||
+         SETTINGS.statusBarMiddle != CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE ||
+         SETTINGS.statusBarRight != CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE;
+}
+
 int UITheme::getStatusBarTopHeight(const bool forceStatusItems) {
-  const bool showStatusItems = forceStatusItems || SETTINGS.statusBarChapterPageCount ||
-                               SETTINGS.statusBarBookProgressPercentage ||
-                               SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE ||
-                               SETTINGS.statusBarBattery;
-  const uint8_t statusBarItemsPosition = normalizeStatusBarItemsPosition(SETTINGS.statusBarItemsPosition);
-  const bool statusItemsAtTop =
-      statusBarItemsPosition == CrossPointSettings::STATUS_BAR_ITEMS_POSITION::STATUS_BAR_ITEMS_TOP;
-  const int statusItemsHeight = showStatusItems && statusItemsAtTop ? getStatusBarItemsHeight() : 0;
-  return getProgressBarHeight(SETTINGS.statusBarUpperProgressBar, SETTINGS.statusBarUpperProgressBarThickness) +
+  const uint8_t pos = normalizeStatusBarPosition(SETTINGS.statusBarPosition);
+  if (pos != CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_TOP) {
+    return 0;
+  }
+  const bool showStatusItems = forceStatusItems || hasStatusBarItems();
+  const int statusItemsHeight = showStatusItems ? getStatusBarItemsHeight() : 0;
+  return getProgressBarHeight(SETTINGS.statusBarProgressBar, CrossPointSettings::PROGRESS_BAR_THIN) +
          statusItemsHeight;
 }
 
 int UITheme::getStatusBarBottomHeight(const bool forceStatusItems) {
-  const bool showStatusItems = forceStatusItems || SETTINGS.statusBarChapterPageCount ||
-                               SETTINGS.statusBarBookProgressPercentage ||
-                               SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE ||
-                               SETTINGS.statusBarBattery;
-  const uint8_t statusBarItemsPosition = normalizeStatusBarItemsPosition(SETTINGS.statusBarItemsPosition);
-  const bool statusItemsAtBottom =
-      statusBarItemsPosition == CrossPointSettings::STATUS_BAR_ITEMS_POSITION::STATUS_BAR_ITEMS_BOTTOM;
-  const int statusItemsHeight = showStatusItems && statusItemsAtBottom ? getStatusBarItemsHeight() : 0;
-  return getProgressBarHeight(SETTINGS.statusBarLowerProgressBar, SETTINGS.statusBarLowerProgressBarThickness) +
+  const uint8_t pos = normalizeStatusBarPosition(SETTINGS.statusBarPosition);
+  if (pos != CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_BOTTOM) {
+    return 0;
+  }
+  const bool showStatusItems = forceStatusItems || hasStatusBarItems();
+  const int statusItemsHeight = showStatusItems ? getStatusBarItemsHeight() : 0;
+  return getProgressBarHeight(SETTINGS.statusBarProgressBar, CrossPointSettings::PROGRESS_BAR_THIN) +
          statusItemsHeight;
 }
 

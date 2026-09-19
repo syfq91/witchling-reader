@@ -226,6 +226,63 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.sdFontFamilyName[sizeof(s.sdFontFamilyName) - 1] = '\0';
   s.removeFinishedBooksFromRecents = doc["removeFinishedBooksFromRecents"] | (uint8_t)0;
 
+  // Migrate legacy status bar settings if new keys are not present
+  if (!doc.containsKey("statusBarPosition") && doc.containsKey("statusBarItemsPosition")) {
+    s.statusBarPosition = clamp(doc["statusBarItemsPosition"] | s.statusBarPosition,
+                                CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_POSITION_COUNT,
+                                CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_BOTTOM);
+    if (needsResave) *needsResave = true;
+  }
+  if (!doc.containsKey("statusBarProgressBar")) {
+    if (doc.containsKey("statusBarUpperProgressBar") &&
+        doc["statusBarUpperProgressBar"].as<uint8_t>() != static_cast<uint8_t>(CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS)) {
+      s.statusBarProgressBar = clamp(doc["statusBarUpperProgressBar"] | s.statusBarProgressBar,
+                                     CrossPointSettings::STATUS_BAR_PROGRESS_BAR::STATUS_BAR_PROGRESS_BAR_COUNT,
+                                     CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS);
+      if (needsResave) *needsResave = true;
+    } else if (doc.containsKey("statusBarLowerProgressBar") &&
+               doc["statusBarLowerProgressBar"].as<uint8_t>() != static_cast<uint8_t>(CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS)) {
+      s.statusBarProgressBar = clamp(doc["statusBarLowerProgressBar"] | s.statusBarProgressBar,
+                                     CrossPointSettings::STATUS_BAR_PROGRESS_BAR::STATUS_BAR_PROGRESS_BAR_COUNT,
+                                     CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS);
+      if (needsResave) *needsResave = true;
+    }
+  }
+  if (!doc.containsKey("statusBarLeft") && !doc.containsKey("statusBarMiddle") && !doc.containsKey("statusBarRight")) {
+    bool migrated = false;
+    if (doc.containsKey("statusBarBattery")) {
+      s.statusBarLeft = doc["statusBarBattery"] ? CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY
+                                                : CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE;
+      migrated = true;
+    }
+    if (doc.containsKey("statusBarTitle")) {
+      const uint8_t titleVal = doc["statusBarTitle"] | 0;
+      if (titleVal == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE) {
+        s.statusBarMiddle = CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BOOK_TITLE;
+      } else if (titleVal == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
+        s.statusBarMiddle = CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_CHAPTER_TITLE;
+      } else {
+        s.statusBarMiddle = CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE;
+      }
+      migrated = true;
+    }
+    if (doc.containsKey("statusBarChapterPageCount") || doc.containsKey("statusBarBookProgressPercentage")) {
+      const bool pages = doc["statusBarChapterPageCount"] | false;
+      const bool percent = doc["statusBarBookProgressPercentage"] | false;
+      if (pages && percent) {
+        s.statusBarRight = CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_PAGE_AND_PERCENTAGE;
+      } else if (pages) {
+        s.statusBarRight = CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_PAGE_COUNT;
+      } else if (percent) {
+        s.statusBarRight = CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BOOK_PERCENTAGE;
+      } else {
+        s.statusBarRight = CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE;
+      }
+      migrated = true;
+    }
+    if (migrated && needsResave) *needsResave = true;
+  }
+
   const uint8_t quickResumeBeforeNormalize = s.quickResumeSleepScreen;
   CrossPointSettings::normalizeDependentSettings(s);
   if (s.quickResumeSleepScreen != quickResumeBeforeNormalize && needsResave) *needsResave = true;

@@ -61,10 +61,25 @@ class CrossPointSettings {
     STATUS_BAR_PROGRESS_BAR_THICKNESS_COUNT
   };
   enum STATUS_BAR_TITLE { BOOK_TITLE = 0, CHAPTER_TITLE = 1, HIDE_TITLE = 2, STATUS_BAR_TITLE_COUNT };
-  enum STATUS_BAR_ITEMS_POSITION {
-    STATUS_BAR_ITEMS_TOP = 0,
-    STATUS_BAR_ITEMS_BOTTOM = 1,
-    STATUS_BAR_ITEMS_POSITION_COUNT
+  enum STATUS_BAR_POSITION {
+    STATUS_BAR_TOP = 0,
+    STATUS_BAR_BOTTOM = 1,
+    STATUS_BAR_POSITION_COUNT
+  };
+  // Compatibility aliases
+  using STATUS_BAR_ITEMS_POSITION = STATUS_BAR_POSITION;
+  static constexpr uint8_t STATUS_BAR_ITEMS_TOP = STATUS_BAR_TOP;
+  static constexpr uint8_t STATUS_BAR_ITEMS_BOTTOM = STATUS_BAR_BOTTOM;
+
+  enum STATUS_BAR_SLOT_CONTENT {
+    SLOT_HIDE = 0,
+    SLOT_BATTERY = 1,
+    SLOT_PAGE_COUNT = 2,
+    SLOT_BOOK_PERCENTAGE = 3,
+    SLOT_PAGE_AND_PERCENTAGE = 4,
+    SLOT_CHAPTER_TITLE = 5,
+    SLOT_BOOK_TITLE = 6,
+    STATUS_BAR_SLOT_CONTENT_COUNT
   };
 
   enum ORIENTATION {
@@ -194,18 +209,14 @@ class CrossPointSettings {
   // and on wake restore the page directly (skipping the boot screen).
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
   // Status bar settings
-  uint8_t statusBarChapterPageCount = 1;
+  uint8_t statusBarPosition = STATUS_BAR_BOTTOM;
+  uint8_t statusBarLeft = SLOT_BATTERY;
+  uint8_t statusBarMiddle = SLOT_CHAPTER_TITLE;
+  uint8_t statusBarRight = SLOT_PAGE_AND_PERCENTAGE;
+  uint8_t statusBarProgressBar = HIDE_PROGRESS;
   // Printed ("physical") page number from the book's page-list. Drawn in parentheses to the left of
   // the device page counter when both share a location; otherwise on its own. Default on.
   uint8_t statusBarPrintedPage = 1;
-  uint8_t statusBarBookProgressPercentage = 1;
-  uint8_t statusBarUpperProgressBar = HIDE_PROGRESS;
-  uint8_t statusBarUpperProgressBarThickness = PROGRESS_BAR_NORMAL;
-  uint8_t statusBarLowerProgressBar = HIDE_PROGRESS;
-  uint8_t statusBarLowerProgressBarThickness = PROGRESS_BAR_NORMAL;
-  uint8_t statusBarItemsPosition = STATUS_BAR_ITEMS_BOTTOM;
-  uint8_t statusBarTitle = CHAPTER_TITLE;
-  uint8_t statusBarBattery = 1;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
   uint8_t textAntiAliasing = 1;
