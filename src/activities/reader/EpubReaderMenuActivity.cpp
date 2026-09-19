@@ -579,6 +579,10 @@ void EpubReaderMenuActivity::drawChrome() {
 }
 
 void EpubReaderMenuActivity::drawFooter() {
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  // Confirm means "next tab" while the bar holds focus and "select" on a row, so the hint names
+  // the tab it would move to rather than a generic label.
+  const auto confirmLabel =
+      tabsFocused() && tabCount() > 0 ? tabLabel((selectedTab() + 1) % tabCount()) : tr(STR_SELECT);
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
