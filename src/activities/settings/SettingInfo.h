@@ -68,7 +68,6 @@ enum class SettingAction {
   ScreenRepair,
   CheckForUpdates,
   SdFirmwareUpdate,
-  Language,
   SystemInfo,
   BootDiagnostics,
   DictionarySelect,

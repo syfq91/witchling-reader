@@ -189,7 +189,6 @@ The Settings screen is organized into four top-level tabs: **[Display](#371-disp
 
 #### 3.7.4 System
 
-- **Language**: Set the system language (see **[Supported Languages](#supported-languages)**).
 - **Show Hidden Files**: Show files and folders whose names start with `.`. "ON" / "OFF"
 - **Show File Extensions**: Show file extensions in the file browser. "ON" / "OFF"
 

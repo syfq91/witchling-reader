@@ -201,7 +201,6 @@ STR_CHECK_UPDATES: "Check for updates"
 STR_SYSTEM_UPDATE_TYPE2: "Alternative Firmware Updates"
 STR_SKIP_HTTPS_VALIDATION: "Skip HTTPS validation (risky)"
 
-STR_LANGUAGE: "Language"
 STR_CLEAR_READING_CACHE: "Clear Reading Cache"
 STR_USERNAME: "Username"
 STR_PASSWORD: "Password"
