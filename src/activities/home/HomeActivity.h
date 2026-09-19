@@ -45,6 +45,9 @@ class HomeActivity final : public Activity {
   bool hasOpdsServers = false;
   bool coverRendered = false;
   bool coverBufferStored = false;
+  // Home can be entered while Back is still held (e.g. leaving Settings with
+  // Back): ignore that stale release until a fresh press is seen here.
+  bool backPressSeen = false;
   // True while the ~48 KB secondary framebuffer has been released to give the
   // cold-cache cover decode/extract pipeline headroom (mirrors the reader's pattern).
   // Restored once all covers are loaded, and on exit. See loadRecentCovers().
