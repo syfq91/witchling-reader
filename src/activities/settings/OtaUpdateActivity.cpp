@@ -88,10 +88,6 @@ void OtaUpdateActivity::buildConfirmScreen(UiScreen& screen) {
   ConfirmDialog::Spec spec;
   spec.headline = tr(STR_NEW_UPDATE);
   spec.message = updateDialogBody.c_str();
-  spec.cancelLabel = tr(STR_CANCEL);
-  spec.acceptLabel = tr(STR_UPDATE);
-  spec.cancelAction = ACTION_CANCEL;
-  spec.acceptAction = ACTION_UPDATE;
   ConfirmDialog::draw(screen, spec);
 }
 

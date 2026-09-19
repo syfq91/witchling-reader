@@ -15,8 +15,13 @@ constexpr fui::ActionId ACTION_CONFIRM = 2;
 }  // namespace
 
 ConfirmationActivity::ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                           const std::string& heading, const std::string& body)
-    : Activity("Confirmation", renderer, mappedInput), UiAppHost(renderer), heading(heading), body(body) {}
+                                           const std::string& heading, const std::string& body,
+                                           const bool showButtons)
+    : Activity("Confirmation", renderer, mappedInput),
+      UiAppHost(renderer),
+      heading(heading),
+      body(body),
+      showButtons(showButtons) {}
 
 void ConfirmationActivity::onEnter() {
   Activity::onEnter();
@@ -57,10 +62,12 @@ void ConfirmationActivity::buildDialogScreen(UiScreen& screen) {
   ConfirmDialog::Spec spec;
   spec.headline = heading.empty() ? nullptr : heading.c_str();
   spec.message = body.empty() ? nullptr : body.c_str();
-  spec.cancelLabel = tr(STR_CANCEL);
-  spec.acceptLabel = tr(STR_CONFIRM);
-  spec.cancelAction = ACTION_CANCEL;
-  spec.acceptAction = ACTION_CONFIRM;
+  if (showButtons) {
+    spec.cancelLabel = tr(STR_CANCEL);
+    spec.acceptLabel = tr(STR_CONFIRM);
+    spec.cancelAction = ACTION_CANCEL;
+    spec.acceptAction = ACTION_CONFIRM;
+  }
   ConfirmDialog::draw(screen, spec);
 }
 

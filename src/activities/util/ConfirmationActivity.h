@@ -20,6 +20,7 @@ class ConfirmationActivity : public Activity, private UiAppHost {
   std::string heading;
   std::string body;
   bool inputArmed = false;
+  bool showButtons = true;
 
   static void dialogScreen(UiScreen& screen, void* user);
   static void onCancelEvent(const freeink::ui::ActionEvent& event, void* user);
@@ -30,7 +31,7 @@ class ConfirmationActivity : public Activity, private UiAppHost {
 
  public:
   ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& heading,
-                       const std::string& body);
+                       const std::string& body, bool showButtons = true);
 
   void onEnter() override;
   void onExit() override;

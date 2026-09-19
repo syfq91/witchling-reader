@@ -49,17 +49,26 @@ inline void draw(UiAppHost::UiScreen& screen, const Spec& spec) {
   const auto& theme = screen.theme();
 
   fui::DialogOption options[2];
-  options[0].label = spec.cancelLabel;
-  options[0].action = spec.cancelAction;
-  options[1].label = spec.acceptLabel;
-  options[1].action = spec.acceptAction;
+  uint8_t optionCount = 0;
+  if (spec.cancelLabel != nullptr || spec.acceptLabel != nullptr) {
+    if (spec.cancelLabel != nullptr) {
+      options[optionCount].label = spec.cancelLabel;
+      options[optionCount].action = spec.cancelAction;
+      optionCount++;
+    }
+    if (spec.acceptLabel != nullptr) {
+      options[optionCount].label = spec.acceptLabel;
+      options[optionCount].action = spec.acceptAction;
+      optionCount++;
+    }
+  }
 
   fui::OptionDialogProps props;
   props.title = spec.title;
   props.headline = spec.headline;
   props.message = spec.message;
-  props.options = options;
-  props.optionCount = 2;
+  props.options = optionCount > 0 ? options : nullptr;
+  props.optionCount = optionCount;
 
   props.titleText = theme.smallText;
   props.titleText.align = fui::TextAlign::Center;
