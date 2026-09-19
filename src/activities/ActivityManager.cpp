@@ -492,8 +492,12 @@ void ActivityManager::popActivity() {
 
 bool ActivityManager::preventAutoSleep() const { return currentActivity && currentActivity->preventAutoSleep(); }
 
+bool ActivityManager::isCurrentReaderActivity() const {
+  return currentActivity && currentActivity->isReaderActivity();
+}
+
 bool ActivityManager::isReaderActivity() const {
-  if (currentActivity && currentActivity->isReaderActivity()) return true;
+  if (isCurrentReaderActivity()) return true;
   return std::any_of(stackActivities.begin(), stackActivities.end(),
                      [](const auto& activity) { return activity->isReaderActivity(); });
 }
@@ -502,7 +506,7 @@ bool ActivityManager::skipLoopDelay() const { return currentActivity && currentA
 
 
 void ActivityManager::dispatchButtonAction(const CrossPointSettings::BUTTON_ACTION action) {
-  if (currentActivity && currentActivity->isReaderActivity()) {
+  if (isCurrentReaderActivity()) {
     currentActivity->onButtonAction(action);
   }
 }

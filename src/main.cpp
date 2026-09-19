@@ -1277,7 +1277,7 @@ void loop() {
           // In the reader, route through the activity so it re-displays the CURRENT page in
           // the requested mode (a raw displayBuffer() here can flush a Background-A pre-render
           // of the next page, which looks like a page turn). Elsewhere, raw-flush is correct.
-          if (activityManager.isReaderActivity()) {
+          if (activityManager.isCurrentReaderActivity()) {
             activityManager.dispatchButtonAction(BA::BTN_FORCE_REFRESH);
           } else {
             RenderLock lock;
@@ -1286,7 +1286,7 @@ void loop() {
           break;
         }
         case BA::BTN_FORCE_FAST_REFRESH: {
-          if (activityManager.isReaderActivity()) {
+          if (activityManager.isCurrentReaderActivity()) {
             activityManager.dispatchButtonAction(BA::BTN_FORCE_FAST_REFRESH);
           } else {
             RenderLock lock;
@@ -1353,7 +1353,7 @@ void loop() {
       const uint8_t action = actionFor(ev);
       // Fall through to the activity when the event has no global effect here: either an
       // explicit Default mapping, or a reader-scoped action while not in the reader.
-      if (action == BA::BTN_DEFAULT || (isReaderScopedAction(action) && !activityManager.isReaderActivity())) {
+      if (action == BA::BTN_DEFAULT || (isReaderScopedAction(action) && !activityManager.isCurrentReaderActivity())) {
         defaultEvents.push_back(ev);
         continue;
       }

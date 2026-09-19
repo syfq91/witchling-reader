@@ -55,7 +55,7 @@ void ButtonNavigator::onRelease(const Buttons& buttons, const Callback& callback
   // ActivityManager::dispatchButtonAction, which is reader-only). Gating on isShortPending
   // there just makes Left/Right navigation feel sluggish (300ms lag) compared to Up/Down
   // (which have no FSM at all). So skip the gate outside reader activities.
-  const bool inReader = activityManager.isReaderActivity();
+  const bool inReader = activityManager.isCurrentReaderActivity();
   const bool wasReleased =
       std::any_of(buttons.begin(), buttons.end(), [inReader](const MappedInputManager::Button button) {
         if (mappedInput == nullptr || !mappedInput->wasReleased(button)) {

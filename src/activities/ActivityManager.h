@@ -173,6 +173,7 @@ class ActivityManager {
 
   bool preventAutoSleep() const;
   bool isReaderActivity() const;
+  bool isCurrentReaderActivity() const;
   bool skipLoopDelay() const;
 
 
