@@ -4302,7 +4302,6 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   // pre-render). Mark the overlay as a miss before the status bar draws it.
   backgroundAGlyph_ = '-';
 #endif
-  publishPageLinkTargets(*page, orientedMarginLeft, contentTop);
   // Snapshot the page the status bar last reported BEFORE renderStatusBar()
   // overwrites it: further down it is the only way left to tell a page turn from
   // a clock or battery tick that redrew the page already on the panel.
