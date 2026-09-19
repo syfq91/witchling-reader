@@ -62,7 +62,6 @@ enum class SettingAction {
   ButtonActionsOverview,
   GestureActionsOverview,
   CustomiseStatusBar,
-  DownloadFonts,
   OPDSBrowser,
   Network,
   ClearCache,

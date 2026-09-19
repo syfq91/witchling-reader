@@ -53,17 +53,8 @@ void SettingsActivity::onEnter() {
   auto addTo = [](std::vector<SettingInfo>& vec, const SettingInfo& s) { vec.push_back(s); };
   auto addToMoved = [](std::vector<SettingInfo>& vec, SettingInfo s) { vec.push_back(std::move(s)); };
 
-  bool sawReaderFontSection = false;
-  bool insertedFontDownload = false;
   bool sawIncludeBetaUpdates = false;
   SettingInfo includeBetaUpdatesSetting{};
-
-  auto insertFontDownloadBelowFontSection = [&]() {
-    auto fontDownload = SettingInfo::Action(StrId::STR_FONT_MANAGER, SettingAction::DownloadFonts);
-    fontDownload.withSubcategory(StrId::STR_MENU_READER_FONT);
-    addToMoved(readerSettings, std::move(fontDownload));
-    insertedFontDownload = true;
-  };
 
   for (const auto& setting : getSettingsList()) {
     if (setting.category == StrId::STR_NONE_OPT) continue;
@@ -81,12 +72,6 @@ void SettingsActivity::onEnter() {
       sawIncludeBetaUpdates = true;
       continue;
     }
-    const bool isReaderFontEntry =
-        enriched.category == StrId::STR_CAT_READER && enriched.submenu == StrId::STR_MENU_READER_FONT;
-
-    if (!insertedFontDownload && sawReaderFontSection && !isReaderFontEntry) {
-      insertFontDownloadBelowFontSection();
-    }
 
     if (enriched.category == StrId::STR_CAT_DISPLAY) {
       addTo(displaySettings, enriched);
@@ -97,13 +82,8 @@ void SettingsActivity::onEnter() {
     } else if (enriched.category == StrId::STR_CAT_SYSTEM) {
       addTo(systemSettings, enriched);
     }
-    if (isReaderFontEntry) sawReaderFontSection = true;
 
     // Web-only categories (e.g. OPDS Browser) are skipped for device UI
-  }
-
-  if (!insertedFontDownload && sawReaderFontSection) {
-    insertFontDownloadBelowFontSection();
   }
 
   // Device-only ACTION items — subcategory drives separator insertion automatically.

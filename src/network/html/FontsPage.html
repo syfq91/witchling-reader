@@ -141,43 +141,6 @@
         font-size: 0.95em;
       }
       .notice a { color: inherit; font-weight: 600; }
-      .toolbar {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-        align-items: center;
-        margin-bottom: 12px;
-      }
-      .download-layout {
-        display: grid;
-        grid-template-columns: minmax(240px, 1fr) 280px;
-        gap: 16px;
-        align-items: start;
-      }
-      .status-panel {
-        background: var(--card-bg);
-        border: 1px solid var(--border-color);
-        border-radius: 8px;
-        padding: 16px;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-      }
-      .status-panel h3 {
-        margin: 0 0 10px 0;
-        font-size: 1rem;
-      }
-      .status-panel p {
-        margin: 0;
-      }
-      #remoteStatus {
-        margin-top: 8px;
-        min-height: 80px;
-        display: block;
-        border-radius: 6px;
-        padding: 12px;
-        background: var(--notice-bg);
-        border: 1px solid var(--notice-border);
-        color: var(--notice-color);
-      }
       .status-ok {
         background: #d4edda;
         color: #155724;
@@ -203,21 +166,6 @@
     <div class="card">
       <h2>Installed Fonts</h2>
       <div id="families"><p class="empty">Loading...</p></div>
-    </div>
-
-    <div class="card">
-      <h2>Download Fonts</h2>
-      <div class="toolbar">
-        <button id="refreshManifest" class="btn btn-primary" type="button">Refresh Catalog</button>
-        <button id="downloadAllRemote" class="btn btn-primary" type="button">Download All Updates</button>
-      </div>
-      <div class="download-layout">
-        <div id="remoteFamilies"><p class="empty">Catalog not loaded</p></div>
-        <div class="status-panel">
-          <h3>Download Status</h3>
-          <div id="remoteStatus" class="status-message"><p>Waiting for action...</p></div>
-        </div>
-      </div>
     </div>
 
     <div class="card">
@@ -319,107 +267,6 @@
         setStatus('status', 'Delete error: ' + err.message, false);
       }
       await loadFonts();
-      await loadRemoteManifest();
-    }
-
-    async function loadRemoteManifest() {
-      const el = document.getElementById('remoteFamilies');
-      el.innerHTML = '<p class="empty">Loading catalog...</p>';
-      try {
-        const res = await fetch('/api/fonts/manifest');
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error || 'catalog unavailable');
-        }
-
-        el.innerHTML = '';
-        if (!Array.isArray(data.families) || data.families.length === 0) {
-          el.innerHTML = '<p class="empty">No remote fonts found</p>';
-          return;
-        }
-
-        data.families.forEach(f => {
-          const row = document.createElement('div');
-          row.className = 'family';
-
-          const info = document.createElement('div');
-          info.className = 'family-info';
-
-          const title = document.createElement('h3');
-          title.textContent = f.name;
-
-          const meta = document.createElement('span');
-          meta.className = 'family-meta';
-          const state = f.installed ? (f.hasUpdate ? 'Installed, update available' : 'Installed, up to date') : 'Not installed';
-          const details = state + ' - ' + (f.fileCount || 0) + ' file(s), ' + formatSize(f.totalSize || 0);
-          meta.textContent = f.description ? (f.description + ' - ' + details) : details;
-
-          info.appendChild(title);
-          info.appendChild(meta);
-
-          const btn = document.createElement('button');
-          btn.className = 'btn btn-primary';
-          btn.dataset.family = f.name;
-          btn.textContent = f.installed ? (f.hasUpdate ? 'Update' : 'Reinstall') : 'Download';
-
-          row.appendChild(info);
-          row.appendChild(btn);
-          el.appendChild(row);
-        });
-
-        el.querySelectorAll('button[data-family]').forEach(btn => {
-          btn.addEventListener('click', async () => {
-            btn.disabled = true;
-            await downloadRemoteFamily(btn.dataset.family);
-            btn.disabled = false;
-          });
-        });
-      } catch (err) {
-        el.innerHTML = '<p class="empty">Failed to load catalog: ' + err.message + '</p>';
-      }
-    }
-
-    async function downloadRemoteFamily(family) {
-      setStatus('remoteStatus', 'Downloading "' + family + '"...');
-      try {
-        const res = await fetch('/api/fonts/download', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({family})
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error || 'download failed');
-        }
-        setStatus('remoteStatus', 'Installed "' + family + '".', true);
-        await loadFonts();
-        await loadRemoteManifest();
-      } catch (err) {
-        setStatus('remoteStatus', 'Install failed for "' + family + '": ' + err.message, false);
-      }
-    }
-
-    async function downloadAllRemoteUpdates() {
-      setStatus('remoteStatus', 'Downloading all available updates...');
-      const btn = document.getElementById('downloadAllRemote');
-      btn.disabled = true;
-      try {
-        const res = await fetch('/api/fonts/download', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({all: true})
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error || 'download failed');
-        }
-        setStatus('remoteStatus', 'Installed/updated ' + (data.installedCount || 0) + ' family(s).', true);
-        await loadFonts();
-        await loadRemoteManifest();
-      } catch (err) {
-        setStatus('remoteStatus', 'Download-all failed: ' + err.message, false);
-      }
-      btn.disabled = false;
     }
 
     // Derive family name from a .cpfont filename: take everything before the
@@ -501,14 +348,9 @@
       setStatus('status', 'Uploaded ' + uploaded + ' file' + (uploaded === 1 ? '' : 's') +
         ' to family "' + family + '".', true);
       await loadFonts();
-      await loadRemoteManifest();
     });
 
-    document.getElementById('refreshManifest').addEventListener('click', loadRemoteManifest);
-    document.getElementById('downloadAllRemote').addEventListener('click', downloadAllRemoteUpdates);
-
     loadFonts();
-    loadRemoteManifest();
   </script>
   </body>
 </html>

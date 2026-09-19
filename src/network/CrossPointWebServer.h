@@ -121,8 +121,6 @@ class CrossPointWebServer {
   // Font management handlers
   void handleFontsPage() const;
   void handleFontList();
-  void handleFontManifest();
-  void handleFontDownload();
   void handleFontUpload();
   void handleFontUploadData();
   void handleFontDelete();

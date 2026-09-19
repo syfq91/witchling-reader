@@ -6,7 +6,6 @@
 #include "ClearCacheActivity.h"
 #include "DictionarySelectionActivity.h"
 #include "EnumSelectionActivity.h"
-#include "FontDownloadActivity.h"
 #include "FontSelectionActivity.h"
 #include "LanguageSelectActivity.h"
 #include "OpdsServerListActivity.h"
@@ -27,8 +26,6 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<ButtonActionsOverviewActivity>(renderer, mappedInput);
     case SettingAction::CustomiseStatusBar:
       return std::make_unique<StatusBarSettingsActivity>(renderer, mappedInput);
-    case SettingAction::DownloadFonts:
-      return std::make_unique<FontDownloadActivity>(renderer, mappedInput);
     case SettingAction::OPDSBrowser:
       return std::make_unique<OpdsServerListActivity>(renderer, mappedInput);
     case SettingAction::Network:
