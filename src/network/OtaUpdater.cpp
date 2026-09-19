@@ -27,12 +27,9 @@
 
 namespace {
 constexpr char latestReleaseUrl[] = "https://api.github.com/repos/" CROSSPOINT_GIT_REPOSITORY "/releases/latest";
-constexpr char releaseListUrl[] = "https://api.github.com/repos/" CROSSPOINT_GIT_REPOSITORY "/releases?per_page=1";
 constexpr int otaHttpMaxAttempts = 3;
 constexpr unsigned long otaInitialRetryDelayMs = 1000;
 constexpr size_t releaseMetadataMaxBytes = 128 * 1024;
-
-const char* getReleaseApiUrl() { return SETTINGS.includeBetaUpdates ? releaseListUrl : latestReleaseUrl; }
 
 void delayBeforeRetry(const char* operation, int attempt) {
   const unsigned long delayMs = otaInitialRetryDelayMs << static_cast<unsigned int>(attempt - 1);
@@ -56,17 +53,16 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   totalSize = 0;
   render = false;
 
-  const char* releaseApiUrl = getReleaseApiUrl();
+  const char* releaseApiUrl = latestReleaseUrl;
 
   // Keep WiFi out of modem-sleep while doing release metadata HTTPS I/O.
   // This mirrors installUpdate() and reduces intermittent TLS read stalls.
   WifiPowerSaveGuard wifiPowerSaveGuard;
 
-  // Use one streaming parser path for both stable and beta update checks to
-  // avoid holding full GitHub release JSON in memory.
+  // Use streaming parser path to avoid holding full GitHub release JSON in memory.
   // Adapted from crosspoint-reader/crosspoint-reader (MIT),
   // PR #1810 by znelson and contributors.
-  LOG_DBG("OTA", "Checking for %s update at %s", SETTINGS.includeBetaUpdates ? "beta" : "stable", releaseApiUrl);
+  LOG_DBG("OTA", "Checking for update at %s", releaseApiUrl);
   constexpr char assetName[] = "firmware.bin";
 
   for (int attempt = 1; attempt <= otaHttpMaxAttempts; ++attempt) {
@@ -122,7 +118,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     totalSize = otaSize;
     updateAvailable = true;
 
-    LOG_DBG("OTA", "Found %s update: %s", SETTINGS.includeBetaUpdates ? "beta" : "stable", latestVersion.c_str());
+    LOG_DBG("OTA", "Found update: %s", latestVersion.c_str());
     return OK;
   }
 

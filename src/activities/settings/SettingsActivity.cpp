@@ -53,9 +53,6 @@ void SettingsActivity::onEnter() {
   auto addTo = [](std::vector<SettingInfo>& vec, const SettingInfo& s) { vec.push_back(s); };
   auto addToMoved = [](std::vector<SettingInfo>& vec, SettingInfo s) { vec.push_back(std::move(s)); };
 
-  bool sawIncludeBetaUpdates = false;
-  SettingInfo includeBetaUpdatesSetting{};
-
   for (const auto& setting : getSettingsList()) {
     if (setting.category == StrId::STR_NONE_OPT) continue;
     // Enrich font-family entries with SD card families discovered at boot.
@@ -66,11 +63,6 @@ void SettingsActivity::onEnter() {
       enriched.enumLabels.clear();
       enriched.enumLabels.reserve(n);
       for (uint8_t i = 0; i < n; i++) enriched.enumLabels.push_back(fontFamilyOptionLabel(i));
-    }
-    if (enriched.nameId == StrId::STR_INCLUDE_BETA_UPDATES) {
-      includeBetaUpdatesSetting = enriched;
-      sawIncludeBetaUpdates = true;
-      continue;
     }
 
     if (enriched.category == StrId::STR_CAT_DISPLAY) {
@@ -113,9 +105,6 @@ void SettingsActivity::onEnter() {
              std::move(SettingInfo::Separator(StrId::STR_SYSTEM_UPDATE_TYPE1).withSubmenu(StrId::STR_SYSTEM_UPDATE)));
   addToMoved(systemSettings, std::move(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates)
                                            .withSubmenu(StrId::STR_SYSTEM_UPDATE)));
-  if (sawIncludeBetaUpdates) {
-    addToMoved(systemSettings, std::move(includeBetaUpdatesSetting.withSubmenu(StrId::STR_SYSTEM_UPDATE)));
-  }
   addToMoved(systemSettings,
              std::move(SettingInfo::Separator(StrId::STR_SYSTEM_UPDATE_TYPE2).withSubmenu(StrId::STR_SYSTEM_UPDATE)));
   addToMoved(systemSettings,

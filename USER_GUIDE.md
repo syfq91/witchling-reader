@@ -203,7 +203,6 @@ The Settings screen is organized into four top-level tabs: **[Display](#371-disp
 
 **Firmware Update**:
 - **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi.
-- **Include Beta Updates**: Whether to include release-candidate builds in update checks. "ON" / "OFF"
 - **SD Firmware Update**: Flash a firmware `.bin` file from the SD card.
 
 #### 3.7.5 OPDS Servers (Multiple Libraries)

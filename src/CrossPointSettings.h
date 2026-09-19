@@ -312,8 +312,6 @@ class CrossPointSettings {
   uint8_t inlineFootnotePreviews = 0;
   // Remove finished book from Recent Books when the end-of-book screen action is selected.
   uint8_t removeFinishedBooksFromRecents = 0;
-  // Include release candidate builds when checking for OTA updates.
-  uint8_t includeBetaUpdates = 0;
   // Accept any TLS certificate on https requests (1 = skip validation).
   //
   // For self-hosted servers with a private CA or a self-signed certificate —
