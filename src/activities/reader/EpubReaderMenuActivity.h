@@ -71,8 +71,7 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
   freeink::ui::ListNav& activeNav() override { return tabNav[activeTabIndex()]; }
   int tabCount() const override { return visibleTabCount; }
   const char* tabLabel(int slot) const override;
-  int16_t tabBarHeight() const override { return 54; }
-  void customizeTabBar(UiScreen& screen, freeink::ui::TabBarProps& props) override;
+  int16_t tabBarHeight() const override;
   void onBackFromTabs() override { onBackPressed(); }
   void drawChrome() override;
   void drawFooter() override;
@@ -81,9 +80,6 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
   void onBackPressed();
   void onSettingToggled(int index);
   void materializeListWindow();
-
-  static bool paintTabIcon(freeink::ui::DrawTarget& target, freeink::ui::Rect rect, const freeink::ui::TabItem& tab,
-                           uint8_t index, void* user);
 
   // Map from StrId to MenuAction for result passing
   static MenuAction actionForNameId(StrId nameId);

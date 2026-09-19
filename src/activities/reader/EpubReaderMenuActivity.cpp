@@ -525,70 +525,14 @@ void EpubReaderMenuActivity::materializeListWindow() {
   }
 }
 
-bool EpubReaderMenuActivity::paintTabIcon(fui::DrawTarget& target, const fui::Rect rect, const fui::TabItem& tab,
-                                          const uint8_t, void* user) {
-  auto* self = static_cast<EpubReaderMenuActivity*>(user);
-  const auto ink =
-      fui::Paint::solid(tab.selected && self->activeNav().selected < 0 ? fui::Color::White : fui::Color::Black);
-  const int16_t left = rect.x;
-  const int16_t top = rect.y;
-  const int16_t right = static_cast<int16_t>(rect.right() - 1);
-  const int16_t bottom = static_cast<int16_t>(rect.bottom() - 1);
-  const int16_t centerX = static_cast<int16_t>(rect.x + rect.width / 2);
-  const int16_t centerY = static_cast<int16_t>(rect.y + rect.height / 2);
-  switch (self->visibleTabs[tab.value]) {
-    case MenuTab::Navigation:
-      target.line({left, static_cast<int16_t>(top + 3)}, {right, static_cast<int16_t>(top + 3)}, 2, ink);
-      target.line({left, centerY}, {right, centerY}, 2, ink);
-      target.line({left, static_cast<int16_t>(bottom - 2)}, {right, static_cast<int16_t>(bottom - 2)}, 2, ink);
-      break;
-    case MenuTab::Settings:
-      target.line({left, static_cast<int16_t>(top + 3)}, {right, static_cast<int16_t>(top + 3)}, 1, ink);
-      target.line({left, centerY}, {right, centerY}, 1, ink);
-      target.line({left, static_cast<int16_t>(bottom - 2)}, {right, static_cast<int16_t>(bottom - 2)}, 1, ink);
-      target.fill({static_cast<int16_t>(left + 3), top, 3, 7}, ink);
-      target.fill({static_cast<int16_t>(right - 5), static_cast<int16_t>(centerY - 3), 3, 7}, ink);
-      target.fill({static_cast<int16_t>(centerX - 1), static_cast<int16_t>(bottom - 5), 3, 7}, ink);
-      break;
-    case MenuTab::Sync:
-      target.line({static_cast<int16_t>(left + 2), static_cast<int16_t>(top + 4)},
-                  {static_cast<int16_t>(right - 2), static_cast<int16_t>(top + 4)}, 2, ink);
-      target.triangle({right, static_cast<int16_t>(top + 4)}, {static_cast<int16_t>(right - 5), top},
-                      {static_cast<int16_t>(right - 5), static_cast<int16_t>(top + 8)}, ink);
-      target.line({static_cast<int16_t>(right - 2), static_cast<int16_t>(bottom - 3)},
-                  {static_cast<int16_t>(left + 2), static_cast<int16_t>(bottom - 3)}, 2, ink);
-      target.triangle({left, static_cast<int16_t>(bottom - 3)}, {static_cast<int16_t>(left + 5), bottom},
-                      {static_cast<int16_t>(left + 5), static_cast<int16_t>(bottom - 7)}, ink);
-      break;
-    case MenuTab::Tools:
-      target.stroke({static_cast<int16_t>(left + 1), static_cast<int16_t>(top + 1), 6, 6}, ink, 2, 3);
-      target.line({static_cast<int16_t>(left + 6), static_cast<int16_t>(top + 6)},
-                  {static_cast<int16_t>(right - 2), static_cast<int16_t>(bottom - 2)}, 3, ink);
-      target.stroke({static_cast<int16_t>(right - 5), static_cast<int16_t>(bottom - 5), 5, 5}, ink, 1, 2);
-      break;
-    case MenuTab::Count:
-      break;
-  }
-  return true;
-}
-
 const char* EpubReaderMenuActivity::tabLabel(const int slot) const {
   static constexpr StrId tabLabels[MENU_TAB_COUNT] = {StrId::STR_READER_NAVIGATION, StrId::STR_SETTINGS_TITLE,
                                                       StrId::STR_SYNC, StrId::STR_READER_TOOLS};
   return I18N.get(tabLabels[static_cast<size_t>(visibleTabs[slot])]);
 }
 
-// Adapted from CrossInk's icon-tab reader menu at commit 60cc4da5 (MIT):
-// https://github.com/uxjulia/crossink -- the icon-above-label tab design and the per-tab glyphs
-// paintTabIcon() draws. The shared tab composition and touch routing this builds on moved to
-// TabbedUiListActivity, which carries the rest of that credit.
-void EpubReaderMenuActivity::customizeTabBar(UiScreen& screen, fui::TabBarProps& props) {
-  // This menu labels its tabs with an icon above the word, so it wants the smaller text and an
-  // icon painter; the settings screen takes the plain text default.
-  props.text = screen.theme().smallText;
-  props.iconSize = 16;
-  props.iconPainter = &EpubReaderMenuActivity::paintTabIcon;
-  props.iconPainterUserData = this;
+int16_t EpubReaderMenuActivity::tabBarHeight() const {
+  return static_cast<int16_t>(UITheme::getInstance().getMetrics().tabBarHeight);
 }
 
 void EpubReaderMenuActivity::buildScreen(UiScreen& screen) {
