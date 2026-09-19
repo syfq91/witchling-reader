@@ -11,9 +11,6 @@ For full documentation refer to the [upstream README](https://github.com/jpirnay
 - Add [OPDS Progression 1.0](https://github.com/opds-community/drafts/blob/main/opds-progression-1.0.md) Sync
 - Removed TXT and Markdown Support (EPUB only)
 - Lyra Sole Theme (Classic, 3 Covers, and Carousel variants removed)
-- Tabbed Settings & Reader Menus (categorized into Display, Reader, Controls, System tabs)
-- Unified FreeInkUI List Framework across all pickers, file browser, and menus
-- SD Card Font Memory-Mapping (`mmap`) & Image Decoder Heap Recovery
 - Removed KOReader sync and Calibre wireless transfer
 - Removed Weather Integration
 - Removed USB Serial, Flashing & Host Communication
