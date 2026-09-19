@@ -13,7 +13,7 @@
 #include <string>
 
 #include "MappedInputManager.h"
-
+#include "UiFontScale.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
 
@@ -52,17 +52,26 @@ static BootHeapProbe s_probePreTheme(2);
 UITheme UITheme::instance;
 static BootHeapProbe s_probePostTheme(3);
 
+// The ladder is indexed by UI_FONT_SIZE but does not depend on it (see UiFontScale.h); this is
+// the one place the two meet, so it is the one place that can check they agree.
+static_assert(UiFontLadder::STEP_COUNT == CrossPointSettings::UI_FONT_SIZE_COUNT,
+              "every UI_FONT_SIZE needs a row in UiFontLadder::STEPS");
+
+UiFontLadder::Step UITheme::fontGrowth() { return UiFontLadder::growthAt(SETTINGS.uiFontSize); }
+
 UITheme::UITheme() {
   LOG_DBG("UI", "Using Lyra theme");
   currentTheme = std::make_unique<LyraTheme>();
-  currentMetrics = &LyraMetrics::values;
+  currentMetrics = LyraMetrics::values;
+  UiFontLadder::applyTo(currentMetrics, fontGrowth());
 }
 
 void UITheme::reload() {
   if (!currentTheme) {
     currentTheme = std::make_unique<LyraTheme>();
-    currentMetrics = &LyraMetrics::values;
   }
+  currentMetrics = LyraMetrics::values;
+  UiFontLadder::applyTo(currentMetrics, fontGrowth());
 }
 
 int UITheme::getNumberOfItemsPerPage(const GfxRenderer& renderer, bool hasHeader, bool hasTabBar, bool hasButtonHints,

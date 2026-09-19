@@ -166,6 +166,8 @@ inline std::vector<SettingInfo> buildSettingsList() {
                                          StrId::STR_CAT_DISPLAY)
                          .requiring(SettingRequires::SunlightFadingPanel));
 
+  settings.push_back(SettingInfo::Enum(StrId::STR_UI_FONT_SIZE, &CrossPointSettings::uiFontSize,
+                                       {StrId::STR_NORMAL, StrId::STR_LARGE}, "uiFontSize", StrId::STR_CAT_DISPLAY));
 
   // --- Reader ---
   // General reader settings

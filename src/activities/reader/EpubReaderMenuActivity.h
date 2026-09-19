@@ -8,6 +8,7 @@
 
 #include "../TabbedUiListActivity.h"
 #include "activities/settings/SettingInfo.h"
+#include "components/UITheme.h"
 
 class EpubReaderMenuActivity final : public TabbedUiListActivity {
  public:

@@ -147,6 +147,8 @@ add_subdirectory(content_bin)
 
 add_subdirectory(font_size_ladder)
 add_subdirectory(settings_grouping)
+add_subdirectory(ui_font_ladder)
+add_subdirectory(text_truncation)
 add_subdirectory(default_ignorable)
 add_subdirectory(utf8_compose)
 add_subdirectory(adaptive_tone)

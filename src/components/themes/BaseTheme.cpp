@@ -182,9 +182,10 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
   constexpr int buttonWidth = 106;
-  constexpr int buttonHeight = BaseMetrics::values.buttonHintsHeight;
-  constexpr int buttonY = BaseMetrics::values.buttonHintsHeight;  // Distance from bottom
-  constexpr int textYOffset = 7;                                  // Distance from top of button to text baseline
+  // Read live rather than from the constexpr table: the strip grows with the UI font size.
+  const int buttonHeight = UITheme::getInstance().getMetrics().buttonHintsHeight;
+  const int buttonY = buttonHeight;  // Distance from bottom
+  constexpr int textYOffset = 7;     // Distance from top of button to text baseline
   // Hand-tuned for the X4 width (480); other widths spread evenly.
   constexpr int x4ButtonPositions[] = {25, 130, 245, 350};
   int buttonPositions[4];
@@ -285,8 +286,9 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
                          const std::function<std::string(int index)>& rowSubtitle,
                          const std::function<UIIcon(int index)>& rowIcon,
                          const std::function<std::string(int index)>& rowValue, bool highlightValue) const {
-  int rowHeight =
-      (rowSubtitle != nullptr) ? BaseMetrics::values.listWithSubtitleRowHeight : BaseMetrics::values.listRowHeight;
+  const ThemeMetrics& metrics = UITheme::getInstance().getMetrics();
+  const UiFontLadder::Step growth = UITheme::fontGrowth();
+  int rowHeight = (rowSubtitle != nullptr) ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight;
   int pageItems = rect.height / rowHeight;
 
   if (pageItems <= 0 || itemCount <= 0 || rowTitle == nullptr) {
@@ -340,8 +342,12 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
         subtitleText.replace(nl, 1, " \u2022 ");
       }
       auto subtitle = renderer.truncatedText(UI_10_FONT_ID, subtitleText.c_str(), textWidth);
-      renderer.drawText(UI_10_FONT_ID, rect.x + BaseMetrics::values.contentSidePadding, itemY + 30, subtitle.c_str(),
-                        i != selectedIndex);
+      // Pushed down by however much the title line above it grew, so the pair keeps the spacing
+      // the 30 px was tuned for instead of colliding at the larger UI font size. growth.title,
+      // not growth.body: this theme draws a row that HAS a subtitle in UI_12 (see `font` above),
+      // where the Lyra themes draw every row title in UI_10.
+      renderer.drawText(UI_10_FONT_ID, rect.x + BaseMetrics::values.contentSidePadding, itemY + 30 + growth.title,
+                        subtitle.c_str(), i != selectedIndex);
     }
 
     if (rowValue != nullptr) {
@@ -681,7 +687,7 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
 void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                const std::function<std::string(int index)>& buttonLabel,
                                const std::function<UIIcon(int index)>& rowIcon) const {
-  int rowHeight = BaseMetrics::values.menuRowHeight;
+  int rowHeight = UITheme::getInstance().getMetrics().menuRowHeight;
   int rowSpacing = BaseMetrics::values.menuSpacing;
   if (buttonCount > 0 && rect.height > 0) {
     const int defaultHeight = buttonCount * rowHeight + std::max(0, buttonCount - 1) * rowSpacing;

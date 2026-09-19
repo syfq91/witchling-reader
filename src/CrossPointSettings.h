@@ -146,6 +146,15 @@ class CrossPointSettings {
   // Hide battery percentage
   enum HIDE_BATTERY_PERCENTAGE { HIDE_NEVER = 0, HIDE_READER = 1, HIDE_ALWAYS = 2, HIDE_BATTERY_PERCENTAGE_COUNT };
 
+  // Size of the menu/chrome text. Each step rebinds the three logical UI font IDs one rung up
+  // the Inter ladder (applyUiFontScale() in main.cpp) and adds the matching number of pixels to
+  // every metric that has to hold a line of UI text (UiFontLadder::applyTo() in UiFontScale.h).
+  //
+  // Deliberately does NOT touch the reader's own font or its status bar: those feed the text
+  // viewport, and changing the viewport invalidates every book's pagination cache. This setting
+  // is about making menu rows easier to hit, not about re-laying-out books.
+  enum UI_FONT_SIZE { UI_FONT_SIZE_DEFAULT = 0, UI_FONT_SIZE_LARGE = 1, UI_FONT_SIZE_COUNT };
+
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
 
@@ -296,6 +305,8 @@ class CrossPointSettings {
   uint8_t opdsFilenameFormat = 0;
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
+  // Menu/chrome text size (UI_FONT_SIZE)
+  uint8_t uiFontSize = UI_FONT_SIZE_DEFAULT;
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
