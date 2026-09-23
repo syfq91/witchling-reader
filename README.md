@@ -23,6 +23,7 @@ For full original documentation, refer to the [upstream README](https://github.c
 - **Extra Themes & Touch Code**: Kept Lyra as the sole theme with borderless button hints; removed touch layer overhead.
 - **Non-English Translations**: Pruned non-English languages to keep firmware size lean and fast.
 - **Unused Features**: Removed Bionic Reading, Guide Dots, Auto Page Turn, Page as QR Code, and Screenshots.
+- **Font Scaling Test**: Removed the developer font scaling test screen from System settings.
 
 ### Fixed
 - **EPUB Cover Detection**: Fixed home screen sometimes displaying wrong images (like title banners or logos) by detecting covers from the Table of Contents, cover pages, and prioritizing real cover art.

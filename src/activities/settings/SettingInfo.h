@@ -70,7 +70,6 @@ enum class SettingAction {
   SdFirmwareUpdate,
   SystemInfo,
   BootDiagnostics,
-  FontScalingTest,
   DictionarySelect,
   SleepTimeoutPicker,
   RefreshFrequencyPicker,
