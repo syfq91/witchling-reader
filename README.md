@@ -10,25 +10,23 @@ For full original documentation, refer to the [upstream README](https://github.c
 
 ### Added
 - **OPDS Progression 1.0**: Automatically syncs reading progress with compatible OPDS servers (e.g., Kavita, Audiobookshelf).
-- **Simplified Status Bar**: Streamlined 5-option status bar customization (Top/Bottom, configurable Left, Middle, and Right slots for battery, page count, percentage, book title, and chapter title, plus a progress bar).
-- **Larger Reading Sizes**: Added 20pt, 22pt, 24pt, and 26pt text sizes with sharper headings and smooth font scaling.
-- **Menu Text Size**: Selectable **UI Font Size** (Normal / Large) in Settings for easier menu readability.
-- **File & Folder Management**: Create folders, move books/folders, and delete folders directly within the file browser.
-- **Visual Busy Indicator**: Subtle hourglass indicator during slower screen transitions so you know the device is working.
 - **Quick Resume**: Press the Back button on the home screen to instantly jump back into your current book.
+- **Simplified Status Bar**: Streamlined status bar customization options in Settings.
+- **OPDS in File Transfer**: Access your OPDS library directly from the File Transfer menu.
+- **Enhanced Tab Navigation**: Bottom buttons and dynamic tab labels make navigating reader menus faster.
 
 ### Removed
-- **TXT and Markdown Reader**: Pruned to focus exclusively on an optimized, fast EPUB experience.
-- **Unused Subsystems**: Removed Clock / Timezones, Weather integration, and Reading Statistics to save memory and battery.
+- **TXT and Markdown Reader**: Focused exclusively on an optimized, fast EPUB experience.
+- **Unused Subsystems**: Removed Clock, Weather integration, and Reading Statistics to save memory and battery.
 - **KOReader Sync & Calibre Wireless Transfer**: Simplified the networking stack in favor of direct OPDS sync.
-- **Extra Themes & Touch Code**: Removed touch layer overhead for the X4 hardware; kept Lyra as the sole theme with borderless button hints.
-- **Non-English Translations**: Pruned non-English translations to keep firmware size lean and fast.
+- **USB Serial & Flashing Code**: Removed unusable USB serial, host, and flashing features for locked X4 hardware.
+- **Extra Themes & Touch Code**: Kept Lyra as the sole theme with borderless button hints; removed touch layer overhead.
+- **Non-English Translations**: Pruned non-English languages to keep firmware size lean and fast.
+- **Unused Features**: Removed Bionic Reading, Guide Dots, Auto Page Turn, Page as QR Code, and Screenshots.
 
 ### Fixed
-- **EPUB Image Metadata**: Fixed memory exhaustion and crashes on EPUBs with large JPEG metadata headers (upstream #249).
-- **Faster SD Card Access**: Batched data transfers from the SD card for snappier page turns and library browsing.
-- **Font & Size Switching**: Fixed issues where changing fonts or sizes in the reader menu did not take effect until closing and reopening the book.
-- **Button Responsiveness**: Fixed missed button presses during screen redraws in long lists.
+- **EPUB Cover Detection**: Fixed home screen sometimes displaying wrong images (like title banners or logos) by detecting covers from the Table of Contents, cover pages, and prioritizing real cover art.
+- **Reader Menu Navigation**: Fixed bottom button navigation issues inside reader menus.
 
 ---
 
