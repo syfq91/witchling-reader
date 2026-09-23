@@ -37,6 +37,45 @@ size_t TocNcxParser::write(const uint8_t* buffer, const size_t size) {
   return size;
 }
 
+namespace {
+bool isCoverLabel(std::string_view label) {
+  while (!label.empty() && isspace(static_cast<unsigned char>(label.front()))) {
+    label.remove_prefix(1);
+  }
+  while (!label.empty() && isspace(static_cast<unsigned char>(label.back()))) {
+    label.remove_suffix(1);
+  }
+  if (label.empty()) return false;
+
+  char lower[64];
+  if (label.size() >= sizeof(lower)) return false;
+  for (size_t i = 0; i < label.size(); ++i) {
+    lower[i] = static_cast<char>(tolower(static_cast<unsigned char>(label[i])));
+  }
+  lower[label.size()] = '\0';
+
+  if (strcmp(lower, "cover") == 0 || strcmp(lower, "front cover") == 0 ||
+      strcmp(lower, "cover page") == 0 || strcmp(lower, "cover image") == 0 ||
+      strcmp(lower, "book cover") == 0 || strcmp(lower, "title page") == 0 ||
+      strcmp(lower, "titlepage") == 0 || strcmp(lower, "portada") == 0 ||
+      strcmp(lower, "cubierta") == 0 || strcmp(lower, "couverture") == 0 ||
+      strcmp(lower, "capa") == 0 || strcmp(lower, "titelbild") == 0 ||
+      strcmp(lower, "umschlag") == 0 || strcmp(lower, "copertina") == 0) {
+    return true;
+  }
+
+  if (strncmp(lower, "cover", 5) == 0) {
+    const char c = lower[5];
+    if (c == '\0' || c == ' ' || c == ':' || c == '-' || c == '_') return true;
+  }
+  if (strncmp(lower, "front cover", 11) == 0) {
+    const char c = lower[11];
+    if (c == '\0' || c == ' ' || c == ':' || c == '-' || c == '_') return true;
+  }
+  return false;
+}
+}  // namespace
+
 void TocNcxParser::startElement(void* userData, const char* name, const char** atts) {
   // NOTE: We rely on navPoint label and content coming before any nested navPoints, this will be fine:
   // <navPoint>
@@ -105,6 +144,16 @@ void TocNcxParser::startElement(void* userData, const char* name, const char** a
 
     self->currentLabel.clear();
     self->currentSrc.clear();
+    self->currentNavPointIsCover = false;
+    for (int i = 0; atts[i]; i += 2) {
+      if (strcasecmp(atts[i], "id") == 0 || strcasecmp(atts[i], "class") == 0) {
+        if (strcasecmp(atts[i + 1], "cover") == 0 || strcasecmp(atts[i + 1], "cover-page") == 0 ||
+            strcasecmp(atts[i + 1], "coverpage") == 0) {
+          self->currentNavPointIsCover = true;
+          break;
+        }
+      }
+    }
     return;
   }
 
@@ -172,6 +221,16 @@ void TocNcxParser::endElement(void* userData, const char* name) {
 
       if (pos != std::string::npos) {
         anchor = FsHelpers::decodeUriEscapes(rawTarget.substr(pos + 1));
+      }
+
+      if (self->coverHref.empty() && (self->currentNavPointIsCover || isCoverLabel(self->currentLabel))) {
+        self->coverHref = href;
+        LOG_DBG("TOC", "Found cover in NCX TOC: %s (label='%s')", self->coverHref.c_str(),
+                self->currentLabel.c_str());
+        if (self->stopOnCoverFound) {
+          self->saxParser_.stop();
+          return;
+        }
       }
 
       if (self->cache) {

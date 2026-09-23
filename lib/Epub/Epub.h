@@ -48,6 +48,8 @@ class Epub {
 
   bool findContentOpfFile(std::string* contentOpfFile) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, OpfCacheMode cacheMode);
+  bool findCoverInToc(std::string& outCoverHref) const;
+  bool extractCoverImageFromPage(const std::string& pageHref, std::string& outImageHref) const;
   bool parseTocNcxFile() const;
   bool parseTocNavFile() const;
   bool parsePageMapFile() const;

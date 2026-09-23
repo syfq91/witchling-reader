@@ -23,6 +23,8 @@ class TocNavParser final : public Print {
     IN_PL_OL,          // Inside <ol> (within page-list nav)
     IN_PL_LI,          // Inside <li> (within page-list nav)
     IN_PL_ANCHOR,      // Inside <a> (within page-list nav)
+    IN_NAV_LANDMARKS,  // Inside <nav epub:type="landmarks">
+    IN_LM_ANCHOR,      // Inside <a> (within landmarks nav)
   };
 
  private:
@@ -47,6 +49,10 @@ class TocNavParser final : public Print {
   std::string currentPageLabel;
   std::string currentPageHref;
 
+  std::string coverHref;
+  bool stopOnCoverFound = false;
+  bool currentAnchorIsCover = false;
+
   static void startElement(void* userData, const char* name, const char** atts);
   static void characterData(void* userData, const char* s, int len);
   static void endElement(void* userData, const char* name);
@@ -61,4 +67,7 @@ class TocNavParser final : public Print {
 
   size_t write(uint8_t) override;
   size_t write(const uint8_t* buffer, size_t size) override;
+
+  const std::string& getCoverHref() const { return coverHref; }
+  void setStopOnCoverFound(const bool stop) { stopOnCoverFound = stop; }
 };

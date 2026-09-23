@@ -59,16 +59,20 @@ MediaClass classifyMediaType(const char* mediaType) {
   return MediaClass::Other;
 }
 
-// True when `word` appears as a whole space-separated token in `props` (the OPF
+inline bool isPropSep(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// True when `word` appears as a whole whitespace-separated token in `props` (the OPF
 // `properties` attribute format). Pointer scan — no std::string construction.
 bool hasPropertyWord(const char* props, const char* word) {
   if (props == nullptr || *props == '\0') return false;
   const size_t wordLen = strlen(word);
   const char* p = props;
   while ((p = strstr(p, word)) != nullptr) {
-    const bool startsToken = (p == props) || (p[-1] == ' ');
+    const bool startsToken = (p == props) || isPropSep(p[-1]);
     const char after = p[wordLen];
-    if (startsToken && (after == '\0' || after == ' ')) return true;
+    if (startsToken && (after == '\0' || isPropSep(after))) return true;
     p += wordLen;
   }
   return false;
@@ -595,12 +599,30 @@ void ContentOpfParser::startElement(void* userData, const char* name, const char
 
     if (itemId == self->coverItemId) {
       // Some EPUBs set meta name="cover" to an XHTML wrapper item.
-      // Only treat it as a cover image when the manifest media-type is image/*.
+      // Only treat it directly as a cover image when the manifest media-type is image/*.
+      // Otherwise record it as an XHTML wrapper page to extract the image from.
       if (mediaClass == MediaClass::Image) {
         self->coverItemHref = href;
-      } else {
-        LOG_DBG("COF", "Ignoring meta cover item '%s' with non-image media type: %s", itemId.c_str(),
-                mediaType != nullptr ? mediaType : "(none)");
+      } else if (self->metaCoverPageHref.empty()) {
+        self->metaCoverPageHref = href;
+        LOG_DBG("COF", "Found meta cover wrapper page '%s': %s", itemId.c_str(), href.c_str());
+      }
+    }
+
+    // Manifest item ID heuristic for books lacking explicit <meta name="cover">
+    if (self->coverItemHref.empty() && mediaClass == MediaClass::Image) {
+      if (self->manifestCoverItemHref.empty()) {
+        if (itemId == "cover" || itemId == "cover-image" || itemId == "coverimage" ||
+            itemId == "cover_image" || itemId == "cover_img" || itemId == "coverimg") {
+          self->manifestCoverItemHref = href;
+          LOG_DBG("COF", "Found manifest cover item candidate '%s': %s", itemId.c_str(), href.c_str());
+        }
+      }
+    } else if (mediaClass != MediaClass::Image && self->manifestCoverPageHref.empty()) {
+      if (itemId == "cover" || itemId == "coverpage" || itemId == "cover-page" ||
+          itemId == "titlepage" || itemId == "title-page") {
+        self->manifestCoverPageHref = href;
+        LOG_DBG("COF", "Found manifest cover page candidate '%s': %s", itemId.c_str(), href.c_str());
       }
     }
 

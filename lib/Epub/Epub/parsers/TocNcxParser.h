@@ -40,6 +40,10 @@ class TocNcxParser final : public Print {
   std::string currentPageLabel;
   std::string currentPageSrc;
 
+  std::string coverHref;
+  bool stopOnCoverFound = false;
+  bool currentNavPointIsCover = false;
+
   static void startElement(void* userData, const char* name, const char** atts);
   static void characterData(void* userData, const char* s, int len);
   static void endElement(void* userData, const char* name);
@@ -54,4 +58,7 @@ class TocNcxParser final : public Print {
 
   size_t write(uint8_t) override;
   size_t write(const uint8_t* buffer, size_t size) override;
+
+  const std::string& getCoverHref() const { return coverHref; }
+  void setStopOnCoverFound(const bool stop) { stopOnCoverFound = stop; }
 };

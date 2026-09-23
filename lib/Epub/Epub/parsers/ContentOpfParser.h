@@ -152,6 +152,9 @@ class ContentOpfParser final : public Print {
   std::string pageMapPath;  // EPUB 2.01 page-map.xml document path
   std::string coverItemHref;
   std::string guideCoverPageHref;  // Guide reference with type="cover" or "cover-page" (points to XHTML wrapper)
+  std::string metaCoverPageHref;   // Meta name="cover" pointing to an XHTML wrapper document
+  std::string manifestCoverItemHref;  // Manifest item id="cover" / "cover-image" with image media-type
+  std::string manifestCoverPageHref;  // Manifest item id="cover" / "titlepage" with XHTML media-type
   std::string textReferenceHref;
   std::vector<std::string> cssFiles;  // CSS stylesheet paths
 
