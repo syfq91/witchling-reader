@@ -12,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "SdCardFontGlobals.h"
+
 #include "activities/settings/SettingInfo.h"
 
 // Shared settings list used by both the device settings UI and the web settings API.
@@ -61,6 +62,7 @@ inline std::string getRefreshFrequencyDisplay(void*) {
   if (v == 0) return std::string(tr(STR_NEVER));
   return std::to_string(v) + tr(STR_PAGES_SUFFIX);
 }
+
 
 inline std::vector<SettingInfo> buildSettingsList() {
   // Shared button action options used by all button enum entries.
@@ -165,7 +167,8 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                                          StrId::STR_CAT_DISPLAY)
                          .requiring(SettingRequires::SunlightFadingPanel));
-
+  settings.push_back(SettingInfo::Toggle(StrId::STR_SHOW_BUSY_INDICATOR, &CrossPointSettings::showBusyIndicator,
+                                         "showBusyIndicator", StrId::STR_CAT_DISPLAY));
   settings.push_back(SettingInfo::Enum(StrId::STR_UI_FONT_SIZE, &CrossPointSettings::uiFontSize,
                                        {StrId::STR_NORMAL, StrId::STR_LARGE}, "uiFontSize", StrId::STR_CAT_DISPLAY));
 
@@ -187,12 +190,16 @@ inline std::vector<SettingInfo> buildSettingsList() {
                          .withSubcategory(StrId::STR_MENU_READER_FONT)
                          .withSubmenu(StrId::STR_MENU_READER_FONT)
                          .withSelectorActivity());
-  settings.push_back(
-      SettingInfo::Enum(StrId::STR_FONT_SIZE, &CrossPointSettings::fontSize,
-                        {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE, StrId::STR_X_LARGE, StrId::STR_TINY},
-                        "fontSize", StrId::STR_CAT_READER)
-          .withSubmenu(StrId::STR_MENU_READER_FONT)
-          .withSelectorActivity());
+  {
+    // Labels, not enumValues: these read "12pt", "14pt" ... straight off
+    // CrossPointSettings::FONT_SIZE_RUNGS, so a rung added or changed there needs no edit here.
+    auto row =
+        SettingInfo::Enum(StrId::STR_FONT_SIZE, &CrossPointSettings::fontSize, {}, "fontSize", StrId::STR_CAT_READER)
+            .withSubmenu(StrId::STR_MENU_READER_FONT)
+            .withSelectorActivity();
+    row.enumLabels = CrossPointSettings::fontSizeLabels();
+    settings.push_back(std::move(row));
+  }
   settings.push_back(SettingInfo::Toggle(StrId::STR_TEXT_AA, &CrossPointSettings::textAntiAliasing, "textAntiAliasing",
                                          StrId::STR_CAT_READER)
                          .withSubmenu(StrId::STR_MENU_READER_FONT));
@@ -379,7 +386,6 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Enum(StrId::STR_OPDS_FILENAME_FORMAT, &CrossPointSettings::opdsFilenameFormat,
                                        {StrId::STR_FMT_AUTHOR_TITLE, StrId::STR_FMT_TITLE_AUTHOR, StrId::STR_FMT_TITLE},
                                        "opdsFilenameFormat"));
-
 
   // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
   settings.push_back(SettingInfo::Enum(StrId::STR_STATUS_BAR_LOCATION, &CrossPointSettings::statusBarPosition,

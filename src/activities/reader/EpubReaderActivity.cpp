@@ -487,7 +487,7 @@ int getImageOnlyPageYOffset(const Page& page, const int viewportHeight) {
 
   const bool imageOnlyPage = std::all_of(
       page.elements.begin(), page.elements.end(),
-      [](const std::shared_ptr<PageElement>& element) { return element && element->getTag() == TAG_PageImage; });
+      [](const std::unique_ptr<PageElement>& element) { return element && element->getTag() == TAG_PageImage; });
   if (!imageOnlyPage) {
     return 0;
   }
@@ -637,6 +637,18 @@ void EpubReaderActivity::onEnter() {
   // shortcut would most plausibly skip or cache in RTC, so they get their own bucket.
   WakeTrace::mark(WakeTrace::Phase::StoresLoaded);
 
+#if CROSSPOINT_KOREADER_AUTOSYNC
+  if (KOReaderAutoSync::sleepPushEnabled() || KOReaderAutoSync::intervalPushEnabled()) {
+    AUTOSYNC_STATE.seedLastSeen(
+        currentSpineIndex, navTarget.kind == NavigationTarget::Kind::Page ? navTarget.page : navTarget.fallbackPage);
+  }
+  autoSyncPullPending = KOReaderAutoSync::pullEnabled() && WakeTrace::isResume();
+  autoSyncIndicator = SyncIndicator::None;
+  if (KOREADER_STORE.getShowSyncIndicator() && AUTOSYNC_STATE.lastSyncFailed()) {
+    autoSyncIndicator = SyncIndicator::Failed;
+  }
+#endif  // CROSSPOINT_KOREADER_AUTOSYNC
+
   // Trigger first update
   logReaderMemSnapshot("onEnter_before_request_update");
   if (WiFi.status() == WL_CONNECTED && OpdsProgressionSync::hasSyncConfig(epub->getCachePath())) {
@@ -675,6 +687,7 @@ void EpubReaderActivity::onExit() {
   if (getEffectiveTextAntiAliasing() || renderer.supportsGrayFrame()) {
     ReaderUtils::enforceExitFullRefresh(renderer);
   }
+
 
   // If a pre-render left the next page in the frame buffer, redraw the current page so the
   // next activity (notably SleepActivity's OVERLAY mode) sees what the user was looking at.
@@ -758,6 +771,16 @@ void EpubReaderActivity::loop() {
     serviceFinishedBookLaunch();
     return;
   }
+
+#if CROSSPOINT_KOREADER_AUTOSYNC
+  if (autoSyncPullDialogLaunched) {
+    return;
+  }
+  serviceAutoSync();
+  if (autoSyncPullDialogLaunched) {
+    return;
+  }
+#endif  // CROSSPOINT_KOREADER_AUTOSYNC
 
   if (inputDrainGuard.shouldDrain(mappedInput)) {
     buttonEvents.drain();
@@ -1552,10 +1575,17 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
       // framebuffer back at once rather than holding it across the Settled tick — AA is off for
       // every render until it returns. A completed backgroundSection_ survives this (it no longer
       // references the arena) so buildSection() can still adopt it.
-      endBackgroundBorrow();
-      // Flush any image dimensions this background build resolved (valid regardless of the
+      // Resolve the image headers this build deferred BEFORE the borrowed framebuffer goes back
+      // (#249): device-measured on the X3, reader-time contiguous heap tops out around 31.7 KB
+      // while the walk's ring needs 33.3 KB — at every moment of a session, this one included.
+      // The borrowed region is the only block of that size, and the build that used it as an
+      // arena is finished (its state is torn down before Done/Failed; a completed Section no
+      // longer references it), so reset() reclaims the build's bump allocations and the walk
+      // carves its ring there. Also flushes whatever this build resolved (valid regardless of the
       // build's outcome). One write per completed background section, under the render lock.
-      epub->persistImageManifest();
+      if (buildScratch_) buildScratch_->reset();
+      epub->persistImageManifest(buildScratch_.get());
+      endBackgroundBorrow();
       backgroundBuildState_ = BackgroundBuildState::Settled;
       return;
     }
@@ -1691,13 +1721,27 @@ void EpubReaderActivity::stepCurrentSectionBuild() {
     return;
   }
 
+  // Done, but possibly with an image dropped to alt text because its header walk was deferred
+  // (SOF behind a large metadata block; the ring could not be had mid-parse — #249). The parser
+  // and its arena are gone now, so resolve the deferred headers here; if that answered any, the
+  // manifest serves the dimensions with no ring at all and a rebuild comes out clean. Nothing
+  // resolved means a rebuild would do nothing different, so the build stands as it is.
+  // Ring storage for the walk: the borrowed arena when C holds one (idle now — the build state is
+  // gone), else the heap, which on the released path still contains the freed buffer because
+  // recoverSecondaryBufferIfNeeded() only restores it on the next render.
+  if (secondaryBorrowed_ && buildScratch_) buildScratch_->reset();
+  const bool imageHeadersResolved = epub->persistImageManifest(secondaryBorrowed_ ? buildScratch_.get() : nullptr);
+  if (section->isImageHeaderDegraded() && imageHeadersResolved) {
+    fallbackToReleasedRebuild("image headers resolved after build", /*retryIncremental=*/true);
+    return;
+  }
+
   // Done & clean: the on-disk LUT is written and `section` is now a complete cache. Resolve the
   // navigation target now that the final page count is known, then transition to reading.
 #if DEBUG_BACKGROUND_WORK
   bgCounters_.cCompletes++;
 #endif
   LOG_INF("ERS", "Background-C spine=%d complete: %u pages", currentSpineIndex, section->pageCount);
-  epub->persistImageManifest();
   readerPhase_ = ReaderPhase::READING;
 
   // Resolve the display position. For a Page target, section->currentPage already tracked the
@@ -2255,6 +2299,20 @@ void EpubReaderActivity::applyBookReaderOverrides(
   ReaderUtils::enforceExitFullRefresh(renderer);
 
   RenderLock lock(*this);
+
+  // The SD font was only ever (re)loaded on BOOK OPEN: ensureSdFontLoadedForPath() is called from
+  // ActivityManager's goToReader/replaceWithReader and nowhere else. Changing the font or the size
+  // from the reader menu therefore left the previously loaded face in place, and because
+  // resolveFontId() demanded an exact point-size match, a size change fell back to the built-in
+  // family until the book was closed and reopened. Both symptoms, one missing call. The resolver
+  // now serves any size from the loaded face through a scaled alias, but that alias is made by
+  // this very call (SdCardFontManager::ensureSizeAlias), so it is still the fix.
+  //
+  // Safe here and not earlier: the overrides are already persisted to RECENT_BOOKS above, which is
+  // what the path-based resolution reads, and the RenderLock this holds is the one the cold-load
+  // popup expects its caller to own.
+  if (epub) ensureSdFontLoadedForPath(epub->getPath().c_str());
+
   if (section) {
     const int currentPage = section->currentPage;
     if (!section->hasActiveBuild()) {
@@ -2391,20 +2449,26 @@ int EpubReaderActivity::getEffectiveReaderFontId() const {
 // four page slots. Two things changed since: FontCacheManager now prewarms per fontId, and
 // the parser caps sections at ONE auxiliary font (body R/B/I + aux R = exactly four slots).
 static FontSizeLadder buildReaderFontSizeLadder(const int bodyFontId) {
-  static constexpr uint8_t kSizeEnums[] = {CrossPointSettings::TINY, CrossPointSettings::SMALL,
-                                           CrossPointSettings::MEDIUM, CrossPointSettings::LARGE,
-                                           CrossPointSettings::EXTRA_LARGE};
-  static constexpr uint8_t kPointSizes[] = {10, 12, 14, 16, 18};
+  // Sizes and their point values come from CrossPointSettings::FONT_SIZE_RUNGS, the one table
+  // that defines the ladder; this used to keep its own pair of arrays and went stale.
   static constexpr uint8_t kFamilies[] = {CrossPointSettings::BOOKERLY, CrossPointSettings::NOTOSANS};
+  const auto& rungs = CrossPointSettings::FONT_SIZE_RUNGS;
+  constexpr int rungCount = CrossPointSettings::FONT_SIZE_RUNG_COUNT;
+  // FontSizeLadder is fixed-capacity and drops extra rungs without a word, so the size that
+  // would be lost is the one added last -- the largest, which is exactly the one a heading is
+  // most likely to want. Caught here rather than at runtime.
+  static_assert(rungCount <= FontSizeLadder::kMaxRungs,
+                "FontSizeLadder::kMaxRungs is smaller than the reader ladder; raise it or headings "
+                "will silently resample from a smaller face");
 
   FontSizeLadder ladder;
   for (const uint8_t family : kFamilies) {
-    for (size_t i = 0; i < sizeof(kSizeEnums); ++i) {
-      if (CrossPointSettings::getBuiltinReaderFontId(family, kSizeEnums[i]) != bodyFontId) continue;
-      const uint8_t bodyPt = kPointSizes[i];
-      for (size_t j = 0; j < sizeof(kSizeEnums); ++j) {
-        ladder.addRung(CrossPointSettings::getBuiltinReaderFontId(family, kSizeEnums[j]),
-                       static_cast<uint16_t>(kPointSizes[j] * 100 / bodyPt));
+    for (int i = 0; i < rungCount; ++i) {
+      if (CrossPointSettings::getBuiltinReaderFontId(family, rungs[i].size) != bodyFontId) continue;
+      const uint8_t bodyPt = rungs[i].points;
+      for (int j = 0; j < rungCount; ++j) {
+        ladder.addRung(CrossPointSettings::getBuiltinReaderFontId(family, rungs[j].size),
+                       static_cast<uint16_t>(rungs[j].points * 100 / bodyPt));
       }
       return ladder;
     }
@@ -3270,6 +3334,21 @@ EpubReaderActivity::BuildOutcome EpubReaderActivity::compileSectionCache(const R
     LOG_INF("ERS", "createSectionFile retry returned %d in %ums (free=%lu)", createOk ? 1 : 0, millis() - retryStart,
             esp_get_free_heap_size());
     checkHeapIntegrity("after_createSectionFile_retry");
+  }
+
+  // An image dropped to alt text because its header walk was deferred (#249) is resolved now,
+  // while the buffer is still released: the walk's ring needs ~33 KB contiguous, which this
+  // reader heap only has with the buffer gone (X3 steady state tops out ~31.7 KB). Only a
+  // resolve earns the one rebuild — the manifest then answers with no ring at all — so a walk
+  // that still fails leaves the build as it is.
+  if (createOk && section->isImageHeaderDegraded() && epub->persistImageManifest()) {
+    LOG_INF("ERS", "Section %d: image headers resolved after the build; rebuilding once", currentSpineIndex);
+    section->clearCache();
+    const uint32_t rebuildStart = millis();
+    createOk = runCreate();
+    LOG_INF("ERS", "createSectionFile image rebuild returned %d in %ums (free=%lu)", createOk ? 1 : 0,
+            millis() - rebuildStart, esp_get_free_heap_size());
+    checkHeapIntegrity("after_createSectionFile_image_rebuild");
   }
 
   // No eager image pre-decode here. Only the dimensions are needed to lay a section out, and
@@ -4425,9 +4504,16 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
     // ran, so nothing is walked twice.
     renderer.copyGrayscaleLsbBuffers(capLsb.get());
     renderer.copyGrayscaleMsbBuffers(capMsb.get());
-    // Base and greys as ONE waveform. No triggerDisplay/completeDisplay split:
-    // there is nothing to overlap with, because the plane work already happened.
-    renderer.displayGrayscaleFrame(pageRefreshMode);
+    // Base and greys as ONE waveform. Deferred, not blocking: there is no AA work left to
+    // overlap -- the planes went out with the page -- but there is plenty of OTHER work, and it
+    // was all sitting behind this call. The pre-render scheduling and lock.unlock() below exist
+    // precisely to hand the waveform window to the loop task, and a blocking display here meant
+    // the waveform was already over by the time they ran. completeDisplay() after the unlock
+    // collects it, exactly as the trigger paths do.
+    //
+    // Measured on a T5S3, where this is the only path that advertises supportsGrayFrame():
+    // 1.4-2.7 s per page turn during which stepCurrentSectionBuild() could not run at all.
+    renderer.triggerGrayscaleFrame(pageRefreshMode);
     lastRenderStats.usedGrayscale = true;
     lastRenderStats.textAntiAliasing = true;
   } else if (inlineAaThisRender) {

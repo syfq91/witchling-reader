@@ -7,7 +7,9 @@
 #include "I18nKeys.h"
 #include "MappedInputManager.h"
 #include "TouchUi.h"
+#include "activities/SliderPickerActivity.h"
 #include "components/UITheme.h"
+#include "settings/SliderSettingPicker.h"
 
 namespace fui = freeink::ui;
 
@@ -77,13 +79,14 @@ bool UiListActivity::routeListTouch() {
 #endif
 }
 
+// No RenderLock. `selected` is atomic, and requestSelection() defers the viewport
+// pull to the next build, where ListNav::syncToProps consumes followOnBuild -- so
+// nothing here touches the render task's `top`. The lock used to park the loop task
+// for the whole screen build, and buttons are sampled once per loop pass from level
+// state with no queue: a press that both started and ended inside that window was
+// never seen at all. Long lists, where the build is slowest, dropped the most.
 void UiListActivity::moveSelectionTo(const int index) {
-  {
-    RenderLock lock(*this);
-    auto& currentNav = activeNav();
-    currentNav.selected = index;
-    currentNav.follow(listCount());
-  }
+  activeNav().requestSelection(index);
   onSelectionChanged(index);
   requestUpdate();
 }
@@ -114,32 +117,34 @@ void UiListActivity::loop() {
 void UiListActivity::navigateButtons() {
   const int count = listCount();
   auto& currentNav = activeNav();
+  // Page by inputPageRows(), not pageRows(): the latter reads the render task's
+  // drawnRows directly, which a build in flight is writing. inputPageRows() is the
+  // atomic that onListRendered() publishes for exactly this caller. It can be one
+  // build old while a refresh runs; the next layout's feedback corrects the viewport.
   buttonNavigator.onNextRelease(
       [this, count, &currentNav] { moveSelectionTo(ButtonNavigator::nextIndex(currentNav.selected, count)); });
   buttonNavigator.onPreviousRelease(
       [this, count, &currentNav] { moveSelectionTo(ButtonNavigator::previousIndex(currentNav.selected, count)); });
   buttonNavigator.onNextContinuous([this, count, &currentNav] {
-    moveSelectionTo(ButtonNavigator::nextPageIndex(currentNav.selected, count, currentNav.pageRows()));
+    moveSelectionTo(ButtonNavigator::nextPageIndex(currentNav.selected, count, currentNav.inputPageRows()));
   });
   buttonNavigator.onPreviousContinuous([this, count, &currentNav] {
-    moveSelectionTo(ButtonNavigator::previousPageIndex(currentNav.selected, count, currentNav.pageRows()));
+    moveSelectionTo(ButtonNavigator::previousPageIndex(currentNav.selected, count, currentNav.inputPageRows()));
   });
 }
 
 void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, const bool hasSubtitle) {
-  int16_t rowHeight = screen.theme().rowHeight;
 #if CP_TOUCH_UI
   if (!mappedInput.hasTouch()) {
     const auto& metrics = UITheme::getInstance().getMetrics();
-    rowHeight = static_cast<int16_t>(hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight);
-    props.rowHeight = rowHeight;
+    props.rowHeight = static_cast<int16_t>(hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight);
   }
 #else
   const auto& metrics = UITheme::getInstance().getMetrics();
-  rowHeight = static_cast<int16_t>(hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight);
-  props.rowHeight = rowHeight;
+  props.rowHeight = static_cast<int16_t>(hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight);
 #endif
-  activeNav().syncToProps(screen.body(), rowHeight, screen.theme().listRowGap, listCount(), props);
+  props = screen.resolveListProps(props);
+  activeNav().syncToProps(screen.body(), props.rowHeight, props.rowGap, listCount(), props);
 }
 
 void UiListActivity::drawChrome() {
@@ -166,4 +171,23 @@ void UiListActivity::render(RenderLock&&) {
   afterUiRender();
   drawFooter();
   renderer.displayBuffer();
+}
+
+bool UiListActivity::tryOpenSliderFor(const SettingAction action, std::function<void()> onDone) {
+  SliderPickerActivity::Config cfg;
+  if (!SliderSetting::configFor(action, cfg)) return false;
+
+  startActivityForResult(std::make_unique<SliderPickerActivity>(renderer, mappedInput, std::move(cfg)),
+                         [this, action, onDone = std::move(onDone)](const ActivityResult& result) {
+                           const auto* pr = std::get_if<PercentResult>(&result.data);
+                           if (!result.isCancelled && pr != nullptr) {
+                             if (SliderSetting::apply(action, static_cast<uint8_t>(pr->percent))) {
+                               SETTINGS.saveToFile();
+                             }
+                           } else {
+                             SliderSetting::cancel(action);
+                           }
+                           if (onDone) onDone();
+                         });
+  return true;
 }

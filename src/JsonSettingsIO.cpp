@@ -118,6 +118,9 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   // Font family uses a DynamicEnumCtx in SettingsList (no valuePtr) so the generic
   // loop above skips it. Save manually.
   doc["fontFamily"] = s.fontFamily;
+  // Which numbering the fontSize values below are in.
+  // See CrossPointSettings::FONT_SIZE_ORDER_VERSION.
+  doc["fontSizeOrderV"] = CrossPointSettings::FONT_SIZE_ORDER_VERSION;
   if (s.dictionaryName[0] != '\0') {
     doc["dictionaryName"] = s.dictionaryName;
   }
@@ -189,7 +192,10 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
         // hardware (or the sleep timer) somewhere the UI would never have offered.
         v = v <= info.persistMax ? v : fieldDefault;
       } else if (info.type == SettingType::ENUM) {
-        v = clamp(v, (uint8_t)info.enumValues.size(), fieldDefault);
+        // getEnumOptionCount(), not enumValues.size(): a row that carries enumLabels instead of
+        // translated StrIds (the font-size rows) has no enumValues at all, and bounding on that
+        // rejected every value including the stored one.
+        v = clamp(v, info.getEnumOptionCount(), fieldDefault);
       } else if (info.type == SettingType::TOGGLE) {
         v = clamp(v, (uint8_t)2, fieldDefault);
       } else if (info.type == SettingType::VALUE) {
@@ -285,12 +291,26 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
 
   const uint8_t quickResumeBeforeNormalize = s.quickResumeSleepScreen;
   CrossPointSettings::normalizeDependentSettings(s);
+  // Font sizes were renumbered into pixel order; a file written before that holds the old
+  // values. Done here rather than in the generic loop because the loop clamps against the
+  // option count (6 either way, so every legacy value survives it) and knows nothing about what
+  // an individual key means. Idempotent across boots: an unmigrated file keeps its old stamp,
+  // so the same remap is applied to the same stored values every time until it is rewritten.
+  {
+    const auto fileVersion = static_cast<uint8_t>(doc["fontSizeOrderV"] | 0);
+    if (fileVersion < CrossPointSettings::FONT_SIZE_ORDER_VERSION) {
+      s.fontSize = CrossPointSettings::remapLegacyFontSize(s.fontSize, fileVersion);
+      if (needsResave) *needsResave = true;
+    }
+  }
+
   if (s.quickResumeSleepScreen != quickResumeBeforeNormalize && needsResave) *needsResave = true;
 
   LOG_DBG("CPS", "Settings loaded from file");
 
   return true;
 }
+
 
 // ---- WifiCredentialStore ----
 
@@ -452,6 +472,10 @@ bool JsonSettingsIO::loadWifi(WifiCredentialStore& store, const char* json, bool
 
 bool JsonSettingsIO::saveRecentBooks(const RecentBooksStore& store, const char* path) {
   JsonDocument doc;
+  // Which numbering each book's fontSizeOverride is in. Its own stamp rather than the settings
+  // file's: the two files are written independently, so one can be migrated while the other is
+  // still on the old numbering. See CrossPointSettings::FONT_SIZE_ORDER_VERSION.
+  doc["fontSizeOrderV"] = CrossPointSettings::FONT_SIZE_ORDER_VERSION;
   JsonArray arr = doc["books"].to<JsonArray>();
   for (const auto& book : store.getBooks()) {
     JsonObject obj = arr.add<JsonObject>();
@@ -489,6 +513,9 @@ bool JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) 
 
   store.recentBooks.clear();
   JsonArray arr = doc["books"].as<JsonArray>();
+  // Which FONT_SIZE numbering the per-book overrides in this file are in. Absent (0) is every
+  // file written before the sizes were put in pixel order.
+  const auto fontSizeOrderV = static_cast<uint8_t>(doc["fontSizeOrderV"] | 0);
   auto clampInt8 = [](int value, int minValue, int maxValue, int8_t fallback) -> int8_t {
     if (value < minValue || value > maxValue) {
       return fallback;
@@ -514,6 +541,11 @@ bool JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) 
       book.fontFamilyOverride = -1;
     }
     book.fontSizeOverride = clampInt8(obj["fontSizeOverride"] | -1, -1, CrossPointSettings::FONT_SIZE_COUNT - 1, -1);
+    // -1 means "follow the default" and is not a FONT_SIZE, so it is left alone.
+    if (book.fontSizeOverride >= 0) {
+      book.fontSizeOverride = static_cast<int8_t>(
+          CrossPointSettings::remapLegacyFontSize(static_cast<uint8_t>(book.fontSizeOverride), fontSizeOrderV));
+    }
     book.paragraphAlignmentOverride =
         clampInt8(obj["paragraphAlignmentOverride"] | -1, -1, CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT - 1, -1);
     book.textAntiAliasingOverride = clampInt8(obj["textAntiAliasingOverride"] | -1, -1, 1, -1);

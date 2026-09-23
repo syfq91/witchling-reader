@@ -35,6 +35,7 @@ class OpdsBookBrowserActivity final : public Activity {
         initialQuery_(std::move(initialQuery)) {}
 
   void onEnter() override;
+  bool usesWifi() const override { return true; }
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
@@ -76,5 +77,5 @@ class OpdsBookBrowserActivity final : public Activity {
   void launchSearch();
   void performSearch(const std::string& query);
   void fetchCoverForEntry(const OpdsEntry& entry);
-  bool preventAutoSleep() override { return true; }
+  bool preventAutoSleep() override;
 };

@@ -451,6 +451,10 @@ bool sleepCoverNeedsPreparing(const std::string& bookPath, bool cropped) {
 
 void SleepActivity::onEnter() {
   Activity::onEnter();
+  renderSleepScreen();
+}
+
+void SleepActivity::renderSleepScreen() {
   RenderLock lock(*this);
 
   // Quick Resume: paint a moon icon over the current page and keep the framebuffer

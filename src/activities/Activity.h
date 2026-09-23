@@ -55,6 +55,7 @@ class Activity {
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
+  virtual bool usesWifi() const { return false; }
 
   // What a tap on the row at `index` should do, moving this screen's selection if it lands on a
   // new row. See ListRowTap.h for the rule; most implementations are one call to
@@ -71,6 +72,17 @@ class Activity {
   // Left/Right buttons mean something other than list paging override this boundary.
   virtual bool pageList(ListPageDirection /*direction*/) { return false; }
 
+
+  // True when transitions INTO or OUT OF this activity must not paint a busy indicator. Checked
+  // on both ends, because the reasons run both directions:
+  //
+  //  - Sleep and the frontlight drawer paint by COMPOSITING onto whatever the write framebuffer
+  //    already holds. An indicator syncs the displayed frame into that buffer and swaps, so it
+  //    changes the very thing they are about to composite onto -- the sleep cover then appears
+  //    over the previous screen plus the indicator.
+  //  - Boot already shows a splash, so marking the hand-off to Home paints over it for nothing.
+  //  - Leaving a lightweight overlay is fast by construction; there is no wait to acknowledge.
+  virtual bool suppressesBusyIndicator() const { return false; }
 
   // Return true to suppress the minute-tick requestUpdate() from ActivityManager when nothing
   // status-bar-relevant has changed since the last render. Skipping avoids a no-op page render

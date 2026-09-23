@@ -10,9 +10,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "I18n.h"
 #include "RecentBooksStore.h"
+#include "UiFontScale.h"
+#include "components/BookProgressPresentation.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -67,6 +70,32 @@ int statusBarProgressPercent(const uint8_t progressBar, const float bookProgress
   const int chapterProgress =
       (pageCount > 0) ? static_cast<int>((static_cast<float>(currentPage) / pageCount) * 100) : 0;
   return std::clamp(chapterProgress, 0, 100);
+}
+
+constexpr int SYNC_INDICATOR_SIZE = 12;
+
+void drawSyncIndicator(const GfxRenderer& renderer, const int x, const int y, const SyncIndicator indicator) {
+  const int r = SYNC_INDICATOR_SIZE / 2;
+  const int cx = x + r;
+  const int cy = y + r;
+  switch (indicator) {
+    case SyncIndicator::None:
+      return;
+    case SyncIndicator::Active:
+      renderer.drawArc(r, cx, cy, 1, -1, 2, true);
+      renderer.drawArc(r, cx, cy, -1, 1, 2, true);
+      renderer.fillRect(cx + r - 3, cy - 1, 4, 3, true);
+      renderer.fillRect(cx - r, cy - 1, 4, 3, true);
+      return;
+    case SyncIndicator::Failed:
+      renderer.drawArc(r, cx, cy, 1, -1, 1, true);
+      renderer.drawArc(r, cx, cy, -1, -1, 1, true);
+      renderer.drawArc(r, cx, cy, 1, 1, 1, true);
+      renderer.drawArc(r, cx, cy, -1, 1, 1, true);
+      renderer.fillRect(cx - 1, cy - 4, 2, 5, true);
+      renderer.fillRect(cx - 1, cy + 2, 2, 2, true);
+      return;
+  }
 }
 }  // namespace
 
@@ -207,9 +236,15 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
     if (labels[i] != nullptr && labels[i][0] != '\0') {
       const int x = inverted ? pageWidth - buttonPositions[i] - buttonWidth : buttonPositions[i];
       renderer.fillRect(x, stripY, buttonWidth, buttonHeight, false);
-      const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, labels[i]);
+      // See LyraTheme::drawButtonHints: fixed box, scaling font, centred text. Shrink first,
+      // clip only if even the smaller face will not fit.
+      const int labelFont =
+          renderer.getTextWidth(UI_10_FONT_ID, labels[i]) > buttonWidth - 4 ? FIT_SMALL_FONT_ID : UI_10_FONT_ID;
+      const std::string label = renderer.truncatedText(labelFont, labels[i], buttonWidth - 4);
+      const int textWidth = renderer.getTextWidth(labelFont, label.c_str());
       const int textX = x + (buttonWidth - 1 - textWidth) / 2;
-      renderer.drawText(UI_10_FONT_ID, textX, stripY + textYOffset, labels[i]);
+      renderer.drawText(labelFont, textX, stripY + textYOffset, label.c_str());
+      renderer.drawRect(x, stripY, buttonWidth, buttonHeight);
     }
   }
 
@@ -439,15 +474,21 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
   // --- Top "book" card for the current title (selectorIndex == 0) ---
   // When there's no cover image, use fixed size (half screen)
   // When there's cover image, adapt width to image aspect ratio, keep height fixed at 400px
-  const int baseHeight = rect.height;  // Fixed height (400px)
+  const int baseHeight = rect.height;  // The tile height the layout settled on, not the metric
+
+  // The cover thumbnail's height is part of its filename, and HomeActivity generates the file
+  // from this same rect (getHomeCoverRenderHeight). Asking for BaseMetrics::homeCoverHeight
+  // instead is equivalent only while the tile is never trimmed -- and computeHomeScreenLayout
+  // trims it as soon as the menu needs the room, at which point this side asks the card for a
+  // file the other side never wrote and the cover reads "Loading..." for ever.
+  const int coverThumbHeight = std::max(120, rect.height);
 
   int bookWidth, bookX;
   bool hasCoverImage = false;
 
   if (hasContinueReading && !recentBooks[0].coverBmpPath.empty()) {
     // Try to get actual image dimensions from BMP header
-    const std::string coverBmpPath =
-        UITheme::getCoverThumbPath(recentBooks[0].coverBmpPath, BaseMetrics::values.homeCoverHeight);
+    const std::string coverBmpPath = UITheme::getCoverThumbPath(recentBooks[0].coverBmpPath, coverThumbHeight);
 
     FsFile file;
     if (Storage.openFileForRead("HOME", coverBmpPath, file)) {
@@ -499,8 +540,7 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     // Only load from SD on first render, then use stored buffer
 
     if (hasContinueReading && !recentBooks[0].coverBmpPath.empty() && !coverRendered) {
-      const std::string coverBmpPath =
-          UITheme::getCoverThumbPath(recentBooks[0].coverBmpPath, BaseMetrics::values.homeCoverHeight);
+      const std::string coverBmpPath = UITheme::getCoverThumbPath(recentBooks[0].coverBmpPath, coverThumbHeight);
 
       // First time: load cover from SD and render
       FsFile file;
@@ -598,6 +638,19 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
       totalTextHeight += renderer.getLineHeight(UI_10_FONT_ID);
     }
 
+    // What you have put into the book, under the title block rather than over the cover art.
+    // The card is a little over half the screen wide, so the sentence gets up to two lines, set
+    // in the non-scaling small face: this block is centred inside a fixed-height card and sits
+    // above the "Continue Reading" label, so it must not grow with the UI font setting.
+    const std::string history = BookProgressPresentation::historyLine(recentBooks[0]);
+    const int historyLineHeight = renderer.getLineHeight(FIT_SMALL_FONT_ID);
+    const auto historyLines = history.empty()
+                                  ? std::vector<std::string>{}
+                                  : renderer.wrappedText(FIT_SMALL_FONT_ID, history.c_str(), bookWidth - 40, 2);
+    if (!historyLines.empty()) {
+      totalTextHeight += historyLineHeight / 2 + static_cast<int>(historyLines.size()) * historyLineHeight;
+    }
+
     // Vertically center the title block within the card
     int titleYStart = bookY + (bookHeight - totalTextHeight) / 2;
 
@@ -631,6 +684,12 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
           maxTextWidth = seriesWidth;
         }
       }
+      for (const auto& line : historyLines) {
+        const int historyWidth = renderer.getTextWidth(FIT_SMALL_FONT_ID, line.c_str());
+        if (historyWidth > maxTextWidth) {
+          maxTextWidth = historyWidth;
+        }
+      }
 
       const int boxWidth = maxTextWidth + boxPadding * 2;
       const int boxHeight = totalTextHeight + boxPadding * 2;
@@ -656,6 +715,15 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
 
     if (!truncatedSeries.empty()) {
       renderer.drawCenteredText(UI_10_FONT_ID, titleYStart, truncatedSeries.c_str(), !bookSelected);
+      titleYStart += renderer.getLineHeight(UI_10_FONT_ID);
+    }
+
+    if (!historyLines.empty()) {
+      titleYStart += historyLineHeight / 2;
+      for (const auto& line : historyLines) {
+        renderer.drawCenteredText(FIT_SMALL_FONT_ID, titleYStart, line.c_str(), !bookSelected);
+        titleYStart += historyLineHeight;
+      }
     }
 
     // "Continue Reading" label at the bottom
@@ -754,6 +822,55 @@ Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message, cons
   const int textX = x + (w - textWidth) / 2;
   const int textY = y + margin - 2;
   renderer.drawText(UI_12_FONT_ID, textX, textY, message, true, EpdFontFamily::BOLD);
+  shipPopup(renderer, ship);
+  return Rect{x, y, w, h};
+}
+
+// Lucide's "hourglass" on its native 24x24 grid, drawn as STROKES rather than blitted from a
+// bitmap. GfxRenderer::drawImage() rotates a bitmap's position but not its bits (see the
+// "TODO: Rotate bits" there), so a bitmap icon lies on its side as soon as the UI is not in the
+// panel's native orientation. drawLine() goes through rotateCoordinates() and is upright in all
+// four.
+static void drawHourglass(const GfxRenderer& renderer, const int originX, const int originY, const int size) {
+  const float s = static_cast<float>(size) / 24.0f;
+  const int stroke = std::max(2, static_cast<int>(2.0f * s + 0.5f));  // Lucide stroke-width 2
+  const auto px = [&](const float u) { return originX + static_cast<int>(u * s + 0.5f); };
+  const auto py = [&](const float v) { return originY + static_cast<int>(v * s + 0.5f); };
+  const auto line = [&](const float x1, const float y1, const float x2, const float y2) {
+    renderer.drawLine(px(x1), py(y1), px(x2), py(y2), stroke, true);
+  };
+  line(5, 2, 19, 2);    // top bar
+  line(5, 22, 19, 22);  // bottom bar
+  // Upper funnel, then lower. The two 2-unit corner arcs are taken as their chords, which is
+  // sub-pixel at this size.
+  line(7, 2, 7, 6.172f);
+  line(7, 6.172f, 12, 12);
+  line(12, 12, 17, 6.172f);
+  line(17, 6.172f, 17, 2);
+  line(7, 22, 7, 17.828f);
+  line(7, 17.828f, 12, 12);
+  line(12, 12, 17, 17.828f);
+  line(17, 17.828f, 17, 22);
+}
+
+Rect BaseTheme::drawBusyIndicator(const GfxRenderer& renderer, const bool overlayDisplayedFrame,
+                                  const PopupShip ship) const {
+  // Same reasoning as drawPopup(): re-seed from the frame on screen so the box overlays current
+  // content rather than the stale two-refreshes-ago frame the last swap left behind.
+  if (overlayDisplayedFrame) renderer.syncWriteBufferFromDisplayed();
+  constexpr int margin = 15;
+  constexpr int icon = 32;
+  constexpr int w = icon + margin * 2;
+  constexpr int h = icon + margin * 2;
+  // Screen-centred, unlike drawPopup()'s fixed y: this one is not read alongside other chrome,
+  // and centre is where the eye already is when a screen fails to change.
+  const int x = (renderer.getScreenWidth() - w) / 2;
+  const int y = (renderer.getScreenHeight() - h) / 2;
+
+  renderer.fillRect(x - 2, y - 2, w + 4, h + 4, true);  // frame thickness 2, matching drawPopup
+  renderer.fillRect(x, y, w, h, false);
+  drawHourglass(renderer, x + margin, y + margin, icon);
+
   shipPopup(renderer, ship);
   return Rect{x, y, w, h};
 }

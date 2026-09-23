@@ -141,4 +141,20 @@ void drawBadge(const GfxRenderer& renderer, Rect coverRect, const RecentBook& bo
   }
 }
 
+std::string formatReadingDuration(uint32_t /*totalSeconds*/) {
+  return {};
+}
+
+std::string formatLastRead(time_t /*epoch*/) {
+  return {};
+}
+
+std::string historyLine(const RecentBook& /*book*/) {
+  return {};
+}
+
+std::string historyLineCompact(const RecentBook& /*book*/) {
+  return {};
+}
+
 }  // namespace BookProgressPresentation

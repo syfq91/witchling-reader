@@ -30,7 +30,9 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 75;  // bumped: removed bionic reading
+constexpr uint8_t SECTION_FILE_VERSION = 75;  // bumped: removed bionic reading; reader ladder gained
+                                              // rungs above 18 pt (20/22/24/26), so a heading snaps to a
+                                              // different face and residual than it did under v74.
                                               // v74: the HTML `hidden` attribute now
                                               // suppresses an element, so a v73 cache still
                                               // holds the laid-out text it should have hidden

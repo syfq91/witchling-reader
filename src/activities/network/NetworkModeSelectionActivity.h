@@ -25,6 +25,7 @@ class NetworkModeSelectionActivity final : public Activity {
   explicit NetworkModeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("NetworkModeSelection", renderer, mappedInput) {}
   void onEnter() override;
+  bool usesWifi() const override { return true; }
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;

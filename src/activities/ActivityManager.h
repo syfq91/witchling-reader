@@ -59,6 +59,11 @@ class ActivityManager {
   std::vector<std::unique_ptr<Activity>> stackActivities;
   std::unique_ptr<Activity> currentActivity;
 
+  bool sleepTransition = false;
+
+  std::atomic<bool> activityUsesWifi{false};
+  void refreshWifiActivityFlag();
+
   void exitActivity(const RenderLock& lock);
 
   // Pending activity to be launched on next loop iteration
@@ -94,6 +99,14 @@ class ActivityManager {
   // Whether to trigger a render after the current loop()
   // This variable must only be set by the main loop, to avoid race conditions
   volatile bool requestedUpdate = false;
+
+  // Set when something earlier in THIS loop() tick has already put the displayed frame in the
+  // write framebuffer, so a later partial paint must not sync over it. Cleared at the top of
+  // every tick. See the "Re-syncing the write buffer" pitfall in docs/activity-manager.md.
+  bool framebufferPreparedThisTick = false;
+
+  // Paints the "working on it" banner before a queued transition runs. See the .cpp.
+  void showBusyIndicator();
 
   // When true, input events are consumed (discarded) until all buttons are released
   // and no press/release events remain.  Armed automatically on activity transitions
@@ -170,6 +183,10 @@ class ActivityManager {
   // Remove the currentActivity, returning the last one on stack
   // Note: if popActivity() on last activity on the stack, we will goHome()
   void popActivity();
+
+  bool currentActivityUsesWifi() const { return activityUsesWifi.load(std::memory_order_relaxed); }
+
+  bool inSleepTransition() const { return sleepTransition; }
 
   bool preventAutoSleep() const;
   bool isReaderActivity() const;

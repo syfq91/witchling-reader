@@ -501,6 +501,7 @@ class EpubReaderActivity final : public Activity {
   int finishedBookSyncPage_ = 0;
   int finishedBookSyncPageCount_ = 0;
   ReaderUtils::InputDrainGuard inputDrainGuard;
+
   // -1 means use global SETTINGS value.
   int8_t bookEmbeddedStyleOverride = -1;
   int8_t bookImageRenderingOverride = -1;

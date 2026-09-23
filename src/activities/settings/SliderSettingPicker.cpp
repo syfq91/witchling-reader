@@ -11,6 +11,7 @@
 namespace SliderSetting {
 
 
+
 bool configFor(const SettingAction action, SliderPickerActivity::Config& cfg) {
   switch (action) {
     case SettingAction::SleepTimeoutPicker:
@@ -37,7 +38,7 @@ bool configFor(const SettingAction action, SliderPickerActivity::Config& cfg) {
   }
 }
 
-void apply(const SettingAction action, const uint8_t value) {
+bool apply(const SettingAction action, const uint8_t value) {
   // The field a slider edits is declared once, on the row itself (SettingInfo::persisting), and
   // read from there by BOTH this and JsonSettingsIO. It used to be written out twice — a switch
   // here and a hand-written line in the serialiser — and the two could disagree silently: the
@@ -49,13 +50,15 @@ void apply(const SettingAction action, const uint8_t value) {
   // Bound to a named local, NOT iterated straight out of the call: getSettingsList() returns the
   // vector BY VALUE, so a range-for over the call alone destroys it at the end of the loop and
   // anything still pointing into it dangles. Same form JsonSettingsIO uses.
+
+
   const auto settings = getSettingsList();
   const auto row = std::find_if(settings.begin(), settings.end(), [action](const SettingInfo& info) {
     return info.type == SettingType::ACTION && info.action == action && info.persistPtr;
   });
   if (row == settings.end()) {
     LOG_ERR("SET", "Slider action %d edits no declared field; see SettingInfo::persisting", static_cast<int>(action));
-    return;
+    return false;
   }
   SETTINGS.*(row->persistPtr) = value;
 
@@ -64,6 +67,7 @@ void apply(const SettingAction action, const uint8_t value) {
     default:
       break;
   }
+  return true;
 }
 
 void cancel(const SettingAction /*action*/) {}

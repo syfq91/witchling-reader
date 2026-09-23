@@ -6,6 +6,7 @@
 #include "ClearCacheActivity.h"
 #include "DictionarySelectionActivity.h"
 #include "EnumSelectionActivity.h"
+#include "FontScalingTestActivity.h"
 #include "FontSelectionActivity.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
@@ -41,6 +42,8 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<SystemInformationActivity>(renderer, mappedInput);
     case SettingAction::BootDiagnostics:
       return std::make_unique<BootDiagnosticsActivity>(renderer, mappedInput);
+    case SettingAction::FontScalingTest:
+      return std::make_unique<FontScalingTestActivity>(renderer, mappedInput);
     case SettingAction::DictionarySelect:
       return std::make_unique<DictionarySelectionActivity>(renderer, mappedInput);
     case SettingAction::Submenu:

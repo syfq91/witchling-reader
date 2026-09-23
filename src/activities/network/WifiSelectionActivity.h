@@ -139,7 +139,12 @@ class WifiSelectionActivity final : public Activity {
   explicit WifiSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool autoConnect = true)
       : Activity("WifiSelection", renderer, mappedInput), allowAutoConnect(autoConnect) {}
   void onEnter() override;
+  bool usesWifi() const override { return true; }
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  // Scanning and associating are work in flight, and a half-entered passphrase is
+  // lost if the device sleeps out from under it. Callers reach this screen through
+  // startActivityForResult(), so their own override stops applying while it is up.
+  bool preventAutoSleep() override { return true; }
 };
