@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <limits>
@@ -800,6 +801,8 @@ void Epub::parseCssFiles() const {
 bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
   tocReliability = TocReliability::Unknown;
+  chapterProgressMarkersLoaded = false;
+  chapterProgressMarkers.clear();
 
   // Initialize spine/TOC cache
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
@@ -1137,6 +1140,9 @@ bool Epub::loadForMetadata() {
 }
 
 bool Epub::clearCache(const bool preserveThumbs) const {
+  chapterProgressMarkersLoaded = false;
+  chapterProgressMarkers.clear();
+
   if (!Storage.exists(cachePath.c_str())) {
     LOG_DBG("EPB", "Cache does not exist, no action needed");
     return true;
@@ -2123,6 +2129,57 @@ float Epub::calculateProgress(const int currentSpineIndex, const float currentSp
   const float sectionProgSize = currentSpineRead * static_cast<float>(curChapterSize);
   const float totalProgress = static_cast<float>(prevChapterSize) + sectionProgSize;
   return totalProgress / static_cast<float>(bookSize);
+}
+
+const std::vector<float>& Epub::getChapterProgressMarkers() const {
+  if (chapterProgressMarkersLoaded) {
+    return chapterProgressMarkers;
+  }
+  chapterProgressMarkersLoaded = true;
+  chapterProgressMarkers.clear();
+
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+    return chapterProgressMarkers;
+  }
+
+  const size_t bookSize = getBookSize();
+  if (bookSize == 0) {
+    return chapterProgressMarkers;
+  }
+
+  const int tocCount = getTocItemsCount();
+  const int spineCount = getSpineItemsCount();
+
+  if (hasReliableToc() && tocCount > 1) {
+    chapterProgressMarkers.reserve(std::min(tocCount, 500));
+    for (int i = 0; i < tocCount; i++) {
+      const int spineIndex = getSpineIndexForTocIndex(i);
+      if (spineIndex >= 0 && spineIndex < spineCount) {
+        const float prog = calculateProgress(spineIndex, 0.0f);
+        if (prog > 0.005f && prog < 0.995f) {
+          chapterProgressMarkers.push_back(prog);
+        }
+      }
+    }
+  } else if (spineCount > 1) {
+    chapterProgressMarkers.reserve(std::min(spineCount, 500));
+    for (int i = 0; i < spineCount; i++) {
+      const float prog = calculateProgress(i, 0.0f);
+      if (prog > 0.005f && prog < 0.995f) {
+        chapterProgressMarkers.push_back(prog);
+      }
+    }
+  }
+
+  if (!chapterProgressMarkers.empty()) {
+    std::sort(chapterProgressMarkers.begin(), chapterProgressMarkers.end());
+    chapterProgressMarkers.erase(
+        std::unique(chapterProgressMarkers.begin(), chapterProgressMarkers.end(),
+                    [](const float a, const float b) { return std::abs(a - b) < 0.001f; }),
+        chapterProgressMarkers.end());
+  }
+
+  return chapterProgressMarkers;
 }
 
 void Epub::streamPrintedPageEntries(

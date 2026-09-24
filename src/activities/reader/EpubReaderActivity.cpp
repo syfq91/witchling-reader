@@ -4996,8 +4996,9 @@ void EpubReaderActivity::renderStatusBar() const {
       printedPageLabel = std::string("(") + *nearest + ")";
     }
   }
+  const auto& markers = epub ? epub->getChapterProgressMarkers() : std::vector<float>{};
   GUI.drawStatusBar(renderer, bookProgress, currentPage, displayPageCount, bookTitle, chapterTitle, 0, isStarred,
-                    printedPageLabel, /*fillMargin=*/true, /*pageCountApproximate=*/building);
+                    printedPageLabel, /*fillMargin=*/true, /*pageCountApproximate=*/building, markers);
 
 #if DEBUG_BACKGROUND_WORK
   renderBackgroundDebugOverlay();

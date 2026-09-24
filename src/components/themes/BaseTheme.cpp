@@ -892,7 +892,8 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
                               const int pageCount, const std::string& bookTitle, const std::string& chapterTitle,
                               const int paddingBottom, const bool isStarred,
                               const std::string& printedPageLabel, const bool fillMargin,
-                              const bool pageCountApproximate) const {
+                              const bool pageCountApproximate,
+                              const std::vector<float>& chapterMarkers) const {
   // While a section is still being laid out the total page count is a byte-based estimate, shown
   // with a leading "~" so the reader knows it will firm up as the chapter finishes building.
   const char* pageCountPrefix = pageCountApproximate ? "~" : "";
@@ -919,9 +920,39 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
       const int progress = statusBarProgressPercent(SETTINGS.statusBarProgressBar, bookProgress, currentPage, pageCount);
       const int barWidth = progressBarMaxWidth * progress / 100;
       const int extraBottom = (!statusAtTop && fillMargin) ? orientedMarginBottom - 1 : 0;
+      const int totalBarHeight = barHeight + extraBottom;
       const int y = statusAtTop ? orientedMarginTop + paddingBottom
                                 : screenHeight - orientedMarginBottom - paddingBottom - barHeight;
-      renderer.fillRect(barMarginLeft, y, barWidth, barHeight + extraBottom, true);
+
+      // Clear the progress bar strip to ensure a clean background on redraws
+      renderer.fillRect(barMarginLeft, y, progressBarMaxWidth, totalBarHeight, false);
+
+      // Draw the filled portion of the progress bar
+      if (barWidth > 0) {
+        renderer.fillRect(barMarginLeft, y, barWidth, totalBarHeight, true);
+      }
+
+      // Draw chapter markers for book progress bar
+      if (SETTINGS.statusBarProgressBar == CrossPointSettings::STATUS_BAR_PROGRESS_BAR::BOOK_PROGRESS &&
+          !chapterMarkers.empty()) {
+        int lastMarkerX = -100;
+        for (const float markerProg : chapterMarkers) {
+          const int markerX = barMarginLeft + static_cast<int>(std::round(progressBarMaxWidth * markerProg));
+          if (markerX <= barMarginLeft || markerX >= barMarginLeft + progressBarMaxWidth) {
+            continue;
+          }
+          // Avoid clustering: ensure at least 2px of spacing between adjacent markers
+          if (markerX - lastMarkerX < 3) {
+            continue;
+          }
+          lastMarkerX = markerX;
+
+          // Inverted color (white) when progress bar has passed the chapter, black otherwise
+          const bool passed = (markerX < barMarginLeft + barWidth);
+          const bool markerColor = !passed;
+          renderer.fillRect(markerX, y, 1, totalBarHeight, markerColor);
+        }
+      }
     }
   }
 

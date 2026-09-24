@@ -4,6 +4,7 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -81,8 +82,22 @@ void drawPreviewProgressBar(const GfxRenderer& renderer, const Rect& rect, const
   const int percent = progressBar == CrossPointSettings::STATUS_BAR_PROGRESS_BAR::BOOK_PROGRESS ? 75 : 25;
   const int barHeight = UITheme::getProgressBarHeight(progressBar, CrossPointSettings::PROGRESS_BAR_THIN);
   const int y = topEdge ? rect.y + previewInnerMargin : rect.y + rect.height - previewInnerMargin - barHeight;
-  const int barWidth = (rect.width - previewInnerMargin * 2) * percent / 100;
-  renderer.fillRect(rect.x + previewInnerMargin, y, barWidth, barHeight);
+  const int maxWidth = rect.width - previewInnerMargin * 2;
+  const int barWidth = maxWidth * percent / 100;
+  const int startX = rect.x + previewInnerMargin;
+
+  renderer.fillRect(startX, y, maxWidth, barHeight, false);
+  renderer.fillRect(startX, y, barWidth, barHeight, true);
+
+  if (progressBar == CrossPointSettings::STATUS_BAR_PROGRESS_BAR::BOOK_PROGRESS) {
+    // Show sample chapter markers at 20%, 40%, 60%, 80%
+    constexpr float sampleMarkers[] = {0.20f, 0.40f, 0.60f, 0.80f};
+    for (const float markerProg : sampleMarkers) {
+      const int markerX = startX + static_cast<int>(std::round(maxWidth * markerProg));
+      const bool passed = (markerX < startX + barWidth);
+      renderer.fillRect(markerX, y, 1, barHeight, !passed);
+    }
+  }
 }
 
 void drawPreviewStatusItems(const GfxRenderer& renderer, const Rect& rect, const ThemeMetrics& metrics) {

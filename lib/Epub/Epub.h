@@ -61,6 +61,8 @@ class Epub {
   mutable uint64_t zipFingerprint_ = 0;
   mutable bool zipFingerprintComputed_ = false;
   mutable bool zipFingerprintValid_ = false;
+  mutable std::vector<float> chapterProgressMarkers;
+  mutable bool chapterProgressMarkersLoaded = false;
   // Session cache of the archive's EOCD details (raw fields, keeping ZipFile
   // forward-declared), harvested from the first successful ZipFile operation
   // and seeded into every later instance so the per-instance EOCD scan runs
@@ -271,6 +273,7 @@ class Epub {
 
   size_t getBookSize() const;
   float calculateProgress(int currentSpineIndex, float currentSpineRead) const;
+  const std::vector<float>& getChapterProgressMarkers() const;
   CssParser* getCssParser() const { return cssParser.get(); }
   // Load (or build) the image manifest. Call after load() when images will be rendered.
   // Skipping this is valid for text-only or placeholder rendering modes.

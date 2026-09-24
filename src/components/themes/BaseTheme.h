@@ -180,7 +180,8 @@ class BaseTheme {
                              const int pageCount, const std::string& bookTitle, const std::string& chapterTitle,
                              const int paddingBottom = 0, const bool isStarred = false,
                              const std::string& printedPageLabel = std::string(), const bool fillMargin = true,
-                             const bool pageCountApproximate = false) const;
+                             const bool pageCountApproximate = false,
+                             const std::vector<float>& chapterMarkers = {}) const;
   virtual void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;
   virtual void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
                              int contentStartX = 0, int contentWidth = 0) const;
