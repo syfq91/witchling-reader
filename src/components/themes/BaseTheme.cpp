@@ -62,14 +62,8 @@ int progressBarPixelHeight(const uint8_t progressBar, const uint8_t thickness, c
   return std::max(0, reservedHeight - metrics.progressBarMarginTop);
 }
 
-int statusBarProgressPercent(const uint8_t progressBar, const float bookProgress, const int currentPage,
-                             const int pageCount) {
-  if (progressBar == CrossPointSettings::STATUS_BAR_PROGRESS_BAR::BOOK_PROGRESS) {
-    return std::clamp(static_cast<int>(std::lround(bookProgress)), 0, 100);
-  }
-  const int chapterProgress =
-      (pageCount > 0) ? static_cast<int>((static_cast<float>(currentPage) / pageCount) * 100) : 0;
-  return std::clamp(chapterProgress, 0, 100);
+int statusBarProgressPercent(const float bookProgress) {
+  return std::clamp(static_cast<int>(std::lround(bookProgress)), 0, 100);
 }
 
 constexpr int SYNC_INDICATOR_SIZE = 12;
@@ -917,7 +911,7 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     const int barHeight = progressBarPixelHeight(SETTINGS.statusBarProgressBar,
                                                  CrossPointSettings::PROGRESS_BAR_THIN, metrics);
     if (barHeight > 0) {
-      const int progress = statusBarProgressPercent(SETTINGS.statusBarProgressBar, bookProgress, currentPage, pageCount);
+      const int progress = statusBarProgressPercent(bookProgress);
       const int barWidth = progressBarMaxWidth * progress / 100;
       const int extraBottom = (!statusAtTop && fillMargin) ? orientedMarginBottom - 1 : 0;
       const int totalBarHeight = barHeight + extraBottom;
@@ -933,8 +927,7 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
       }
 
       // Draw chapter markers for book progress bar
-      if (SETTINGS.statusBarProgressBar == CrossPointSettings::STATUS_BAR_PROGRESS_BAR::BOOK_PROGRESS &&
-          !chapterMarkers.empty()) {
+      if (!chapterMarkers.empty()) {
         int lastMarkerX = -100;
         for (const float markerProg : chapterMarkers) {
           const int markerX = barMarginLeft + static_cast<int>(std::round(progressBarMaxWidth * markerProg));

@@ -25,7 +25,7 @@ const StrId slotContentNames[] = {
     StrId::STR_STATUS_BAR_CHAPTER_TITLE,
     StrId::STR_STATUS_BAR_BOOK_TITLE,
 };
-const StrId progressBarNames[] = {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE};
+const StrId progressBarNames[] = {StrId::STR_BOOK, StrId::STR_HIDE};
 
 // One menu row. Editing a status-bar option means: cycle `field` through `valueCount` values and
 // display its current value. Rows with an enum-style set of choices provide `valueNames` (indexed by
@@ -79,7 +79,7 @@ void drawPreviewProgressBar(const GfxRenderer& renderer, const Rect& rect, const
     return;
   }
 
-  const int percent = progressBar == CrossPointSettings::STATUS_BAR_PROGRESS_BAR::BOOK_PROGRESS ? 75 : 25;
+  constexpr int percent = 75;
   const int barHeight = UITheme::getProgressBarHeight(progressBar, CrossPointSettings::PROGRESS_BAR_THIN);
   const int y = topEdge ? rect.y + previewInnerMargin : rect.y + rect.height - previewInnerMargin - barHeight;
   const int maxWidth = rect.width - previewInnerMargin * 2;
@@ -89,14 +89,12 @@ void drawPreviewProgressBar(const GfxRenderer& renderer, const Rect& rect, const
   renderer.fillRect(startX, y, maxWidth, barHeight, false);
   renderer.fillRect(startX, y, barWidth, barHeight, true);
 
-  if (progressBar == CrossPointSettings::STATUS_BAR_PROGRESS_BAR::BOOK_PROGRESS) {
-    // Show sample chapter markers at 20%, 40%, 60%, 80%
-    constexpr float sampleMarkers[] = {0.20f, 0.40f, 0.60f, 0.80f};
-    for (const float markerProg : sampleMarkers) {
-      const int markerX = startX + static_cast<int>(std::round(maxWidth * markerProg));
-      const bool passed = (markerX < startX + barWidth);
-      renderer.fillRect(markerX, y, 1, barHeight, !passed);
-    }
+  // Show sample chapter markers at 20%, 40%, 60%, 80%
+  constexpr float sampleMarkers[] = {0.20f, 0.40f, 0.60f, 0.80f};
+  for (const float markerProg : sampleMarkers) {
+    const int markerX = startX + static_cast<int>(std::round(maxWidth * markerProg));
+    const bool passed = (markerX < startX + barWidth);
+    renderer.fillRect(markerX, y, 1, barHeight, !passed);
   }
 }
 

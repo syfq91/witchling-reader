@@ -407,7 +407,7 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Enum(StrId::STR_STATUS_BAR_RIGHT, &CrossPointSettings::statusBarRight, slotChoices,
                                        "statusBarRight", StrId::STR_CUSTOMISE_STATUS_BAR));
   settings.push_back(SettingInfo::Enum(StrId::STR_PROGRESS_BAR, &CrossPointSettings::statusBarProgressBar,
-                                       {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE},
+                                       {StrId::STR_BOOK, StrId::STR_HIDE},
                                        "statusBarProgressBar", StrId::STR_CUSTOMISE_STATUS_BAR));
 
   return settings;

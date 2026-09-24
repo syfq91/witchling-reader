@@ -253,6 +253,9 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
                                      CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS);
       if (needsResave) *needsResave = true;
     }
+  } else if (doc["statusBarProgressBar"].as<uint8_t>() == 2) {
+    s.statusBarProgressBar = CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS;
+    if (needsResave) *needsResave = true;
   }
   if (!doc.containsKey("statusBarLeft") && !doc.containsKey("statusBarMiddle") && !doc.containsKey("statusBarRight")) {
     bool migrated = false;
