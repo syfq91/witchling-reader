@@ -15,7 +15,6 @@
 #include "SettingsSubmenuActivity.h"
 #include "SliderSettingPicker.h"
 #include "TouchUi.h"
-#include "UiFontScale.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -138,10 +137,6 @@ void SettingsActivity::onEnter() {
 
 void SettingsActivity::onExit() {
   TabbedUiListActivity::onExit();
-  // Both read SETTINGS, so they are independent — but they are a pair: the ladder binds the UI
-  // fonts and reload() re-derives the metrics sized to hold them. Changing one without the other
-  // leaves rows that clip their own text.
-  applyUiFontScale();               // Re-bind the UI font ladder in case the size was changed
   UITheme::getInstance().reload();  // Re-apply theme in case it was changed
 }
 
