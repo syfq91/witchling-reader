@@ -54,7 +54,6 @@ void CrossPointSettings::normalizeDependentSettings(CrossPointSettings& settings
     settings.quickResumeSleepScreen = QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
   }
   settings.uiFontSize = UI_FONT_SIZE_DEFAULT;
-  settings.showBusyIndicator = 0;
 }
 
 bool CrossPointSettings::isReaderScopedAction(const uint8_t action) {

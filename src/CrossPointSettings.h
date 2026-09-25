@@ -283,7 +283,7 @@ class CrossPointSettings {
   enum HIDE_BATTERY_PERCENTAGE { HIDE_NEVER = 0, HIDE_READER = 1, HIDE_ALWAYS = 2, HIDE_BATTERY_PERCENTAGE_COUNT };
 
   // Size of the menu/chrome text. Kept for UiFontLadder / layout compatibility, defaulting to Normal.
-  enum UI_FONT_SIZE { UI_FONT_SIZE_DEFAULT = 0, UI_FONT_SIZE_LARGE = 1, UI_FONT_SIZE_COUNT };
+  enum UI_FONT_SIZE { UI_FONT_SIZE_DEFAULT = 0, UI_FONT_SIZE_COUNT };
 
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
@@ -300,13 +300,6 @@ class CrossPointSettings {
     TILT_ACT_NEXT_PAGE = 1,
     TILT_ACT_PREV_PAGE = 2,
     TILT_GESTURE_ACTION_COUNT
-  };
-
-  // Whether a list-row tap activates immediately or first moves selection.
-  enum TOUCH_LIST_ACTIVATION {
-    TOUCH_LIST_SELECT_THEN_ACTIVATE = 0,
-    TOUCH_LIST_ACTIVATE_IMMEDIATELY = 1,
-    TOUCH_LIST_ACTIVATION_COUNT
   };
 
   // Text darkness for AA glyph rendering (forwarded to GfxRenderer::setTextDarkness)
@@ -436,8 +429,6 @@ class CrossPointSettings {
   uint8_t opdsFilenameFormat = 0;
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
-  // Acknowledge a press that starts a slow screen change. See ActivityManager::showBusyIndicator().
-  uint8_t showBusyIndicator = 0;
   // NOT a preference: the measured cost of a FAST refresh on this panel, carried across boots so
   // the first decision after a reboot is as good as the last one before it. Written from
   // HalDisplay's measurement, never from the UI, and absent from the JSON settings file for that
@@ -464,7 +455,6 @@ class CrossPointSettings {
   uint8_t tiltPositiveAction = TILT_ACT_NEXT_PAGE;
   // Action when the computed tilt value crosses the negative threshold.
   uint8_t tiltNegativeAction = TILT_ACT_PREV_PAGE;
-  uint8_t touchListActivation = TOUCH_LIST_SELECT_THEN_ACTIVATE;
 
   // Enable synthetic TOC fallback for malformed/sparse TOC books (1 = enabled, 0 = disabled)
   uint8_t syntheticTocFallback = 1;

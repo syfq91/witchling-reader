@@ -24,6 +24,9 @@ For full original documentation, refer to the [upstream README](https://github.c
 - **Non-English Translations**: Pruned non-English languages to keep firmware size lean and fast.
 - **Unused Features**: Removed Bionic Reading, Guide Dots, Auto Page Turn, Page as QR Code, and Screenshots.
 - **Font Scaling Test**: Removed the developer font scaling test screen from System settings.
+- **UI Font Size & Unused Font Data**: Locked UI typography to Normal default and removed unused `inter_ui_14` font bitmaps to reclaim ~109 KB flash.
+- **Busy Indicator**: Removed the "Show Busy Indicator" setting and disabled transition screen overlays.
+- **Dead Code & Unused Assets**: Purged orphaned UI components (`CardLayout`, `FrontlightPanelActivity`, unused icons) and pruned 229 unreferenced translation strings.
 
 ### Fixed
 - **EPUB Cover Detection**: Fixed home screen sometimes displaying wrong images (like title banners or logos) by detecting covers from the Table of Contents, cover pages, and prioritizing real cover art.

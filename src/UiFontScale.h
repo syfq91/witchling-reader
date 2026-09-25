@@ -44,7 +44,6 @@ struct Step {
 };
 inline constexpr Step STEPS[] = {
     {23, 25, 30},  // DEFAULT: notosans_8,  inter_ui_10, inter_ui_12
-    {25, 30, 35},  // LARGE:   inter_ui_10, inter_ui_12, inter_ui_14
 };
 inline constexpr size_t STEP_COUNT = std::size(STEPS);
 

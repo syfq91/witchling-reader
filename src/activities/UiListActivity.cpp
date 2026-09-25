@@ -46,8 +46,7 @@ ListRowTap::Result UiListActivity::selectListRow(const int index) {
 }
 
 void UiListActivity::onRowAction(const int index) {
-  const auto result = listTapActivation.applyPreference(
-      index, selectListRow(index), SETTINGS.touchListActivation == CrossPointSettings::TOUCH_LIST_ACTIVATE_IMMEDIATELY);
+  const auto result = listTapActivation.applyPreference(index, selectListRow(index), /*activateImmediately=*/false);
   if (result == ListRowTap::Result::Rejected) return;
   if (result == ListRowTap::Result::Selected) {
     moveSelectionTo(index);

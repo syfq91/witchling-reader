@@ -60,7 +60,6 @@ enum class SettingAction {
   None,
   RemapFrontButtons,
   ButtonActionsOverview,
-  GestureActionsOverview,
   CustomiseStatusBar,
   OPDSBrowser,
   Network,
