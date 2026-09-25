@@ -249,17 +249,20 @@ void SdFirmwareUpdateActivity::buildScreen(UiScreen& screen) {
   screen.header(headerText);
 
   if (state == State::VALIDATING) {
-    screen.centeredText(tr(STR_VALIDATING_FIRMWARE));
+    screen.centeredText(tr(STR_VALIDATING_FIRMWARE), screen.theme().bodyText);
   } else if (state == State::UPDATING) {
     const unsigned int pct = firmwareSize > 0 ? static_cast<unsigned int>((writtenBytes * 100) / firmwareSize) : 0;
 
-    screen.spacer(40);
     fui::TextStyle titleStyle = screen.theme().titleText;
     titleStyle.bold = true;
     titleStyle.align = fui::TextAlign::Center;
-    screen.centeredText(tr(STR_UPDATING), titleStyle);
+    const int16_t titleH = screen.target().lineHeight(titleStyle.font);
 
-    screen.spacer(20);
+    const int16_t gap1 = screen.theme().spaceLg;
+
+    const int16_t barH = 16;
+    const int16_t barW = static_cast<int16_t>(screen.body().width * 4 / 5);
+
     fui::ProgressBarProps barProps;
     barProps.value = pct;
     barProps.max = 100;
@@ -268,26 +271,81 @@ void SdFirmwareUpdateActivity::buildScreen(UiScreen& screen) {
     barProps.border = fui::Paint::solid(fui::Color::Black);
     barProps.fill = fui::Paint::solid(fui::Color::Black);
 
-    const int16_t barW = static_cast<int16_t>(screen.body().width * 4 / 5);
-    const int16_t barH = 20;
-    const fui::Rect barRect = fui::centeredRect(screen.takeTop(barH), fui::Size{barW, barH});
+    const int16_t gap2 = screen.theme().spaceMd;
+
+    fui::TextStyle pctStyle = screen.theme().bodyText;
+    pctStyle.bold = true;
+    pctStyle.align = fui::TextAlign::Center;
+    const int16_t pctH = screen.target().lineHeight(pctStyle.font);
+
+    const int16_t gap3 = screen.theme().spaceLg;
+
+    fui::TextStyle warnStyle = screen.theme().smallText;
+    warnStyle.align = fui::TextAlign::Center;
+    warnStyle.maxLines = 2;
+    const int16_t warnH = static_cast<int16_t>(screen.target().lineHeight(warnStyle.font) * 2);
+
+    const int16_t totalH = static_cast<int16_t>(titleH + gap1 + barH + gap2 + pctH + gap3 + warnH);
+    const int16_t topMargin = static_cast<int16_t>((screen.body().height - totalH) / 2);
+    if (topMargin > 0) {
+      screen.spacer(topMargin);
+    }
+
+    const fui::Rect titleRect = screen.takeTop(titleH);
+    screen.target().text(titleRect, tr(STR_UPDATING), titleStyle);
+
+    screen.spacer(gap1);
+
+    const fui::Rect barSlot = screen.takeTop(barH);
+    const fui::Rect barRect = fui::centeredRect(barSlot, fui::Size{barW, barH});
     fui::progressBar(screen.frame(), barRect, barProps);
 
-    screen.spacer(10);
-    std::string pctStr = std::to_string(pct) + "%";
-    screen.centeredText(pctStr.c_str());
+    screen.spacer(gap2);
 
-    screen.spacer(10);
-    screen.centeredText(tr(STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF));
+    std::string pctStr = std::to_string(pct) + "%";
+    const fui::Rect pctRect = screen.takeTop(pctH);
+    screen.target().text(pctRect, pctStr.c_str(), pctStyle);
+
+    screen.spacer(gap3);
+
+    const int16_t sidePadding = screen.theme().spaceLg;
+    const fui::Rect warnSlot = screen.takeTop(warnH);
+    const fui::Rect warnRect{
+        static_cast<int16_t>(warnSlot.x + sidePadding), warnSlot.y,
+        static_cast<int16_t>(warnSlot.width > sidePadding * 2 ? warnSlot.width - sidePadding * 2 : warnSlot.width),
+        warnSlot.height};
+    screen.target().text(warnRect, tr(STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF), warnStyle);
   } else if (state == State::SUCCESS) {
-    screen.spacer(40);
     fui::TextStyle titleStyle = screen.theme().titleText;
     titleStyle.bold = true;
     titleStyle.align = fui::TextAlign::Center;
-    screen.centeredText(tr(STR_UPDATE_COMPLETE), titleStyle);
+    const int16_t titleH = screen.target().lineHeight(titleStyle.font);
 
-    screen.spacer(20);
-    screen.centeredText(tr(STR_RESTARTING_HINT));
+    const int16_t gap = screen.theme().spaceLg;
+
+    fui::TextStyle hintStyle = screen.theme().bodyText;
+    hintStyle.align = fui::TextAlign::Center;
+    hintStyle.maxLines = 3;
+    const int16_t hintH = static_cast<int16_t>(screen.target().lineHeight(hintStyle.font) * 3);
+
+    const int16_t totalH = static_cast<int16_t>(titleH + gap + hintH);
+    const int16_t topMargin = static_cast<int16_t>((screen.body().height - totalH) / 2);
+    if (topMargin > 0) {
+      screen.spacer(topMargin);
+    }
+
+    const fui::Rect titleRect = screen.takeTop(titleH);
+    screen.target().text(titleRect, tr(STR_UPDATE_COMPLETE), titleStyle);
+
+    screen.spacer(gap);
+
+    const int16_t sidePadding = screen.theme().spaceLg;
+    const fui::Rect hintSlot = screen.takeTop(hintH);
+    const fui::Rect hintRect{
+        static_cast<int16_t>(hintSlot.x + sidePadding), hintSlot.y,
+        static_cast<int16_t>(hintSlot.width > sidePadding * 2 ? hintSlot.width - sidePadding * 2 : hintSlot.width),
+        hintSlot.height};
+    screen.target().text(hintRect, tr(STR_RESTARTING_HINT), hintStyle);
   } else if (state == State::FAILED) {
     ConfirmDialog::Spec spec;
     spec.headline = tr(STR_UPDATE_FAILED);
@@ -298,7 +356,7 @@ void SdFirmwareUpdateActivity::buildScreen(UiScreen& screen) {
   } else {
     // PICKING / CONFIRMING: a sub-activity is on top, nothing to draw.
     if (recoveryMode) {
-      screen.centeredText(tr(STR_RECOVERY_MODE_HINT));
+      screen.centeredText(tr(STR_RECOVERY_MODE_HINT), screen.theme().bodyText);
     }
   }
 }
