@@ -15,12 +15,20 @@
 #include "HomeMenu.h"
 #include "activities/reader/ReaderActivity.h"
 #include "components/UITheme.h"
+#include "components/UiAppHost.h"
 #include "util/ButtonNavigator.h"
 
 struct RecentBook;
 struct Rect;
 
-class HomeActivity final : public Activity {
+class HomeActivity final : public Activity, private UiAppHost {
+  static constexpr freeink::ui::ActionId ACTION_RECENT_BOOK = 1;
+  static constexpr freeink::ui::ActionId ACTION_MENU_ITEM = 2;
+
+  static void screenTrampoline(UiScreen& screen, void* user);
+  static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
+  void buildScreen(UiScreen& screen);
+  void handleAction(const freeink::ui::ActionEvent& event);
 
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
@@ -103,6 +111,7 @@ class HomeActivity final : public Activity {
   explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string focusBookPath = {},
                         int focusSelectorIndex = -1)
       : Activity("Home", renderer, mappedInput),
+        UiAppHost(renderer),
         focusBookPath(std::move(focusBookPath)),
         focusSelectorIndex(focusSelectorIndex) {}
   void onEnter() override;

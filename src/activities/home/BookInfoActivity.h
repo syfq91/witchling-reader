@@ -6,8 +6,9 @@
 #include <vector>
 
 #include "../Activity.h"
+#include "components/UiAppHost.h"
 
-class BookInfoActivity final : public Activity {
+class BookInfoActivity final : public Activity, private UiAppHost {
   const std::string filePath;
 
   // Metadata populated in onEnter
@@ -28,28 +29,25 @@ class BookInfoActivity final : public Activity {
   int descLinesPerPage = 0;
   int descTotalPages = 0;
 
-  // Partial-render caches: set on the first full render, reused when only the
-  // description page changes.
-  bool fullRenderDone = false;
-  int descBandX = 0;
-  int descBandY = 0;
-  int descBandWidth = 0;
-  int descBandHeight = 0;
-  int hintsBandY = 0;
-  int hintsBandHeight = 0;
-  int partialRenderCount = 0;
-  static constexpr int MAX_PARTIAL_RENDERS = 10;
+  freeink::ui::Rect bodyRect_{};
+
+  static constexpr freeink::ui::ActionId ACTION_BACK = 1;
+  static constexpr freeink::ui::ActionId ACTION_PREV = 2;
+  static constexpr freeink::ui::ActionId ACTION_NEXT = 3;
 
   static std::string formatFileSize(size_t bytes);
-  void renderLoading();
   void loadData();
-  void renderDescriptionAndHints();
+  void buildScreen(UiScreen& screen);
+  void afterUiRender();
+  static void screenTrampoline(UiScreen& screen, void* user);
+  static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
 
  public:
   explicit BookInfoActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string filePath)
-      : Activity("BookInfo", renderer, mappedInput), filePath(std::move(filePath)) {}
+      : Activity("BookInfo", renderer, mappedInput), UiAppHost(renderer), filePath(std::move(filePath)) {}
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 };

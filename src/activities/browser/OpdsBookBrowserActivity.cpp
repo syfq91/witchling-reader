@@ -11,6 +11,7 @@
 #include <SaxParser/SaxParser.h>
 #include <WiFi.h>
 #include <Xtc.h>
+#include <components/controls/progress-bar.h>
 
 #include <algorithm>
 #include <cctype>
@@ -25,6 +26,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
+#include "components/UiAppHelpers.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
 #include "network/OpdsProgressionSync.h"
@@ -245,6 +247,18 @@ void OpdsBookBrowserActivity::onEnter() {
   memoryTrimmed = false;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
+
+  resetUi();
+  app.setScreen(screenTrampoline, this);
+  app.on(ACTION_BACK, actionTrampoline, this);
+  app.on(ACTION_RETRY, actionTrampoline, this);
+  app.on(ACTION_CONFIRM, actionTrampoline, this);
+  app.on(ACTION_SEARCH, actionTrampoline, this);
+  app.on(ACTION_INFO, actionTrampoline, this);
+  app.on(ACTION_SELECT_ENTRY, actionTrampoline, this);
+  app.on(ACTION_SELECT_FORMAT, actionTrampoline, this);
+  app.on(ACTION_DOWNLOAD, actionTrampoline, this);
+
   requestUpdate();
 
   // Try the per-server discovery cache so the browser opens instantly without
@@ -275,6 +289,7 @@ void OpdsBookBrowserActivity::onEnter() {
 }
 
 void OpdsBookBrowserActivity::onExit() {
+  resetUi();
   Activity::onExit();
 
   entryOffsets.clear();
@@ -291,6 +306,11 @@ void OpdsBookBrowserActivity::onExit() {
 
 void OpdsBookBrowserActivity::loop() {
   if (state == BrowserState::WIFI_SELECTION || state == BrowserState::SEARCH_INPUT) {
+    return;
+  }
+
+  const auto route = UiAppHost::routeTouch(mappedInput);
+  if (route) {
     return;
   }
 
@@ -434,119 +454,278 @@ bool OpdsBookBrowserActivity::preventAutoSleep() {
   return false;
 }
 
+void OpdsBookBrowserActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<OpdsBookBrowserActivity*>(user)->buildScreen(screen);
+}
+
+void OpdsBookBrowserActivity::actionTrampoline(const freeink::ui::ActionEvent& event, void* user) {
+  static_cast<OpdsBookBrowserActivity*>(user)->handleAction(event);
+}
+
+void OpdsBookBrowserActivity::handleAction(const freeink::ui::ActionEvent& event) {
+  switch (event.action) {
+    case ACTION_BACK:
+      if (state == BrowserState::CHECK_WIFI) {
+        onGoHome();
+      } else if (state == BrowserState::BOOK_DETAIL) {
+        state = BrowserState::BROWSING;
+        requestUpdate();
+      } else if (state == BrowserState::FORMAT_SELECTION) {
+        state = BrowserState::BROWSING;
+        selectedBookIndex = -1;
+        formatSelectionLabels.clear();
+        requestUpdate();
+      } else {
+        navigateBack();
+      }
+      break;
+    case ACTION_RETRY:
+      if (state == BrowserState::ERROR) {
+        if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+          state = BrowserState::LOADING;
+          statusMessage = tr(STR_LOADING);
+          requestUpdate();
+          fetchFeed(currentPath);
+        } else {
+          launchWifiSelection();
+        }
+      }
+      break;
+    case ACTION_CONFIRM:
+      if (state == BrowserState::BROWSING) {
+        if (!entryOffsets.empty()) {
+          const auto entry = getEntry(selectorIndex);
+          entry.type == OpdsEntryType::BOOK ? chooseBookFormat(entry) : navigateToEntry(entry);
+        }
+      } else if (state == BrowserState::FORMAT_SELECTION) {
+        if (selectedBookIndex >= 0 && selectedBookIndex < static_cast<int>(entryOffsets.size())) {
+          const auto entry = getEntry(selectedBookIndex);
+          if (formatSelectorIndex >= 0 && formatSelectorIndex < static_cast<int>(entry.acquisitionLinks.size())) {
+            downloadBook(entry, entry.acquisitionLinks[formatSelectorIndex]);
+          }
+        }
+      }
+      break;
+    case ACTION_SEARCH:
+      if (!searchTemplate.empty()) launchSearch();
+      break;
+    case ACTION_INFO:
+      if (!entryOffsets.empty()) {
+        const auto entry = getEntry(selectorIndex);
+        if (entry.type == OpdsEntryType::BOOK) {
+          state = BrowserState::LOADING;
+          statusMessage = tr(STR_LOADING);
+          requestUpdateAndWait();
+          fetchCoverForEntry(entry);
+          state = BrowserState::BOOK_DETAIL;
+          requestUpdate();
+        }
+      }
+      break;
+    case ACTION_SELECT_ENTRY:
+      selectorIndex = event.value;
+      if (!entryOffsets.empty() && selectorIndex >= 0 && selectorIndex < static_cast<int>(entryOffsets.size())) {
+        const auto entry = getEntry(selectorIndex);
+        entry.type == OpdsEntryType::BOOK ? chooseBookFormat(entry) : navigateToEntry(entry);
+      }
+      break;
+    case ACTION_SELECT_FORMAT:
+      formatSelectorIndex = event.value;
+      if (selectedBookIndex >= 0 && selectedBookIndex < static_cast<int>(entryOffsets.size())) {
+        const auto entry = getEntry(selectedBookIndex);
+        if (formatSelectorIndex >= 0 && formatSelectorIndex < static_cast<int>(entry.acquisitionLinks.size())) {
+          downloadBook(entry, entry.acquisitionLinks[formatSelectorIndex]);
+        }
+      }
+      break;
+    case ACTION_DOWNLOAD:
+      if (state == BrowserState::BOOK_DETAIL) {
+        const auto entry = getEntry(selectorIndex);
+        state = BrowserState::BROWSING;
+        requestUpdate();
+        chooseBookFormat(entry);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+void OpdsBookBrowserActivity::materializeListWindow() {
+  const int count = static_cast<int>(entryOffsets.size());
+  if (count == 0) {
+    windowFirst = 0;
+    windowCount = 0;
+    return;
+  }
+  if (selectorIndex < windowFirst) {
+    windowFirst = static_cast<uint16_t>(selectorIndex);
+  } else if (selectorIndex >= windowFirst + LIST_WINDOW_CAPACITY) {
+    windowFirst = static_cast<uint16_t>(selectorIndex - LIST_WINDOW_CAPACITY + 1);
+  }
+  windowCount = static_cast<uint16_t>(std::min(static_cast<size_t>(count - windowFirst), LIST_WINDOW_CAPACITY));
+
+  for (uint16_t offset = 0; offset < windowCount; ++offset) {
+    const size_t index = windowFirst + offset;
+    auto& row = windowItems[offset];
+    row = {};
+    row.actionValue = static_cast<int16_t>(index);
+    row.enabled = true;
+
+    const auto entry = getEntry(index);
+    if (entry.type == OpdsEntryType::NAVIGATION) {
+      windowLabels[offset] = "> " + entry.title;
+      windowSubtitles[offset] = "";
+    } else {
+      windowLabels[offset] = entry.title;
+      windowSubtitles[offset] = entry.author;
+    }
+    row.label = windowLabels[offset].c_str();
+    row.subtitle = windowSubtitles[offset].empty() ? nullptr : windowSubtitles[offset].c_str();
+  }
+}
+
 void OpdsBookBrowserActivity::render(RenderLock&&) {
   renderer.clearScreen();
+  resetUi();
+  renderUi();
+  afterUiRender();
+  renderer.displayBuffer();
+}
 
-  // Only the browsing list labels its side buttons (see below); every other state uses Back and
-  // Confirm alone, so it keeps the full width.
-  const Rect contentRect = UITheme::getContentRect(renderer, true, state == BrowserState::BROWSING);
-  const int midY = contentRect.y + contentRect.height / 2;
-
-  // Show server name in header if available, otherwise generic title
+void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
   const char* headerTitle = server.name.empty() ? tr(STR_OPDS_BROWSER) : server.name.c_str();
-  renderer.drawCenteredText(UI_12_FONT_ID, 15, headerTitle, true, EpdFontFamily::BOLD);
+  screen.header(headerTitle);
 
-  if (state == BrowserState::CHECK_WIFI) {
-    renderer.drawCenteredText(UI_10_FONT_ID, midY, statusMessage.c_str());
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
-
-  if (state == BrowserState::LOADING) {
-    renderer.drawCenteredText(UI_10_FONT_ID, midY, statusMessage.c_str());
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
-
-  if (state == BrowserState::ERROR) {
-    renderer.drawCenteredText(UI_10_FONT_ID, midY - 20, tr(STR_ERROR_MSG));
-    renderer.drawCenteredText(UI_10_FONT_ID, midY + 10, errorMessage.c_str());
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
-
-  if (state == BrowserState::DOWNLOADING) {
-    renderer.drawCenteredText(UI_10_FONT_ID, midY - 40, tr(STR_DOWNLOADING));
-    // Trim long titles to keep them within the content bounds.
-    auto title = renderer.truncatedText(UI_10_FONT_ID, statusMessage.c_str(), contentRect.width - 40);
-    renderer.drawCenteredText(UI_10_FONT_ID, midY - 10, title.c_str());
-    if (downloadTotal > 0) {
-      const int barWidth = contentRect.width - 100;
-      constexpr int barHeight = 20;
-      const int barX = contentRect.x + 50;
-      const int barY = midY + 20;
-      GUI.drawProgressBar(renderer, Rect{barX, barY, barWidth, barHeight}, downloadProgress, downloadTotal);
+  switch (state) {
+    case BrowserState::CHECK_WIFI:
+    case BrowserState::LOADING: {
+      screen.centeredText(statusMessage.c_str());
+      const freeink::ui::FooterAction actions[] = {{tr(STR_BACK), ACTION_BACK}};
+      screen.footer(actions, 1);
+      break;
     }
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
-
-  if (state == BrowserState::FORMAT_SELECTION) {
-    const auto entry = getEntry(selectedBookIndex);
-    auto title = renderer.truncatedText(UI_10_FONT_ID, entry.title.c_str(), contentRect.width - 40);
-    renderer.drawCenteredText(UI_10_FONT_ID, midY - 40, title.c_str(), true, EpdFontFamily::BOLD);
-    if (!entry.author.empty()) {
-      auto author = renderer.truncatedText(UI_10_FONT_ID, entry.author.c_str(), contentRect.width - 40);
-      renderer.drawCenteredText(UI_10_FONT_ID, midY - 10, author.c_str());
+    case BrowserState::ERROR: {
+      screen.centeredText(errorMessage.empty() ? tr(STR_ERROR_MSG) : errorMessage.c_str());
+      const freeink::ui::FooterAction actions[] = {
+          {tr(STR_BACK), ACTION_BACK},
+          {tr(STR_RETRY), ACTION_RETRY},
+      };
+      screen.footer(actions, 2);
+      break;
     }
-
-    const int listTop = midY + 20;
-    const int itemsPerPage = formatItemsPerPage(contentRect);
-    const int pageStartIndex = formatSelectorIndex / itemsPerPage * itemsPerPage;
-    renderer.fillRect(contentRect.x, listTop + (formatSelectorIndex - pageStartIndex) * FORMAT_ITEM_HEIGHT - 2,
-                      contentRect.width - 1, FORMAT_ITEM_HEIGHT);
-    for (int i = pageStartIndex;
-         i < static_cast<int>(entry.acquisitionLinks.size()) && i < pageStartIndex + itemsPerPage; i++) {
-      const char* label = i < static_cast<int>(formatSelectionLabels.size()) ? formatSelectionLabels[i].c_str() : "";
-      auto item = renderer.truncatedText(UI_10_FONT_ID, label, contentRect.width - 40);
-      renderer.drawText(UI_10_FONT_ID, contentRect.x + 20, listTop + (i - pageStartIndex) * FORMAT_ITEM_HEIGHT,
-                        item.c_str(), i != formatSelectorIndex);
+    case BrowserState::DOWNLOADING: {
+      screen.centeredText(statusMessage.c_str());
+      const freeink::ui::FooterAction actions[] = {{tr(STR_BACK), ACTION_BACK}};
+      screen.footer(actions, 1);
+      break;
     }
+    case BrowserState::FORMAT_SELECTION: {
+      if (selectedBookIndex >= 0 && selectedBookIndex < static_cast<int>(entryOffsets.size())) {
+        const auto entry = getEntry(selectedBookIndex);
+        const int count = static_cast<int>(entry.acquisitionLinks.size());
+        freeink::ui::ListItem fItems[8];
+        const int displayCount = std::min(count, 8);
+        for (int i = 0; i < displayCount; ++i) {
+          fItems[i] = {};
+          fItems[i].label = i < static_cast<int>(formatSelectionLabels.size()) ? formatSelectionLabels[i].c_str() : "";
+          fItems[i].actionValue = static_cast<int16_t>(i);
+          fItems[i].enabled = true;
+        }
+        screen.list(fItems, displayCount, formatSelectorIndex, ACTION_SELECT_FORMAT);
+      }
+      const freeink::ui::FooterAction actions[] = {
+          {tr(STR_BACK), ACTION_BACK},
+          {tr(STR_DOWNLOAD), ACTION_CONFIRM},
+      };
+      screen.footer(actions, 2);
+      break;
+    }
+    case BrowserState::BOOK_DETAIL: {
+      const freeink::ui::FooterAction actions[] = {
+          {tr(STR_BACK), ACTION_BACK},
+          {tr(STR_DOWNLOAD), ACTION_DOWNLOAD},
+      };
+      screen.footer(actions, 2);
+      break;
+    }
+    case BrowserState::BROWSING: {
+      materializeListWindow();
+      if (entryOffsets.empty()) {
+        screen.centeredText(tr(STR_NO_ENTRIES));
+      } else {
+        freeink::ui::ListProps props;
+        props.count = static_cast<uint16_t>(entryOffsets.size());
+        props.selectedIndex = static_cast<int16_t>(selectorIndex);
+        props.topIndex = windowFirst;
+        props.action = ACTION_SELECT_ENTRY;
+        props.items = windowItems;
+        props.itemsWindowFirst = windowFirst;
+        props.itemsWindowCount = windowCount;
+        props.labelText = screen.theme().bodyText;
+        props.labelText.maxLines = 1;
+        props.subtitleText = screen.theme().smallText;
+        props.subtitleText.maxLines = 1;
+        screen.list(props);
+      }
 
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DOWNLOAD), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
+      const bool selectedIsBook = !entryOffsets.empty() && getEntry(selectorIndex).type == OpdsEntryType::BOOK;
+      const char* confirmLabel = selectedIsBook ? tr(STR_DOWNLOAD) : tr(STR_OPEN);
+      const char* searchLabel = !searchTemplate.empty() ? tr(STR_SEARCH) : nullptr;
+      const char* infoLabel = selectedIsBook ? tr(STR_INFO) : nullptr;
+
+      freeink::ui::FooterAction actions[4];
+      uint8_t aCount = 0;
+      actions[aCount++] = {tr(STR_BACK), ACTION_BACK};
+      if (searchLabel) {
+        actions[aCount++] = {searchLabel, ACTION_SEARCH};
+      }
+      if (infoLabel) {
+        actions[aCount++] = {infoLabel, ACTION_INFO};
+      }
+      actions[aCount++] = {confirmLabel, ACTION_CONFIRM};
+      screen.footer(actions, aCount);
+      break;
+    }
+    default:
+      break;
   }
+}
 
+void OpdsBookBrowserActivity::afterUiRender() {
   if (state == BrowserState::BOOK_DETAIL) {
+    if (selectorIndex < 0 || selectorIndex >= static_cast<int>(entryOffsets.size())) return;
     const auto entry = getEntry(selectorIndex);
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto contentRect = UITheme::getContentRect(renderer, true, false);
+    const int contentTop = contentRect.y + metrics.headerHeight + 6;
+    const int contentBottom = contentRect.y + contentRect.height - app.theme().footerHeight - 6;
     const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
-    const int fmtY = contentRect.y + contentRect.height - lineH - 4;
+    const int fmtY = contentBottom - lineH;
 
-    // Cover: draw on the left if available
     int coverColW = 0;
     if (coverAvailable) {
       HalFile bmpFile;
       if (Storage.openFileForRead("OPDS", "/.tmp_opds_cover.bmp", bmpFile)) {
         Bitmap bmp(bmpFile);
         if (bmp.parseHeaders() == BmpReaderError::Ok && bmp.getWidth() > 0 && bmp.getHeight() > 0) {
-          const int coverAreaH = fmtY - 35 - 4;
+          const int coverAreaH = fmtY - contentTop - 4;
           int coverH = std::min(bmp.getHeight(), coverAreaH);
           int coverW = bmp.getWidth() * coverH / bmp.getHeight();
           if (coverW > contentRect.width / 3) {
             coverW = contentRect.width / 3;
             coverH = bmp.getHeight() * coverW / bmp.getWidth();
           }
-          renderer.drawBitmap(bmp, contentRect.x, 35, coverW, coverH);
-          coverColW = coverW + 6;
+          renderer.drawBitmap(bmp, contentRect.x + 10, contentTop, coverW, coverH);
+          coverColW = coverW + 16;
         }
         bmpFile.close();
       }
     }
 
-    // Text column (right of cover, or full width)
     const int textX = contentRect.x + coverColW + 10;
     const int textW = contentRect.width - coverColW - 20;
-    int y = 35;
+    int y = contentTop;
 
     auto title = renderer.truncatedText(UI_10_FONT_ID, entry.title.c_str(), textW, EpdFontFamily::BOLD);
     renderer.drawText(UI_10_FONT_ID, textX, y, title.c_str(), true, EpdFontFamily::BOLD);
@@ -581,58 +760,17 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
       auto fmtsStr = renderer.truncatedText(UI_10_FONT_ID, fmts.c_str(), contentRect.width - 20);
       renderer.drawCenteredText(UI_10_FONT_ID, fmtY, fmtsStr.c_str());
     }
-
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DOWNLOAD), "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
-
-  // Browsing state
-  // Show appropriate button hint based on selected entry type.
-  // Read the selected entry once so its type drives both button labels.
-  const bool selectedIsBook = !entryOffsets.empty() && getEntry(selectorIndex).type == OpdsEntryType::BOOK;
-  const char* confirmLabel = selectedIsBook ? tr(STR_DOWNLOAD) : tr(STR_OPEN);
-  const char* searchLabel = !searchTemplate.empty() ? tr(STR_SEARCH) : tr(STR_DIR_UP);
-  // Search/Info ride logical Left/Right, the step rides logical Up/Down: rotating the device moves
-  // each pair between the front strip and the side buttons, and the hints follow them there.
-  const auto hints =
-      mappedInput.mapHints(tr(STR_BACK), confirmLabel, searchLabel, selectedIsBook ? tr(STR_INFO) : tr(STR_DIR_DOWN),
-                           tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, hints.front.btn1, hints.front.btn2, hints.front.btn3, hints.front.btn4);
-  GUI.drawSideButtonHints(renderer, hints.side.up, hints.side.down);
-
-  if (entryOffsets.empty()) {
-    renderer.drawCenteredText(UI_10_FONT_ID, midY, tr(STR_NO_ENTRIES));
-    renderer.displayBuffer();
-    return;
-  }
-
-  const auto pageStartIndex = selectorIndex / PAGE_ITEMS * PAGE_ITEMS;
-  renderer.fillRect(contentRect.x, 60 + (selectorIndex % PAGE_ITEMS) * 30 - 2, contentRect.width - 1, 30);
-
-  for (size_t i = pageStartIndex; i < entryOffsets.size() && i < static_cast<size_t>(pageStartIndex + PAGE_ITEMS);
-       i++) {
-    const auto entry = getEntry(i);
-
-    // Format display text with type indicator
-    std::string displayText;
-    if (entry.type == OpdsEntryType::NAVIGATION) {
-      displayText = "> " + entry.title;  // Folder/navigation indicator
-    } else {
-      // Book: "Title - Author" or just "Title"
-      displayText = entry.title;
-      if (!entry.author.empty()) {
-        displayText += " - " + entry.author;
-      }
+  } else if (state == BrowserState::DOWNLOADING) {
+    if (downloadTotal > 0) {
+      const auto contentRect = UITheme::getContentRect(renderer, true, false);
+      const int midY = contentRect.y + contentRect.height / 2;
+      const int barWidth = contentRect.width - 100;
+      constexpr int barHeight = 20;
+      const int barX = contentRect.x + 50;
+      const int barY = midY + 20;
+      GUI.drawProgressBar(renderer, Rect{barX, barY, barWidth, barHeight}, downloadProgress, downloadTotal);
     }
-
-    auto item = renderer.truncatedText(UI_10_FONT_ID, displayText.c_str(), contentRect.width - 40);
-    renderer.drawText(UI_10_FONT_ID, contentRect.x + 20, 60 + (i % PAGE_ITEMS) * 30, item.c_str(),
-                      i != static_cast<size_t>(selectorIndex));
   }
-
-  renderer.displayBuffer();
 }
 
 void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {

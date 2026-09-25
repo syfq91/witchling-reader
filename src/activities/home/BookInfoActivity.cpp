@@ -9,9 +9,11 @@
 #include <Logging.h>
 #include <Xtc.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <ctime>
 
+#include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -25,21 +27,6 @@ std::string BookInfoActivity::formatFileSize(const size_t bytes) {
     snprintf(buf, sizeof(buf), "%.1f MB", bytes / (1024.0f * 1024.0f));
   }
   return buf;
-}
-
-void BookInfoActivity::renderLoading() {
-  renderer.clearScreen();
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-
-  GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
-                 tr(STR_INFO));
-
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  renderer.drawText(UI_12_FONT_ID, contentRect.x + metrics.contentSidePadding, contentTop, tr(STR_LOADING));
-
-  renderer.displayBuffer();
 }
 
 void BookInfoActivity::loadData() {
@@ -101,27 +88,43 @@ void BookInfoActivity::loadData() {
 
 void BookInfoActivity::onEnter() {
   Activity::onEnter();
-  fullRenderDone = false;
-  {
-    RenderLock lock(*this);
-    renderLoading();
-  }
+  descPage = 0;
+  descTotalPages = 0;
+  descLines.clear();
+  descWrappedWidth = 0;
+
+  resetUi();
+  app.setScreen(screenTrampoline, this);
+  app.on(ACTION_BACK, actionTrampoline, this);
+  app.on(ACTION_PREV, actionTrampoline, this);
+  app.on(ACTION_NEXT, actionTrampoline, this);
+
   loadData();
   requestUpdate(true);
 }
 
-// Prev/Next are labelled on the front strip and this screen draws no side hints, so they stay there
-// whichever way the device is held — only which of the two comes first on screen moves, and
-// frontStripPrevious/Next answer that exactly the way mapLabels() does.
+void BookInfoActivity::onExit() {
+  resetUi();
+  Activity::onExit();
+}
+
 void BookInfoActivity::loop() {
+  const auto touch = routeTouch(mappedInput);
+  if (touch.routed) {
+    if (app.invalidated()) requestUpdate();
+    if (touch) return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     finish();
-  } else if (mappedInput.wasReleased(MappedInputManager::frontStripPrevious())) {
+  } else if (mappedInput.wasReleased(MappedInputManager::frontStripPrevious()) ||
+             mappedInput.wasLogicalPressed(MappedInputManager::Direction::Left)) {
     if (descPage > 0) {
       descPage--;
       requestUpdate(true);
     }
-  } else if (mappedInput.wasReleased(MappedInputManager::frontStripNext())) {
+  } else if (mappedInput.wasReleased(MappedInputManager::frontStripNext()) ||
+             mappedInput.wasLogicalPressed(MappedInputManager::Direction::Right)) {
     if (descPage + 1 < descTotalPages) {
       descPage++;
       requestUpdate(true);
@@ -130,42 +133,56 @@ void BookInfoActivity::loop() {
 }
 
 void BookInfoActivity::render(RenderLock&&) {
-  // Fast path: only the description page / button hints changed. Reuse the
-  // already-rendered header/cover/meta by clearing just those two bands. Cap
-  // consecutive partial renders to bound e-ink ghosting buildup.
-  //
-  // Requires Portrait orientation: the hints-gutter location is derived below
-  // assuming the gutter sits at the bottom, which is only true in Portrait
-  // (PortraitInverted puts it at the top; landscape orientations put it on a
-  // side). In non-Portrait we fall through to a full render to avoid leaving
-  // stale button labels in the real gutter.
-  if (fullRenderDone && loadSucceeded && !description.empty() && partialRenderCount < MAX_PARTIAL_RENDERS &&
-      renderer.getOrientation() == GfxRenderer::Portrait) {
-    // The write framebuffer holds the frame from two refreshes ago (displayBuffer() swaps
-    // buffers), so on alternating page turns it still contains the "Loading" screen or an
-    // older page rather than the current cover/meta. Resync it to the displayed frame before
-    // patching just the description/hints bands; without this the stale top section (cover or
-    // "Loading") ships back to the panel and the cover appears to flip in and out.
-    renderer.syncWriteBufferFromDisplayed();
-    renderer.fillRect(descBandX, descBandY, descBandWidth, descBandHeight, false);
-    renderer.fillRect(0, hintsBandY, renderer.getScreenWidth(), hintsBandHeight, false);
-    renderDescriptionAndHints();
-    ++partialRenderCount;
-    renderer.displayBuffer();
-    return;
-  }
-
-  partialRenderCount = 0;
   renderer.clearScreen();
+  renderUi();
+  afterUiRender();
+  renderer.displayBuffer();
+}
 
+void BookInfoActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<BookInfoActivity*>(user)->buildScreen(screen);
+}
+
+void BookInfoActivity::actionTrampoline(const freeink::ui::ActionEvent& event, void* user) {
+  auto* self = static_cast<BookInfoActivity*>(user);
+  if (event.action == ACTION_BACK) {
+    self->finish();
+  } else if (event.action == ACTION_PREV) {
+    if (self->descPage > 0) {
+      self->descPage--;
+      self->requestUpdate(true);
+    }
+  } else if (event.action == ACTION_NEXT) {
+    if (self->descPage + 1 < self->descTotalPages) {
+      self->descPage++;
+      self->requestUpdate(true);
+    }
+  }
+}
+
+void BookInfoActivity::buildScreen(UiScreen& screen) {
+  namespace fui = freeink::ui;
+  screen.header(tr(STR_INFO));
+
+  fui::FooterAction footerActions[3];
+  uint8_t footerCount = 0;
+  footerActions[footerCount++] = {tr(STR_BACK), ACTION_BACK};
+  if (descPage > 0) {
+    footerActions[footerCount++] = {tr(STR_PREV), ACTION_PREV};
+  }
+  if (descPage + 1 < descTotalPages) {
+    footerActions[footerCount++] = {tr(STR_NEXT), ACTION_NEXT};
+  }
+  screen.footer(footerActions, footerCount);
+
+  bodyRect_ = screen.body();
+}
+
+void BookInfoActivity::afterUiRender() {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+  const Rect contentRect{bodyRect_.x, bodyRect_.y, bodyRect_.width, bodyRect_.height};
 
-  // Header
-  GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
-                 tr(STR_INFO));
-
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentTop = contentRect.y + metrics.verticalSpacing;
   const int contentBottom = contentRect.y + contentRect.height - metrics.verticalSpacing;
   const int textX = contentRect.x + metrics.contentSidePadding;
   const int textWidth = contentRect.width - metrics.contentSidePadding * 2;
@@ -197,10 +214,6 @@ void BookInfoActivity::render(RenderLock&&) {
       const std::string sizeLine = std::string(tr(STR_FILE_SIZE)) + ": " + formatFileSize(fileSizeBytes);
       renderer.drawText(UI_10_FONT_ID, textX, y, sizeLine.c_str());
     }
-
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
     return;
   }
 
@@ -284,36 +297,20 @@ void BookInfoActivity::render(RenderLock&&) {
   topSectionBottom = std::max(topSectionBottom, metaY);
 
   // --- Description: full width below the top section, paged via Left/Right ---
-  descTotalPages = 0;
-  descLinesPerPage = 0;
-  descBandX = textX;
-  descBandWidth = textWidth;
-  descBandY = contentBottom;
-  descBandHeight = 0;
+  int descBandX = textX;
+  int descBandWidth = textWidth;
+  int descBandY = contentBottom;
+  int descBandHeight = 0;
   if (!description.empty()) {
     int y = topSectionBottom + metrics.verticalSpacing;
     if (y + lineHeightSmall + 4 < contentBottom) {
       renderer.drawLine(textX, y, contentRect.x + contentRect.width - metrics.contentSidePadding, y);
       y += 4;
 
-      // Record the description band (below the separator) for partial redraws.
       descBandY = y;
       descBandHeight = contentBottom - y;
     }
   }
-
-  // Hints band spans from the bottom of the content area to the screen bottom.
-  hintsBandY = contentRect.y + contentRect.height;
-  hintsBandHeight = renderer.getScreenHeight() - hintsBandY;
-
-  renderDescriptionAndHints();
-
-  fullRenderDone = true;
-  renderer.displayBuffer();
-}
-
-void BookInfoActivity::renderDescriptionAndHints() {
-  const int lineHeightSmall = renderer.getLineHeight(UI_10_FONT_ID);
 
   descTotalPages = 0;
   descLinesPerPage = 0;
@@ -340,9 +337,4 @@ void BookInfoActivity::renderDescriptionAndHints() {
       }
     }
   }
-
-  const char* prevLabel = (descPage > 0) ? tr(STR_PREV) : "";
-  const char* nextLabel = (descPage + 1 < descTotalPages) ? tr(STR_NEXT) : "";
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", prevLabel, nextLabel);
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }

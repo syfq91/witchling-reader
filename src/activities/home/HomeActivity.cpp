@@ -611,6 +611,11 @@ void HomeActivity::restoreSecondaryBuffer(bool callerHoldsRenderLock) {
 void HomeActivity::onEnter() {
   Activity::onEnter();
 
+  resetUi();
+  app.setScreen(screenTrampoline, this);
+  app.on(ACTION_RECENT_BOOK, actionTrampoline, this);
+  app.on(ACTION_MENU_ITEM, actionTrampoline, this);
+
   hasOpdsServers = OPDS_STORE.hasServers();
 
   selectorIndex = 0;
@@ -662,6 +667,7 @@ void HomeActivity::onEnter() {
 }
 
 void HomeActivity::onExit() {
+  resetUi();
   // The cover-loading burst is over; release the one book's metadata the memo still holds.
   Epub::clearCoverMetadataMemo();
   Activity::onExit();
@@ -710,6 +716,12 @@ void HomeActivity::freeCoverBuffer() {
 }
 
 void HomeActivity::loop() {
+  const auto touch = routeTouch(mappedInput);
+  if (touch.routed) {
+    if (app.invalidated()) requestUpdate();
+    if (touch) return;
+  }
+
   if (menuEntriesDirty) {
     rebuildMenuEntries();
   }
@@ -773,6 +785,8 @@ void HomeActivity::render(RenderLock&&) {
   const int menuCount = static_cast<int>(menuEntries.size());
 
   renderer.clearScreen();
+  resetUi();
+  renderUi();
   bool bufferRestored = coverBufferStored && restoreCoverBuffer();
 
   GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.homeTopPadding}, nullptr);
@@ -854,3 +868,79 @@ void HomeActivity::dispatchMenuAction(HomeMenuAction action) {
 
   activityManager.goToHomeMenuAction(action);
 }
+
+void HomeActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<HomeActivity*>(user)->buildScreen(screen);
+}
+
+void HomeActivity::actionTrampoline(const freeink::ui::ActionEvent& event, void* user) {
+  static_cast<HomeActivity*>(user)->handleAction(event);
+}
+
+void HomeActivity::handleAction(const freeink::ui::ActionEvent& event) {
+  if (event.action == ACTION_RECENT_BOOK) {
+    if (!recentBooks.empty()) {
+      app.clearTapFlash();
+      onSelectBook(recentBooks[0].path);
+    }
+  } else if (event.action == ACTION_MENU_ITEM) {
+    const size_t idx = static_cast<size_t>(event.value);
+    if (idx < menuEntries.size()) {
+      app.clearTapFlash();
+      selectorIndex = static_cast<int>(recentBooks.size() + idx);
+      dispatchMenuAction(menuEntries[idx].action);
+    }
+  }
+}
+
+void HomeActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const ::Rect contentRect = UITheme::getContentRect(renderer, true, false);
+
+  if (menuEntriesDirty) {
+    rebuildMenuEntries();
+  }
+
+  const int menuCount = static_cast<int>(menuEntries.size());
+  const HomeScreenLayout layout = computeHomeScreenLayout(metrics, contentRect.height, menuCount);
+
+  // Register hit area for the recent book hero slot
+  if (!recentBooks.empty()) {
+    screen.frame().hit(
+        freeink::ui::Rect{static_cast<int16_t>(contentRect.x),
+                          static_cast<int16_t>(metrics.homeTopPadding),
+                          static_cast<int16_t>(contentRect.width),
+                          static_cast<int16_t>(layout.recentTileHeight)},
+        ACTION_RECENT_BOOK, 0);
+  }
+
+  // Register hit areas for the menu tiles
+  int rowHeight = metrics.menuRowHeight;
+  int rowSpacing = metrics.menuSpacing;
+  const int menuY = metrics.homeTopPadding + layout.recentTileHeight + layout.recentToMenuGap;
+  if (menuCount > 0 && layout.menuHeight > 0) {
+    const int defaultHeight = menuCount * rowHeight + std::max(0, menuCount - 1) * rowSpacing;
+    if (defaultHeight > layout.menuHeight) {
+      const int spacingSlots = std::max(1, menuCount - 1);
+      rowSpacing = std::max(0, (layout.menuHeight - menuCount * rowHeight) / spacingSlots);
+      if (menuCount * rowHeight + std::max(0, menuCount - 1) * rowSpacing > layout.menuHeight) {
+        rowHeight = std::max(30, (layout.menuHeight - std::max(0, menuCount - 1) * rowSpacing) / menuCount);
+      }
+      if (menuCount * rowHeight + std::max(0, menuCount - 1) * rowSpacing > layout.menuHeight) {
+        rowHeight = std::max(1, layout.menuHeight / menuCount);
+        rowSpacing = 0;
+      }
+    }
+  }
+
+  for (size_t i = 0; i < menuEntries.size(); ++i) {
+    const int tileY = menuY + static_cast<int>(i) * (rowHeight + rowSpacing);
+    screen.frame().hit(
+        freeink::ui::Rect{static_cast<int16_t>(contentRect.x + metrics.contentSidePadding),
+                          static_cast<int16_t>(tileY),
+                          static_cast<int16_t>(contentRect.width - metrics.contentSidePadding * 2),
+                          static_cast<int16_t>(rowHeight)},
+        ACTION_MENU_ITEM, static_cast<int16_t>(i));
+  }
+}
+

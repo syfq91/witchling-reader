@@ -255,10 +255,15 @@ flowchart TD
 
 | Activity | Current State | Target Base Class / FreeInk Component | Specific Tasks |
 |---|---|---|---|
-| [`BookInfoActivity`](file:///home/syafiq/code/witchling-reader/src/activities/home/BookInfoActivity.h) | Manual text wrapping and `GUI.drawHeader` | `UiAppHost` / `fui::TextArea` | • Book title, author, cover thumbnail, and scrollable synopsis. |
-| [`KeyboardEntryActivity`](file:///home/syafiq/code/witchling-reader/src/activities/util/KeyboardEntryActivity.h) | Hand-crafted 2D grid matrix navigation | `UiAppHost` / `freeink::ui::QwertyKeyboard` | • Evaluate FreeInk SDK's `components/keyboard/keyboard.h` for touch and D-pad button navigation. |
-| [`OpdsBookBrowserActivity`](file:///home/syafiq/code/witchling-reader/src/activities/browser/OpdsBookBrowserActivity.h) | Custom paginated catalog list | `UiListActivity` / `fui::BookCard` | • Catalog feed entries rendered with standardized book items and format badges. |
-| [`HomeActivity`](file:///home/syafiq/code/witchling-reader/src/activities/home/HomeActivity.h) | Legacy `BaseTheme` cover & menu drawing | FreeInk UI Integration | • Utilize `freeink::ui::CoverCarousel` / `CoverGrid` for recent reading hero slot.<br/>• Render home navigation entries via `freeink::ui::TileGrid` or `fui::List`. |
+| [`BookInfoActivity`](file:///home/syafiq/code/witchling-reader/src/activities/home/BookInfoActivity.h) | Manual text wrapping and `GUI.drawHeader` | `UiAppHost` | ✅ Migrated. Standardized header/footer with `ACTION_BACK`, `ACTION_PREV`, `ACTION_NEXT`. Composite cover thumbnail + metadata card with paged synopsis in `afterUiRender()`. |
+| [`KeyboardEntryActivity`](file:///home/syafiq/code/witchling-reader/src/activities/util/KeyboardEntryActivity.h) | Hand-crafted 2D grid matrix navigation | `UiAppHost` / `freeink::ui::qwertyKeyboard` | ✅ Migrated. Full QWERTY keyboard with `qwertyKeyboard`, `textField`, dual touch + physical D-pad navigation (`KeyboardNavigator`), Shift, Mode (?123), OK, Del, and URL mode snippets. |
+| [`OpdsBookBrowserActivity`](file:///home/syafiq/code/witchling-reader/src/activities/browser/OpdsBookBrowserActivity.h) | Custom paginated catalog list | `UiAppHost` / `freeink::ui::ListProps` | ✅ Migrated. All 8 internal states migrated. Feed entries rendered with windowed `fui::list`, book details with cover preview in `afterUiRender()`, format selection dialogs, and progress bars. |
+| [`HomeActivity`](file:///home/syafiq/code/witchling-reader/src/activities/home/HomeActivity.h) | Legacy `BaseTheme` cover & menu drawing | `UiAppHost` | ✅ Migrated. Registered interactive hit zones for recent reading hero slot (`ACTION_RECENT_BOOK`) and menu tiles (`ACTION_MENU_ITEM`). Full touch responsiveness with zero regressions to background cover decoding pipeline and D-pad navigation. |
+
+**Phase 6 Verification**:
+- PlatformIO C3 Build: **Passed** (`pio run -e default`).
+- RAM: 18.0% (58,896 bytes — 0 byte static DRAM delta vs baseline, rock solid across all 6 phases).
+- Flash: 83.3% (5,461,741 bytes — 32.9 KB net delta across all 4 complex screens). Zero template bloat.
 
 #### Excluded Surfaces (Intentionally Direct Renderers)
 * **Core Reader Viewports** ([`EpubReaderActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/EpubReaderActivity.h), [`XtcReaderActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/XtcReaderActivity.h)): Must remain dedicated high-performance text/image blitting engines that draw directly to `GfxRenderer` framebuffers for battery life and speed.

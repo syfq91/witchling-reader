@@ -7,13 +7,14 @@
 
 #include "../Activity.h"
 #include "OpdsServerStore.h"
+#include "components/UiAppHost.h"
 #include "util/ButtonNavigator.h"
 
 /**
  * Activity for browsing and downloading books from an OPDS server.
  * Supports navigation through catalog hierarchy and downloading EPUBs.
  */
-class OpdsBookBrowserActivity final : public Activity {
+class OpdsBookBrowserActivity final : public Activity, private UiAppHost {
  public:
   enum class BrowserState {
     CHECK_WIFI,
@@ -30,6 +31,7 @@ class OpdsBookBrowserActivity final : public Activity {
   explicit OpdsBookBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, OpdsServer server,
                                    std::string initialQuery = {})
       : Activity("OpdsBookBrowser", renderer, mappedInput),
+        UiAppHost(renderer),
         buttonNavigator(),
         server(std::move(server)),
         initialQuery_(std::move(initialQuery)) {}
@@ -41,6 +43,30 @@ class OpdsBookBrowserActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
+  static constexpr freeink::ui::ActionId ACTION_BACK = 1;
+  static constexpr freeink::ui::ActionId ACTION_RETRY = 2;
+  static constexpr freeink::ui::ActionId ACTION_CONFIRM = 3;
+  static constexpr freeink::ui::ActionId ACTION_SEARCH = 4;
+  static constexpr freeink::ui::ActionId ACTION_INFO = 5;
+  static constexpr freeink::ui::ActionId ACTION_SELECT_ENTRY = 6;
+  static constexpr freeink::ui::ActionId ACTION_SELECT_FORMAT = 7;
+  static constexpr freeink::ui::ActionId ACTION_DOWNLOAD = 8;
+
+  static void screenTrampoline(UiScreen& screen, void* user);
+  static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
+
+  void buildScreen(UiScreen& screen);
+  void handleAction(const freeink::ui::ActionEvent& event);
+  void afterUiRender();
+  void materializeListWindow();
+
+  static constexpr size_t LIST_WINDOW_CAPACITY = 16;
+  uint16_t windowFirst = 0;
+  uint16_t windowCount = 0;
+  freeink::ui::ListItem windowItems[LIST_WINDOW_CAPACITY];
+  std::string windowLabels[LIST_WINDOW_CAPACITY];
+  std::string windowSubtitles[LIST_WINDOW_CAPACITY];
+
   ButtonNavigator buttonNavigator;
   BrowserState state = BrowserState::LOADING;
   std::vector<uint32_t> entryOffsets;

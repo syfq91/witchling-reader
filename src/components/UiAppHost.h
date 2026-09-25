@@ -10,7 +10,7 @@ class MappedInputManager;
 
 class UiAppHost {
  public:
-  using UiApp = freeink::ui::FreeInkApp<24, 6>;
+  using UiApp = freeink::ui::FreeInkApp<48, 12>;
   using UiScreen = UiApp::ScreenType;
 
   explicit UiAppHost(const GfxRenderer& renderer);
