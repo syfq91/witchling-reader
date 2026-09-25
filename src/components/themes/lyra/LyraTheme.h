@@ -30,17 +30,7 @@ constexpr ThemeMetrics values = {.batteryWidth = 16,
                                  .progressBarHeight = 16,
                                  .progressBarMarginTop = 1,
                                  .statusBarHorizontalMargin = 5,
-                                 .statusBarVerticalMargin = 19,
-                                 .keyboardKeyWidth = 31,
-                                 .keyboardKeyHeight = 40,
-                                 .keyboardKeySpacing = 0,
-                                 .keyboardBottomKeyHeight = 35,
-                                 .keyboardBottomKeySpacing = 5,
-                                 .keyboardBottomAligned = true,
-                                 .keyboardCenteredText = false,
-                                 .keyboardVerticalOffset = -7,
-                                 .keyboardTextFieldWidthPercent = 85,
-                                 .keyboardWidthPercent = 90};
+                                 .statusBarVerticalMargin = 19};
 }
 
 class LyraTheme : public BaseTheme {
@@ -52,11 +42,6 @@ class LyraTheme : public BaseTheme {
   void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle) const override;
   void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
                      const char* rightLabel = nullptr) const override;
-  void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
-                const std::function<std::string(int index)>& rowTitle,
-                const std::function<std::string(int index)>& rowSubtitle,
-                const std::function<UIIcon(int index)>& rowIcon, const std::function<std::string(int index)>& rowValue,
-                bool highlightValue) const override;
   void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                        const char* btn4) const override;
   void drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, const char* downBtn) const override;
@@ -70,11 +55,6 @@ class LyraTheme : public BaseTheme {
   Rect drawPopup(const GfxRenderer& renderer, const char* message, bool overlayDisplayedFrame = true,
                  PopupShip ship = PopupShip::Blocking) const override;
   void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const override;
-  void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
-                     int contentStartX = 0, int contentWidth = 0) const override;
-  void drawKeyboardKey(const GfxRenderer& renderer, Rect rect, const char* label, const bool isSelected,
-                       const char* secondaryLabel = nullptr, KeyboardKeyType keyType = KeyboardKeyType::Normal,
-                       bool inactiveSelection = false) const override;
   bool showsFileIcons() const override { return true; }
 
  protected:

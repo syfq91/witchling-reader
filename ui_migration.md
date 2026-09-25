@@ -3,7 +3,7 @@
 This document establishes a complete, phased architecture and execution plan for migrating the remaining Witchling Reader user interfaces from the legacy drawing engine (`BaseTheme::drawList`, manual coordinate calculations, and custom scroll loops) to the **FreeInk SDK UI** framework (`FreeInkUI`).
 
 > [!NOTE]
-> **Status:** Phases 1–4 have been successfully implemented and verified. Phases 5–7 remain scheduled according to the roadmap below.
+> **Status:** All Phases (1 through 7) have been successfully implemented, verified, and concluded. The entire Witchling Reader UI runs on FreeInk SDK UI with legacy drawing routines fully purged.
 
 ---
 
@@ -271,15 +271,21 @@ flowchart TD
 
 ---
 
-### Phase 7: Deprecation & Dead Code Pruning
-Once Phases 1–5 are complete and no callers of the legacy list drawer remain:
-1. **Delete Legacy List Drawing Routines**:
-   * Remove `virtual void drawList(...)` from [`BaseTheme.h`](file:///home/syafiq/code/witchling-reader/src/components/themes/BaseTheme.h) and [`BaseTheme.cpp`](file:///home/syafiq/code/witchling-reader/src/components/themes/BaseTheme.cpp) (~170 lines).
-   * Remove override `void drawList(...)` from [`LyraTheme.h`](file:///home/syafiq/code/witchling-reader/src/components/themes/lyra/LyraTheme.h) and [`LyraTheme.cpp`](file:///home/syafiq/code/witchling-reader/src/components/themes/lyra/LyraTheme.cpp) (~250 lines).
-2. **Prune Obsolete Theme Metrics**:
-   * Prune unused fields in `ThemeMetrics` (`listRowHeight`, `listWithSubtitleRowHeight`, `listSidePadding`, etc.) that were only used by legacy `drawList`.
-3. **Flash & Binary Audit**:
-   * Reclaim an estimated **~15–20 KB of flash** from deleted layout math and dead string formatting routines.
+### Phase 7: Deprecation & Dead Code Pruning — ✅ COMPLETED
+With all activities migrated to FreeInkUI, the legacy drawing engine and dead metrics have been purged:
+1. **Deleted Legacy List & Component Drawing Routines**:
+   * Removed `drawList(...)`, `drawListSeparator(...)`, and `drawListOverflowArrows(...)` from [`BaseTheme`](file:///home/syafiq/code/witchling-reader/src/components/themes/BaseTheme.h) and [`LyraTheme`](file:///home/syafiq/code/witchling-reader/src/components/themes/lyra/LyraTheme.h).
+   * Removed dead keyboard drawing routines: `drawKeyboardKey(...)`, `drawTextField(...)`, `drawHelpText(...)`, and `KeyboardKeyType` enum.
+   * Removed unused `getNumberOfItemsPerPage(...)` from `UITheme`.
+2. **Pruned Obsolete Theme Metrics**:
+   * Pruned 11 dead keyboard layout metrics from `ThemeMetrics`, `BaseMetrics::values`, `LyraMetrics::values`, and `UiFontScale.h`.
+3. **Net Code Elimination**:
+   * **+10 lines, -510 lines** net diff across theme components.
+
+**Phase 7 Verification**:
+- PlatformIO C3 Build: **Passed** (`pio run -e default`).
+- RAM: 18.0% (58,848 bytes — **48 bytes static DRAM saved**).
+- Flash: 83.3% (5,458,943 bytes — **2,798 bytes flash binary saved**). Zero legacy code remaining.
 
 ---
 

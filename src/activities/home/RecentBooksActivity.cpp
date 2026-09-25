@@ -345,9 +345,8 @@ void RecentBooksActivity::openSelectedBook(const bool longPress) {
 // already selected opens the book. The highlight moving IS the confirmation step -- opening a
 // book on a single mis-tap costs a page load and a navigation back, which is the most expensive
 // thing a stray finger can do on this screen.
-//
-// The two views resolve the hit differently, and neither re-derives geometry. The list view
-// draws through GUI.drawList, so its rows are already published in ListTouchBand and
+// The two views resolve the hit differently: the list view uses FreeInkUI, while the grid view
+// computes touch targets from its tile positions.
 void RecentBooksActivity::loop() {
   if (APP_STATE.recentBooksGridView) {
     const bool gridView = true;

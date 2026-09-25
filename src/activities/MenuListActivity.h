@@ -9,7 +9,7 @@
 #include "settings/SettingInfo.h"
 
 // Base class for activities that display a scrollable list of SettingInfo items.
-// Provides common navigation, toggle/cycle logic, and drawList rendering.
+// Provides common navigation, toggle/cycle logic, and FreeInkUI list rendering.
 //
 // Subclasses populate `menuItems` (typically in the constructor or onEnter()),
 // then rely on the default loop()/onEnter() or override selectively.

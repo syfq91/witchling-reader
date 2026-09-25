@@ -66,23 +66,9 @@ struct ThemeMetrics {
   int progressBarMarginTop;
   int statusBarHorizontalMargin;
   int statusBarVerticalMargin;
-
-  int keyboardKeyWidth;
-  int keyboardKeyHeight;
-  int keyboardKeySpacing;
-  int keyboardBottomKeyHeight;
-  int keyboardBottomKeySpacing;
-  bool keyboardBottomAligned;
-  bool keyboardCenteredText;
-  int keyboardVerticalOffset;
-  int keyboardTextFieldWidthPercent;
-  int keyboardWidthPercent;
-  int keyboardKeyCornerRadius = 0;
 };
 
 enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Ellipsis };
-
-enum class KeyboardKeyType { Normal, Shift, Mode, Reveal, Space, Del, Ok, Disabled };
 
 enum class HomeNavigation { Linear, Carousel };
 
@@ -114,17 +100,7 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .progressBarHeight = 16,
                                  .progressBarMarginTop = 1,
                                  .statusBarHorizontalMargin = 5,
-                                 .statusBarVerticalMargin = 19,
-                                 .keyboardKeyWidth = 22,
-                                 .keyboardKeyHeight = 40,
-                                 .keyboardKeySpacing = 0,
-                                 .keyboardBottomKeyHeight = 35,
-                                 .keyboardBottomKeySpacing = 5,
-                                 .keyboardBottomAligned = true,
-                                 .keyboardCenteredText = false,
-                                 .keyboardVerticalOffset = -13,
-                                 .keyboardTextFieldWidthPercent = 85,
-                                 .keyboardWidthPercent = 90};
+                                 .statusBarVerticalMargin = 19};
 }
 
 enum class SyncIndicator : uint8_t { None, Active, Failed };
@@ -142,14 +118,6 @@ class BaseTheme {
   virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                const char* btn4) const;
   virtual void drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, const char* downBtn) const;
-  virtual void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
-                        const std::function<std::string(int index)>& rowTitle,
-                        const std::function<std::string(int index)>& rowSubtitle = nullptr,
-                        const std::function<UIIcon(int index)>& rowIcon = nullptr,
-                        const std::function<std::string(int index)>& rowValue = nullptr,
-                        bool highlightValue = false) const;
-  virtual void drawListSeparator(const GfxRenderer& renderer, Rect rowRect, int textX, int textWidth,
-                                 const std::string& title) const;
   virtual void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
                           const char* subtitle = nullptr) const;
   virtual void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
@@ -176,12 +144,6 @@ class BaseTheme {
                              const std::string& printedPageLabel = std::string(), const bool fillMargin = true,
                              const bool pageCountApproximate = false,
                              const std::vector<float>& chapterMarkers = {}) const;
-  virtual void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;
-  virtual void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
-                             int contentStartX = 0, int contentWidth = 0) const;
-  virtual void drawKeyboardKey(const GfxRenderer& renderer, Rect rect, const char* label, const bool isSelected,
-                               const char* secondaryLabel = nullptr, KeyboardKeyType keyType = KeyboardKeyType::Normal,
-                               bool inactiveSelection = false) const;
   virtual bool showsFileIcons() const { return false; }
 
   // ---- Home screen navigation / rendering contract ----
@@ -230,9 +192,6 @@ class BaseTheme {
   static int statusBarBatteryWidth(const GfxRenderer& renderer, const ThemeMetrics& metrics, bool showPercentage);
 
  protected:
-  // Up/down triangles marking that the list continues past the visible rows. Used by themes
-  // without a scroll bar.
-  static void drawListOverflowArrows(const GfxRenderer& renderer, Rect rect);
 
   // Ships the frame a drawPopup() override just composed, blocking or not. One place so the two
   // popup looks cannot drift on the part that isn't a look at all.

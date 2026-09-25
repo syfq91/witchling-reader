@@ -313,7 +313,7 @@ void FileBrowserActivity::resetNavigation(const int selected) {
   nav.reset(std::max(0, std::min(last, selected)));
 }
 
-// Rows one Left/Right press moves. drawList reports what the last render fit — which for wrapped
+// Rows one Left/Right press moves. nav reports what the last render fit — which for wrapped
 // rows is not a constant — and before the first render there is nothing to report yet.
 int FileBrowserActivity::listPageSize() const { return nav.pageRowsFor(listCount()); }
 

@@ -72,10 +72,8 @@ constexpr void applyTo(ThemeMetrics& metrics, const Step& growth) {
   metrics.menuRowHeight += growth.body;
   metrics.tabBarHeight += growth.body;
   metrics.buttonHintsHeight += growth.body;
-  metrics.keyboardKeyHeight += growth.body;
-  metrics.keyboardBottomKeyHeight += growth.body;
 
-  // A title line plus up to two subtitle lines, the worst case drawList() paints.
+  // A title line plus up to two subtitle lines.
   metrics.listWithSubtitleRowHeight += growth.body + growth.small * 2;
 
   // A title line plus an optional subtitle line.

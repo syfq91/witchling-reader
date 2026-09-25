@@ -80,25 +80,6 @@ Rect UITheme::getHeaderRect(const GfxRenderer& renderer) {
   return Rect{full.x, metrics.topPadding, full.width, metrics.headerHeight};
 }
 
-int UITheme::getNumberOfItemsPerPage(const GfxRenderer& renderer, bool hasHeader, bool hasTabBar, bool hasButtonHints,
-                                     bool hasSubtitle) {
-  const ThemeMetrics& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = getContentRect(renderer, hasButtonHints, /*hasSideHints=*/false);
-  int reservedHeight = metrics.topPadding;
-  if (hasHeader) {
-    reservedHeight += metrics.headerHeight + metrics.verticalSpacing;
-  }
-  if (hasTabBar) {
-    reservedHeight += metrics.tabBarHeight;
-  }
-  if (hasButtonHints) {
-    reservedHeight += metrics.verticalSpacing;
-  }
-  const int availableHeight = contentRect.height - reservedHeight;
-  int rowHeight = hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight;
-  return availableHeight / rowHeight;
-}
-
 Rect UITheme::getContentRect(const GfxRenderer& renderer, bool hasBottomHints, bool hasSideHints) {
   const ThemeMetrics& metrics = UITheme::getInstance().getMetrics();
   const int bh = hasBottomHints ? metrics.buttonHintsHeight : 0;
