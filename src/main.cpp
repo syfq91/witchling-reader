@@ -178,10 +178,14 @@ constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
 // "Quick Resume on Timeout").
 constexpr uint32_t SILENT_REBOOT_TARGET_SLEEP = 4;
 constexpr uint32_t SILENT_REBOOT_TARGET_SLEEP_TIMEOUT = 5;
+// Boot into Settings after a settings action left the radio up on its way out
+// (the WiFi Networks picker, Weather's city search), so the user lands back where
+// they started instead of on Home.
+constexpr uint32_t SILENT_REBOOT_TARGET_SETTINGS = 7;
 // Upper bound for the cold-boot sanity check on silentRebootTarget (RTC_NOINIT is
 // uninitialized on power-up). Must equal the highest target above — keep it in
 // sync when adding one, or the new target silently reads as HOME.
-constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_SLEEP_TIMEOUT;
+constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_SETTINGS;
 constexpr uint32_t HEAP_RECOVERY_RESTART_LATCH_MAGIC = 0x48EA9C01;
 
 // How the device is coming back to life, resolved once at boot. Both resume
@@ -230,6 +234,13 @@ void silentRestartToReader() {
   ESP.restart();
 }
 
+void silentRestartToSettings() {
+  if (deepSleepInProgress) return;
+  armSilentReboot(SILENT_REBOOT_TARGET_SETTINGS);
+  LOG_DBG("MAIN", "Silent restart (target=settings)");
+  delay(50);
+  ESP.restart();
+}
 bool trySilentRestartToReaderForHeapRecovery() {
   if (deepSleepInProgress) return false;  // sleeping supersedes the heap-defrag reboot
   if (heapRecoveryRestartLatch == HEAP_RECOVERY_RESTART_LATCH_MAGIC) {
@@ -1070,6 +1081,8 @@ void setup() {
   } else if (resume == BootResume::Silent && silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_READER &&
              !APP_STATE.openEpubPath.empty()) {
     activityManager.goToReader(APP_STATE.openEpubPath);
+  } else if (resume == BootResume::Silent && silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_SETTINGS) {
+    activityManager.goToSettings();
   } else if (resume == BootResume::Silent) {
     // target == home (or reader with no open book): land on home — don't fall
     // through to the sleep-wake "resume reader" logic, which fires on stale

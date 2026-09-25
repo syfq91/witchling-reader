@@ -389,6 +389,98 @@ void checkHeapIntegrity(const char* checkpoint) {
 inline void checkHeapIntegrity(const char*) {}
 #endif
 
+// Pin forensics for a failed secondary-framebuffer realloc: which USED blocks split the big free
+// spans. heap_caps_dump() cannot be used for this -- it prints every block (hundreds of lines)
+// while holding the heap lock with interrupts masked, and on X3 2026-09-25 that tripped the
+// 300 ms Interrupt WDT mid-dump (Guru Meditation, reboot). The walker callback runs under the same
+// lock, so it only copies into a fixed static table; the printing happens after the walk returns.
+//
+// Recorded: every free span >= PIN_SPAN_MIN, and every used block bordering one (the candidate
+// pins), with its first words. With CONFIG_HEAP_POISONING_LIGHT the block starts with the poison
+// head {0xABBA1234, requested size}; the words after it are the payload -- a vtable pointer
+// (0x3cxxxxxx rodata: `nm -n firmware.elf` finds the "vtable for X" at or below it) or text
+// identifies the owner. A payload of two heap pointers is usually an unwritten block's stale
+// TLSF free-list links.
+struct HeapPinEntry {
+  uintptr_t addr;
+  uint32_t size;
+  bool used;
+  uint32_t words[4];
+};
+struct HeapPinWalk {
+  static constexpr size_t MAX_ENTRIES = 24;
+  static constexpr size_t PIN_SPAN_MIN = 1024;
+  HeapPinEntry entries[MAX_ENTRIES];
+  size_t count = 0;
+  size_t dropped = 0;
+  HeapPinEntry prev{};  // previous block of the current heap
+  bool prevValid = false;
+  bool prevRecorded = false;
+  intptr_t heapStart = 0;
+
+  void record(const HeapPinEntry& e) {
+    if (count < MAX_ENTRIES) {
+      entries[count++] = e;
+    } else {
+      ++dropped;
+    }
+  }
+};
+
+HeapPinEntry makePinEntry(const walker_block_info_t& block) {
+  HeapPinEntry e{reinterpret_cast<uintptr_t>(block.ptr), static_cast<uint32_t>(block.size), block.used, {}};
+  if (block.used && block.size >= sizeof(e.words)) memcpy(e.words, block.ptr, sizeof(e.words));
+  return e;
+}
+
+bool heapPinWalker(walker_heap_into_t heap, walker_block_info_t block, void* user) {
+  auto& w = *static_cast<HeapPinWalk*>(user);
+  if (heap.start != w.heapStart) {  // new heap: adjacency does not cross heap boundaries
+    w.heapStart = heap.start;
+    w.prevValid = false;
+  }
+  const HeapPinEntry cur = makePinEntry(block);
+  const bool curBigFree = !cur.used && cur.size >= HeapPinWalk::PIN_SPAN_MIN;
+  const bool prevBigFree = w.prevValid && !w.prev.used && w.prev.size >= HeapPinWalk::PIN_SPAN_MIN;
+  bool curRecorded = false;
+  if (curBigFree) {
+    if (w.prevValid && w.prev.used && !w.prevRecorded) w.record(w.prev);  // used block before the span
+    w.record(cur);
+    curRecorded = true;
+  } else if (cur.used && prevBigFree) {
+    w.record(cur);  // used block after the span
+    curRecorded = true;
+  }
+  w.prev = cur;
+  w.prevValid = true;
+  w.prevRecorded = curRecorded;
+  return true;
+}
+
+void logHeapPinForensics() {
+  // ~700 B: too big for the render-task stack, and not worth permanent BSS for a once-per-boot
+  // diagnostic. Allocated before the walk and freed after, so it cannot be a pin it reports.
+  auto walkOwner = makeUniqueNoThrow<HeapPinWalk>();
+  if (!walkOwner) {
+    LOG_ERR("ERS", "  (no heap for the pin walk)");
+    return;
+  }
+  HeapPinWalk& walk = *walkOwner;
+  heap_caps_walk(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT, heapPinWalker, &walk);
+  for (size_t i = 0; i < walk.count; ++i) {
+    const HeapPinEntry& e = walk.entries[i];
+    if (e.used) {
+      LOG_ERR("ERS", "  pin  0x%08x size=%5lu words=%08lx %08lx %08lx %08lx", static_cast<unsigned>(e.addr),
+              static_cast<unsigned long>(e.size), static_cast<unsigned long>(e.words[0]),
+              static_cast<unsigned long>(e.words[1]), static_cast<unsigned long>(e.words[2]),
+              static_cast<unsigned long>(e.words[3]));
+    } else {
+      LOG_ERR("ERS", "  free 0x%08x size=%5lu", static_cast<unsigned>(e.addr), static_cast<unsigned long>(e.size));
+    }
+  }
+  if (walk.dropped != 0) LOG_ERR("ERS", "  (+%u entries not recorded)", static_cast<unsigned>(walk.dropped));
+}
+
 #if DEBUG_MEMORY_CONSUMPTION
 // The `Min Free` in the periodic [MEM] line is esp_get_minimum_free_heap_size() — a boot-wide
 // watermark with no timestamp, so it tells you the session dipped to N and nothing about where.
@@ -2850,7 +2942,16 @@ bool EpubReaderActivity::reallocSecondaryEvictingCaches() {
     LOG_INF("ERS", "Dropping Background-B section (spine=%d) for secondary realloc", backgroundBuildSpineIndex_);
     resetBackgroundBuild();
   }
-  if (renderer.reallocSecondaryBuffer()) {
+  // The image manifest keeps one path string per image a build has met, allocated during that
+  // build -- after a released one, strewn through the very hole this realloc needs (X3
+  // 2026-09-25: "OEBPS/images/..." blocks bounding the freed region). Persist and drop it, then
+  // reload it from images.bin once the buffer is placed. Only with no build holding it: the
+  // parser caches the manifest pointer at setup, and the reload replaces the object.
+  const bool evictManifest = epub && !(section && section->hasActiveBuild());
+  if (evictManifest) epub->releaseImageManifest();
+  const bool restored = renderer.reallocSecondaryBuffer();
+  if (evictManifest) epub->loadImageManifest();
+  if (restored) {
     LOG_INF("ERS", "Secondary realloc succeeded after cache eviction");
     return true;
   }
@@ -2951,14 +3052,13 @@ void EpubReaderActivity::recoverSecondaryBufferIfNeeded() {
       const uint32_t contigHeap = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT);
       LOG_ERR("ERS", "Secondary display buffer realloc failed (free=%lu contig=%lu); AA stays off, will retry",
               freeHeap, contigHeap);
-      // One-shot forensic dump so field logs identify WHAT is pinning the released hole
-      // (address + size of every block). Once per boot: the block map barely changes
-      // between failed retries and the dump is hundreds of serial lines.
+      // One-shot forensics so field logs identify WHAT is pinning the released hole. Once per
+      // boot: the block map barely changes between failed retries.
       static bool dumpedHeapOnce = false;
       if (!dumpedHeapOnce) {
         dumpedHeapOnce = true;
-        LOG_ERR("ERS", "Heap block dump (one-shot, pin forensics):");
-        heap_caps_dump(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT);
+        LOG_ERR("ERS", "Heap pin forensics (one-shot, free spans >= 1 KB and their neighbours):");
+        logHeapPinForensics();
       }
       // Cache eviction plus opportunistic retries did not recover a framebuffer-sized
       // contiguous block, so escalate to a recovery reboot once free heap is plentiful
@@ -3282,6 +3382,11 @@ EpubReaderActivity::BuildOutcome EpubReaderActivity::compileSectionCache(const R
   buildParams.viewportWidth = layout.viewportWidth;
   buildParams.viewportHeight = layout.viewportHeight;
 
+  // Image headers an earlier build could not size (a walk short of memory keeps its image queued
+  // in the manifest) are resolved now, from the framebuffer, before this build carves up the
+  // heap: whatever it lays out from here on is answered from the manifest with no ring at all.
+  if (!secondaryBorrowed_) resolvePendingImageHeadersFromFramebuffer();
+
   // Prefer to build WITHOUT releasing the secondary buffer when heap is ample, so the chapter's
   // first page keeps a valid fast-refresh baseline. The in-place attempt defers image decode to
   // the lazy per-page path, so a failure here is a graceful parser abort (not a corruption-prone
@@ -3337,19 +3442,39 @@ EpubReaderActivity::BuildOutcome EpubReaderActivity::compileSectionCache(const R
     checkHeapIntegrity("after_createSectionFile_retry");
   }
 
-  // An image dropped to alt text because its header walk was deferred (#249) is resolved now,
-  // while the buffer is still released: the walk's ring needs ~33 KB contiguous, which this
-  // reader heap only has with the buffer gone (X3 steady state tops out ~31.7 KB). Only a
-  // resolve earns the one rebuild — the manifest then answers with no ring at all — so a walk
-  // that still fails leaves the build as it is.
-  if (createOk && section->isImageHeaderDegraded() && epub->persistImageManifest()) {
-    LOG_INF("ERS", "Section %d: image headers resolved after the build; rebuilding once", currentSpineIndex);
-    section->clearCache();
-    const uint32_t rebuildStart = millis();
-    createOk = runCreate();
-    LOG_INF("ERS", "createSectionFile image rebuild returned %d in %ums (free=%lu)", createOk ? 1 : 0,
-            millis() - rebuildStart, esp_get_free_heap_size());
-    checkHeapIntegrity("after_createSectionFile_image_rebuild");
+  // An image dropped to alt text because its header walk was deferred (#249) is resolved now.
+  // First from the heap, where the staged walk (16 KB ring) mostly fits with the buffer released;
+  // what is still short of memory then comes from the framebuffer itself: reclaim the freed hole
+  // as the one 52 KB block (a plain realloc), borrow it for the walk, and free it again so the
+  // restore below runs exactly as before. That is the region an X3 heap can never offer
+  // otherwise -- after a fragmented build not even released (2026-09-25: 28,660 contig against a
+  // 33,280 walk left a chapter cached with none of its 27 images). Only a resolve earns the one
+  // rebuild -- the manifest then answers with no ring at all -- so a walk that finds nothing
+  // leaves the build as it is.
+  if (createOk && section->isImageHeaderDegraded()) {
+    bool imagesResolved = epub->persistImageManifest();
+    const EpubImageManifest* manifest = epub->getImageManifest();
+    if (manifest && manifest->hasPending()) {
+      if (released) {
+        if (renderer.reallocSecondaryBuffer()) {
+          imagesResolved = resolvePendingImageHeadersFromFramebuffer() || imagesResolved;
+          renderer.releaseSecondaryBuffer();
+        } else {
+          LOG_ERR("ERS", "Section %d: no block for the image header walk; images stay deferred", currentSpineIndex);
+        }
+      } else {
+        imagesResolved = resolvePendingImageHeadersFromFramebuffer() || imagesResolved;
+      }
+    }
+    if (imagesResolved) {
+      LOG_INF("ERS", "Section %d: image headers resolved after the build; rebuilding once", currentSpineIndex);
+      section->clearCache();
+      const uint32_t rebuildStart = millis();
+      createOk = runCreate();
+      LOG_INF("ERS", "createSectionFile image rebuild returned %d in %ums (free=%lu)", createOk ? 1 : 0,
+              millis() - rebuildStart, esp_get_free_heap_size());
+      checkHeapIntegrity("after_createSectionFile_image_rebuild");
+    }
   }
 
   // No eager image pre-decode here. Only the dimensions are needed to lay a section out, and
@@ -3404,6 +3529,27 @@ EpubReaderActivity::BuildOutcome EpubReaderActivity::compileSectionCache(const R
   }
   checkHeapIntegrity("after_fb_realloc");
   return outcome;
+}
+
+bool EpubReaderActivity::resolvePendingImageHeadersFromFramebuffer() {
+  EpubImageManifest* manifest = epub ? epub->getImageManifest() : nullptr;
+  if (!manifest || !manifest->hasPending() || secondaryBorrowed_ || !renderer.hasSecondaryBuffer()) return false;
+  size_t size = 0;
+  uint8_t* borrowed = renderer.borrowSecondaryBuffer(&size);
+  if (!borrowed) return false;
+  bool resolved = false;
+  {
+    // Scoped so the arena is gone before the buffer goes back (see the warm pass for the
+    // use-after-free this ordering prevents). The walk's ring is a scoped block inside it.
+    BuildArena arena(borrowed, size);
+    if (arena.valid()) {
+      resolved = epub->persistImageManifest(&arena);
+      LOG_INF("ERS", "Image header walk from the framebuffer: resolved=%d, still pending=%d", resolved ? 1 : 0,
+              manifest->hasPending() ? 1 : 0);
+    }
+  }
+  renderer.returnSecondaryBuffer();  // cannot fail: the region never entered the heap
+  return resolved;
 }
 
 bool EpubReaderActivity::buildSection(const RenderLayout& layout) {
@@ -3488,6 +3634,18 @@ bool EpubReaderActivity::buildSection(const RenderLayout& layout) {
   // is permanent rather than repeated on the next open.
   if (cacheHit && section->isTruncatedCache() && section->pageCount == 0) {
     LOG_INF("ERS", "Section %d: cached file is truncated with 0 pages; discarding and rebuilding", currentSpineIndex);
+    section->clearCache();
+    cacheHit = false;
+  }
+
+  // A cache whose build dropped images because the heap could not size them right then (the
+  // header walk needs ~33 KB contiguous; X3 2026-09-25: a rebuild on a fragmented heap left all 27
+  // images of a chapter out, and the heap-recovery reboot that followed would have had room for
+  // every one). The rebuild resolves them while the buffer is released. Once per spine per
+  // session: if even that build comes out degraded, reading on beats rebuilding on every entry.
+  if (cacheHit && section->isImageHeaderDegraded() && imageHeaderRebuildSpine_ != currentSpineIndex) {
+    LOG_INF("ERS", "Section %d: cached without images the heap could not size; rebuilding", currentSpineIndex);
+    imageHeaderRebuildSpine_ = currentSpineIndex;
     section->clearCache();
     cacheHit = false;
   }

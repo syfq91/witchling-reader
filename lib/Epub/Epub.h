@@ -281,6 +281,10 @@ class Epub {
   // Non-const: section indexing resolves + caches new image dimensions through it.
   EpubImageManifest* getImageManifest() { return imageManifest.get(); }
   const EpubImageManifest* getImageManifest() const { return imageManifest.get(); }
+  // See EpubImageManifest::releaseMemory(); loadImageManifest() brings it back.
+  void releaseImageManifest() {
+    if (imageManifest) imageManifest->releaseMemory();
+  }
   // End-of-build hook: walk any image whose header read was deferred mid-parse (see
   // EpubImageManifest::resolvePending), then flush newly-resolved dimensions to images.bin.
   // Returns true when at least one deferred image was resolved — i.e. a build that degraded
@@ -289,7 +293,7 @@ class Epub {
   // from, or nullptr to use the heap — see EpubImageManifest::resolvePending.
   bool persistImageManifest(BuildArena* walkArena = nullptr) {
     if (!imageManifest) return false;
-    const bool resolvedDeferred = imageManifest->resolvePending(walkArena) > 0;
+    const bool resolvedDeferred = imageManifest->resolvePending(walkArena, getPath()) > 0;
     imageManifest->persistIfDirty();
     return resolvedDeferred;
   }

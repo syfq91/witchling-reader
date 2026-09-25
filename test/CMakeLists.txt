@@ -149,7 +149,7 @@ add_subdirectory(opds_filename)
 add_subdirectory(epub_pipeline)
 add_subdirectory(memory_arena)
 add_subdirectory(content_bin)
-
+add_subdirectory(sd_font_intervals)
 add_subdirectory(font_size_ladder)
 add_subdirectory(settings_grouping)
 add_subdirectory(home_menu)

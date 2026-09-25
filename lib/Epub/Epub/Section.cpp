@@ -30,9 +30,21 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 75;  // bumped: removed bionic reading; reader ladder gained
-                                              // rungs above 18 pt (20/22/24/26), so a heading snaps to a
-                                              // different face and residual than it did under v74.
+constexpr uint8_t SECTION_FILE_VERSION = 77;  // bumped: the status byte records a heap-degraded
+                                              // image build (kStatusImageHeaderDegraded); a v76
+                                              // cache may be image-less without saying so
+                                              // v76: a percentage wrapper (<div
+                                              // style="width:60%">) no longer shrinks a block
+                                              // image below min(native, column), so image
+                                              // sizes baked into v75 pages are stale
+                                              // v75: the reader ladder gained rungs above
+                                              // 18 pt (20/22/24/26), so a heading snaps to a
+                                              // different face and residual than it did under
+                                              // v74 and breaks across lines differently. The
+                                              // ladder is derived from the body fontId and so is
+                                              // deliberately absent from the property hash; the
+                                              // hash therefore still MATCHES, and this version
+                                              // is the only thing that rejects a v74 cache
                                               // v74: the HTML `hidden` attribute now
                                               // suppresses an element, so a v73 cache still
                                               // holds the laid-out text it should have hidden
@@ -92,6 +104,15 @@ constexpr uint32_t kPageBreakMap = kAnchorMap + sizeof(uint32_t);
 constexpr uint32_t kParagraphLut = kPageBreakMap + sizeof(uint32_t);
 constexpr uint32_t kSize = kParagraphLut + sizeof(uint32_t);
 }  // namespace header
+
+// The byte at header::kParseComplete. It was a bool, so files written before the flags existed
+// read as "complete / not degraded" or "truncated" exactly as before -- no version bump.
+//   kStatusImageHeaderDegraded: an image was laid out as alt text because the heap could not
+//   size it right then (see Section::isImageHeaderDegraded). Persisted so a later open -- with
+//   the fresh heap the build lacked -- can rebuild the chapter instead of caching it image-less
+//   for good.
+constexpr uint8_t kStatusParseComplete = 1 << 0;
+constexpr uint8_t kStatusImageHeaderDegraded = 1 << 1;
 
 // On-disk paragraph LUT entry: u32 xhtmlByteOffset + u16 paragraphIndex + u16 listItemIndex.
 // listItemIndex is the running <li> count at page-break time; together with
@@ -498,7 +519,7 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
   serialization::writePod(file, hyphenationEnabled);
   serialization::writePod(file, embeddedStyle);
   serialization::writePod(file, imageRendering);
-  serialization::writePod(file, false);      // Placeholder for parseComplete (patched later)
+  serialization::writePod(file, false);      // Placeholder for the status byte (patched later)
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for LUT offset (patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for anchor map offset (patched later)
@@ -509,6 +530,7 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
 
 bool Section::loadSectionFile(const BuildParams& p) {
   truncatedCache = false;
+  imageHeaderDegraded_ = false;
   embeddedStyleFallback = false;
   uint32_t propertyHash = calculatePropertyHash(p);
   filePath = getSectionFilePath(propertyHash);
@@ -552,7 +574,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
     bool fileHyphenationEnabled;
     bool fileEmbeddedStyle;
     uint8_t fileImageRendering;
-    bool fileParseComplete;
+    uint8_t fileStatus;
     serialization::readPod(file, fileFontId);
     serialization::readPod(file, fileLineCompression);
     serialization::readPod(file, fileExtraParagraphSpacing);
@@ -562,7 +584,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
     serialization::readPod(file, fileHyphenationEnabled);
     serialization::readPod(file, fileEmbeddedStyle);
     serialization::readPod(file, fileImageRendering);
-    serialization::readPod(file, fileParseComplete);
+    serialization::readPod(file, fileStatus);
 
     const bool embeddedStyleMatches =
         (p.embeddedStyle == fileEmbeddedStyle) || (usingEmbeddedStyleFallback && !fileEmbeddedStyle);
@@ -576,7 +598,8 @@ bool Section::loadSectionFile(const BuildParams& p) {
       return false;
     }
 
-    truncatedCache = !fileParseComplete;
+    truncatedCache = (fileStatus & kStatusParseComplete) == 0;
+    imageHeaderDegraded_ = (fileStatus & kStatusImageHeaderDegraded) != 0;
   }
 
   serialization::readPod(file, pageCount);
@@ -627,6 +650,7 @@ bool Section::clearCache() {
   pageCount = 0;
   currentPage = 0;
   truncatedCache = false;
+  imageHeaderDegraded_ = false;
 
   if (!Storage.exists(filePath.c_str())) {
     LOG_DBG("SCT", "Cache does not exist, no action needed");
@@ -1008,6 +1032,9 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   // finalizer below copies the spill into the section file's anchor map. Set before setup(),
   // which is where the parser opens it.
   st.visitor->setAnchorSpillPath(getAnchorSpillPath());
+  // Only the lent framebuffer region has room for the parser's SAX state (~10 KB) on top of the
+  // build's own use; the owned heap arena is 10 KB in total and would just move the block.
+  if (st.arena && st.arena != st.ownedArena.get()) st.visitor->setBuildArena(st.arena);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
 
   // Inline footnote previews are NOT wired up here: the note text this spine needs may not be
@@ -1541,7 +1568,9 @@ Section::BuildPhaseResult Section::runBuildFinalize(BuildState& st) {
     Storage.remove(filePath.c_str());
     return BuildPhaseResult::Failed;
   }
-  serialization::writePod(file, parseComplete);
+  const uint8_t status =
+      (parseComplete ? kStatusParseComplete : 0) | (imageHeaderDegraded_ ? kStatusImageHeaderDegraded : 0);
+  serialization::writePod(file, status);
   serialization::writePod(file, pageCount);
   serialization::writePod(file, lutOffset);
   serialization::writePod(file, anchorMapOffset);
@@ -1549,8 +1578,8 @@ Section::BuildPhaseResult Section::runBuildFinalize(BuildState& st) {
   serialization::writePod(file, paragraphLutOffset);
   file.flush();
 
-  const size_t expectedHeaderPatchEnd = headerPatchStart + sizeof(parseComplete) + sizeof(pageCount) +
-                                        sizeof(lutOffset) + sizeof(anchorMapOffset) + sizeof(pageBreakMapOffset) +
+  const size_t expectedHeaderPatchEnd = headerPatchStart + sizeof(status) + sizeof(pageCount) + sizeof(lutOffset) +
+                                        sizeof(anchorMapOffset) + sizeof(pageBreakMapOffset) +
                                         sizeof(paragraphLutOffset);
   if (file.position() != expectedHeaderPatchEnd) {
     LOG_ERR("SCT", "Section header patch write failed: wrote %u bytes at offset %u",
@@ -1566,25 +1595,25 @@ Section::BuildPhaseResult Section::runBuildFinalize(BuildState& st) {
 
   buildTocBoundaries(anchors);
 
-  // Populate in-memory pageBreakLabels from the just-completed parse so the status bar
-  // can show printed-page labels without having to reload the section cache from disk.
-  // Without this, labels only appear after a subsequent open (via buildPageBreakLabelsFromFile).
-  this->pageBreakLabels.clear();
-  for (const auto& entry : visitor.getPageBreakLabels()) {
-    this->pageBreakLabels.emplace_back(entry.first, entry.second);
-  }
+  // The labels were just written to the cache; the first query reads them back from there
+  // (see pageBreakLabelsPending_ for why they are not copied from the parser here). Swap, not
+  // clear(), so a rebuilt section also gives back the previous build's block.
+  std::vector<std::pair<uint16_t, std::string>>().swap(this->pageBreakLabels);
+  pageBreakLabelsPending_ = !visitor.getPageBreakLabels().empty();
 
   file.close();
 
   // The spill has been copied into the cache; it is scratch and nothing reads it again.
   Storage.remove(getAnchorSpillPath().c_str());
 
-  // Cache the LUT in memory and open the file for reading so that
-  // subsequent loadPageFromSectionFile() calls can seek directly without re-opening.
-  if (!Storage.openFileForRead("SCT", filePath, file)) {
-    LOG_ERR("SCT", "Failed to open section file for reading after creation");
-    return BuildPhaseResult::Failed;
-  }
+  // Cache the LUT in memory. The read handle is NOT reopened here: HalFile heap-allocates its
+  // FsFile (~92 B) on every open, and this one lives as long as the section. Taken now, while a
+  // released build still has the secondary framebuffer's hole open, it pins the hole's low edge
+  // (X3 2026-09-25, pin forensics: the FsFile vtable at the bottom of the freed region). The
+  // first loadPageFromSectionFile() opens it instead, after the reader has re-taken the buffer.
+  // Drop the closed write handle too: close() keeps HalFile's heap Impl, which was allocated at
+  // build setup -- inside that same hole.
+  file = HalFile();
   truncatedCache = !parseComplete;
   this->lut = std::move(st.lut);
   const uint32_t finalizeMs = millis() - phaseFinalizeStart;
@@ -1843,8 +1872,8 @@ std::unique_ptr<Page> Section::loadPageFromSectionFile() {
   }
 
   if (!file) {
-    // Safety fallback: file was closed unexpectedly; reopen
-    LOG_ERR("SCT", "loadPageFromSectionFile: file not open, reopening");
+    // Normal after a build (finalize leaves the read handle for here, see runBuildFinalize);
+    // otherwise a fallback for a handle that was closed unexpectedly.
     if (!Storage.openFileForRead("SCT", filePath, file)) {
       return nullptr;
     }
@@ -2100,7 +2129,18 @@ void Section::buildTocBoundariesFromFile(FsFile& f) {
             [](const TocBoundary& a, const TocBoundary& b) { return a.startPage < b.startPage; });
 }
 
-void Section::buildPageBreakLabelsFromFile(FsFile& f) {
+void Section::ensurePageBreakLabels() const {
+  if (!pageBreakLabelsPending_) return;
+  pageBreakLabelsPending_ = false;  // one attempt: a failed read leaves the labels empty
+  // A private handle, so a const query never moves the shared page-reading position.
+  FsFile f;
+  if (!Storage.openFileForRead("SCT", filePath, f)) return;
+  buildPageBreakLabelsFromFile(f);
+  f.close();
+}
+
+void Section::buildPageBreakLabelsFromFile(FsFile& f) const {
+  pageBreakLabelsPending_ = false;
   pageBreakLabels.clear();
   f.seek(header::kPageBreakMap);
   uint32_t pageBreakMapOffset;
@@ -2112,6 +2152,7 @@ void Section::buildPageBreakLabelsFromFile(FsFile& f) {
   f.seek(pageBreakMapOffset);
   uint16_t count;
   serialization::readPod(f, count);
+  pageBreakLabels.reserve(count);
   for (uint16_t i = 0; i < count; i++) {
     uint16_t page;
     std::string label;
@@ -2263,6 +2304,7 @@ std::optional<std::string> Section::getNearestPrintedPageLabelAtOrBefore(uint16_
   // pageBreakLabels is built in document order (i.e. ascending pageIndex), so the last
   // entry whose page is <= `page` is the "you're currently reading at or after this
   // printed page" hint. Returns the raw label (no parens, no slash-collapsing).
+  ensurePageBreakLabels();
   std::optional<std::string> best;
   for (const auto& [labelPage, label] : pageBreakLabels) {
     if (labelPage > page) break;
@@ -2276,6 +2318,7 @@ std::optional<std::string> Section::getPrintedPageLabelForPage(uint16_t page) co
   // Multiple labels can co-occur when a short device page contains more than one EPUB
   // pagebreak marker (e.g. printed pages 7 and 8 both starting within the same device page).
   // pageBreakLabels is recorded in document order, so we can short-circuit once we pass `page`.
+  ensurePageBreakLabels();
   std::vector<std::string> labels;
   for (const auto& [labelPage, label] : pageBreakLabels) {
     if (labelPage == page) {
