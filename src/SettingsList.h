@@ -3,10 +3,12 @@
 #include <HalCapabilities.h>
 #include <HalGPIO.h>
 #include <I18n.h>
+#include <Logging.h>
 
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -102,8 +104,23 @@ inline std::vector<SettingInfo> buildSettingsList() {
     return result;
   };
 
+  // Sized to the build so the vector never grows. SettingInfo is 100 bytes on the C3, so growing
+  // past capacity doubles it: a ~20 KB contiguous request made while the old block is still held,
+  // on every settings save and load (JsonSettingsIO rebuilds this list each time). A flat 100 was
+  // outgrown: touch C3 boards were already past it, and an X3 that crossed it aborted a settings
+  // save at contig 23540. The counts are the push_backs in each block; the headroom absorbs a few
+  // new rows, and the log at the end says when it no longer does.
+  constexpr size_t kCommonRows = 103;
+#if CP_TOUCH_UI
+  constexpr size_t kTouchRows = 3 + std::size(TouchGestures::BINDINGS);
+#else
+  constexpr size_t kTouchRows = 0;
+#endif
+  constexpr size_t kKoreaderAutoSyncRows = 0;
+  constexpr size_t kHeadroomRows = 8;
+  constexpr size_t kReservedRows = kCommonRows + kTouchRows + kKoreaderAutoSyncRows + kHeadroomRows;
   std::vector<SettingInfo> settings;
-  settings.reserve(100);
+  settings.reserve(kReservedRows);
 
   // --- Display ---
   settings.push_back(SettingInfo::Action(StrId::STR_TIME_TO_SLEEP, SettingAction::SleepTimeoutPicker)
@@ -150,6 +167,22 @@ inline std::vector<SettingInfo> buildSettingsList() {
                                        {StrId::STR_NEVER, StrId::STR_IN_READER, StrId::STR_ALWAYS},
                                        "hideBatteryPercentage", StrId::STR_CAT_DISPLAY)
                          .withSubcategory(StrId::STR_MENU_DISP_BATTERY));
+  // Home screen entries: on = on the home screen, off = behind its "More" entry.
+  settings.push_back(SettingInfo::Toggle(StrId::STR_BROWSE_FILES, &CrossPointSettings::showBrowseFilesOnHome,
+                                         "showBrowseFilesOnHome", StrId::STR_CAT_DISPLAY)
+                         .withSubmenu(StrId::STR_MENU_DISP_HOME));
+  settings.push_back(SettingInfo::Toggle(StrId::STR_MENU_RECENT_BOOKS, &CrossPointSettings::showRecentBooksOnHome,
+                                         "showRecentBooksOnHome", StrId::STR_CAT_DISPLAY)
+                         .withSubmenu(StrId::STR_MENU_DISP_HOME));
+  settings.push_back(SettingInfo::Toggle(StrId::STR_GLOBAL_BOOKMARKS, &CrossPointSettings::showBookmarksOnHome,
+                                         "showBookmarksOnHome", StrId::STR_CAT_DISPLAY)
+                         .withSubmenu(StrId::STR_MENU_DISP_HOME));
+  settings.push_back(SettingInfo::Toggle(StrId::STR_OPDS_BROWSER, &CrossPointSettings::showOpdsBrowserOnHome,
+                                         "showOpdsBrowserOnHome", StrId::STR_CAT_DISPLAY)
+                         .withSubmenu(StrId::STR_MENU_DISP_HOME));
+  settings.push_back(SettingInfo::Toggle(StrId::STR_FILE_TRANSFER, &CrossPointSettings::showFileTransferOnHome,
+                                         "showFileTransferOnHome", StrId::STR_CAT_DISPLAY)
+                         .withSubmenu(StrId::STR_MENU_DISP_HOME));
   settings.push_back(SettingInfo::Action(StrId::STR_REFRESH_FREQ, SettingAction::RefreshFrequencyPicker)
                          .persisting(&CrossPointSettings::refreshFrequencyPages, "refreshFrequencyPages", 60)
                          .withDisplayGetter(getRefreshFrequencyDisplay)
@@ -167,6 +200,7 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                                          StrId::STR_CAT_DISPLAY)
                          .requiring(SettingRequires::SunlightFadingPanel));
+
 
 
   // --- Reader ---
@@ -407,6 +441,12 @@ inline std::vector<SettingInfo> buildSettingsList() {
                                        {StrId::STR_BOOK, StrId::STR_HIDE},
                                        "statusBarProgressBar", StrId::STR_CUSTOMISE_STATUS_BAR));
 
+  // cppcheck-suppress knownConditionTrueFalse ; false while kCommonRows is right, which is the
+  // point: it turns true only when someone adds rows without raising the reserve.
+  if (settings.size() > kReservedRows) {
+    LOG_ERR("SET", "Settings list outgrew its reserve (%u > %u rows): raise kCommonRows",
+            static_cast<unsigned>(settings.size()), static_cast<unsigned>(kReservedRows));
+  }
   return settings;
 }
 

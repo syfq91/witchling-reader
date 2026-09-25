@@ -19,6 +19,8 @@
 #include "home/FileBrowserActivity.h"
 #include "home/GlobalBookmarksActivity.h"
 #include "home/HomeActivity.h"
+#include "home/HomeMoreActivity.h"
+#include "home/HomeMenu.h"
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
@@ -473,6 +475,35 @@ void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::
   replaceActivity(std::make_unique<FullScreenMessageActivity>(renderer, mappedInput, std::move(message), style));
 }
 
+void ActivityManager::goToHomeMore() { replaceActivity(std::make_unique<HomeMoreActivity>(renderer, mappedInput)); }
+
+void ActivityManager::goToHomeMenuAction(const HomeMenuAction action) {
+  switch (action) {
+    case HomeMenuAction::FileBrowser:
+      goToFileBrowser();
+      break;
+    case HomeMenuAction::Recents:
+      goToRecentBooks();
+      break;
+    case HomeMenuAction::GlobalBookmarks:
+      goToGlobalBookmarks();
+      break;
+    case HomeMenuAction::OpdsBrowser:
+      goToBrowser();
+      break;
+    case HomeMenuAction::FileTransfer:
+      goToFileTransfer();
+      break;
+    case HomeMenuAction::More:
+      goToHomeMore();
+      break;
+    case HomeMenuAction::Settings:
+      goToSettings();
+      break;
+    default:
+      break;
+  }
+}
 void ActivityManager::goHome(std::string focusBookPath, int focusSelectorIndex) {
   hasReturnHint = false;
   replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, std::move(focusBookPath), focusSelectorIndex));
@@ -505,6 +536,12 @@ bool ActivityManager::preventAutoSleep() const { return currentActivity && curre
 
 bool ActivityManager::isCurrentReaderActivity() const {
   return currentActivity && currentActivity->isReaderActivity();
+}
+
+bool ActivityManager::keepAwake() const { return currentActivity && currentActivity->keepAwake(); }
+
+bool ActivityManager::requiresExclusiveStorageLoop() const {
+  return currentActivity && currentActivity->requiresExclusiveStorageLoop();
 }
 
 bool ActivityManager::isReaderActivity() const {

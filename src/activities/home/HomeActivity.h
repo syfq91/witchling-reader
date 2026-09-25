@@ -12,6 +12,7 @@
 
 #include "../Activity.h"
 #include "./FileBrowserActivity.h"
+#include "HomeMenu.h"
 #include "activities/reader/ReaderActivity.h"
 #include "components/UITheme.h"
 #include "util/ButtonNavigator.h"
@@ -20,22 +21,6 @@ struct RecentBook;
 struct Rect;
 
 class HomeActivity final : public Activity {
- public:
-  enum class MenuAction {
-    FileBrowser,
-    Recents,
-    GlobalBookmarks,
-    OpdsBrowser,
-    FileTransfer,
-    Settings,
-  };
-
- private:
-  struct MenuEntry {
-    MenuAction action;
-    StrId label;
-    UIIcon icon;
-  };
 
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
@@ -82,14 +67,14 @@ class HomeActivity final : public Activity {
   int coverRectH = 0;
 
   std::vector<RecentBook> recentBooks;
-  std::vector<MenuEntry> menuEntries;
+  std::vector<HomeMenuEntry> menuEntries;
   bool menuEntriesDirty = true;
 
   std::string focusBookPath;
   int focusSelectorIndex = -1;
 
   void onSelectBook(const std::string& path);
-  void dispatchMenuAction(MenuAction action);
+  void dispatchMenuAction(HomeMenuAction action);
 
   void rebuildMenuEntries();
   bool storeCoverBuffer();

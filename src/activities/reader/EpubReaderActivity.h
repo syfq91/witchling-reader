@@ -832,6 +832,7 @@ class EpubReaderActivity final : public Activity {
   void startActivityForResult(std::unique_ptr<Activity>&& activity, ActivityResultHandler resultHandler) override;
   bool isReaderActivity() const override { return true; }
   bool preventAutoSleep() override { return section && section->hasActiveBuild(); }
+
   // Hold full speed while a section build is in flight. A build only ever runs during reader
   // idle, so main.cpp's inactivity governor has passed IDLE_DOWNCLOCK_MS and drops the CPU
   // to 10 MHz between slices — the per-slice HalPowerManager::Lock then raises it right back,

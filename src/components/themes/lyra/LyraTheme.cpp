@@ -19,6 +19,7 @@
 #include "components/icons/book.h"
 #include "components/icons/book24.h"
 #include "components/icons/cover.h"
+#include "components/icons/ellipsis.h"
 #include "components/icons/file24.h"
 #include "components/icons/folder.h"
 #include "components/icons/folder24.h"
@@ -97,6 +98,8 @@ const uint8_t* LyraTheme::iconForName(UIIcon icon, int size) {
         return BookIcon;
       case UIIcon::Recent:
         return RecentIcon;
+      case UIIcon::Ellipsis:
+        return EllipsisIcon;
       case UIIcon::Settings:
         return Settings2Icon;
       case UIIcon::Transfer:

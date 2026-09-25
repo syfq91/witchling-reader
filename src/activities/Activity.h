@@ -53,7 +53,19 @@ class Activity {
   bool isUpdateSuperseded() const;
 
   virtual bool skipLoopDelay() { return false; }
+  // preventAutoSleep() means "busy": it holds off the sleep timeout AND keeps the CPU at full
+  // speed, because main.cpp treats it as user activity. keepAwake() is the idle counterpart:
+  // the device must not time out to sleep, but nothing is running between events, so the idle
+  // governor may still downclock and light-sleep (e.g. reader auto page turn, issue #293).
   virtual bool preventAutoSleep() { return false; }
+  virtual bool keepAwake() { return false; }
+  // True while the activity has handed the raw SD card to something outside the
+  // firmware (USB Drive). The filesystem is unmounted for the duration, so both
+  // main.cpp's loop and ActivityManager's stand down: no screenshots, no sleep,
+  // no button shortcuts, no navigation. Such an activity leaves by rebooting,
+  // never by transitioning — a transition would let filesystem users back in
+  // while the host still owns the sectors.
+  virtual bool requiresExclusiveStorageLoop() const { return false; }
   virtual bool isReaderActivity() const { return false; }
   virtual bool usesWifi() const { return false; }
 

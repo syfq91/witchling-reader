@@ -462,7 +462,14 @@ class CrossPointSettings {
   uint8_t inlineFootnotePreviews = 0;
   // Remove finished book from Recent Books when the end-of-book screen action is selected.
   uint8_t removeFinishedBooksFromRecents = 0;
-
+  // Which entries sit on the home screen (1) rather than behind its "More" entry (0). An entry
+  // with nothing behind it (no bookmarks, no OPDS server) shows in neither place.
+  // Settings has no switch: it is where these are turned back on. See HomeMenu.cpp.
+  uint8_t showBrowseFilesOnHome = 1;
+  uint8_t showRecentBooksOnHome = 1;
+  uint8_t showBookmarksOnHome = 1;
+  uint8_t showOpdsBrowserOnHome = 1;
+  uint8_t showFileTransferOnHome = 1;
   // Accept any TLS certificate on https requests (1 = skip validation).
   //
   // For self-hosted servers with a private CA or a self-signed certificate —

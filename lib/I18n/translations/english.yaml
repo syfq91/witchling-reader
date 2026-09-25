@@ -514,6 +514,9 @@ STR_DIAG_ABORTED_FMT: "woke and refused to start"
 STR_DIAG_ABORTED_LIFETIME: "ever recorded"
 STR_DIAG_ABORTED_PENDING: "counted but not yet filed"
 
+STR_MENU_DISP_HOME: "Home screen"
+STR_MENU_DISP_UI: "User interface"
+STR_MORE: "More"
 
 STR_MENU_GESTURE_ACTIONS: "Gesture actions"
 STR_GEST_SWIPE_LEFT: "Swipe left"
@@ -535,3 +538,4 @@ STR_MOVE_HERE: "Move"
 STR_MOVE_FAILED: "Move failed"
 STR_MOVE_NAME_TAKEN: "A file of that name is already there"
 STR_MOVE_SAME_FOLDER: "It is already in that folder"
+
