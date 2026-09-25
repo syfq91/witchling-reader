@@ -1,9 +1,9 @@
 #pragma once
 
+#include <array>
 #include <functional>
 
-#include "../Activity.h"
-#include "util/ButtonNavigator.h"
+#include "activities/UiListActivity.h"
 
 enum class NetworkMode { JOIN_NETWORK, CREATE_HOTSPOT, OPDS_BROWSER };
 
@@ -16,20 +16,23 @@ enum class NetworkMode { JOIN_NETWORK, CREATE_HOTSPOT, OPDS_BROWSER };
  * The onModeSelected callback is called with the user's choice.
  * The onCancel callback is called if the user presses back.
  */
-class NetworkModeSelectionActivity final : public Activity {
-  ButtonNavigator buttonNavigator;
-
-  int selectedIndex = 0;
-
+class NetworkModeSelectionActivity final : public UiListActivity {
  public:
   explicit NetworkModeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("NetworkModeSelection", renderer, mappedInput) {}
-  void onEnter() override;
+      : UiListActivity("NetworkModeSelection", renderer, mappedInput) {}
+
   bool usesWifi() const override { return true; }
-  void onExit() override;
-  void loop() override;
-  void render(RenderLock&&) override;
 
   void onModeSelected(NetworkMode mode);
   void onCancel();
+
+ protected:
+  int listCount() const override { return 3; }
+  const char* headerTitle() const override;
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  void onBackButton() override { onCancel(); }
+
+ private:
+  std::array<freeink::ui::ListItem, 3> items;
 };

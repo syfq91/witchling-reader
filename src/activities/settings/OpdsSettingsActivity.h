@@ -1,38 +1,44 @@
 #pragma once
 
+#include <array>
+#include <string>
+
 #include "OpdsServerStore.h"
-#include "activities/Activity.h"
-#include "util/ButtonNavigator.h"
+#include "activities/UiListActivity.h"
 
 /**
  * Edit screen for a single OPDS server.
  * Shows Name, URL, Username, Password fields and a Delete option.
  * Used for both adding new servers and editing existing ones.
  */
-class OpdsSettingsActivity final : public Activity {
+class OpdsSettingsActivity final : public UiListActivity {
  public:
   /**
    * @param serverIndex Index into OpdsServerStore, or -1 for a new server
    */
   explicit OpdsSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int serverIndex = -1)
-      : Activity("OpdsSettings", renderer, mappedInput), serverIndex(serverIndex) {}
+      : UiListActivity("OpdsSettings", renderer, mappedInput), serverIndex(serverIndex) {}
 
   void onEnter() override;
-  void onExit() override;
-  void loop() override;
-  void render(RenderLock&&) override;
+
+ protected:
+  int listCount() const override;
+  const char* headerTitle() const override;
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  void afterUiRender() override;
 
  private:
-  ButtonNavigator buttonNavigator;
-
-  int selectedIndex = 0;
   int serverIndex;
   OpdsServer editServer;
   bool isNewServer = false;
   bool showSaveError = false;
   std::string popupMessage;
 
+  std::array<freeink::ui::ListItem, 5> items;
+  std::array<std::string, 5> itemValues;
+
   int getMenuItemCount() const;
-  void handleSelection();
+  void handleSelection(int index);
   bool saveServer();
 };

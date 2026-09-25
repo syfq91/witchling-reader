@@ -8,6 +8,8 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+namespace fui = freeink::ui;
+
 namespace {
 // UI steps correspond to logical roles in order: Back, Confirm, Left, Right.
 constexpr uint8_t kRoleCount = 4;
@@ -17,10 +19,9 @@ constexpr uint8_t kUnassigned = 0xFF;
 constexpr unsigned long kErrorDisplayMs = 1500;
 }  // namespace
 
-void ButtonRemapActivity::onEnter() {
-  Activity::onEnter();
+const char* ButtonRemapActivity::headerTitle() const { return tr(STR_REMAP_FRONT_BUTTONS); }
 
-  // Start with all roles unassigned to avoid duplicate blocking.
+void ButtonRemapActivity::onEnter() {
   currentStep = 0;
   tempMapping[0] = kUnassigned;
   tempMapping[1] = kUnassigned;
@@ -28,56 +29,52 @@ void ButtonRemapActivity::onEnter() {
   tempMapping[3] = kUnassigned;
   errorMessage.clear();
   errorUntil = 0;
-  requestUpdate();
+
+  UiListActivity::onEnter();
+  nav.selected = 0;
 }
 
-void ButtonRemapActivity::onExit() { Activity::onExit(); }
-
-void ButtonRemapActivity::loop() {
+bool ButtonRemapActivity::handleCustomInput() {
   // Clear any temporary warning after its timeout.
   if (errorUntil > 0 && millis() > errorUntil) {
     errorMessage.clear();
     errorUntil = 0;
     requestUpdate();
-    return;
+    return true;
   }
 
   // Side buttons:
   // - Up: reset mapping to defaults and exit.
   // - Down: cancel without saving.
   if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
-    // Persist default mapping immediately so the user can recover quickly.
     SETTINGS.frontButtonBack = CrossPointSettings::FRONT_HW_BACK;
     SETTINGS.frontButtonConfirm = CrossPointSettings::FRONT_HW_CONFIRM;
     SETTINGS.frontButtonLeft = CrossPointSettings::FRONT_HW_LEFT;
     SETTINGS.frontButtonRight = CrossPointSettings::FRONT_HW_RIGHT;
     SETTINGS.saveToFile();
     finish();
-    return;
+    return true;
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
-    // Exit without changing settings.
     finish();
-    return;
+    return true;
   }
 
   {
-    // Make sure UI done rendering before accepting another assignment.
-    // This avoids rapid double-presses that can advance the step without a visible redraw.
     RenderLock lock(*this);
 
     // Wait for a front button press to assign to the current role.
     const int pressedButton = mappedInput.getPressedFrontButton();
     if (pressedButton < 0) {
-      return;
+      return true;
     }
 
     // Update temporary mapping and advance the remap step.
     // Only accept the press if this hardware button isn't already assigned elsewhere.
     if (!validateUnassigned(static_cast<uint8_t>(pressedButton))) {
       requestUpdate();
-      return;
+      return true;
     }
     tempMapping[currentStep] = static_cast<uint8_t>(pressedButton);
     currentStep++;
@@ -87,14 +84,81 @@ void ButtonRemapActivity::loop() {
       applyTempMapping();
       SETTINGS.saveToFile();
       finish();
-      return;
+      return true;
     }
 
+    nav.selected = currentStep;
     requestUpdate();
+  }
+  return true;
+}
+
+void ButtonRemapActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+
+  const int lineH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int hintsAreaHeight = lineH * 2 + metrics.verticalSpacing * 2;
+
+  screen.setContentMarginFromScreen(fui::Insets{
+      static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
+      static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
+      static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height) + hintsAreaHeight),
+      static_cast<int16_t>(contentRect.x)});
+
+  // Subheader prompt: "Press the button for:"
+  fui::TextAreaProps prompt;
+  prompt.text = tr(STR_REMAP_PROMPT);
+  prompt.style = screen.theme().bodyText;
+  prompt.style.font = fui::GfxRendererTarget::FONT_BODY;
+  prompt.style.bold = true;
+  screen.textArea(prompt, static_cast<int16_t>(renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing));
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+  for (uint8_t i = 0; i < kRoleCount; ++i) {
+    const uint8_t assignedButton = tempMapping[i];
+    itemValues[i] = (assignedButton == kUnassigned) ? tr(STR_UNASSIGNED) : getHardwareName(assignedButton);
+    items[i] = {};
+    items[i].label = getRoleName(i);
+    items[i].value = itemValues[i].c_str();
+    items[i].actionValue = static_cast<int16_t>(i);
+    items[i].enabled = true;
+  }
+
+  fui::ListProps props;
+  props.items = items.data();
+  props.count = kRoleCount;
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;
+  props.labelText = screen.theme().bodyText;
+  props.labelText.maxLines = 1;
+
+  nav.selected = currentStep;
+  syncListViewport(screen, props, /*hasSubtitle=*/false);
+  screen.list(props);
+
+  if (!errorMessage.empty()) {
+    screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+    fui::TextAreaProps err;
+    err.text = errorMessage.c_str();
+    err.style = screen.theme().smallText;
+    err.style.bold = true;
+    screen.textArea(err, static_cast<int16_t>(lineH + 4));
   }
 }
 
-void ButtonRemapActivity::render(RenderLock&&) {
+void ButtonRemapActivity::afterUiRender() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+
+  const int lineH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int hintsY = contentRect.y + contentRect.height - lineH * 2 - metrics.verticalSpacing;
+
+  renderer.drawCenteredText(SMALL_FONT_ID, hintsY, tr(STR_REMAP_RESET_HINT));
+  renderer.drawCenteredText(SMALL_FONT_ID, hintsY + lineH + 2, tr(STR_REMAP_CANCEL_HINT));
+}
+
+void ButtonRemapActivity::drawFooter() {
   const auto labelForHardware = [&](uint8_t hardwareIndex) -> const char* {
     for (uint8_t i = 0; i < kRoleCount; i++) {
       if (tempMapping[i] == hardwareIndex) {
@@ -104,53 +168,10 @@ void ButtonRemapActivity::render(RenderLock&&) {
     return "-";
   };
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-
-  renderer.clearScreen();
-
-  GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
-                 tr(STR_REMAP_FRONT_BUTTONS));
-  GUI.drawSubHeader(
-      renderer, Rect{contentRect.x, metrics.topPadding + metrics.headerHeight, contentRect.width, metrics.tabBarHeight},
-      tr(STR_REMAP_PROMPT));
-
-  int topOffset = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
-  int contentHeight = contentRect.height - topOffset - metrics.verticalSpacing;
-  GUI.drawList(
-      renderer, Rect{contentRect.x, topOffset, contentRect.width, contentHeight}, kRoleCount, currentStep,
-      [&](int index) { return getRoleName(static_cast<uint8_t>(index)); }, nullptr, nullptr,
-      [&](int index) {
-        uint8_t assignedButton = tempMapping[static_cast<uint8_t>(index)];
-        return (assignedButton == kUnassigned) ? tr(STR_UNASSIGNED) : getHardwareName(assignedButton);
-      },
-      true);
-
-  // Temporary warning banner for duplicates.
-  if (!errorMessage.empty()) {
-    GUI.drawHelpText(renderer,
-                     Rect{contentRect.x, contentRect.y + contentRect.height - metrics.contentSidePadding - 15,
-                          contentRect.width, 20},
-                     errorMessage.c_str());
-  }
-
-  // Provide side button actions at the bottom of the screen (split across two lines).
-  GUI.drawHelpText(
-      renderer,
-      Rect{contentRect.x, topOffset + 4 * metrics.listRowHeight + 4 * metrics.verticalSpacing, contentRect.width, 20},
-      tr(STR_REMAP_RESET_HINT));
-  GUI.drawHelpText(renderer,
-                   Rect{contentRect.x, topOffset + 4 * metrics.listRowHeight + 5 * metrics.verticalSpacing + 20,
-                        contentRect.width, 20},
-                   tr(STR_REMAP_CANCEL_HINT));
-
-  // Live preview of logical labels under front buttons.
-  // This mirrors the on-device front button order: Back, Confirm, Left, Right.
   GUI.drawButtonHints(renderer, labelForHardware(CrossPointSettings::FRONT_HW_BACK),
                       labelForHardware(CrossPointSettings::FRONT_HW_CONFIRM),
                       labelForHardware(CrossPointSettings::FRONT_HW_LEFT),
                       labelForHardware(CrossPointSettings::FRONT_HW_RIGHT));
-  renderer.displayBuffer();
 }
 
 void ButtonRemapActivity::applyTempMapping() {

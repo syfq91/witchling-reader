@@ -14,6 +14,8 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+namespace fui = freeink::ui;
+
 namespace {
 const StrId statusPositionNames[] = {StrId::STR_TOP, StrId::STR_BOTTOM};
 const StrId slotContentNames[] = {
@@ -64,9 +66,7 @@ const StatusBarItem& visibleItem(int visibleIndex) {
   return statusBarItems[0];  // out-of-range guard; callers clamp the index first
 }
 
-int visibleItemCount() {
-  return static_cast<int>(sizeof(statusBarItems) / sizeof(statusBarItems[0]));
-}
+int visibleItemCount() { return static_cast<int>(sizeof(statusBarItems) / sizeof(statusBarItems[0])); }
 
 constexpr int previewHorizontalInset = 10;
 constexpr int previewHeight = 78;
@@ -103,8 +103,7 @@ void drawPreviewStatusItems(const GfxRenderer& renderer, const Rect& rect, const
     return;
   }
 
-  const bool statusAtTop =
-      SETTINGS.statusBarPosition == CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_TOP;
+  const bool statusAtTop = SETTINGS.statusBarPosition == CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_TOP;
   const int adjacentProgressHeight =
       UITheme::getProgressBarHeight(SETTINGS.statusBarProgressBar, CrossPointSettings::PROGRESS_BAR_THIN);
   const int statusItemsHeight = UITheme::getStatusBarItemsHeight();
@@ -138,7 +137,8 @@ void drawPreviewStatusItems(const GfxRenderer& renderer, const Rect& rect, const
   // 1. Left slot
   int leftClusterWidth = 0;
   if (SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY) {
-    GUI.drawBatteryLeft(renderer, Rect{leftEdge + previewBatteryInset, textY, metrics.batteryWidth, metrics.batteryHeight},
+    GUI.drawBatteryLeft(renderer,
+                        Rect{leftEdge + previewBatteryInset, textY, metrics.batteryWidth, metrics.batteryHeight},
                         showBatteryPercentage);
     leftClusterWidth = BaseTheme::statusBarBatteryWidth(renderer, metrics, showBatteryPercentage);
   } else if (SETTINGS.statusBarLeft != CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE) {
@@ -153,7 +153,8 @@ void drawPreviewStatusItems(const GfxRenderer& renderer, const Rect& rect, const
   int rightClusterWidth = 0;
   if (SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY) {
     const int battWidth = BaseTheme::statusBarBatteryWidth(renderer, metrics, showBatteryPercentage);
-    GUI.drawBatteryRight(renderer, Rect{rightEdge - metrics.batteryWidth, textY, metrics.batteryWidth, metrics.batteryHeight},
+    GUI.drawBatteryRight(renderer,
+                         Rect{rightEdge - metrics.batteryWidth, textY, metrics.batteryWidth, metrics.batteryHeight},
                          showBatteryPercentage);
     rightClusterWidth = battWidth;
   } else if (SETTINGS.statusBarRight != CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE) {
@@ -191,22 +192,19 @@ void drawPreviewStatusItems(const GfxRenderer& renderer, const Rect& rect, const
         textWidth = renderer.getTextWidth(SMALL_FONT_ID, text.c_str());
       }
       if (availableSpace > 0) {
-        renderer.drawText(SMALL_FONT_ID,
-                          leftEdge + titleMarginLeftAdjusted + (availableSpace - textWidth) / 2,
-                          textY, text.c_str());
+        renderer.drawText(SMALL_FONT_ID, leftEdge + titleMarginLeftAdjusted + (availableSpace - textWidth) / 2, textY,
+                          text.c_str());
       }
     }
   }
 }
 }  // namespace
 
+int StatusBarSettingsActivity::listCount() const { return visibleItemCount(); }
+
+const char* StatusBarSettingsActivity::headerTitle() const { return tr(STR_CUSTOMISE_STATUS_BAR); }
+
 void StatusBarSettingsActivity::onEnter() {
-  Activity::onEnter();
-
-  if (selectedIndex >= visibleItemCount()) {
-    selectedIndex = 0;
-  }
-
   // Clamp status bar settings in case of corrupt/migrated data: every field must hold a valid value
   // index (0..valueCount-1). A stray value would index past its valueNames array when rendered.
   for (const auto& item : statusBarItems) {
@@ -215,78 +213,81 @@ void StatusBarSettingsActivity::onEnter() {
     }
   }
 
+  UiListActivity::onEnter();
+}
+
+void StatusBarSettingsActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+
+  const int previewLabelHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int previewAreaHeight = previewLabelHeight + previewHeight + metrics.verticalSpacing * 2;
+
+  screen.setContentMarginFromScreen(fui::Insets{
+      static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
+      static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
+      static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height) + previewAreaHeight),
+      static_cast<int16_t>(contentRect.x)});
+
+  const int count = visibleItemCount();
+  for (int i = 0; i < count; ++i) {
+    const StatusBarItem& item = visibleItem(i);
+    const uint8_t value = SETTINGS.*item.field;
+    if (item.valueNames) {
+      itemValues[i] = I18N.get(item.valueNames[value]);
+    } else {
+      itemValues[i] = value ? tr(STR_SHOW) : tr(STR_HIDE);
+    }
+    items[i] = {};
+    items[i].label = I18N.get(item.label);
+    items[i].value = itemValues[i].c_str();
+    items[i].actionValue = static_cast<int16_t>(i);
+    items[i].enabled = true;
+  }
+
+  fui::ListProps props;
+  props.items = items.data();
+  props.count = static_cast<uint16_t>(count);
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;
+  props.labelText = screen.theme().bodyText;
+  props.labelText.maxLines = 1;
+
+  syncListViewport(screen, props, /*hasSubtitle=*/false);
+  screen.list(props);
+}
+
+void StatusBarSettingsActivity::activateIndex(const int index) {
+  handleSelection(index);
   requestUpdate();
 }
 
-void StatusBarSettingsActivity::onExit() { Activity::onExit(); }
-
-void StatusBarSettingsActivity::loop() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
-
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-    handleSelection();
-    requestUpdate();
-    return;
-  }
-
-  // Handle navigation
-  const int menuCount = visibleItemCount();
-  buttonNavigator.onNextList(selectedIndex, menuCount, [this] { requestUpdate(); });
-  buttonNavigator.onPreviousList(selectedIndex, menuCount, [this] { requestUpdate(); });
-}
-
-void StatusBarSettingsActivity::handleSelection() {
-  const StatusBarItem& item = visibleItem(selectedIndex);
+void StatusBarSettingsActivity::handleSelection(const int index) {
+  const StatusBarItem& item = visibleItem(index);
   SETTINGS.*item.field = (SETTINGS.*item.field + 1) % item.valueCount;
   SETTINGS.saveToFile();
 }
 
-void StatusBarSettingsActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
-  auto metrics = UITheme::getInstance().getMetrics();
+void StatusBarSettingsActivity::afterUiRender() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-  const int pageWidth = (int)renderer.getScreenWidth();
-  const int pageHeight = (int)renderer.getScreenHeight();
+  const int pageWidth = static_cast<int>(renderer.getScreenWidth());
 
-  GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
-                 tr(STR_CUSTOMISE_STATUS_BAR));
-
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int previewLabelHeight = renderer.getLineHeight(UI_10_FONT_ID);
   const int previewAreaHeight = previewLabelHeight + previewHeight + metrics.verticalSpacing * 2;
-  const int contentHeight =
-      pageHeight - contentTop - metrics.buttonHintsHeight - previewAreaHeight - metrics.verticalSpacing * 2;
-  GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, contentHeight}, visibleItemCount(), static_cast<int>(selectedIndex),
-      [](int index) { return std::string(I18N.get(visibleItem(index).label)); }, nullptr, nullptr,
-      [](int index) {
-        const StatusBarItem& item = visibleItem(index);
-        const uint8_t value = SETTINGS.*item.field;
-        // Enum rows show their named value; toggle rows (no valueNames) show Show/Hide.
-        if (item.valueNames) {
-          return I18N.get(item.valueNames[value]);
-        }
-        return value ? tr(STR_SHOW) : tr(STR_HIDE);
-      },
-      true);
+  const int previewLabelY = contentRect.y + contentRect.height - previewAreaHeight;
 
-  // Draw button hints
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_TOGGLE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  const int previewLabelY = contentTop + contentHeight + metrics.verticalSpacing;
   renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, previewLabelY, tr(STR_PREVIEW));
   const Rect previewRect{previewHorizontalInset, previewLabelY + previewLabelHeight + metrics.verticalSpacing / 2,
                          pageWidth - previewHorizontalInset * 2, previewHeight};
   renderer.drawRect(previewRect.x, previewRect.y, previewRect.width, previewRect.height);
-  const bool statusAtTop =
-      (SETTINGS.statusBarPosition == CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_TOP);
+
+  const bool statusAtTop = (SETTINGS.statusBarPosition == CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_TOP);
   drawPreviewProgressBar(renderer, previewRect, SETTINGS.statusBarProgressBar, statusAtTop);
   drawPreviewStatusItems(renderer, previewRect, metrics);
+}
 
-  renderer.displayBuffer();
+void StatusBarSettingsActivity::drawFooter() {
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_TOGGLE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
