@@ -208,7 +208,9 @@ bool FileBrowserActivity::handleCustomInput() {
     // the chapter selector, and the reason the context menu moved to a long press on Right. Paging
     // is driven from the event stream rather than ButtonNavigator: the navigator acts on the press
     // edge, which would page on the way into every long press.
-    if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) &&
+    // PickFirmware reserves the Right button for Options rather than paging forward.
+    if (model.getMode() != Mode::PickFirmware &&
+        MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) &&
         ev.type == ButtonEventManager::PressType::Short && listPages()) {
       pageSelection(1);
       return true;
@@ -220,11 +222,12 @@ bool FileBrowserActivity::handleCustomInput() {
       return true;
     }
 
-    // Options: a long press on the page-forward button, and a short press when the folder fits on
-    // one screen and there is nothing to page. Either way the button hint says which one it is —
-    // and it rides the same logical button, so rotating the device never separates the two.
+    // Options: in PickFirmware mode, always triggered on Right (short or long press).
+    // In other modes, a long press on Right, and a short press when the folder fits on
+    // one screen and there is nothing to page. Either way the button hint says which one it is.
     const bool optionsPress = (ev.type == ButtonEventManager::PressType::Long) ||
-                              (ev.type == ButtonEventManager::PressType::Short && !listPages());
+                              (ev.type == ButtonEventManager::PressType::Short &&
+                               (!listPages() || model.getMode() == Mode::PickFirmware));
     if (model.getMode() != Mode::PickFolder &&
         MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) && optionsPress) {
       // Open the context menu for any selection. openContextMenu() shows
@@ -438,14 +441,14 @@ void FileBrowserActivity::drawFooter() {
     const std::string selectedEntry = model.entryName(static_cast<size_t>(nav.selected));
     selectingFirmwareFile = !selectedEntry.empty() && selectedEntry.back() != '/';
   }
-  const char* confirmLabel = !hasEntries             ? ""
+  const char* confirmLabel = confirmOpensOptions() ? tr(STR_OPTIONS)
+                             : !hasEntries         ? ""
                              : selectingFirmwareFile ? tr(STR_SELECT)
-                             : confirmOpensOptions() ? tr(STR_OPTIONS)
                                                      : tr(STR_OPEN);
   // The Options menu is available for every entry in Books and PickFirmware modes.
   // The menu always offers the browser display options (sort + visibility); supported
   // files get extra file-specific actions appended. So the hint shows for files and dirs alike.
-  const bool showOptionsHint = model.getMode() != Mode::PickFolder && hasEntries;
+  const bool showOptionsHint = model.getMode() != Mode::PickFolder;
   // In a folder worth paging through, Left/Right are the page buttons and the hints say so —
   // Options is then the long press on Right. In a folder that fits on one screen there is nothing
   // to page, so the strip looks exactly as it always did.
@@ -455,6 +458,7 @@ void FileBrowserActivity::drawFooter() {
   // carries it that would draw the same word twice on one strip, and the second copy would sit on
   // a slot such a board has no key for.
   const char* nextLabel = (model.getMode() == Mode::PickFolder)         ? tr(STR_MOVE_HERE)
+                          : (model.getMode() == Mode::PickFirmware)     ? (confirmOpensOptions() ? "" : tr(STR_OPTIONS))
                           : pages                                       ? tr(STR_LIST_PAGE_NEXT)
                           : (showOptionsHint && !confirmOpensOptions()) ? tr(STR_OPTIONS)
                                                                         : "";
@@ -591,7 +595,7 @@ void FileBrowserActivity::moveToFolder(const std::string& fullPath, const std::s
 //
 // A board with the keys keeps Confirm as Open, and its menu one hold of Right away.
 bool FileBrowserActivity::confirmOpensOptions() const {
-  return model.getMode() == Mode::Books && !HalCapabilities::hasBackAndConfirmButtons();
+  return model.getMode() != Mode::PickFolder && !HalCapabilities::hasBackAndConfirmButtons();
 }
 
 void FileBrowserActivity::showBrowserOptionsMenu(const std::string& dirEntry) {
