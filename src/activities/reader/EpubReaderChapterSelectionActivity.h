@@ -1,37 +1,46 @@
 #pragma once
+
 #include <Epub.h>
 
+#include <array>
 #include <memory>
+#include <string>
 
-#include "../Activity.h"
-#include "util/ButtonNavigator.h"
+#include "activities/UiListActivity.h"
 
-class EpubReaderChapterSelectionActivity final : public Activity {
-  std::shared_ptr<Epub> epub;
-  std::string epubPath;
-  ButtonNavigator buttonNavigator;
-  int currentSpineIndex = 0;
-  int currentTocIndex = 0;
-  int selectorIndex = 0;
-
-  // Number of items that fit on a page, derived from logical screen height.
-  // This adapts automatically when switching between portrait and landscape.
-  int getPageItems() const;
-
-  // Total TOC items count
-  int getTotalItems() const;
-
+class EpubReaderChapterSelectionActivity final : public UiListActivity {
  public:
   explicit EpubReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                               const std::shared_ptr<Epub>& epub, const std::string& epubPath,
                                               const int currentSpineIndex, const int currentTocIndex)
-      : Activity("EpubReaderChapterSelection", renderer, mappedInput),
+      : UiListActivity("EpubReaderChapterSelection", renderer, mappedInput),
         epub(epub),
         epubPath(epubPath),
         currentSpineIndex(currentSpineIndex),
         currentTocIndex(currentTocIndex) {}
+
   void onEnter() override;
-  void onExit() override;
-  void loop() override;
-  void render(RenderLock&&) override;
+
+ protected:
+  int listCount() const override;
+  const char* headerTitle() const override;
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  void onBackButton() override;
+  void navigateButtons() override;
+  void drawFooter() override;
+
+ private:
+  std::shared_ptr<Epub> epub;
+  std::string epubPath;
+  int currentSpineIndex = 0;
+  int currentTocIndex = 0;
+
+  static constexpr size_t LIST_WINDOW_CAPACITY = 24;
+  std::array<std::string, LIST_WINDOW_CAPACITY> windowLabels;
+  std::array<freeink::ui::ListItem, LIST_WINDOW_CAPACITY> windowItems;
+  uint16_t windowFirst = 0;
+  uint16_t windowCount = 0;
+
+  void materializeListWindow();
 };

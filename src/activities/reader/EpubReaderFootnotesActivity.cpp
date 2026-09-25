@@ -5,17 +5,20 @@
 
 #include <algorithm>
 
+#include "I18nKeys.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
+
+namespace fui = freeink::ui;
+
+int EpubReaderFootnotesActivity::listCount() const { return static_cast<int>(order.size()); }
+
+const char* EpubReaderFootnotesActivity::headerTitle() const { return tr(STR_FOOTNOTES); }
 
 void EpubReaderFootnotesActivity::onEnter() {
-  Activity::onEnter();
-  selectedIndex = 0;
-  scrollOffset = 0;
+  UiListActivity::onEnter();
 
-  // Notes first, then navigation, each in page order. Built once here rather than at every
-  // render: the list cannot change while it is open.
+  // Notes first, then navigation, each in page order.
   order.clear();
   order.reserve(footnotes.size());
   for (size_t i = 0; i < footnotes.size(); ++i) {
@@ -30,123 +33,110 @@ void EpubReaderFootnotesActivity::onEnter() {
   }
   // A page of only links needs no divider — there is nothing above it to divide from.
   if (firstLinkRow == 0) firstLinkRow = -1;
-  requestUpdate();
 }
 
-void EpubReaderFootnotesActivity::onExit() { Activity::onExit(); }
+void EpubReaderFootnotesActivity::materializeListWindow() {
+  const int count = listCount();
+  windowFirst = static_cast<uint16_t>(std::max(0, std::min(nav.top, count)));
+  windowCount = static_cast<uint16_t>(
+      std::min(static_cast<size_t>(count - windowFirst), static_cast<size_t>(LIST_WINDOW_CAPACITY)));
 
-void EpubReaderFootnotesActivity::loop() {
-  ButtonEventManager::ButtonEvent ev;
-  while (buttonEvents.consumeEvent(ev)) {
-    if (ev.button == MappedInputManager::Button::Back && ev.type == ButtonEventManager::PressType::Short) {
-      ActivityResult result;
-      result.isCancelled = true;
-      setResult(std::move(result));
-      finish();
-      return;
+  for (uint16_t offset = 0; offset < windowCount; ++offset) {
+    const size_t rowIdx = windowFirst + offset;
+    const size_t entry = order[rowIdx];
+    auto& item = windowItems[offset];
+    item = {};
+    item.actionValue = static_cast<int16_t>(rowIdx);
+    item.enabled = true;
+
+    if (static_cast<int>(rowIdx) == firstLinkRow) {
+      item.sectionHeading = tr(STR_LINK);
     }
 
-    // Power short-press also selects the footnote, mirroring upstream's quick-access
-    // gesture. This context-specific binding is active only while the footnote list is
-    // open, alongside the navigation bindings below.
-    if ((ev.button == MappedInputManager::Button::Confirm || ev.button == MappedInputManager::Button::Power) &&
-        ev.type == ButtonEventManager::PressType::Short) {
-      if (selectedIndex >= 0 && selectedIndex < static_cast<int>(order.size())) {
-        setResult(FootnoteResult{footnotes[order[selectedIndex]].href});
-        finish();
-      }
-      return;
-    }
-
-    // Either axis moves the selection: whichever pair runs up and down the screen and whichever
-    // runs across it. Matching the four logical directions rather than the raw names is also what
-    // keeps one press to one step — buttonFor() never answers PageBack/PageForward, which are the
-    // side buttons under a second name and used to move the selection twice per press (see the
-    // aliasing note in ButtonEventManager.h).
-    if ((MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) ||
-         MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left)) &&
-        ev.type == ButtonEventManager::PressType::Short) {
-      advanceSelection(-1);
-      continue;
-    }
-
-    if ((MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Down) ||
-         MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right)) &&
-        ev.type == ButtonEventManager::PressType::Short) {
-      advanceSelection(1);
-      continue;
-    }
-  }
-}
-
-void EpubReaderFootnotesActivity::advanceSelection(int delta) {
-  if (order.empty()) {
-    return;
-  }
-  const int n = static_cast<int>(order.size());
-  selectedIndex = ((selectedIndex + delta) % n + n) % n;
-  requestUpdate();
-}
-
-void EpubReaderFootnotesActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
-  renderer.drawCenteredText(UI_12_FONT_ID, 15, tr(STR_FOOTNOTES), true, EpdFontFamily::BOLD);
-
-  if (order.empty()) {
-    renderer.drawCenteredText(UI_10_FONT_ID, 90, tr(STR_NO_FOOTNOTES));
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
-
-  constexpr int startY = 50;
-  constexpr int lineHeight = 36;
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-  constexpr int marginLeft = 20;
-
-  const int visibleCount = std::max(1, (contentRect.height - startY) / lineHeight);
-  if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
-  if (selectedIndex >= scrollOffset + visibleCount) scrollOffset = selectedIndex - visibleCount + 1;
-
-  for (int i = scrollOffset; i < static_cast<int>(order.size()) && i < scrollOffset + visibleCount; i++) {
-    const int y = contentRect.y + startY + (i - scrollOffset) * lineHeight;
-    const bool isSelected = (i == selectedIndex);
-    const size_t entry = order[i];
-
-    if (isSelected) {
-      renderer.fillRect(contentRect.x, y, contentRect.width, lineHeight, true);
-    }
-
-    // The line between the notes and the links. Drawn INSIDE the top of the first link row rather
-    // than as a row of its own, so the rows stay uniform: nothing to skip when moving the
-    // selection, and the touch band stays one contiguous run of activatable rows.
-    if (i == firstLinkRow) {
-      renderer.fillRect(contentRect.x + marginLeft, y, contentRect.width - 2 * marginLeft, 1, !isSelected);
-    }
-
-    // Footnote marker, plus the note text when the preview store resolved it — truncated to the
-    // row. A navigation link has no note text by definition, so it is named for what it is; a
-    // marker-less one was already shown that way.
-    std::string label = footnotes[entry].number;
     const bool note = entryIsNote(entry);
+    std::string label = footnotes[entry].number;
     if (label.empty()) {
       label = tr(STR_LINK);
     } else if (!note) {
       label += "  ";
       label += tr(STR_LINK);
     }
+
+    windowLabels[offset] = label;
+    item.label = windowLabels[offset].c_str();
+
     if (note && entry < previews.size() && !previews[entry].empty()) {
-      label += ": ";
-      label += previews[entry];
+      windowSubtitles[offset] = previews[entry];
+      item.subtitle = windowSubtitles[offset].c_str();
     }
-    label = renderer.truncatedText(UI_10_FONT_ID, label.c_str(), contentRect.width - 2 * marginLeft);
-    renderer.drawText(UI_10_FONT_ID, contentRect.x + marginLeft, y + 4, label.c_str(), !isSelected);
+  }
+}
+
+void EpubReaderFootnotesActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
+                  static_cast<int16_t>(contentRect.x)});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+  if (listCount() == 0) {
+    fui::TextAreaProps empty;
+    empty.text = tr(STR_NO_FOOTNOTES);
+    empty.style = screen.theme().bodyText;
+    empty.showCaret = false;
+    screen.textArea(empty);
+    return;
   }
 
+  const bool hasPreviews =
+      std::any_of(previews.begin(), previews.end(), [](const std::string& s) { return !s.empty(); });
+
+  fui::ListProps props;
+  props.count = static_cast<uint16_t>(listCount());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;
+  props.labelText = screen.theme().bodyText;
+  props.subtitleText = screen.theme().smallText;
+  props.headerText = screen.theme().smallText;
+
+  syncListViewport(screen, props, hasPreviews);
+  materializeListWindow();
+  props.items = windowItems.data();
+  props.itemsWindowFirst = windowFirst;
+  props.itemsWindowCount = windowCount;
+  screen.list(props);
+}
+
+void EpubReaderFootnotesActivity::activateIndex(const int index) {
+  if (index >= 0 && index < static_cast<int>(order.size())) {
+    setResult(FootnoteResult{footnotes[order[index]].href});
+    finish();
+  }
+}
+
+void EpubReaderFootnotesActivity::onBackButton() {
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
+}
+
+bool EpubReaderFootnotesActivity::handleCustomInput() {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Power)) {
+    const int selected = activeNav().selected;
+    if (selected >= 0 && selected < listCount()) {
+      activateIndex(selected);
+      return true;
+    }
+  }
+  return false;
+}
+
+void EpubReaderFootnotesActivity::drawFooter() {
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  renderer.displayBuffer();
 }

@@ -3,7 +3,7 @@
 This document establishes a complete, phased architecture and execution plan for migrating the remaining Witchling Reader user interfaces from the legacy drawing engine (`BaseTheme::drawList`, manual coordinate calculations, and custom scroll loops) to the **FreeInk SDK UI** framework (`FreeInkUI`).
 
 > [!NOTE]
-> **Status:** Phase 1 (Pure Settings & Configuration Lists) and Phase 2 (Library & Book History Lists) have been successfully implemented and verified. Phases 3–7 remain scheduled according to the roadmap below.
+> **Status:** Phase 1 (Pure Settings & Configuration Lists), Phase 2 (Library & Book History Lists), and Phase 3 (Reader In-Book Navigation Lists) have been successfully implemented and verified. Phases 4–7 remain scheduled according to the roadmap below.
 
 ---
 
@@ -198,14 +198,19 @@ flowchart TD
 
 ---
 
-### Phase 3: Reader In-Book Navigation Lists
+### Phase 3: Reader In-Book Navigation Lists — ✅ COMPLETED
 **Target**: Reader navigation screens that currently hand-roll list scrolling and manual coordinate positioning with `renderer.drawText()`.
 
-| Activity | Current State | Target Base Class | Specific Tasks |
+| Activity | Previous State | Target Base Class | Status & Implementation Notes |
 |---|---|---|---|
-| [`EpubReaderChapterSelectionActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/EpubReaderChapterSelectionActivity.h) | Hand-crafted TOC scrolling loop (`startY = 60`, `lineHeight = 30`) | `UiListActivity` | • Replace custom page items calculation with `syncListViewport()`.<br/>• Indent nested TOC levels via `props.labelText` margin or indentation prefix.<br/>• Instant scroll jumping on large books with hundreds of chapters. |
-| [`XtcReaderChapterSelectionActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/XtcReaderChapterSelectionActivity.h) | Hand-crafted manga TOC scroll loop | `UiListActivity` | • Bind chapter titles and page ranges to `windowItems`.<br/>• Smooth page jump on selection. |
-| [`EpubReaderFootnotesActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/EpubReaderFootnotesActivity.h) | Hand-crafted footnote list with custom separator line | `UiListActivity` | • Convert footnotes and jump links into `windowItems`.<br/>• Use FreeInk list item headers (`isHeader`) to partition footnotes from external links. |
+| [`EpubReaderChapterSelectionActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/EpubReaderChapterSelectionActivity.h) | Hand-crafted TOC scrolling loop (`startY = 60`, `lineHeight = 30`) | `UiListActivity` | ✅ Migrated. Virtualized windowing (`LIST_WINDOW_CAPACITY = 24`), nested TOC level indentation prefix, initial chapter matching `currentTocIndex`/`currentSpineIndex`, Up/Down stepping + Left/Right full-page jump navigation. |
+| [`XtcReaderChapterSelectionActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/XtcReaderChapterSelectionActivity.h) | Hand-crafted manga TOC scroll loop | `UiListActivity` | ✅ Migrated. Chapter titles with start page indicators (`p. X`), initial chapter tracking for `currentPage`, Up/Down stepping + Left/Right full-page jump navigation. |
+| [`EpubReaderFootnotesActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/EpubReaderFootnotesActivity.h) | Hand-crafted footnote list with custom separator line | `UiListActivity` | ✅ Migrated. Footnotes listed first with optional note preview subtitles, navigation links partitioned below with native `item.sectionHeading = tr(STR_LINK)`. Power button quick-activation shortcut preserved via `handleCustomInput()`. |
+
+**Phase 3 Verification**:
+- PlatformIO C3 Build: **Passed** (`pio run -e default`).
+- RAM: 18.0% (58,896 bytes — 0 byte delta vs baseline).
+- Flash: 82.5% (5,406,463 bytes — net delta of +6.9 KB across all 3 screens). Zero template expansion.
 
 ---
 

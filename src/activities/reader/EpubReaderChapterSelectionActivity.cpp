@@ -5,119 +5,130 @@
 
 #include <algorithm>
 
+#include "I18nKeys.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
 
-int EpubReaderChapterSelectionActivity::getTotalItems() const { return epub->getTocItemsCount(); }
+namespace fui = freeink::ui;
 
-int EpubReaderChapterSelectionActivity::getPageItems() const {
-  constexpr int lineHeight = 30;
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-  const int startY = 60 + contentRect.y;
-  const int availableHeight = contentRect.y + contentRect.height - startY - lineHeight;
-  // Clamp to at least one item to avoid division by zero and empty paging.
-  return std::max(1, availableHeight / lineHeight);
-}
+int EpubReaderChapterSelectionActivity::listCount() const { return epub ? epub->getTocItemsCount() : 0; }
+
+const char* EpubReaderChapterSelectionActivity::headerTitle() const { return tr(STR_SELECT_CHAPTER); }
 
 void EpubReaderChapterSelectionActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
 
   if (!epub) {
     return;
   }
 
-  selectorIndex = (currentTocIndex >= 0 && currentTocIndex < epub->getTocItemsCount())
-                      ? currentTocIndex
-                      : epub->getTocIndexForSpineIndex(currentSpineIndex);
-  if (selectorIndex == -1) {
-    selectorIndex = 0;
+  int initialIndex = (currentTocIndex >= 0 && currentTocIndex < epub->getTocItemsCount())
+                         ? currentTocIndex
+                         : epub->getTocIndexForSpineIndex(currentSpineIndex);
+  if (initialIndex < 0) {
+    initialIndex = 0;
   }
-
-  // Trigger first update
-  requestUpdate();
+  moveSelectionTo(initialIndex);
 }
 
-void EpubReaderChapterSelectionActivity::onExit() { Activity::onExit(); }
+void EpubReaderChapterSelectionActivity::materializeListWindow() {
+  const int count = listCount();
+  windowFirst = static_cast<uint16_t>(std::max(0, std::min(nav.top, count)));
+  windowCount = static_cast<uint16_t>(
+      std::min(static_cast<size_t>(count - windowFirst), static_cast<size_t>(LIST_WINDOW_CAPACITY)));
 
-void EpubReaderChapterSelectionActivity::loop() {
-  const int pageItems = getPageItems();
-  const int totalItems = getTotalItems();
+  for (uint16_t offset = 0; offset < windowCount; ++offset) {
+    const size_t index = windowFirst + offset;
+    auto item = epub->getTocItem(static_cast<int>(index));
+    const int level = std::max(1, static_cast<int>(item.level));
+    std::string indent;
+    if (level > 1) {
+      indent.assign(static_cast<size_t>(std::min(level - 1, 6) * 2), ' ');
+    }
+    windowLabels[offset] = indent + (item.title.empty() ? tr(STR_UNNAMED) : item.title);
 
-  ButtonEventManager::ButtonEvent ev;
-  while (buttonEvents.consumeEvent(ev)) {
-    if (ev.button == MappedInputManager::Button::Confirm && ev.type == ButtonEventManager::PressType::Short) {
-      const auto newSpineIndex = epub->getSpineIndexForTocIndex(selectorIndex);
-      if (newSpineIndex == -1) {
-        ActivityResult result;
-        result.isCancelled = true;
-        setResult(std::move(result));
-        finish();
-      } else {
-        setResult(ChapterResult{newSpineIndex, selectorIndex});
-        finish();
-      }
-      return;
-    }
-    if (ev.button == MappedInputManager::Button::Back && ev.type == ButtonEventManager::PressType::Short) {
-      ActivityResult result;
-      result.isCancelled = true;
-      setResult(std::move(result));
-      finish();
-      return;
-    }
+    auto& row = windowItems[offset];
+    row = {};
+    row.label = windowLabels[offset].c_str();
+    row.actionValue = static_cast<int16_t>(index);
+    row.enabled = true;
   }
-
-  // Up/Down step one chapter, Left/Right jump a screenful — a book with hundreds of chapters is
-  // otherwise only crossable by holding a button down.
-  buttonNavigator.onNextList(selectorIndex, totalItems, [this] { requestUpdate(); }, pageItems);
-  buttonNavigator.onPreviousList(selectorIndex, totalItems, [this] { requestUpdate(); }, pageItems);
 }
 
-void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
-  renderer.clearScreen();
+void EpubReaderChapterSelectionActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
 
-  const Rect contentRect = UITheme::getContentRect(renderer, true, true);
-  const int pageItems = getPageItems();
-  const int totalItems = getTotalItems();
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
+                  static_cast<int16_t>(contentRect.x)});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  // Manual centering to honor content gutters.
-  const int titleX =
-      contentRect.x +
-      (contentRect.width - renderer.getTextWidth(UI_12_FONT_ID, tr(STR_SELECT_CHAPTER), EpdFontFamily::BOLD)) / 2;
-  renderer.drawText(UI_12_FONT_ID, titleX, 15 + contentRect.y, tr(STR_SELECT_CHAPTER), true, EpdFontFamily::BOLD);
-
-  const auto pageStartIndex = selectorIndex / pageItems * pageItems;
-  // Highlight only the content area, not the hint gutters.
-  renderer.fillRect(contentRect.x, 60 + contentRect.y + (selectorIndex % pageItems) * 30 - 2, contentRect.width - 1,
-                    30);
-
-  for (int i = 0; i < pageItems; i++) {
-    int itemIndex = pageStartIndex + i;
-    if (itemIndex >= totalItems) break;
-    const int displayY = 60 + contentRect.y + i * 30;
-    const bool isSelected = (itemIndex == selectorIndex);
-
-    auto item = epub->getTocItem(itemIndex);
-
-    // Indent per TOC level while keeping content within the gutter-safe region.
-    const int indentSize = contentRect.x + 20 + (item.level - 1) * 15;
-    const std::string chapterName =
-        renderer.truncatedText(UI_10_FONT_ID, item.title.c_str(), contentRect.width - 40 - indentSize);
-
-    renderer.drawText(UI_10_FONT_ID, indentSize, displayY, chapterName.c_str(), !isSelected);
+  if (listCount() == 0) {
+    fui::TextAreaProps empty;
+    empty.text = tr(STR_NO_CHAPTERS);
+    empty.style = screen.theme().bodyText;
+    empty.showCaret = false;
+    screen.textArea(empty);
+    return;
   }
 
-  // Left/Right page when there is more than one page to cross, and fall back to stepping (which is
-  // what ButtonNavigator::nextPageIndex does on a short list) when there is not.
-  const bool pages = totalItems > pageItems;
-  // Paging rides logical Left/Right and stepping logical Up/Down, so which pair sits on the front
-  // strip and which on the side buttons is the orientation's business — mapHints routes both sets
-  // of labels to whichever buttons are doing the job.
+  fui::ListProps props;
+  props.count = static_cast<uint16_t>(listCount());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;
+  props.labelText = screen.theme().bodyText;
+  props.labelText.maxLines = 1;
+
+  syncListViewport(screen, props, /*hasSubtitle=*/false);
+  materializeListWindow();
+  props.items = windowItems.data();
+  props.itemsWindowFirst = windowFirst;
+  props.itemsWindowCount = windowCount;
+  screen.list(props);
+}
+
+void EpubReaderChapterSelectionActivity::activateIndex(const int index) {
+  if (!epub) return;
+  const auto newSpineIndex = epub->getSpineIndexForTocIndex(index);
+  if (newSpineIndex == -1) {
+    ActivityResult result;
+    result.isCancelled = true;
+    setResult(std::move(result));
+    finish();
+  } else {
+    setResult(ChapterResult{newSpineIndex, index});
+    finish();
+  }
+}
+
+void EpubReaderChapterSelectionActivity::onBackButton() {
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
+}
+
+void EpubReaderChapterSelectionActivity::navigateButtons() {
+  bool changed = false;
+  const int count = listCount();
+  const int pageRows = activeNav().inputPageRows();
+  int selected = activeNav().selected;
+
+  buttonNavigator.onNextList(selected, count, [&changed] { changed = true; }, pageRows);
+  buttonNavigator.onPreviousList(selected, count, [&changed] { changed = true; }, pageRows);
+
+  if (changed) {
+    moveSelectionTo(selected);
+  }
+}
+
+void EpubReaderChapterSelectionActivity::drawFooter() {
+  const bool pages = listCount() > activeNav().inputPageRows();
   const auto hints = mappedInput.mapHints(tr(STR_BACK), tr(STR_SELECT), pages ? tr(STR_LIST_PAGE_PREV) : "",
                                           pages ? tr(STR_LIST_PAGE_NEXT) : "", tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, hints.front.btn1, hints.front.btn2, hints.front.btn3, hints.front.btn4);
   GUI.drawSideButtonHints(renderer, hints.side.up, hints.side.down);
-
-  renderer.displayBuffer();
 }
