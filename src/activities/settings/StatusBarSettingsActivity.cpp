@@ -27,23 +27,26 @@ const StrId slotContentNames[] = {
     StrId::STR_STATUS_BAR_CHAPTER_TITLE,
     StrId::STR_STATUS_BAR_BOOK_TITLE,
 };
-const StrId progressBarNames[] = {StrId::STR_BOOK, StrId::STR_HIDE};
-
 // One menu row. Editing a status-bar option means: cycle `field` through `valueCount` values and
 // display its current value. Rows with an enum-style set of choices provide `valueNames` (indexed by
-// the field value); rows with no `valueNames` are on/off toggles rendered as Show/Hide.
+// the field value); rows marked `isToggle` render FreeInkUI's native switch widget.
 struct StatusBarItem {
   StrId label;
   uint8_t CrossPointSettings::* field;
   uint8_t valueCount;
   uint8_t defaultValue;     // value to reset to if the stored one is out of range
-  const StrId* valueNames;  // nullptr → boolean Show/Hide toggle
+  const StrId* valueNames;  // nullptr for toggle items
+  bool isToggle;
 };
 
 template <size_t N>
 constexpr StatusBarItem enumItem(StrId label, uint8_t CrossPointSettings::* field, const StrId (&names)[N],
                                  uint8_t defaultValue) {
-  return {label, field, static_cast<uint8_t>(N), defaultValue, names};
+  return {label, field, static_cast<uint8_t>(N), defaultValue, names, false};
+}
+
+constexpr StatusBarItem toggleItem(StrId label, uint8_t CrossPointSettings::* field, uint8_t defaultValue) {
+  return {label, field, 2, defaultValue, nullptr, true};
 }
 
 const StatusBarItem statusBarItems[] = {
@@ -55,8 +58,8 @@ const StatusBarItem statusBarItems[] = {
              CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_CHAPTER_TITLE),
     enumItem(StrId::STR_STATUS_BAR_RIGHT, &CrossPointSettings::statusBarRight, slotContentNames,
              CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_PAGE_AND_PERCENTAGE),
-    enumItem(StrId::STR_PROGRESS_BAR, &CrossPointSettings::statusBarProgressBar, progressBarNames,
-             CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS),
+    toggleItem(StrId::STR_PROGRESS_BAR, &CrossPointSettings::statusBarProgressBar,
+               CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS),
 };
 
 const StatusBarItem& visibleItem(int visibleIndex) {
@@ -233,16 +236,23 @@ void StatusBarSettingsActivity::buildScreen(UiScreen& screen) {
   for (int i = 0; i < count; ++i) {
     const StatusBarItem& item = visibleItem(i);
     const uint8_t value = SETTINGS.*item.field;
-    if (item.valueNames) {
-      itemValues[i] = I18N.get(item.valueNames[value]);
-    } else {
-      itemValues[i] = value ? tr(STR_SHOW) : tr(STR_HIDE);
-    }
     items[i] = {};
     items[i].label = I18N.get(item.label);
-    items[i].value = itemValues[i].c_str();
     items[i].actionValue = static_cast<int16_t>(i);
     items[i].enabled = true;
+
+    if (item.isToggle) {
+      items[i].toggle = true;
+      items[i].toggleChecked = (value == CrossPointSettings::STATUS_BAR_PROGRESS_BAR::BOOK_PROGRESS);
+      items[i].value = nullptr;
+    } else {
+      if (item.valueNames) {
+        itemValues[i] = I18N.get(item.valueNames[value]);
+      } else {
+        itemValues[i] = value ? tr(STR_SHOW) : tr(STR_HIDE);
+      }
+      items[i].value = itemValues[i].c_str();
+    }
   }
 
   fui::ListProps props;
