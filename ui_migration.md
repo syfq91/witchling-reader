@@ -3,7 +3,7 @@
 This document establishes a complete, phased architecture and execution plan for migrating the remaining Witchling Reader user interfaces from the legacy drawing engine (`BaseTheme::drawList`, manual coordinate calculations, and custom scroll loops) to the **FreeInk SDK UI** framework (`FreeInkUI`).
 
 > [!NOTE]
-> **Status:** Phase 1 (Pure Settings & Configuration Lists), Phase 2 (Library & Book History Lists), and Phase 3 (Reader In-Book Navigation Lists) have been successfully implemented and verified. Phases 4–7 remain scheduled according to the roadmap below.
+> **Status:** Phases 1–4 have been successfully implemented and verified. Phases 5–7 remain scheduled according to the roadmap below.
 
 ---
 
@@ -214,15 +214,20 @@ flowchart TD
 
 ---
 
-### Phase 4: Standalone Value Pickers & Dialogs
+### Phase 4: Standalone Value Pickers & Dialogs — ✅ COMPLETED
 **Target**: Numeric steppers, slider screens, and transient dialogs.
 
-| Activity | Current State | Target Base Class / FreeInk Component | Specific Tasks |
+| Activity | Previous State | Target Base Class / FreeInk Component | Status & Implementation Notes |
 |---|---|---|---|
-| [`SliderPickerActivity`](file:///home/syafiq/code/witchling-reader/src/activities/SliderPickerActivity.h) | Hand-drawn slider track, knob, and percent text | `UiAppHost` / `freeink::ui::Slider` | • Replace manual `renderer.fillRect` track and knob drawing with FreeInk's `freeink::ui::SliderProps`.<br/>• Retain coarse/fine button step acceleration (`buttonNavigator.onPressAndContinuous`). |
-| [`EpubReaderPercentSelectionActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/EpubReaderPercentSelectionActivity.h) | Subclass of `SliderPickerActivity` | Inherits migrated `SliderPickerActivity` | • Inherits the FreeInk slider implementation automatically. |
-| [`EpubReaderPrintedPageInputActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/EpubReaderPrintedPageInputActivity.h) | Hand-rolled digit carousel layout | `UiAppHost` / Custom FreeInk widget | • Render digit slots and active cursor via declarative UI container.<br/>• Clean button navigation for incrementing digits. |
-| [`OpdsProgressionSyncActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/OpdsProgressionSyncActivity.h) | Manual centering and `GUI.drawHeader` | `UiAppHost` / `freeink::ui::OptionDialog` | • Standardize sync status, conflict resolution, and retry prompt. |
+| [`SliderPickerActivity`](file:///home/syafiq/code/witchling-reader/src/activities/SliderPickerActivity.h) | Hand-drawn slider track, knob, and percent text | `UiAppHost` / `freeink::ui::SliderRow` | ✅ Migrated. Built on `UiAppHost` with `fui::sliderRow` (`capsuleSlider` + `[-]`/`[+]` step buttons), prominent value readout, drag/tap touch support, and coarse/fine button step acceleration. |
+| [`EpubReaderPercentSelectionActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/EpubReaderPercentSelectionActivity.h) | Subclass of `SliderPickerActivity` | Inherits migrated `SliderPickerActivity` | ✅ Migrated. Automatically inherits modern FreeInkUI slider implementation for 0–100% reader navigation. |
+| [`EpubReaderPrintedPageInputActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/EpubReaderPrintedPageInputActivity.h) | Hand-rolled digit carousel layout | `UiAppHost` / Custom FreeInk widget | ✅ Migrated. Built on `UiAppHost` with themed layout, active digit cursor underline, single (±1) and double-click (±10) acceleration, and touch event routing. |
+| [`OpdsProgressionSyncActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/OpdsProgressionSyncActivity.h) | Manual centering and `GUI.drawHeader` | `UiAppHost` / `ConfirmDialog` | ✅ Migrated. Standardized sync states (Connecting, Syncing, Remote Newer, Pushed, In Sync, Failed) using `ConfirmDialog::draw` with touch targets and button shortcuts. |
+
+**Phase 4 Verification**:
+- PlatformIO C3 Build: **Passed** (`pio run -e default`).
+- RAM: 18.0% (58,896 bytes — 0 byte delta vs baseline).
+- Flash: 82.6% (5,411,841 bytes — net delta of +5.4 KB across all 4 screens). Zero template expansion.
 
 ---
 

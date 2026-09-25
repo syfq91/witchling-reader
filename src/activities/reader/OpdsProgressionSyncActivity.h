@@ -3,9 +3,10 @@
 #include <string>
 
 #include "activities/Activity.h"
+#include "components/UiAppHost.h"
 #include "network/OpdsProgressionSync.h"
 
-class OpdsProgressionSyncActivity final : public Activity {
+class OpdsProgressionSyncActivity final : public Activity, private UiAppHost {
  public:
   enum State { INITIAL, CONNECTING_WIFI, SYNCING, SUCCESS_REMOTE, SUCCESS_PUSHED, SUCCESS_SAME, NO_CONFIG, FAILED };
 
@@ -20,6 +21,12 @@ class OpdsProgressionSyncActivity final : public Activity {
  private:
   void startWifi();
   void performSync();
+
+  static void screenTrampoline(UiScreen& screen, void* user);
+  static void onCancelEvent(const freeink::ui::ActionEvent& event, void* user);
+  static void onConfirmEvent(const freeink::ui::ActionEvent& event, void* user);
+
+  void buildScreen(UiScreen& screen);
 
   std::string cachePath;
   float localProgression = 0.0f;

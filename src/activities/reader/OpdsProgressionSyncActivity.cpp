@@ -9,19 +9,26 @@
 #include <memory>
 #include <utility>
 
+#include "I18nKeys.h"
 #include "MappedInputManager.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "components/ConfirmDialog.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 constexpr const char* TAG = "OPDS_SYNC_ACT";
-}
+
+constexpr fui::ActionId ACTION_CANCEL = 1;
+constexpr fui::ActionId ACTION_CONFIRM = 2;
+}  // namespace
 
 OpdsProgressionSyncActivity::OpdsProgressionSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                                         std::string cachePath, float localProgression,
+                                                         std::string cachePath, const float localProgression,
                                                          std::string localTitle, std::string localReference)
     : Activity("OpdsProgressionSync", renderer, mappedInput),
+      UiAppHost(renderer),
       cachePath(std::move(cachePath)),
       localProgression(localProgression),
       localTitle(std::move(localTitle)),
@@ -29,6 +36,10 @@ OpdsProgressionSyncActivity::OpdsProgressionSyncActivity(GfxRenderer& renderer, 
 
 void OpdsProgressionSyncActivity::onEnter() {
   Activity::onEnter();
+  resetUi();
+  app.on(ACTION_CANCEL, &OpdsProgressionSyncActivity::onCancelEvent, this);
+  app.on(ACTION_CONFIRM, &OpdsProgressionSyncActivity::onConfirmEvent, this);
+  app.setScreen(&OpdsProgressionSyncActivity::screenTrampoline, this);
 
   if (!OpdsProgressionSync::hasSyncConfig(cachePath)) {
     state = NO_CONFIG;
@@ -47,7 +58,29 @@ void OpdsProgressionSyncActivity::onEnter() {
   }
 }
 
-void OpdsProgressionSyncActivity::onExit() { Activity::onExit(); }
+void OpdsProgressionSyncActivity::onExit() {
+  closeRouting();
+  Activity::onExit();
+}
+
+void OpdsProgressionSyncActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<OpdsProgressionSyncActivity*>(user)->buildScreen(screen);
+}
+
+void OpdsProgressionSyncActivity::onCancelEvent(const fui::ActionEvent&, void* user) {
+  static_cast<OpdsProgressionSyncActivity*>(user)->finish();
+}
+
+void OpdsProgressionSyncActivity::onConfirmEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<OpdsProgressionSyncActivity*>(user);
+  if (self->state == FAILED) {
+    self->state = SYNCING;
+    self->requestUpdateAndWait();
+    self->performSync();
+  } else {
+    self->finish();
+  }
+}
 
 void OpdsProgressionSyncActivity::startWifi() {
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
@@ -98,7 +131,76 @@ void OpdsProgressionSyncActivity::performSync() {
   requestUpdate();
 }
 
+void OpdsProgressionSyncActivity::buildScreen(UiScreen& screen) {
+  ConfirmDialog::Spec spec;
+  spec.title = tr(STR_SYNC_PROGRESS);
+
+  char detailBuf[128];
+  detailBuf[0] = '\0';
+
+  switch (state) {
+    case CONNECTING_WIFI:
+      spec.headline = tr(STR_CONNECTING);
+      break;
+    case SYNCING:
+      spec.headline = tr(STR_SYNCING_PROGRESS);
+      break;
+    case SUCCESS_REMOTE:
+      spec.headline = tr(STR_SYNC_PROGRESS_REMOTE_UPDATED);
+      if (!remoteData.title.empty()) {
+        snprintf(detailBuf, sizeof(detailBuf), "Position: %d%%\n%s",
+                 static_cast<int>(remoteData.progression * 100.0f + 0.5f), remoteData.title.c_str());
+      } else {
+        snprintf(detailBuf, sizeof(detailBuf), "Position: %d%%",
+                 static_cast<int>(remoteData.progression * 100.0f + 0.5f));
+      }
+      spec.message = detailBuf;
+      spec.acceptLabel = tr(STR_CONFIRM);
+      spec.acceptAction = ACTION_CONFIRM;
+      break;
+    case SUCCESS_PUSHED:
+      spec.headline = tr(STR_SYNC_PROGRESS_SUCCESS);
+      snprintf(detailBuf, sizeof(detailBuf), "Saved to server: %d%%",
+               static_cast<int>(localProgression * 100.0f + 0.5f));
+      spec.message = detailBuf;
+      spec.acceptLabel = tr(STR_CONFIRM);
+      spec.acceptAction = ACTION_CONFIRM;
+      break;
+    case SUCCESS_SAME:
+      spec.headline = tr(STR_SYNC_PROGRESS_IN_SYNC);
+      snprintf(detailBuf, sizeof(detailBuf), "Current position: %d%%",
+               static_cast<int>(localProgression * 100.0f + 0.5f));
+      spec.message = detailBuf;
+      spec.acceptLabel = tr(STR_CONFIRM);
+      spec.acceptAction = ACTION_CONFIRM;
+      break;
+    case NO_CONFIG:
+      spec.headline = tr(STR_SYNC_PROGRESS_NO_SERVER);
+      spec.acceptLabel = tr(STR_CONFIRM);
+      spec.acceptAction = ACTION_CONFIRM;
+      break;
+    case FAILED:
+      spec.headline = tr(STR_SYNC_PROGRESS_FAILED);
+      spec.message = statusMessage.empty() ? nullptr : statusMessage.c_str();
+      spec.cancelLabel = tr(STR_BACK);
+      spec.cancelAction = ACTION_CANCEL;
+      spec.acceptLabel = tr(STR_RETRY);
+      spec.acceptAction = ACTION_CONFIRM;
+      break;
+    default:
+      break;
+  }
+
+  ConfirmDialog::draw(screen, spec);
+}
+
 void OpdsProgressionSyncActivity::loop() {
+  const auto touch = routeTouch(mappedInput);
+  if (touch.routed) {
+    if (app.invalidated()) requestUpdate();
+    if (touch) return;
+  }
+
   ButtonEventManager::ButtonEvent ev;
   while (buttonEvents.consumeEvent(ev)) {
     if (ev.type != ButtonEventManager::PressType::Short) continue;
@@ -125,54 +227,7 @@ void OpdsProgressionSyncActivity::loop() {
 
 void OpdsProgressionSyncActivity::render(RenderLock&&) {
   renderer.clearScreen();
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-  const int headerBottom = contentRect.y + metrics.topPadding + metrics.headerHeight;
-  const Rect bodyRect(contentRect.x, headerBottom, contentRect.width,
-                      contentRect.height - (metrics.topPadding + metrics.headerHeight));
-
-  GUI.drawHeader(renderer,
-                 Rect(contentRect.x, contentRect.y + metrics.topPadding, contentRect.width, metrics.headerHeight),
-                 tr(STR_SYNC_PROGRESS));
-
-  int y = bodyRect.y + bodyRect.height / 3;
-
-  if (state == CONNECTING_WIFI) {
-    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_CONNECTING), true, EpdFontFamily::BOLD);
-  } else if (state == SYNCING) {
-    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_SYNCING_PROGRESS), true, EpdFontFamily::BOLD);
-  } else if (state == SUCCESS_REMOTE) {
-    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_SYNC_PROGRESS_REMOTE_UPDATED), true, EpdFontFamily::BOLD);
-    y += 30;
-    char buf[64];
-    snprintf(buf, sizeof(buf), "Position: %d%%", static_cast<int>(remoteData.progression * 100.0f + 0.5f));
-    renderer.drawCenteredText(UI_10_FONT_ID, y, buf);
-    if (!remoteData.title.empty()) {
-      y += 25;
-      renderer.drawCenteredText(UI_10_FONT_ID, y, remoteData.title.c_str());
-    }
-  } else if (state == SUCCESS_PUSHED) {
-    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_SYNC_PROGRESS_SUCCESS), true, EpdFontFamily::BOLD);
-    y += 30;
-    char buf[64];
-    snprintf(buf, sizeof(buf), "Saved to server: %d%%", static_cast<int>(localProgression * 100.0f + 0.5f));
-    renderer.drawCenteredText(UI_10_FONT_ID, y, buf);
-  } else if (state == SUCCESS_SAME) {
-    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_SYNC_PROGRESS_IN_SYNC), true, EpdFontFamily::BOLD);
-    y += 30;
-    char buf[64];
-    snprintf(buf, sizeof(buf), "Current position: %d%%", static_cast<int>(localProgression * 100.0f + 0.5f));
-    renderer.drawCenteredText(UI_10_FONT_ID, y, buf);
-  } else if (state == NO_CONFIG) {
-    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_SYNC_PROGRESS_NO_SERVER), true, EpdFontFamily::BOLD);
-  } else if (state == FAILED) {
-    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_SYNC_PROGRESS_FAILED), true, EpdFontFamily::BOLD);
-    if (!statusMessage.empty()) {
-      y += 30;
-      renderer.drawCenteredText(UI_10_FONT_ID, y, statusMessage.c_str());
-    }
-  }
+  renderUi();
 
   if (state == FAILED) {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");

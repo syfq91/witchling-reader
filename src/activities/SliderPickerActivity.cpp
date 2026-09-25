@@ -3,51 +3,145 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
 #include "activities/ActivityResult.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 constexpr int kSmallStep = 1;
 constexpr int kLargeStep = 10;
 
-constexpr int kBarWidth = 360;
-constexpr int kBarHeight = 16;
-constexpr int kBarY = 140;
-constexpr int kTrackInset = 2;
-
-int barLeft(const GfxRenderer& renderer) {
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-  return contentRect.x + (contentRect.width - kBarWidth) / 2;
-}
-
-int fillWidthFor(int val, int width, int minVal, int maxVal) {
-  if (maxVal <= minVal) return 0;
-  const int usable = width - kTrackInset * 2;
-  const int clamped = std::max(minVal, std::min(maxVal, val));
-  return (clamped - minVal) * usable / (maxVal - minVal);
-}
+constexpr fui::ActionId ACTION_DEC = 1;
+constexpr fui::ActionId ACTION_INC = 2;
+constexpr fui::ActionId ACTION_SLIDER = 3;
 }  // namespace
+
+SliderPickerActivity::SliderPickerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, Config config)
+    : Activity("SliderPicker", renderer, mappedInput),
+      UiAppHost(renderer),
+      value(std::max(config.minValue, std::min(config.maxValue, config.initialValue))),
+      cfg(std::move(config)) {}
+
+void SliderPickerActivity::updateValueText() {
+  if (!cfg.zeroLabel.empty() && value == cfg.minValue) {
+    valueText = cfg.zeroLabel;
+  } else if (!cfg.maxLabel.empty() && value == cfg.maxValue) {
+    valueText = cfg.maxLabel;
+  } else {
+    valueText = std::to_string(value) + cfg.suffix;
+  }
+}
 
 void SliderPickerActivity::onEnter() {
   Activity::onEnter();
+  resetUi();
+  app.on(ACTION_DEC, &SliderPickerActivity::onDecrementEvent, this);
+  app.on(ACTION_INC, &SliderPickerActivity::onIncrementEvent, this);
+  app.on(ACTION_SLIDER, &SliderPickerActivity::onSliderEvent, this);
+  app.setScreen(&SliderPickerActivity::screenTrampoline, this);
+  updateValueText();
   requestUpdate();
 }
 
-void SliderPickerActivity::onExit() { Activity::onExit(); }
+void SliderPickerActivity::onExit() {
+  closeRouting();
+  Activity::onExit();
+}
 
 void SliderPickerActivity::adjustValue(const int delta) {
   const int before = value;
   value += delta;
   if (value < cfg.minValue) value = cfg.minValue;
   if (value > cfg.maxValue) value = cfg.maxValue;
+  updateValueText();
   if (value != before && cfg.onPreview) cfg.onPreview(value);
   requestUpdate();
 }
 
+void SliderPickerActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<SliderPickerActivity*>(user)->buildScreen(screen);
+}
+
+void SliderPickerActivity::onDecrementEvent(const fui::ActionEvent&, void* user) {
+  static_cast<SliderPickerActivity*>(user)->adjustValue(-kSmallStep);
+}
+
+void SliderPickerActivity::onIncrementEvent(const fui::ActionEvent&, void* user) {
+  static_cast<SliderPickerActivity*>(user)->adjustValue(kSmallStep);
+}
+
+void SliderPickerActivity::onSliderEvent(const fui::ActionEvent& event, void* user) {
+  auto* self = static_cast<SliderPickerActivity*>(user);
+  if (event.dragPermille >= 0) {
+    const int range = self->cfg.maxValue - self->cfg.minValue;
+    if (range > 0) {
+      const int newVal = self->cfg.minValue + (event.dragPermille * range + 500) / 1000;
+      self->adjustValue(newVal - self->value);
+    }
+  }
+}
+
+void SliderPickerActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
+                  static_cast<int16_t>(contentRect.x)});
+
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing * 2));
+
+  // Prominent value readout
+  fui::TextAreaProps readout;
+  readout.text = valueText.c_str();
+  readout.style = screen.theme().titleText;
+  readout.style.bold = true;
+  readout.style.align = fui::TextAlign::Center;
+  readout.style.maxLines = 1;
+  readout.showCaret = false;
+  screen.textArea(readout, 40);
+
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing * 2));
+
+  // Slider row: [-] [===O===] [+]
+  fui::SliderRowProps row;
+  row.sliderValue = value - cfg.minValue;
+  row.max = cfg.maxValue - cfg.minValue;
+  row.decrement = ACTION_DEC;
+  row.increment = ACTION_INC;
+  row.sliderAction = ACTION_SLIDER;
+  row.decrementLabel = "-";
+  row.incrementLabel = "+";
+  row.buttonText = screen.theme().titleText;
+  row.buttonText.bold = true;
+  row.buttonText.align = fui::TextAlign::Center;
+  screen.sliderRow(row, 48);
+
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing * 2));
+
+  // Step hint text
+  fui::TextAreaProps hint;
+  hint.text = I18N.get(cfg.hintId);
+  hint.style = screen.theme().smallText;
+  hint.style.align = fui::TextAlign::Center;
+  hint.style.maxLines = 2;
+  hint.showCaret = false;
+  screen.textArea(hint);
+}
 
 void SliderPickerActivity::loop() {
+  const auto touch = routeTouch(mappedInput);
+  if (touch.routed) {
+    if (app.invalidated()) requestUpdate();
+    if (touch) return;
+  }
+
   ButtonEventManager::ButtonEvent ev;
   while (buttonEvents.consumeEvent(ev)) {
     if (ev.button == MappedInputManager::Button::Back && ev.type == ButtonEventManager::PressType::Short) {
@@ -84,34 +178,12 @@ void SliderPickerActivity::loop() {
 void SliderPickerActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
-  renderer.drawCenteredText(UI_12_FONT_ID, 15, I18N.get(cfg.titleId), true, EpdFontFamily::BOLD);
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
+                 I18N.get(cfg.titleId));
 
-  std::string valueText;
-  if (!cfg.zeroLabel.empty() && value == cfg.minValue) {
-    valueText = cfg.zeroLabel;
-  } else if (!cfg.maxLabel.empty() && value == cfg.maxValue) {
-    valueText = cfg.maxLabel;
-  } else {
-    valueText = std::to_string(value) + cfg.suffix;
-  }
-  renderer.drawCenteredText(UI_12_FONT_ID, 90, valueText.c_str(), true, EpdFontFamily::BOLD);
+  renderUi();
 
-  const int barX = barLeft(renderer);
-
-  renderer.drawRect(barX, kBarY, kBarWidth, kBarHeight);
-
-  const int fillWidth = fillWidthFor(value, kBarWidth, cfg.minValue, cfg.maxValue);
-  if (fillWidth > 0) {
-    renderer.fillRect(barX + kTrackInset, kBarY + 2, fillWidth, kBarHeight - 4);
-  }
-
-  const int knobX = barX + kTrackInset + fillWidth - 2;
-  renderer.fillRect(knobX, kBarY - 4, 4, kBarHeight + 8, true);
-
-  renderer.drawCenteredText(SMALL_FONT_ID, kBarY + 30, I18N.get(cfg.hintId), true);
-
-  // The slider runs across the screen, so - / + ride logical Left/Right and move to whichever
-  // button pair lies on that axis; the coarse step rides logical Up/Down and is unlabelled.
   const auto hints = mappedInput.mapHints(tr(STR_BACK), tr(STR_SELECT), "-", "+", "", "");
   GUI.drawButtonHints(renderer, hints.front.btn1, hints.front.btn2, hints.front.btn3, hints.front.btn4);
   GUI.drawSideButtonHints(renderer, hints.side.up, hints.side.down);

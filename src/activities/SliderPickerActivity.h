@@ -7,11 +7,12 @@
 
 #include "MappedInputManager.h"
 #include "activities/Activity.h"
+#include "components/UiAppHost.h"
 #include "util/ButtonNavigator.h"
 
 // Generic slider picker (0–N range, configurable label, suffix, zero label).
 // Returns a PercentResult containing the selected value.
-class SliderPickerActivity : public Activity {
+class SliderPickerActivity : public Activity, private UiAppHost {
  public:
   struct Config {
     StrId titleId;  // Heading shown at top
@@ -36,20 +37,27 @@ class SliderPickerActivity : public Activity {
     std::function<void(int)> onPreview;
   };
 
-  explicit SliderPickerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, Config config)
-      : Activity("SliderPicker", renderer, mappedInput),
-        value(std::max(config.minValue, std::min(config.maxValue, config.initialValue))),
-        cfg(std::move(config)) {}
+  explicit SliderPickerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, Config config);
 
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 
+ protected:
+  void adjustValue(int delta);
+
  private:
   int value;
   Config cfg;
   ButtonNavigator buttonNavigator;
+  std::string valueText;
 
-  void adjustValue(int delta);
+  static void screenTrampoline(UiScreen& screen, void* user);
+  static void onDecrementEvent(const freeink::ui::ActionEvent& event, void* user);
+  static void onIncrementEvent(const freeink::ui::ActionEvent& event, void* user);
+  static void onSliderEvent(const freeink::ui::ActionEvent& event, void* user);
+
+  void buildScreen(UiScreen& screen);
+  void updateValueText();
 };

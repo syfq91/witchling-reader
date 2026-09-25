@@ -1,7 +1,10 @@
 #pragma once
 
+#include <string>
+
 #include "MappedInputManager.h"
 #include "activities/Activity.h"
+#include "components/UiAppHost.h"
 
 // Numeric input dialog for "jump to printed page".
 // User adjusts a single integer (mirroring the printed-page label as shown in the book).
@@ -9,17 +12,10 @@
 // Left/Right move the cursor between digits; Confirm returns the typed string.
 // Books with non-integer labels (roman numerals, etc.) are not addressable via this dialog;
 // the menu item is hidden if the book has no integer-parseable printed-page labels.
-class EpubReaderPrintedPageInputActivity final : public Activity {
+class EpubReaderPrintedPageInputActivity final : public Activity, private UiAppHost {
  public:
   explicit EpubReaderPrintedPageInputActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int initialValue,
-                                              int minValue, int maxValue)
-      : Activity("EpubReaderPrintedPageInput", renderer, mappedInput),
-        value(initialValue),
-        minValue(minValue),
-        maxValue(maxValue) {
-    clampValue();
-    cursorDigit = 0;  // ones place
-  }
+                                              int minValue, int maxValue);
 
   void onEnter() override;
   void onExit() override;
@@ -43,4 +39,13 @@ class EpubReaderPrintedPageInputActivity final : public Activity {
   // don't exist yet, so they can grow the number quickly (e.g. start at 1, move cursor left,
   // press Up to make 11, etc.) without single-pressing dozens of times.
   int maxCursorDigit() const;
+
+  static void screenTrampoline(UiScreen& screen, void* user);
+  static void onDecrementEvent(const freeink::ui::ActionEvent& event, void* user);
+  static void onIncrementEvent(const freeink::ui::ActionEvent& event, void* user);
+  static void onCursorLeftEvent(const freeink::ui::ActionEvent& event, void* user);
+  static void onCursorRightEvent(const freeink::ui::ActionEvent& event, void* user);
+
+  void buildScreen(UiScreen& screen);
+  void afterUiRender();
 };
