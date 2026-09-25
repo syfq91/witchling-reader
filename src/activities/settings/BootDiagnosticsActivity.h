@@ -2,6 +2,7 @@
 
 #include "BootDiagnostics.h"
 #include "activities/Activity.h"
+#include "components/UiAppHost.h"
 
 /// Settings > System > Boot Diagnostics.
 ///
@@ -14,20 +15,31 @@
 /// The page is deliberately one screenful with no scrolling: its job is to be
 /// photographed and pasted into an issue. Row labels are translated; the values stay as
 /// English technical tokens so reports from different locales stay comparable.
-class BootDiagnosticsActivity final : public Activity {
+class BootDiagnosticsActivity final : public Activity, private UiAppHost {
  public:
   explicit BootDiagnosticsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("BootDiagnostics", renderer, mappedInput) {}
+      : Activity("BootDiagnostics", renderer, mappedInput), UiAppHost(renderer) {}
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 
+ protected:
+  void afterUiRender();
+
  private:
+  static constexpr freeink::ui::ActionId ACTION_BACK = 1;
+
   // Fixed storage rather than a vector: 256 bytes as part of the activity object, which
   // is already a heap allocation, versus a second one that would have to be sized from
   // the file anyway. loadRecords() fills it newest-first.
   BootDiag::Record records_[BootDiag::kCapacity] = {};
   uint8_t recordCount_ = 0;
   bool loaded_ = false;
+  freeink::ui::Rect bodyRect_{};
+
+  void buildScreen(UiScreen& screen);
+  static void screenTrampoline(UiScreen& screen, void* user);
+  static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
 };

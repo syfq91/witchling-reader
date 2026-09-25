@@ -3,6 +3,7 @@
 #include <string>
 
 #include "activities/Activity.h"
+#include "components/UiAppHost.h"
 
 /**
  * SD-card based firmware update activity.
@@ -17,7 +18,7 @@
  * Used both from Settings -> System -> "SD Card Firmware Update", and as the only
  * activity launched in boot recovery mode (left side button + power on X3).
  */
-class SdFirmwareUpdateActivity : public Activity {
+class SdFirmwareUpdateActivity : public Activity, private UiAppHost {
  public:
   enum class State {
     PICKING,
@@ -29,21 +30,27 @@ class SdFirmwareUpdateActivity : public Activity {
   };
 
   explicit SdFirmwareUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool recoveryMode = false)
-      : Activity("SdFirmwareUpdate", renderer, mappedInput), recoveryMode(recoveryMode) {}
+      : Activity("SdFirmwareUpdate", renderer, mappedInput),
+        UiAppHost(renderer),
+        recoveryMode(recoveryMode) {}
 
   // Start with a pre-selected firmware path — skips the file picker.
   explicit SdFirmwareUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string preSelectedPath)
       : Activity("SdFirmwareUpdate", renderer, mappedInput),
+        UiAppHost(renderer),
         recoveryMode(false),
         firmwarePath(std::move(preSelectedPath)) {}
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool preventAutoSleep() override { return state == State::UPDATING || state == State::VALIDATING; }
   bool skipLoopDelay() override { return state == State::UPDATING; }
 
  private:
+  static constexpr freeink::ui::ActionId ACTION_BACK = 1;
+
   State state = State::PICKING;
   bool recoveryMode = false;
 
@@ -59,4 +66,8 @@ class SdFirmwareUpdateActivity : public Activity {
   void promptConfirmation();
   void onConfirmationResult(const ActivityResult& result);
   void performUpdate();
+
+  void buildScreen(UiScreen& screen);
+  static void screenTrampoline(UiScreen& screen, void* user);
+  static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
 };

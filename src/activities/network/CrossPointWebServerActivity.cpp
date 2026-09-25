@@ -64,6 +64,11 @@ void CrossPointWebServerActivity::onEnter() {
   connectedIP.clear();
   connectedSSID.clear();
   lastHandleClientTime = 0;
+
+  resetUi();
+  app.setScreen(screenTrampoline, this);
+  app.on(ACTION_BACK, actionTrampoline, this);
+
   requestUpdate();
 
   // Launch network mode selection subactivity
@@ -79,6 +84,7 @@ void CrossPointWebServerActivity::onEnter() {
 }
 
 void CrossPointWebServerActivity::onExit() {
+  resetUi();
   Activity::onExit();
 
   state = WebServerActivityState::SHUTTING_DOWN;
@@ -274,7 +280,8 @@ void CrossPointWebServerActivity::showServerScreenAndReleaseBuffers() {
   // no framebuffer needed after displayBuffer().
   LOG_DBG("WEBACT", "Free heap before frame buffer release: %d bytes", ESP.getFreeHeap());
   renderer.clearScreen();
-  renderServerRunning();
+  renderUi();
+  afterUiRender();
   renderer.displayBuffer();
   buffersReleased = true;
   renderer.releaseFrameBuffers();
@@ -312,6 +319,12 @@ void CrossPointWebServerActivity::startWebServer() {
 }
 
 void CrossPointWebServerActivity::loop() {
+  const auto touch = routeTouch(mappedInput);
+  if (touch.routed) {
+    if (app.invalidated()) requestUpdate();
+    if (touch) return;
+  }
+
   // Handle different states
   if (state == WebServerActivityState::SERVER_RUNNING) {
     // Handle DNS requests for captive portal (AP mode only)
@@ -391,49 +404,55 @@ void CrossPointWebServerActivity::loop() {
 }
 
 void CrossPointWebServerActivity::render(RenderLock&&) {
-  // Frame buffers are released before the web server starts (in startWebServer).
-  // Any render triggered after that point must not touch the null framebuffer.
   if (buffersReleased) return;
-
-  // Only render our own UI when server is running.
-  // Subactivities handle their own rendering.
   if (state == WebServerActivityState::SERVER_RUNNING || state == WebServerActivityState::AP_STARTING) {
     renderer.clearScreen();
-    const auto& metrics = UITheme::getInstance().getMetrics();
-    const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-
-    GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
-                   isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER), nullptr);
-
-    if (state == WebServerActivityState::SERVER_RUNNING) {
-      GUI.drawSubHeader(
-          renderer,
-          Rect{contentRect.x, metrics.topPadding + metrics.headerHeight, contentRect.width, metrics.tabBarHeight},
-          connectedSSID.c_str());
-      renderServerRunning();
-    } else {
-      const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-      const auto top = contentRect.y + (contentRect.height - height) / 2;
-      renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_STARTING_HOTSPOT));
-    }
+    renderUi();
+    afterUiRender();
     renderer.displayBuffer();
   }
 }
 
-namespace {}  // namespace
+void CrossPointWebServerActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<CrossPointWebServerActivity*>(user)->buildScreen(screen);
+}
 
-void CrossPointWebServerActivity::renderServerRunning() const {
+void CrossPointWebServerActivity::actionTrampoline(const freeink::ui::ActionEvent& event, void* user) {
+  auto* self = static_cast<CrossPointWebServerActivity*>(user);
+  if (event.action == ACTION_BACK) {
+    self->onGoHome();
+  }
+}
+
+void CrossPointWebServerActivity::buildScreen(UiScreen& screen) {
+  namespace fui = freeink::ui;
+
+  const char* title = isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER);
+  const char* subtitle = connectedSSID.empty() ? nullptr : connectedSSID.c_str();
+  screen.header(title, subtitle);
+
+  fui::FooterAction footerActions[1];
+  footerActions[0].label = tr(STR_BACK);
+  footerActions[0].action = ACTION_BACK;
+  screen.footer(footerActions, 1);
+
+  if (state == WebServerActivityState::AP_STARTING) {
+    screen.spacer(40);
+    screen.centeredText(tr(STR_STARTING_HOTSPOT));
+  }
+
+  bodyRect_ = screen.body();
+}
+
+void CrossPointWebServerActivity::afterUiRender() {
+  if (state != WebServerActivityState::SERVER_RUNNING) return;
+
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+  const Rect contentRect{bodyRect_.x, bodyRect_.y, bodyRect_.width, bodyRect_.height};
 
-  GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
-                 isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER), nullptr);
-  GUI.drawSubHeader(
-      renderer, Rect{contentRect.x, metrics.topPadding + metrics.headerHeight, contentRect.width, metrics.tabBarHeight},
-      connectedSSID.c_str());
-
-  int startY = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing * 2;
+  int startY = contentRect.y + metrics.verticalSpacing;
   int height10 = renderer.getLineHeight(UI_10_FONT_ID);
+
   if (isApMode) {
     // AP mode display
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, startY, tr(STR_CONNECT_WIFI_HINT), true,
@@ -479,7 +498,6 @@ void CrossPointWebServerActivity::renderServerRunning() const {
     startY += metrics.verticalSpacing * 2;
 
     // STA mode display (original behavior)
-    // std::string ipInfo = "IP Address: " + connectedIP;
     renderer.drawCenteredText(UI_10_FONT_ID, startY, tr(STR_OPEN_URL_HINT), true, EpdFontFamily::BOLD);
     startY += height10;
     renderer.drawCenteredText(UI_10_FONT_ID, startY, tr(STR_SCAN_QR_HINT), true, EpdFontFamily::BOLD);
@@ -499,10 +517,6 @@ void CrossPointWebServerActivity::renderServerRunning() const {
     std::string hostnameUrl = std::string(tr(STR_OR_HTTP_PREFIX)) + AP_HOSTNAME + ".local/";
     renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameUrl.c_str(), true);
 
-    // AP mode: no external RSSI metric available, but keep UI spacing consistent.
-  }
-
-  if (!isApMode) {
     const int signalHeight = 22;
     const int signalWidth = contentRect.width - metrics.contentSidePadding * 2;
     const int signalY = startY + height10 + metrics.verticalSpacing * 2;
@@ -510,7 +524,4 @@ void CrossPointWebServerActivity::renderServerRunning() const {
                            currentRssi);
     renderer.drawCenteredText(SMALL_FONT_ID, signalY + signalHeight + 2, rssiLabel(currentRssi).c_str(), true);
   }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }

@@ -114,10 +114,26 @@ const char* outcomeTag(const BootDiag::Record& record) {
 void BootDiagnosticsActivity::onEnter() {
   Activity::onEnter();
   loaded_ = false;
+
+  resetUi();
+  app.setScreen(screenTrampoline, this);
+  app.on(ACTION_BACK, actionTrampoline, this);
+
   requestUpdate();
 }
 
+void BootDiagnosticsActivity::onExit() {
+  resetUi();
+  Activity::onExit();
+}
+
 void BootDiagnosticsActivity::loop() {
+  const auto touch = routeTouch(mappedInput);
+  if (touch.routed) {
+    if (app.invalidated()) requestUpdate();
+    if (touch) return;
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
       mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     finish();
@@ -134,13 +150,38 @@ void BootDiagnosticsActivity::loop() {
 }
 
 void BootDiagnosticsActivity::render(RenderLock&&) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
-
   renderer.clearScreen();
-  GUI.drawHeader(renderer,
-                 Rect{contentRect.x, contentRect.y + metrics.topPadding, contentRect.width, metrics.headerHeight},
-                 tr(STR_BOOT_DIAGNOSTICS), CROSSPOINT_VERSION);
+  renderUi();
+  afterUiRender();
+  renderer.displayBuffer();
+}
+
+void BootDiagnosticsActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<BootDiagnosticsActivity*>(user)->buildScreen(screen);
+}
+
+void BootDiagnosticsActivity::actionTrampoline(const freeink::ui::ActionEvent& event, void* user) {
+  auto* self = static_cast<BootDiagnosticsActivity*>(user);
+  if (event.action == ACTION_BACK) {
+    self->finish();
+  }
+}
+
+void BootDiagnosticsActivity::buildScreen(UiScreen& screen) {
+  namespace fui = freeink::ui;
+  screen.header(tr(STR_BOOT_DIAGNOSTICS), CROSSPOINT_VERSION);
+
+  fui::FooterAction footerActions[1];
+  footerActions[0].label = tr(STR_BACK);
+  footerActions[0].action = ACTION_BACK;
+  screen.footer(footerActions, 1);
+
+  bodyRect_ = screen.body();
+}
+
+void BootDiagnosticsActivity::afterUiRender() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect{bodyRect_.x, bodyRect_.y, bodyRect_.width, bodyRect_.height};
 
   const int fontId = UI_10_FONT_ID;
   const int leftX = contentRect.x + metrics.verticalSpacing * 3;
@@ -151,8 +192,8 @@ void BootDiagnosticsActivity::render(RenderLock&&) {
   const int lineH = renderer.getLineHeight(fontId);
   const int rowStep = lineH + 2;
   const int subHeaderHeight = lineH + 6;
-  const int hintsTop = contentRect.y + contentRect.height - metrics.buttonHintsHeight;
-  int y = contentRect.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int hintsTop = contentRect.y + contentRect.height;
+  int y = contentRect.y + metrics.verticalSpacing;
 
   auto room = [&](int rows) { return y + rows * rowStep <= hintsTop; };
 
@@ -371,8 +412,4 @@ void BootDiagnosticsActivity::render(RenderLock&&) {
       drawWide(buf);
     }
   }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
 }

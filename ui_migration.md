@@ -231,17 +231,22 @@ flowchart TD
 
 ---
 
-### Phase 5: Network, Diagnostics & Information Views
-**Target**: Network scanning, technical system specifications, and button mapping dashboards.
+### Phase 5: Network, Diagnostics & Information Views — ✅ COMPLETED
+**Target**: Network scanning, technical system specifications, firmware flashing, and button mapping dashboards.
 
-| Activity | Current State | Target Base Class / FreeInk Component | Specific Tasks |
+| Activity | Previous State | Target Base Class / FreeInk Component | Status & Implementation Notes |
 |---|---|---|---|
-| [`WifiSelectionActivity`](file:///home/syafiq/code/witchling-reader/src/activities/network/WifiSelectionActivity.h) | `GUI.drawList` + custom signal drawing loop | `UiListActivity` | • Render AP names and security badges in `windowItems`.<br/>• Draw signal bars via custom icon rendering in item values or `afterUiRender()`. |
-| [`SystemInformationActivity`](file:///home/syafiq/code/witchling-reader/src/activities/settings/SystemInformationActivity.h) | Hand-drawn 2-column layout | `UiAppHost` / `freeink::ui::Table` | • Structured key-value table for flash, RAM, firmware version, and battery. |
-| [`BootDiagnosticsActivity`](file:///home/syafiq/code/witchling-reader/src/activities/settings/BootDiagnosticsActivity.h) | Hand-drawn 2-column diagnostic log | `UiAppHost` / `freeink::ui::Table` | • Standardize reset reason, probe status, and hardware pins display. |
-| [`ButtonActionsOverviewActivity`](file:///home/syafiq/code/witchling-reader/src/activities/settings/ButtonActionsOverviewActivity.h) | Hand-calculated 4-column layout | `UiAppHost` / `freeink::ui::Table` | • Tabular layout: Button name, Short Press, Double Press, Long Press. |
-| [`SdFirmwareUpdateActivity`](file:///home/syafiq/code/witchling-reader/src/activities/settings/SdFirmwareUpdateActivity.h) | Manual text & `GUI.drawProgressBar` | `UiAppHost` / `fui::ProgressBar` | • Modernize progress display during SPI flashing. |
-| [`CrossPointWebServerActivity`](file:///home/syafiq/code/witchling-reader/src/activities/network/CrossPointWebServerActivity.h) | Manual coordinate centering | `UiAppHost` | • Clean layout for IP address, QR code, and transfer counts. |
+| [`ButtonActionsOverviewActivity`](file:///home/syafiq/code/witchling-reader/src/activities/settings/ButtonActionsOverviewActivity.h) | Hand-calculated 4-column layout | `UiAppHost` / `freeink::ui::Table` | ✅ Migrated. Landscape 4-column tabular layout (Button, Short Press, Double Press, Long Press) using `fui::table`, auto row distribution, and header bar. |
+| [`SdFirmwareUpdateActivity`](file:///home/syafiq/code/witchling-reader/src/activities/settings/SdFirmwareUpdateActivity.h) | Manual text & `GUI.drawProgressBar` | `UiAppHost` / `freeink::ui::ProgressBar` | ✅ Migrated. Replaced legacy bar with `fui::progressBar`, clean validation/failed/complete screens, and touch event routing. |
+| [`SystemInformationActivity`](file:///home/syafiq/code/witchling-reader/src/activities/settings/SystemInformationActivity.h) | Hand-drawn 2-column layout + Logo | `UiAppHost` | ✅ Migrated. Standardized header/footer with Update SD action, composite technical stats rendering via `afterUiRender()`, and `Logo120` centered at bottom. |
+| [`BootDiagnosticsActivity`](file:///home/syafiq/code/witchling-reader/src/activities/settings/BootDiagnosticsActivity.h) | Hand-drawn 2-column diagnostic log | `UiAppHost` | ✅ Migrated. Single-screen hardware diagnostic table with reset reasons, wake causes, sleep outcome tags, and power cycle ring buffer history. |
+| [`WifiSelectionActivity`](file:///home/syafiq/code/witchling-reader/src/activities/network/WifiSelectionActivity.h) | `GUI.drawList` + custom signal drawing loop | `UiAppHost` / `freeink::ui::List` | ✅ Migrated. Windowed network list (`LIST_WINDOW_CAPACITY = 24`), signal indicators, security badges, `ConfirmDialog` save/forget prompts, and captive portal QR screen. |
+| [`CrossPointWebServerActivity`](file:///home/syafiq/code/witchling-reader/src/activities/network/CrossPointWebServerActivity.h) | Manual coordinate centering | `UiAppHost` | ✅ Migrated. AP and STA file transfer views with dual QR codes (WiFi credentials + URL), early memory trimming, and frame buffer release. |
+
+**Phase 5 Verification**:
+- PlatformIO C3 Build: **Passed** (`pio run -e default`).
+- RAM: 18.0% (58,896 bytes — 0 byte delta vs baseline, rock solid across all 5 phases).
+- Flash: 82.8% (5,428,813 bytes — net delta of +17.0 KB across all 6 complex screens). Zero template expansion.
 
 ---
 

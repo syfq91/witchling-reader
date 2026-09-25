@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -7,6 +8,7 @@
 #include <vector>
 
 #include "activities/Activity.h"
+#include "components/UiAppHost.h"
 #include "util/ButtonNavigator.h"
 
 // Structure to hold WiFi network information
@@ -44,7 +46,19 @@ enum class WifiSelectionState {
  *
  * The onComplete callback receives true if connected successfully, false if cancelled.
  */
-class WifiSelectionActivity final : public Activity {
+class WifiSelectionActivity final : public Activity, private UiAppHost {
+  static constexpr freeink::ui::ActionId ACTION_ROW = 1;
+  static constexpr freeink::ui::ActionId ACTION_BACK = 2;
+  static constexpr freeink::ui::ActionId ACTION_RESCAN = 3;
+  static constexpr freeink::ui::ActionId ACTION_OPTIONS = 4;
+  static constexpr freeink::ui::ActionId ACTION_PROMPT_YES = 5;
+  static constexpr freeink::ui::ActionId ACTION_PROMPT_NO = 6;
+  static constexpr freeink::ui::ActionId ACTION_FORGET_CANCEL = 7;
+  static constexpr freeink::ui::ActionId ACTION_FORGET_RESET = 8;
+  static constexpr freeink::ui::ActionId ACTION_FORGET_CONFIRM = 9;
+  static constexpr freeink::ui::ActionId ACTION_FAILED_DONE = 10;
+  static constexpr freeink::ui::ActionId ACTION_CAPTIVE_DONE = 11;
+
   ButtonNavigator buttonNavigator;
 
   WifiSelectionState state = WifiSelectionState::SCANNING;
@@ -83,16 +97,21 @@ class WifiSelectionActivity final : public Activity {
   int savePromptSelection = 0;
   int forgetPromptSelection = 0;
 
+  // Windowed list for FreeInkUI
+  static constexpr size_t LIST_WINDOW_CAPACITY = 24;
+  std::array<freeink::ui::ListItem, LIST_WINDOW_CAPACITY> windowItems{};
+  std::array<std::string, LIST_WINDOW_CAPACITY> windowLabels{};
+  std::array<std::string, LIST_WINDOW_CAPACITY> windowValues{};
+  uint16_t windowFirst = 0;
+  uint16_t windowCount = 0;
+  freeink::ui::ListNav nav{};
+  freeink::ui::Rect captiveQrRect_{};
+
   // Connection timeouts
   static constexpr unsigned long CONNECTION_TIMEOUT_MS = 15000;
   static constexpr unsigned long AUTO_CYCLE_TIMEOUT_MS = 5000;
-  // Connect-time scan budget, applied via esp_wifi_set_scan_parameters() (see applyScanBudget()).
-  // Scan duration is CHANNELS x DWELL and independent of SSID density; 80 ms puts a 13-channel
-  // sweep at ~1040 ms against ~1560 ms at the IDF default of 120 ms, while keeping margin for an
-  // AP that is slow to answer a probe. Too short lands back in NO_AP_FOUND plus a driver retry.
   static constexpr uint32_t SCAN_ACTIVE_DWELL_MAX_MS = 120;
   static constexpr uint32_t SCAN_PASSIVE_DWELL_MS = 200;
-  // Documented minimum; only relevant while already associated, which this path is not.
   static constexpr uint8_t SCAN_HOME_CHAN_DWELL_MS = 30;
 
   unsigned long connectionStartTime = 0;
@@ -103,14 +122,11 @@ class WifiSelectionActivity final : public Activity {
   uint16_t evtIdStaStart = 0;
   uint16_t evtIdDisconnected = 0;
 
-  void renderNetworkList() const;
-  void renderPasswordEntry() const;
-  void renderConnecting() const;
-  void renderConnected() const;
-  void renderSavePrompt() const;
-  void renderConnectionFailed() const;
-  void renderForgetPrompt() const;
-  void renderCaptivePortal() const;
+  void buildScreen(UiScreen& screen);
+  void materializeListWindow();
+  void syncListViewport(UiScreen& screen, freeink::ui::ListProps& props);
+  static void screenTrampoline(UiScreen& screen, void* user);
+  static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
 
   void startWifiScan();
   void processWifiScanResults();
@@ -119,14 +135,8 @@ class WifiSelectionActivity final : public Activity {
   void selectNetwork(int index);
   void attemptConnection();
   void checkConnectionStatus();
-  // Issues WiFi.begin() with a full, signal-sorted scan. See the definition for why the cached
-  // channel/BSSID hint that used to shortcut this was removed.
   void issueWifiBegin();
-  // Bound the connect-time scan; see the definition.
   void applyScanBudget();
-  // Prepares the WiFi stack for a connect attempt: ensures STA mode and a clean state,
-  // sets a deterministic hostname. Skips the expensive disconnect(true,true) when WiFi
-  // is already idle so the warm reconnect path doesn't pay an NVS-erase cost.
   void prepareForConnect();
   bool checkCaptivePortal();
   std::string getSignalStrengthIndicator(int32_t rssi) const;
@@ -137,14 +147,14 @@ class WifiSelectionActivity final : public Activity {
 
  public:
   explicit WifiSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool autoConnect = true)
-      : Activity("WifiSelection", renderer, mappedInput), allowAutoConnect(autoConnect) {}
+      : Activity("WifiSelection", renderer, mappedInput),
+        UiAppHost(renderer),
+        allowAutoConnect(autoConnect) {}
   void onEnter() override;
   bool usesWifi() const override { return true; }
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  // Scanning and associating are work in flight, and a half-entered passphrase is
-  // lost if the device sleeps out from under it. Callers reach this screen through
-  // startActivityForResult(), so their own override stops applying while it is up.
+  void afterUiRender();
   bool preventAutoSleep() override { return true; }
 };

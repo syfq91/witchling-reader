@@ -10,12 +10,15 @@
 #include "MappedInputManager.h"
 #include "activities/home/FileBrowserActivity.h"
 #include "activities/util/ConfirmationActivity.h"
-#include "components/UITheme.h"
-#include "fontIds.h"
+#include "components/ConfirmDialog.h"
+#include "components/controls/progress-bar.h"
 #include "network/FirmwareFlasher.h"
 
 void SdFirmwareUpdateActivity::onEnter() {
   Activity::onEnter();
+  resetUi();
+  app.setScreen(screenTrampoline, this);
+  app.on(ACTION_BACK, actionTrampoline, this);
   LOG_INF("FW", "SdFirmwareUpdateActivity build=%s %s recovery=%d", __DATE__, __TIME__, recoveryMode ? 1 : 0);
   if (!firmwarePath.empty()) {
     // Pre-selected path: skip picker and go straight to validation.
@@ -34,6 +37,11 @@ void SdFirmwareUpdateActivity::onEnter() {
     state = State::PICKING;
     launchPicker();
   }
+}
+
+void SdFirmwareUpdateActivity::onExit() {
+  resetUi();
+  Activity::onExit();
 }
 
 void SdFirmwareUpdateActivity::launchPicker() {
@@ -187,6 +195,12 @@ void SdFirmwareUpdateActivity::performUpdate() {
 }
 
 void SdFirmwareUpdateActivity::loop() {
+  const auto touch = routeTouch(mappedInput);
+  if (touch.routed) {
+    if (app.invalidated()) requestUpdate();
+    if (touch) return;
+  }
+
   if (state == State::FAILED) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
         mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
@@ -201,66 +215,90 @@ void SdFirmwareUpdateActivity::loop() {
 }
 
 void SdFirmwareUpdateActivity::render(RenderLock&&) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-
-  renderer.clearScreen();
-
-  const char* headerText = recoveryMode ? tr(STR_RECOVERY_MODE) : tr(STR_SD_FIRMWARE_UPDATE);
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, headerText);
-
-  const auto lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto top = (pageHeight - lineHeight) / 2;
-
-  if (state == State::VALIDATING) {
-    renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_VALIDATING_FIRMWARE));
-  } else if (state == State::UPDATING) {
+  if (state == State::UPDATING) {
     const unsigned int pct = firmwareSize > 0 ? static_cast<unsigned int>((writtenBytes * 100) / firmwareSize) : 0;
     if (pct == lastRenderedPercent) {
       return;
     }
     lastRenderedPercent = pct;
+  }
+  renderer.clearScreen();
+  renderUi();
+  renderer.displayBuffer();
+}
 
-    renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATING), true, EpdFontFamily::BOLD);
+void SdFirmwareUpdateActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<SdFirmwareUpdateActivity*>(user)->buildScreen(screen);
+}
 
-    int y = top + lineHeight + metrics.verticalSpacing;
-    GUI.drawProgressBar(
-        renderer,
-        Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
-        static_cast<int>(pct), 100);
-    y += metrics.progressBarHeight + metrics.verticalSpacing;
-    renderer.drawCenteredText(UI_10_FONT_ID, y, (std::to_string(pct) + "%").c_str());
-    y += lineHeight + metrics.verticalSpacing;
-    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF));
+void SdFirmwareUpdateActivity::actionTrampoline(const freeink::ui::ActionEvent& event, void* user) {
+  auto* self = static_cast<SdFirmwareUpdateActivity*>(user);
+  if (event.action == ACTION_BACK) {
+    if (self->recoveryMode) {
+      self->state = State::PICKING;
+      self->launchPicker();
+    } else {
+      self->finish();
+    }
+  }
+}
+
+void SdFirmwareUpdateActivity::buildScreen(UiScreen& screen) {
+  namespace fui = freeink::ui;
+  const char* headerText = recoveryMode ? tr(STR_RECOVERY_MODE) : tr(STR_SD_FIRMWARE_UPDATE);
+  screen.header(headerText);
+
+  if (state == State::VALIDATING) {
+    screen.centeredText(tr(STR_VALIDATING_FIRMWARE));
+  } else if (state == State::UPDATING) {
+    const unsigned int pct = firmwareSize > 0 ? static_cast<unsigned int>((writtenBytes * 100) / firmwareSize) : 0;
+
+    screen.spacer(40);
+    fui::TextStyle titleStyle = screen.theme().titleText;
+    titleStyle.bold = true;
+    titleStyle.align = fui::TextAlign::Center;
+    screen.centeredText(tr(STR_UPDATING), titleStyle);
+
+    screen.spacer(20);
+    fui::ProgressBarProps barProps;
+    barProps.value = pct;
+    barProps.max = 100;
+    barProps.radius = 4;
+    barProps.borderWidth = 1;
+    barProps.border = fui::Paint::solid(fui::Color::Black);
+    barProps.fill = fui::Paint::solid(fui::Color::Black);
+
+    const int16_t barW = static_cast<int16_t>(screen.body().width * 4 / 5);
+    const int16_t barH = 20;
+    const fui::Rect barRect = fui::centeredRect(screen.takeTop(barH), fui::Size{barW, barH});
+    fui::progressBar(screen.frame(), barRect, barProps);
+
+    screen.spacer(10);
+    std::string pctStr = std::to_string(pct) + "%";
+    screen.centeredText(pctStr.c_str());
+
+    screen.spacer(10);
+    screen.centeredText(tr(STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF));
   } else if (state == State::SUCCESS) {
-    renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_COMPLETE), true, EpdFontFamily::BOLD);
-    const int hintWidth = pageWidth - 2 * metrics.contentSidePadding;
-    const auto hintLines = renderer.wrappedText(UI_10_FONT_ID, tr(STR_RESTARTING_HINT), hintWidth, 4);
-    int hintY = top + lineHeight + metrics.verticalSpacing;
-    for (const auto& line : hintLines) {
-      renderer.drawCenteredText(UI_10_FONT_ID, hintY, line.c_str());
-      hintY += lineHeight;
-    }
+    screen.spacer(40);
+    fui::TextStyle titleStyle = screen.theme().titleText;
+    titleStyle.bold = true;
+    titleStyle.align = fui::TextAlign::Center;
+    screen.centeredText(tr(STR_UPDATE_COMPLETE), titleStyle);
+
+    screen.spacer(20);
+    screen.centeredText(tr(STR_RESTARTING_HINT));
   } else if (state == State::FAILED) {
-    renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
-    if (!errorMessage.empty()) {
-      renderer.drawCenteredText(UI_10_FONT_ID, top + lineHeight + metrics.verticalSpacing, errorMessage.c_str());
-    }
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    ConfirmDialog::Spec spec;
+    spec.headline = tr(STR_UPDATE_FAILED);
+    spec.message = errorMessage.empty() ? nullptr : errorMessage.c_str();
+    spec.acceptLabel = tr(STR_BACK);
+    spec.acceptAction = ACTION_BACK;
+    ConfirmDialog::draw(screen, spec);
   } else {
     // PICKING / CONFIRMING: a sub-activity is on top, nothing to draw.
     if (recoveryMode) {
-      const int hintWidth = pageWidth - 2 * metrics.contentSidePadding;
-      const auto hintLines = renderer.wrappedText(UI_10_FONT_ID, tr(STR_RECOVERY_MODE_HINT), hintWidth, 4);
-      int hintY = top;
-      for (const auto& line : hintLines) {
-        renderer.drawCenteredText(UI_10_FONT_ID, hintY, line.c_str());
-        hintY += lineHeight;
-      }
+      screen.centeredText(tr(STR_RECOVERY_MODE_HINT));
     }
   }
-
-  renderer.displayBuffer();
 }

@@ -69,12 +69,27 @@ void SystemInformationActivity::onEnter() {
   status_.reset();
   sdStatusReady_ = false;
   sdLoadRequested_ = false;
+
+  resetUi();
+  app.setScreen(screenTrampoline, this);
+  app.on(ACTION_BACK, actionTrampoline, this);
+  app.on(ACTION_UPDATE_SD, actionTrampoline, this);
+
   requestUpdate();
 }
 
-void SystemInformationActivity::onExit() { Activity::onExit(); }
+void SystemInformationActivity::onExit() {
+  resetUi();
+  Activity::onExit();
+}
 
 void SystemInformationActivity::loop() {
+  const auto touch = routeTouch(mappedInput);
+  if (touch.routed) {
+    if (app.invalidated()) requestUpdate();
+    if (touch) return;
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
@@ -103,14 +118,50 @@ void SystemInformationActivity::loop() {
 }
 
 void SystemInformationActivity::render(RenderLock&&) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
-
   renderer.clearScreen();
+  renderUi();
+  afterUiRender();
+  renderer.displayBuffer();
+}
 
-  GUI.drawHeader(renderer,
-                 Rect{contentRect.x, contentRect.y + metrics.topPadding, contentRect.width, metrics.headerHeight},
-                 tr(STR_SYSTEM_INFO), CROSSPOINT_VERSION);
+void SystemInformationActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<SystemInformationActivity*>(user)->buildScreen(screen);
+}
+
+void SystemInformationActivity::actionTrampoline(const freeink::ui::ActionEvent& event, void* user) {
+  auto* self = static_cast<SystemInformationActivity*>(user);
+  if (event.action == ACTION_BACK) {
+    self->finish();
+  } else if (event.action == ACTION_UPDATE_SD) {
+    if (!self->sdStatusReady_) {
+      self->sdLoadRequested_ = true;
+      self->requestUpdate();
+    }
+  }
+}
+
+void SystemInformationActivity::buildScreen(UiScreen& screen) {
+  namespace fui = freeink::ui;
+  screen.header(tr(STR_SYSTEM_INFO), CROSSPOINT_VERSION);
+
+  fui::FooterAction footerActions[2];
+  uint8_t footerCount = 0;
+  footerActions[footerCount].label = tr(STR_BACK);
+  footerActions[footerCount].action = ACTION_BACK;
+  footerCount++;
+  if (!sdStatusReady_) {
+    footerActions[footerCount].label = tr(STR_UPDATE);
+    footerActions[footerCount].action = ACTION_UPDATE_SD;
+    footerCount++;
+  }
+  screen.footer(footerActions, footerCount);
+
+  bodyRect_ = screen.body();
+}
+
+void SystemInformationActivity::afterUiRender() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect{bodyRect_.x, bodyRect_.y, bodyRect_.width, bodyRect_.height};
 
   // Two-column layout with interleaved section headers (drawn via the theme's
   // subheader so the full-width underline is consistent with the rest of the
@@ -121,7 +172,7 @@ void SystemInformationActivity::render(RenderLock&&) {
   const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
   const int rowStep = lineH + 2;
   const int subHeaderHeight = lineH + 6;
-  int y = contentRect.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  int y = contentRect.y + metrics.verticalSpacing;
 
   auto drawSection = [&](const char* title) {
     GUI.drawSubHeader(renderer, Rect{contentRect.x, y, contentRect.width, subHeaderHeight}, title);
@@ -138,9 +189,6 @@ void SystemInformationActivity::render(RenderLock&&) {
     drawRow(tr(STR_FW_VERSION), CROSSPOINT_VERSION);
     y += rowStep;
     drawRow("", tr(STR_GATHERING_DATA));
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
     return;
   }
 
@@ -257,19 +305,11 @@ void SystemInformationActivity::render(RenderLock&&) {
     drawRow(tr(STR_SD_CARD), tr(STR_NOT_SET));
   }
 
-  // Draw logo centered horizontally, vertically centered in the space between
-  // the last data row and the button hints. drawImage handles coordinate
-  // transformation internally so plain content-rect coordinates are used here.
   constexpr int kLogoSize = 120;
-  const int hintsTop = contentRect.y + contentRect.height - metrics.buttonHintsHeight;
-  const int logoY = y + (hintsTop - y - kLogoSize) / 2;
+  const int bottomY = contentRect.y + contentRect.height;
+  const int logoY = y + (bottomY - y - kLogoSize) / 2;
   const int logoX = contentRect.x + (contentRect.width - kLogoSize) / 2;
-  if (logoY >= 0 && logoY + kLogoSize <= hintsTop) {
+  if (logoY >= 0 && logoY + kLogoSize <= bottomY) {
     renderer.drawImage(Logo120, logoX, logoY, kLogoSize, kLogoSize);
   }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), sdStatusReady_ ? "" : tr(STR_UPDATE), "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  renderer.displayBuffer();
 }

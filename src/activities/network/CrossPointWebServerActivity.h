@@ -6,6 +6,7 @@
 
 #include "NetworkModeSelectionActivity.h"
 #include "activities/Activity.h"
+#include "components/UiAppHost.h"
 #include "network/CrossPointWebServer.h"
 
 // Web server activity states
@@ -27,7 +28,9 @@ enum class WebServerActivityState {
  * - Handles client requests in its loop() function
  * - Cleans up the server and shuts down WiFi on exit
  */
-class CrossPointWebServerActivity final : public Activity {
+class CrossPointWebServerActivity final : public Activity, private UiAppHost {
+  static constexpr freeink::ui::ActionId ACTION_BACK = 1;
+
   WebServerActivityState state = WebServerActivityState::MODE_SELECTION;
 
   // Network mode
@@ -54,32 +57,29 @@ class CrossPointWebServerActivity final : public Activity {
   // are possible after releaseFrameBuffers().
   bool buffersReleased = false;
   bool memoryFreedForRadio = false;
-
-  void renderServerRunning() const;
+  freeink::ui::Rect bodyRect_{};
 
   void onNetworkModeSelected(NetworkMode mode);
   void onWifiSelectionComplete(bool connected);
-  // Unload SD fonts, paint the QR/URL screen, and release both frame buffers.
-  // AP mode calls this before the WiFi stack starts so it gets the ~100KB of
-  // headroom; STA mode calls it from startWebServer once the IP is known.
-  // Frees what the radio needs (SD font, secondary buffer, glyph cache) — must run before any
-  // WiFi bring-up on either path. Idempotent.
   void freeMemoryBeforeRadio();
   void showServerScreenAndReleaseBuffers();
   void startAccessPoint();
   void startWebServer();
 
+  void buildScreen(UiScreen& screen);
+  static void screenTrampoline(UiScreen& screen, void* user);
+  static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
+
  public:
   explicit CrossPointWebServerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("CrossPointWebServer", renderer, mappedInput) {}
+      : Activity("CrossPointWebServer", renderer, mappedInput), UiAppHost(renderer) {}
   void onEnter() override;
   bool usesWifi() const override { return true; }
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  void afterUiRender();
   bool skipLoopDelay() override { return webServer && webServer->isRunning(); }
   bool preventAutoSleep() override { return webServer && webServer->isRunning(); }
-  // Suppress the minute-tick e-ink refresh while the web server is running.
-  // That 640ms display cycle holds the render mutex and blocks handleClient.
   bool shouldSkipPeriodicUpdate() const override { return webServer && webServer->isRunning(); }
 };
