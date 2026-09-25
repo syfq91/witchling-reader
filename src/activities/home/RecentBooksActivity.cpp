@@ -26,6 +26,8 @@
 #include "fontIds.h"
 #include "util/ButtonNavigator.h"
 
+namespace fui = freeink::ui;
+
 namespace {
 std::string gridThumbPath(const std::string& coverBmpPath, int tw, int th) {
   return UITheme::getCoverThumbPath(coverBmpPath, tw, th);
@@ -229,8 +231,6 @@ bool RecentBooksActivity::loadNextCover() {
 }
 
 void RecentBooksActivity::onEnter() {
-  Activity::onEnter();
-
   if (RECENT_BOOKS.pruneMissing()) {
     RECENT_BOOKS.saveToFile();
   }
@@ -255,13 +255,14 @@ void RecentBooksActivity::onEnter() {
   pngSessionFiles.close();
   pngSessionFailed = false;
 
-  requestUpdate();
+  UiListActivity::onEnter();
+  nav.selected = selectorIndex;
 }
 
 void RecentBooksActivity::onExit() {
   // The cover-loading burst is over; release the one book's metadata the memo still holds.
   Epub::clearCoverMetadataMemo();
-  Activity::onExit();
+  UiListActivity::onExit();
   recentBooks.clear();
   bookProgress.clear();
 }
@@ -279,6 +280,13 @@ void RecentBooksActivity::switchViewMode(bool grid) {
   pngSessionFiles.close();
   pngSessionFailed = false;
   fullRedrawNeeded = true;
+  if (!grid) {
+    nav.selected = selectorIndex;
+    resetUi();
+  } else {
+    selectorIndex = nav.selected;
+    closeRouting();
+  }
   requestUpdate(true);
 }
 
@@ -341,93 +349,211 @@ void RecentBooksActivity::openSelectedBook(const bool longPress) {
 // The two views resolve the hit differently, and neither re-derives geometry. The list view
 // draws through GUI.drawList, so its rows are already published in ListTouchBand and
 void RecentBooksActivity::loop() {
-  const bool gridView = APP_STATE.recentBooksGridView;
-  const int listSize = static_cast<int>(recentBooks.size());
+  if (APP_STATE.recentBooksGridView) {
+    const bool gridView = true;
+    const int listSize = static_cast<int>(recentBooks.size());
+
+    ButtonEventManager::ButtonEvent ev;
+    while (buttonEvents.consumeEvent(ev)) {
+      // Confirm short/long: open book
+      if (ev.button == MappedInputManager::Button::Confirm &&
+          (ev.type == ButtonEventManager::PressType::Short || ev.type == ButtonEventManager::PressType::Long)) {
+        openSelectedBook(ev.type == ButtonEventManager::PressType::Long);
+        return;
+      }
+
+      // Back short: go home
+      if (ev.button == MappedInputManager::Button::Back && ev.type == ButtonEventManager::PressType::Short) {
+        onGoHome();
+        return;
+      }
+
+      // Up short: navigate (row up in grid, previous in list)
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) &&
+          ev.type == ButtonEventManager::PressType::Short) {
+        if (!recentBooks.empty()) {
+          selectorIndex = std::max(0, selectorIndex - gridColumns());
+          nav.selected = selectorIndex;
+          requestUpdate();
+        }
+        continue;
+      }
+
+      // Down short: navigate (row down in grid, next in list)
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Down) &&
+          ev.type == ButtonEventManager::PressType::Short) {
+        if (!recentBooks.empty()) {
+          selectorIndex = std::min(listSize - 1, selectorIndex + gridColumns());
+          nav.selected = selectorIndex;
+          requestUpdate();
+        }
+        continue;
+      }
+
+      // Up long: toggle between list and grid view
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) &&
+          ev.type == ButtonEventManager::PressType::Long) {
+        switchViewMode(!gridView);
+        return;
+      }
+
+      // Left short: column left in grid, previous in list
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left) &&
+          ev.type == ButtonEventManager::PressType::Short) {
+        if (!recentBooks.empty()) {
+          selectorIndex = ButtonNavigator::previousIndex(selectorIndex, listSize);
+          nav.selected = selectorIndex;
+          requestUpdate();
+        }
+        continue;
+      }
+
+      // Right short: column right in grid, next in list
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) &&
+          ev.type == ButtonEventManager::PressType::Short) {
+        if (!recentBooks.empty()) {
+          selectorIndex = ButtonNavigator::nextIndex(selectorIndex, listSize);
+          nav.selected = selectorIndex;
+          requestUpdate();
+        }
+        continue;
+      }
+
+      // Left long: remove selected book (both views)
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left) &&
+          ev.type == ButtonEventManager::PressType::Long) {
+        removeSelectedBook();
+        return;
+      }
+
+      // Right long: show book info (both views)
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) &&
+          ev.type == ButtonEventManager::PressType::Long) {
+        showSelectedBookInfo();
+        return;
+      }
+    }
+    return;
+  }
+
+  UiListActivity::loop();
+}
+
+bool RecentBooksActivity::handleCustomInput() {
+  if (APP_STATE.recentBooksGridView) return false;
 
   ButtonEventManager::ButtonEvent ev;
   while (buttonEvents.consumeEvent(ev)) {
-    // Confirm short/long: open book
-    if (ev.button == MappedInputManager::Button::Confirm &&
-        (ev.type == ButtonEventManager::PressType::Short || ev.type == ButtonEventManager::PressType::Long)) {
-      openSelectedBook(ev.type == ButtonEventManager::PressType::Long);
-      return;
-    }
-
-    // Back short: go home
-    if (ev.button == MappedInputManager::Button::Back && ev.type == ButtonEventManager::PressType::Short) {
-      onGoHome();
-      return;
-    }
-
-    // Up short: navigate (row up in grid, previous in list)
-    if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) &&
-        ev.type == ButtonEventManager::PressType::Short) {
-      if (!recentBooks.empty()) {
-        if (gridView) {
-          selectorIndex = std::max(0, selectorIndex - gridColumns());
-        } else {
-          selectorIndex = ButtonNavigator::previousIndex(selectorIndex, listSize);
-        }
-        requestUpdate();
-      }
-      continue;
-    }
-
-    // Down short: navigate (row down in grid, next in list)
-    if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Down) &&
-        ev.type == ButtonEventManager::PressType::Short) {
-      if (!recentBooks.empty()) {
-        if (gridView) {
-          selectorIndex = std::min(listSize - 1, selectorIndex + gridColumns());
-        } else {
-          selectorIndex = ButtonNavigator::nextIndex(selectorIndex, listSize);
-        }
-        requestUpdate();
-      }
-      continue;
-    }
-
-    // Up long: toggle between list and grid view
     if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) &&
         ev.type == ButtonEventManager::PressType::Long) {
-      switchViewMode(!gridView);
-      return;
+      switchViewMode(true);
+      return true;
     }
-
-    // Left short: column left in grid, previous in list
-    if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left) &&
-        ev.type == ButtonEventManager::PressType::Short) {
-      if (!recentBooks.empty()) {
-        selectorIndex = ButtonNavigator::previousIndex(selectorIndex, listSize);
-        requestUpdate();
-      }
-      continue;
-    }
-
-    // Right short: column right in grid, next in list
-    if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) &&
-        ev.type == ButtonEventManager::PressType::Short) {
-      if (!recentBooks.empty()) {
-        selectorIndex = ButtonNavigator::nextIndex(selectorIndex, listSize);
-        requestUpdate();
-      }
-      continue;
-    }
-
-    // Left long: remove selected book (both views)
     if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left) &&
         ev.type == ButtonEventManager::PressType::Long) {
+      selectorIndex = nav.selected;
       removeSelectedBook();
-      return;
+      return true;
     }
-
-    // Right long: show book info (both views)
     if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) &&
         ev.type == ButtonEventManager::PressType::Long) {
+      selectorIndex = nav.selected;
       showSelectedBookInfo();
-      return;
+      return true;
     }
   }
+  return false;
+}
+
+int RecentBooksActivity::listCount() const { return static_cast<int>(recentBooks.size()); }
+
+const char* RecentBooksActivity::headerTitle() const { return tr(STR_MENU_RECENT_BOOKS); }
+
+void RecentBooksActivity::onBackButton() { onGoHome(); }
+
+void RecentBooksActivity::activateIndex(const int index) {
+  selectorIndex = index;
+  openSelectedBook(false);
+}
+
+void RecentBooksActivity::drawFooter() {
+  const bool hasBooks = !recentBooks.empty();
+  const auto hints =
+      mappedInput.mapHints(tr(STR_HOME), hasBooks ? tr(STR_OPEN) : "", "", "", tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, hints.front.btn1, hints.front.btn2, hints.front.btn3, hints.front.btn4);
+  GUI.drawSideButtonHints(renderer, hints.side.up, hints.side.down);
+}
+
+void RecentBooksActivity::materializeListWindow() {
+  const int count = listCount();
+  windowFirst = static_cast<uint16_t>(std::max(0, std::min(nav.top, count)));
+  windowCount = static_cast<uint16_t>(
+      std::min(static_cast<size_t>(count - windowFirst), static_cast<size_t>(LIST_WINDOW_CAPACITY)));
+
+  for (uint16_t offset = 0; offset < windowCount; ++offset) {
+    const size_t index = windowFirst + offset;
+    const auto& book = recentBooks[index];
+
+    windowTitles[offset] = book.title;
+    if (!book.author.empty() && !book.series.empty()) {
+      windowSubtitles[offset] = book.author + "\n" + book.series;
+    } else if (!book.series.empty()) {
+      windowSubtitles[offset] = book.series;
+    } else {
+      windowSubtitles[offset] = book.author;
+    }
+
+    if (index < bookProgress.size() && bookProgress[index] >= 0) {
+      windowValues[offset] = std::to_string(bookProgress[index]) + "%";
+    } else {
+      windowValues[offset] = "";
+    }
+
+    auto& row = windowItems[offset];
+    row = {};
+    row.label = windowTitles[offset].c_str();
+    row.subtitle = windowSubtitles[offset].empty() ? nullptr : windowSubtitles[offset].c_str();
+    row.value = windowValues[offset].empty() ? nullptr : windowValues[offset].c_str();
+    row.actionValue = static_cast<int16_t>(index);
+    row.enabled = true;
+  }
+}
+
+void RecentBooksActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
+                  static_cast<int16_t>(contentRect.x)});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+  if (recentBooks.empty()) {
+    fui::TextAreaProps empty;
+    empty.text = tr(STR_NO_RECENT_BOOKS);
+    empty.style = screen.theme().bodyText;
+    empty.showCaret = false;
+    screen.textArea(empty);
+    return;
+  }
+
+  fui::ListProps props;
+  props.count = static_cast<uint16_t>(recentBooks.size());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;
+  props.labelText = screen.theme().bodyText;
+  props.labelText.maxLines = 1;
+  props.subtitleText = screen.theme().smallText;
+  props.subtitleText.maxLines = 2;
+
+  syncListViewport(screen, props, /*hasSubtitle=*/true);
+  materializeListWindow();
+  props.items = windowItems.data();
+  props.itemsWindowFirst = windowFirst;
+  props.itemsWindowCount = windowCount;
+  screen.list(props);
 }
 
 void RecentBooksActivity::render(RenderLock&& lock) {
@@ -437,7 +563,8 @@ void RecentBooksActivity::render(RenderLock&& lock) {
   if (openingBook) return;
 
   if (!APP_STATE.recentBooksGridView) {
-    renderListView(std::move(lock));
+    selectorIndex = nav.selected;
+    UiListActivity::render(std::move(lock));
     return;
   }
 
@@ -489,50 +616,6 @@ void RecentBooksActivity::render(RenderLock&& lock) {
     firstRenderDone = true;
     requestUpdate();  // kick off cover generation now that the grid is on screen
   }
-}
-
-void RecentBooksActivity::renderListView(RenderLock&&) {
-  renderer.clearScreen();
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, true);
-
-  GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer), tr(STR_MENU_RECENT_BOOKS));
-
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = contentRect.height - contentTop - metrics.verticalSpacing;
-
-  if (recentBooks.empty()) {
-    renderer.drawText(UI_10_FONT_ID, contentRect.x + metrics.contentSidePadding, contentTop + 20,
-                      tr(STR_NO_RECENT_BOOKS));
-  } else {
-    GUI.drawList(
-        renderer, Rect{contentRect.x, contentTop, contentRect.width, contentHeight},
-        static_cast<int>(recentBooks.size()), selectorIndex, [this](int index) { return recentBooks[index].title; },
-        [this](int index) {
-          const auto& book = recentBooks[index];
-          if (!book.author.empty() && !book.series.empty()) return book.author + "\n" + book.series;
-          if (!book.series.empty()) return book.series;
-          return book.author;
-        },
-        [this](int index) { return UITheme::getFileIcon(recentBooks[index].path); });
-  }
-
-  if (gridShowsGestureHint()) {
-    const int hintY = contentRect.y + contentRect.height - metrics.verticalSpacing - 14;
-    const std::string hint = std::string(tr(STR_DIR_UP)) + "+L: " + tr(STR_VIEW_GRID) + "/" + tr(STR_VIEW_LIST) +
-                             "   " + tr(STR_DIR_LEFT) + "+L: " + tr(STR_REMOVE) + "   " + tr(STR_DIR_RIGHT) +
-                             "+L: " + tr(STR_INFO);
-    renderer.drawText(SMALL_FONT_ID, contentRect.x + metrics.contentSidePadding, hintY, hint.c_str());
-  }
-
-  const bool hasBooks = !recentBooks.empty();
-  const auto hints =
-      mappedInput.mapHints(tr(STR_HOME), hasBooks ? tr(STR_OPEN) : "", "", "", tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, hints.front.btn1, hints.front.btn2, hints.front.btn3, hints.front.btn4);
-  GUI.drawSideButtonHints(renderer, hints.side.up, hints.side.down);
-
-  renderer.displayBuffer();
 }
 
 void RecentBooksActivity::renderGridCell(int index, bool selected, int cellX, int cellY, int tw, int th, int labelW) {

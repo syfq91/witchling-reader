@@ -3,7 +3,7 @@
 This document establishes a complete, phased architecture and execution plan for migrating the remaining Witchling Reader user interfaces from the legacy drawing engine (`BaseTheme::drawList`, manual coordinate calculations, and custom scroll loops) to the **FreeInk SDK UI** framework (`FreeInkUI`).
 
 > [!NOTE]
-> **Status:** Phase 1 (Pure Settings & Configuration Lists) has been successfully implemented and verified. Phases 2–7 remain scheduled according to the roadmap below.
+> **Status:** Phase 1 (Pure Settings & Configuration Lists) and Phase 2 (Library & Book History Lists) have been successfully implemented and verified. Phases 3–7 remain scheduled according to the roadmap below.
 
 ---
 
@@ -181,15 +181,20 @@ flowchart TD
 
 ---
 
-### Phase 2: Library & Book History Lists
-**Target**: User content lists currently calling `GUI.drawList(...)`.
+### Phase 2: Library & Book History Lists — ✅ COMPLETED
+**Target**: User content lists previously calling `GUI.drawList(...)`.
 
-| Activity | Current State | Target Base Class | Specific Tasks |
+| Activity | Previous State | Target Base Class | Status & Implementation Notes |
 |---|---|---|---|
-| [`RecentBooksActivity`](file:///home/syafiq/code/witchling-reader/src/activities/home/RecentBooksActivity.h) | Dual-mode: Grid view + List view via `GUI.drawList` | `UiListActivity` | • Migrate `renderListView()` to FreeInkUI list with book title, author, and reading progress.<br/>• Maintain existing grid cover extraction pipeline while standardizing list view. |
-| [`GlobalBookmarksActivity`](file:///home/syafiq/code/witchling-reader/src/activities/home/GlobalBookmarksActivity.h) | `GUI.drawList` with multi-line chapter/title | `UiListActivity` | • Use two-line `fui::ListItem` (chapter title + book title/date).<br/>• Paging managed by `ListNav`. |
-| [`StarredPagesActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/StarredPagesActivity.h) | `GUI.drawList` in reader overlay | `UiListActivity` | • Standardize in-book bookmark list.<br/>• Connect Confirm to page jump; Delete to removal. |
-| [`FinishedBookActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/FinishedBookActivity.h) | `GUI.drawList` for completion actions | `UiListActivity` | • Header with completion stats.<br/>• Action list (Re-read, Next Book, Delete Cache, Return Home). |
+| [`RecentBooksActivity`](file:///home/syafiq/code/witchling-reader/src/activities/home/RecentBooksActivity.h) | Dual-mode: Grid view + List view via `GUI.drawList` | `UiListActivity` | ✅ Migrated. List view mode migrated to FreeInkUI list with book title, author/series, and reading progress percent. Grid view and background cover extraction pipeline preserved 100%. |
+| [`GlobalBookmarksActivity`](file:///home/syafiq/code/witchling-reader/src/activities/home/GlobalBookmarksActivity.h) | `GUI.drawList` with multi-line chapter/title | `UiListActivity` | ✅ Migrated. Book headers set as non-selectable section headers (`isHeader`), bookmark entries selectable. Left (Rename) and Right (Delete) actions preserved via `handleCustomInput()`. |
+| [`StarredPagesActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/StarredPagesActivity.h) | `GUI.drawList` in reader overlay | `UiListActivity` | ✅ Migrated. In-book bookmark list using windowed `fui::ListProps`. Confirm jumps to page; Left renames; Right deletes; Back cancels cleanly. |
+| [`FinishedBookActivity`](file:///home/syafiq/code/witchling-reader/src/activities/reader/FinishedBookActivity.h) | `GUI.drawList` for completion actions | `UiListActivity` | ✅ Migrated. Congratulations message and next book cover thumbnail + metadata composited via `afterUiRender()`, action items rendered via FreeInkUI list. |
+
+**Phase 2 Verification**:
+- PlatformIO C3 Build: **Passed** (`pio run -e default`).
+- RAM: 18.0% (58,896 bytes — 0 byte delta vs baseline).
+- Flash: 82.4% (5,399,531 bytes — net delta of +5.5 KB for all 4 Phase 2 screens combined). Zero template expansion.
 
 ---
 

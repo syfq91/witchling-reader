@@ -18,14 +18,14 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
-void GlobalBookmarksActivity::onEnter() {
-  Activity::onEnter();
+namespace fui = freeink::ui;
 
+void GlobalBookmarksActivity::onEnter() {
   GLOBAL_BOOKMARKS.reconcile();
   rebuildRows();
 
   const int first = firstSelectableIndex();
-  selectorIndex = first >= 0 ? first : 0;
+  int initialIndex = first >= 0 ? first : 0;
 
   if (restoreHint.target == ReturnTo::GlobalBookmarks) {
     const auto& entries = GLOBAL_BOOKMARKS.getEntries();
@@ -35,28 +35,48 @@ void GlobalBookmarksActivity::onEnter() {
         if (row.isSeparator) continue;
         if (row.bookmarkIndex == static_cast<size_t>(restoreHint.selectBookmarkIndex) &&
             row.bookIndex < entries.size() && entries[row.bookIndex].sourcePath == restoreHint.selectionContext) {
-          selectorIndex = static_cast<int>(i);
+          initialIndex = static_cast<int>(i);
           break;
         }
       }
     }
-    if (selectorIndex < 0 || selectorIndex >= static_cast<int>(rows.size()) || isSeparatorRow(selectorIndex)) {
+    if (initialIndex < 0 || initialIndex >= static_cast<int>(rows.size()) || isSeparatorRow(initialIndex)) {
       const int fallback = firstSelectableIndex();
-      selectorIndex = fallback >= 0 ? fallback : 0;
+      initialIndex = fallback >= 0 ? fallback : 0;
     }
     restoreHint = {};
   }
 
+  UiListActivity::onEnter();
+  nav.selected = initialIndex;
+
   const auto total = static_cast<int>(rows.size());
   buttonNavigator.setSelectablePredicate([this](int index) { return !isSeparatorRow(index); }, total);
-
-  requestUpdate();
 }
 
 void GlobalBookmarksActivity::onExit() {
-  Activity::onExit();
-  rows.clear();
   buttonNavigator.clearSelectablePredicate();
+  rows.clear();
+  UiListActivity::onExit();
+}
+
+int GlobalBookmarksActivity::listCount() const { return static_cast<int>(rows.size()); }
+
+const char* GlobalBookmarksActivity::headerTitle() const { return tr(STR_GLOBAL_BOOKMARKS); }
+
+void GlobalBookmarksActivity::onBackButton() { onGoHome(); }
+
+void GlobalBookmarksActivity::activateIndex(const int index) {
+  if (isSeparatorRow(index)) return;
+  nav.selected = index;
+  openSelected();
+}
+
+ListRowTap::Result GlobalBookmarksActivity::selectListRow(const int index) {
+  if (index >= 0 && index < listCount() && isSeparatorRow(index)) {
+    return ListRowTap::Result::Rejected;
+  }
+  return ListRowTap::apply(index, listCount(), activeNav().selected);
 }
 
 void GlobalBookmarksActivity::rebuildRows() {
@@ -79,7 +99,7 @@ void GlobalBookmarksActivity::rebuildRows() {
   }
 }
 
-bool GlobalBookmarksActivity::isSeparatorRow(int index) const {
+bool GlobalBookmarksActivity::isSeparatorRow(const int index) const {
   return index >= 0 && index < static_cast<int>(rows.size()) && rows[index].isSeparator;
 }
 
@@ -90,7 +110,7 @@ int GlobalBookmarksActivity::firstSelectableIndex() const {
   return -1;
 }
 
-std::string GlobalBookmarksActivity::getRowTitle(int index) const {
+std::string GlobalBookmarksActivity::getRowTitle(const int index) const {
   if (index < 0 || index >= static_cast<int>(rows.size())) return {};
   const auto& row = rows[index];
   const auto& entries = GLOBAL_BOOKMARKS.getEntries();
@@ -98,7 +118,7 @@ std::string GlobalBookmarksActivity::getRowTitle(int index) const {
   const auto& entry = entries[row.bookIndex];
 
   if (row.isSeparator) {
-    return UITheme::makeSeparatorTitle(entry.title.empty() ? entry.sourcePath : entry.title);
+    return entry.title.empty() ? entry.sourcePath : entry.title;
   }
 
   if (row.bookmarkIndex >= entry.bookmarks.size()) return {};
@@ -116,8 +136,9 @@ std::string GlobalBookmarksActivity::getRowTitle(int index) const {
 }
 
 void GlobalBookmarksActivity::openSelected() {
-  if (isSeparatorRow(selectorIndex)) return;
-  const auto& row = rows[selectorIndex];
+  const int selected = nav.selected;
+  if (isSeparatorRow(selected)) return;
+  const auto& row = rows[selected];
   const auto& entries = GLOBAL_BOOKMARKS.getEntries();
   if (row.bookIndex >= entries.size()) return;
   const auto& entry = entries[row.bookIndex];
@@ -130,7 +151,7 @@ void GlobalBookmarksActivity::openSelected() {
     GLOBAL_BOOKMARKS.save();
     rebuildRows();
     const int first = firstSelectableIndex();
-    selectorIndex = first >= 0 ? first : 0;
+    nav.selected = first >= 0 ? first : 0;
     buttonNavigator.setSelectablePredicate([this](int index) { return !isSeparatorRow(index); },
                                            static_cast<int>(rows.size()));
     requestUpdate();
@@ -168,8 +189,9 @@ void GlobalBookmarksActivity::mutateBook(size_t bookIndex, Op&& op) {
 }
 
 void GlobalBookmarksActivity::deleteSelected() {
-  if (isSeparatorRow(selectorIndex)) return;
-  const auto& row = rows[selectorIndex];
+  const int selected = nav.selected;
+  if (isSeparatorRow(selected)) return;
+  const auto& row = rows[selected];
   const size_t bookmarkIndex = row.bookmarkIndex;
 
   mutateBook(row.bookIndex, [bookmarkIndex](BookmarkStore& store) {
@@ -186,17 +208,18 @@ void GlobalBookmarksActivity::deleteSelected() {
     onGoHome();
     return;
   }
-  if (selectorIndex >= total) selectorIndex = total - 1;
-  if (isSeparatorRow(selectorIndex)) {
-    const int next = ButtonNavigator::nextIndex(selectorIndex, total, [this](int i) { return !isSeparatorRow(i); });
-    if (next >= 0) selectorIndex = next;
+  if (nav.selected >= total) nav.selected = total - 1;
+  if (isSeparatorRow(nav.selected)) {
+    const int next = ButtonNavigator::nextIndex(nav.selected, total, [this](int i) { return !isSeparatorRow(i); });
+    if (next >= 0) nav.selected = next;
   }
   requestUpdate();
 }
 
 void GlobalBookmarksActivity::renameSelected() {
-  if (isSeparatorRow(selectorIndex)) return;
-  const auto& row = rows[selectorIndex];
+  const int selected = nav.selected;
+  if (isSeparatorRow(selected)) return;
+  const auto& row = rows[selected];
   const auto& entries = GLOBAL_BOOKMARKS.getEntries();
   if (row.bookIndex >= entries.size()) return;
   const auto& entry = entries[row.bookIndex];
@@ -205,7 +228,7 @@ void GlobalBookmarksActivity::renameSelected() {
   const size_t bookIndex = row.bookIndex;
   const size_t bookmarkIndex = row.bookmarkIndex;
   const std::string initial =
-      entry.bookmarks[bookmarkIndex].name.empty() ? getRowTitle(selectorIndex) : entry.bookmarks[bookmarkIndex].name;
+      entry.bookmarks[bookmarkIndex].name.empty() ? getRowTitle(selected) : entry.bookmarks[bookmarkIndex].name;
 
   startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_RENAME), initial,
                                                                  BookmarkStore::MAX_NAME_LENGTH, InputType::Text),
@@ -225,63 +248,98 @@ void GlobalBookmarksActivity::renameSelected() {
                          });
 }
 
-void GlobalBookmarksActivity::loop() {
-  const int total = static_cast<int>(rows.size());
+bool GlobalBookmarksActivity::handleCustomInput() {
+  const int total = listCount();
+  if (total == 0) return false;
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    onGoHome();
-    return;
+  const int selected = nav.selected;
+  if (!isSeparatorRow(selected)) {
+    if (mappedInput.wasLogicalReleased(MappedInputManager::Direction::Left)) {
+      renameSelected();
+      return true;
+    }
+    if (mappedInput.wasLogicalReleased(MappedInputManager::Direction::Right)) {
+      deleteSelected();
+      return true;
+    }
   }
-
-  if (total == 0) return;
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    openSelected();
-    return;
-  }
-
-  if (mappedInput.wasLogicalReleased(MappedInputManager::Direction::Left)) {
-    renameSelected();
-    return;
-  }
-
-  if (mappedInput.wasLogicalReleased(MappedInputManager::Direction::Right)) {
-    deleteSelected();
-    return;
-  }
-
-  // Navigator is restricted to logical Up/Down so the logical Left (rename) and Right (delete)
-  // handlers above cannot race default cursor movement on the same press tick.
-  buttonNavigator.onNextList(ButtonNavigator::getStepNextButtons(), selectorIndex, total, [this] { requestUpdate(); });
-  buttonNavigator.onPreviousList(ButtonNavigator::getStepPreviousButtons(), selectorIndex, total,
-                                 [this] { requestUpdate(); });
+  return false;
 }
 
-void GlobalBookmarksActivity::render(RenderLock&&) {
-  renderer.clearScreen();
+void GlobalBookmarksActivity::materializeListWindow() {
+  const int count = listCount();
+  windowFirst = static_cast<uint16_t>(std::max(0, std::min(nav.top, count)));
+  windowCount = static_cast<uint16_t>(
+      std::min(static_cast<size_t>(count - windowFirst), static_cast<size_t>(LIST_WINDOW_CAPACITY)));
 
+  const auto& entries = GLOBAL_BOOKMARKS.getEntries();
+
+  for (uint16_t offset = 0; offset < windowCount; ++offset) {
+    const size_t index = windowFirst + offset;
+    auto& rowItem = windowItems[offset];
+    rowItem = {};
+    rowItem.actionValue = static_cast<int16_t>(index);
+
+    const auto& row = rows[index];
+    if (row.isSeparator) {
+      if (row.bookIndex < entries.size()) {
+        const auto& entry = entries[row.bookIndex];
+        windowLabels[offset] = entry.title.empty() ? entry.sourcePath : entry.title;
+      } else {
+        windowLabels[offset] = "";
+      }
+      rowItem.label = windowLabels[offset].c_str();
+      rowItem.isHeader = true;
+      rowItem.enabled = false;
+    } else {
+      windowLabels[offset] = getRowTitle(static_cast<int>(index));
+      rowItem.label = windowLabels[offset].c_str();
+      rowItem.isHeader = false;
+      rowItem.enabled = true;
+    }
+  }
+}
+
+void GlobalBookmarksActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, true);
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
 
-  GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer), tr(STR_GLOBAL_BOOKMARKS));
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
+                  static_cast<int16_t>(contentRect.x)});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = contentRect.height - contentTop - metrics.verticalSpacing;
-
-  if (rows.empty()) {
-    renderer.drawText(UI_10_FONT_ID, contentRect.x + metrics.contentSidePadding, contentTop + 20,
-                      tr(STR_NO_GLOBAL_BOOKMARKS));
-  } else {
-    GUI.drawList(renderer, Rect{contentRect.x, contentTop, contentRect.width, contentHeight},
-                 static_cast<int>(rows.size()), selectorIndex, [this](int index) { return getRowTitle(index); });
+  if (listCount() == 0) {
+    fui::TextAreaProps empty;
+    empty.text = tr(STR_NO_GLOBAL_BOOKMARKS);
+    empty.style = screen.theme().bodyText;
+    empty.showCaret = false;
+    screen.textArea(empty);
+    return;
   }
 
-  const bool hasBookmarks = !rows.empty() && !isSeparatorRow(selectorIndex);
+  fui::ListProps props;
+  props.count = static_cast<uint16_t>(listCount());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;
+  props.labelText = screen.theme().bodyText;
+  props.labelText.maxLines = 1;
+
+  syncListViewport(screen, props, /*hasSubtitle=*/false);
+  materializeListWindow();
+  props.items = windowItems.data();
+  props.itemsWindowFirst = windowFirst;
+  props.itemsWindowCount = windowCount;
+  screen.list(props);
+}
+
+void GlobalBookmarksActivity::drawFooter() {
+  const bool hasBookmarks = !rows.empty() && !isSeparatorRow(nav.selected);
   const auto hints =
       mappedInput.mapHints(tr(STR_HOME), hasBookmarks ? tr(STR_OPEN) : "", hasBookmarks ? tr(STR_RENAME) : "",
                            hasBookmarks ? tr(STR_DELETE) : "", tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, hints.front.btn1, hints.front.btn2, hints.front.btn3, hints.front.btn4);
   GUI.drawSideButtonHints(renderer, hints.side.up, hints.side.down);
-
-  renderer.displayBuffer();
 }

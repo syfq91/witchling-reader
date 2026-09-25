@@ -1,13 +1,12 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <string>
 #include <vector>
 
-#include "../Activity.h"
-#include "util/ButtonNavigator.h"
-
-struct Rect;
+#include "CrossPointState.h"
+#include "activities/UiListActivity.h"
 
 // Home-screen activity that aggregates bookmarks from every indexed book and
 // jumps directly into the chosen book/position on Confirm.
@@ -18,15 +17,23 @@ struct Rect;
 //
 // The display list is a flat vector of rows, where each row is either a book
 // header separator or a bookmark entry belonging to the preceding header.
-class GlobalBookmarksActivity final : public Activity {
+class GlobalBookmarksActivity final : public UiListActivity {
  public:
   explicit GlobalBookmarksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, ReturnHint restoreHint = {})
-      : Activity("GlobalBookmarks", renderer, mappedInput), restoreHint(std::move(restoreHint)) {}
+      : UiListActivity("GlobalBookmarks", renderer, mappedInput), restoreHint(std::move(restoreHint)) {}
 
   void onEnter() override;
   void onExit() override;
-  void loop() override;
-  void render(RenderLock&&) override;
+
+ protected:
+  int listCount() const override;
+  const char* headerTitle() const override;
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  void onBackButton() override;
+  bool handleCustomInput() override;
+  void drawFooter() override;
+  ListRowTap::Result selectListRow(int index) override;
 
  private:
   struct Row {
@@ -35,12 +42,17 @@ class GlobalBookmarksActivity final : public Activity {
     size_t bookmarkIndex = 0;  // index within that entry's bookmarks (separator: ignored)
   };
 
-  ButtonNavigator buttonNavigator;
   std::vector<Row> rows;
-  int selectorIndex = 0;
   ReturnHint restoreHint;
 
+  static constexpr size_t LIST_WINDOW_CAPACITY = 24;
+  std::array<std::string, LIST_WINDOW_CAPACITY> windowLabels;
+  std::array<freeink::ui::ListItem, LIST_WINDOW_CAPACITY> windowItems;
+  uint16_t windowFirst = 0;
+  uint16_t windowCount = 0;
+
   void rebuildRows();
+  void materializeListWindow();
   std::string getRowTitle(int index) const;
   bool isSeparatorRow(int index) const;
   int firstSelectableIndex() const;

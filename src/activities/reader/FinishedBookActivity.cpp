@@ -29,6 +29,8 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+namespace fui = freeink::ui;
+
 namespace {
 std::string extractFolderPath(const std::string& filePath) {
   const auto lastSlash = filePath.find_last_of('/');
@@ -410,7 +412,7 @@ void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputMa
 FinishedBookActivity::FinishedBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                            std::string currentBookPath, std::string nextBookPath,
                                            std::string currentBookAuthor)
-    : Activity("FinishedBook", renderer, mappedInput),
+    : UiListActivity("FinishedBook", renderer, mappedInput),
       currentBookPath_(std::move(currentBookPath)),
       nextBookPath_(std::move(nextBookPath)),
       currentBookAuthor_(std::move(currentBookAuthor)),
@@ -428,7 +430,7 @@ FinishedBookActivity::RowModel FinishedBookActivity::buildRowModel() const {
   if (nextBookAvailable_) {
     // Author/series/cover for the next book are already shown in the preview panel above the
     // list, so the row itself just needs to name the action; title still prefers the loaded
-    // title (falling back to the filename) so the row isn't a bare "Open" before loop() loads it.
+    // title (falling back to the filename) so the row isn't a bare "Open" before metadata loads.
     model.actions.push_back(RowModel::Action::OpenNext);
     model.titles.push_back(nextBookTitle_.empty() ? tr(STR_OPEN_NEXT_BOOK) : nextBookTitle_);
     model.values.push_back(tr(STR_OPEN));
@@ -448,85 +450,7 @@ FinishedBookActivity::RowModel FinishedBookActivity::buildRowModel() const {
 }
 
 void FinishedBookActivity::onEnter() {
-  Activity::onEnter();
   removeFinishedBooksFromRecents_ = SETTINGS.removeFinishedBooksFromRecents;
-  selectedIndex_ = std::clamp(selectedIndex_, 0, std::max(0, buildRowModel().count() - 1));
-
-  if (nextBookAvailable_) {
-    nextBookTitle_ = nextBookName_;
-    nextBookAuthor_.clear();
-    nextBookSeries_.clear();
-    nextBookCoverPath_.clear();
-    nextBookMetadataLoaded_ = false;
-  } else {
-    nextBookTitle_.clear();
-    nextBookAuthor_.clear();
-    nextBookSeries_.clear();
-    nextBookCoverPath_.clear();
-    nextBookMetadataLoaded_ = true;
-  }
-  requestUpdate();
-}
-
-void FinishedBookActivity::loop() {
-  // Built ONCE per loop() rather than per event: the model depends only on member state, and
-  // constructing it allocates four rows of translated strings. Rebuilding it inside the event loop
-  // put that cost in front of every button press. Any handler below that changes what the rows say
-  // (the forget toggle) returns immediately, so a single build stays consistent with the events it
-  // dispatches.
-  const RowModel model = buildRowModel();
-  const int optionCount = model.count();
-  if (optionCount <= 0) {
-    return;
-  }
-
-  selectedIndex_ = std::clamp(selectedIndex_, 0, optionCount - 1);
-
-  ButtonEventManager::ButtonEvent ev;
-  while (buttonEvents.consumeEvent(ev)) {
-    if (ev.type != ButtonEventManager::PressType::Short) {
-      continue;
-    }
-
-    const auto finishWith = [this](const BookFinished::FinishedBookAction action) {
-      MenuResult menuResult;
-      menuResult.action = static_cast<int>(action);
-      ActivityResult result(menuResult);
-      setResult(std::move(result));
-      finish();
-    };
-
-    if (ev.button == MappedInputManager::Button::Back) {
-      finishWith(BookFinished::FinishedBookAction::GoHome);
-      return;
-    }
-
-    if (ev.button == MappedInputManager::Button::Confirm) {
-      switch (model.actions[selectedIndex_]) {
-        case RowModel::Action::GoHome:
-          finishWith(BookFinished::FinishedBookAction::GoHome);
-          return;
-        case RowModel::Action::OpenNext:
-          finishWith(BookFinished::FinishedBookAction::OpenNextBook);
-          return;
-        case RowModel::Action::SearchOpds:
-          finishWith(BookFinished::FinishedBookAction::SearchOpdsForAuthor);
-          return;
-        case RowModel::Action::ToggleForget:
-          removeFinishedBooksFromRecents_ = !removeFinishedBooksFromRecents_;
-          SETTINGS.removeFinishedBooksFromRecents = removeFinishedBooksFromRecents_;
-          SETTINGS.saveToFile();
-          requestUpdate();
-          return;
-      }
-      return;
-    }
-  }
-
-  // Selection movement via the navigator, not consumed events — see the buttonNavigator comment in
-  // the header for why Up/Down/Left/Right never arrive as events on this screen.
-  buttonNavigator.onNextList(selectedIndex_, optionCount, [this] { requestUpdate(); });
-  buttonNavigator.onPreviousList(selectedIndex_, optionCount, [this] { requestUpdate(); });
 
   if (nextBookAvailable_ && !nextBookMetadataLoaded_) {
     const auto metadata = loadNextBookMetadata(nextBookPath_);
@@ -535,25 +459,129 @@ void FinishedBookActivity::loop() {
     nextBookSeries_ = metadata.series;
     nextBookCoverPath_ = metadata.coverPath;
     nextBookMetadataLoaded_ = true;
-    requestUpdate();
+  } else if (!nextBookAvailable_) {
+    nextBookTitle_.clear();
+    nextBookAuthor_.clear();
+    nextBookSeries_.clear();
+    nextBookCoverPath_.clear();
+    nextBookMetadataLoaded_ = true;
+  }
+
+  UiListActivity::onEnter();
+}
+
+int FinishedBookActivity::listCount() const { return buildRowModel().count(); }
+
+const char* FinishedBookActivity::headerTitle() const { return tr(STR_FINISHED_BOOK_HEADER); }
+
+void FinishedBookActivity::onBackButton() {
+  MenuResult menuResult;
+  menuResult.action = static_cast<int>(BookFinished::FinishedBookAction::GoHome);
+  ActivityResult result(menuResult);
+  setResult(std::move(result));
+  finish();
+}
+
+void FinishedBookActivity::activateIndex(const int index) {
+  const RowModel model = buildRowModel();
+  if (index < 0 || index >= model.count()) return;
+
+  const auto finishWith = [this](const BookFinished::FinishedBookAction action) {
+    MenuResult menuResult;
+    menuResult.action = static_cast<int>(action);
+    ActivityResult result(menuResult);
+    setResult(std::move(result));
+    finish();
+  };
+
+  switch (model.actions[index]) {
+    case RowModel::Action::GoHome:
+      finishWith(BookFinished::FinishedBookAction::GoHome);
+      return;
+    case RowModel::Action::OpenNext:
+      finishWith(BookFinished::FinishedBookAction::OpenNextBook);
+      return;
+    case RowModel::Action::SearchOpds:
+      finishWith(BookFinished::FinishedBookAction::SearchOpdsForAuthor);
+      return;
+    case RowModel::Action::ToggleForget:
+      removeFinishedBooksFromRecents_ = !removeFinishedBooksFromRecents_;
+      SETTINGS.removeFinishedBooksFromRecents = removeFinishedBooksFromRecents_;
+      SETTINGS.saveToFile();
+      requestUpdate();
+      return;
   }
 }
 
-void FinishedBookActivity::render(RenderLock&&) {
+void FinishedBookActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-
-  renderer.clearScreen();
   const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-  const int contentTop = contentRect.y;
+
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
+                  static_cast<int16_t>(contentRect.x)});
+
+  const int yGap = renderer.getLineHeight(UI_10_FONT_ID);
+  int topSectionHeight = metrics.verticalSpacing + 2 * (yGap + 4);
+
   const int contentBottom = contentRect.y + contentRect.height - metrics.buttonHintsHeight;
   const int contentWidth = contentRect.width - 2 * metrics.contentSidePadding;
-  int y = contentTop;
-  int yGap = renderer.getLineHeight(UI_10_FONT_ID);
-  GUI.drawHeader(renderer, Rect{contentRect.x, contentTop, contentRect.width, metrics.headerHeight},
-                 tr(STR_FINISHED_BOOK_HEADER), "");
-  y += metrics.headerHeight + metrics.verticalSpacing;
+
+  int previewY = contentRect.y + metrics.headerHeight + topSectionHeight;
+
+  if (nextBookAvailable_) {
+    topSectionHeight += yGap + metrics.verticalSpacing;
+    previewHeight_ = std::max(0, std::min(kFinishedBookCoverHeight,
+                                          contentBottom - previewY - 3 * (renderer.getLineHeight(UI_12_FONT_ID) + 8) -
+                                              metrics.verticalSpacing));
+    previewWidth_ = std::min(contentWidth / 2, kFinishedBookCoverMaxWidth);
+    previewX_ = contentRect.x + metrics.contentSidePadding;
+    previewY_ = previewY;
+    topSectionHeight += previewHeight_ + metrics.verticalSpacing;
+  } else {
+    previewHeight_ = 0;
+    previewWidth_ = 0;
+    previewX_ = 0;
+    previewY_ = 0;
+  }
+
+  screen.spacer(static_cast<int16_t>(topSectionHeight));
+
+  const RowModel model = buildRowModel();
+  const int count = std::min(static_cast<size_t>(model.count()), MAX_ROWS);
+
+  for (int i = 0; i < count; ++i) {
+    rowTitles_[i] = model.titles[i];
+    rowValues_[i] = model.values[i];
+    auto& item = items_[i];
+    item = {};
+    item.label = rowTitles_[i].c_str();
+    item.value = rowValues_[i].empty() ? nullptr : rowValues_[i].c_str();
+    item.actionValue = static_cast<int16_t>(i);
+    item.enabled = true;
+  }
+
+  fui::ListProps props;
+  props.items = items_.data();
+  props.count = static_cast<uint16_t>(count);
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;
+  props.labelText = screen.theme().bodyText;
+  props.labelText.maxLines = 1;
+
+  syncListViewport(screen, props, /*hasSubtitle=*/false);
+  screen.list(props);
+}
+
+void FinishedBookActivity::afterUiRender() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+
+  int y = contentRect.y + metrics.headerHeight + metrics.verticalSpacing;
+  const int yGap = renderer.getLineHeight(UI_10_FONT_ID);
+
   renderer.drawText(UI_10_FONT_ID, contentRect.x + metrics.contentSidePadding, y, tr(STR_FINISHED_BOOK_HEADER_LINE1),
                     true, EpdFontFamily::REGULAR);
   y += yGap + 4;
@@ -565,46 +593,35 @@ void FinishedBookActivity::render(RenderLock&&) {
     renderer.drawText(UI_12_FONT_ID, contentRect.x + metrics.contentSidePadding, y, tr(STR_NEXT_BOOK_HEADER), true,
                       EpdFontFamily::BOLD);
     y += yGap + metrics.verticalSpacing;
-  }
 
-  const int previewHeight =
-      nextBookAvailable_ ? std::max(0, std::min(kFinishedBookCoverHeight,
-                                                contentBottom - y - 3 * (renderer.getLineHeight(UI_12_FONT_ID) + 8) -
-                                                    metrics.verticalSpacing))
-                         : 0;
-  const int previewWidth = nextBookAvailable_ ? std::min(contentWidth / 2, kFinishedBookCoverMaxWidth) : 0;
-  const int previewX = contentRect.x + metrics.contentSidePadding;
-  const int previewY = y;
-
-  if (nextBookAvailable_) {
     int actualCoverWidth = 0;
-    int previewTextX = previewX;
+    int previewTextX = previewX_;
 
-    if (!nextBookCoverPath_.empty()) {
+    if (!nextBookCoverPath_.empty() && previewHeight_ > 0 && previewWidth_ > 0) {
       const std::string coverPath =
           UITheme::getCoverThumbPath(nextBookCoverPath_, kFinishedBookCoverMaxWidth, kFinishedBookCoverHeight);
       HalFile coverFile = Storage.open(coverPath.c_str());
       if (coverFile) {
         Bitmap bmp(coverFile);
         if (bmp.parseHeaders() == BmpReaderError::Ok && bmp.getWidth() > 0 && bmp.getHeight() > 0) {
-          int actualCoverHeight = previewHeight;
+          int actualCoverHeight = previewHeight_;
           actualCoverWidth = bmp.getWidth() * actualCoverHeight / bmp.getHeight();
-          if (actualCoverWidth > previewWidth) {
-            actualCoverWidth = previewWidth;
+          if (actualCoverWidth > previewWidth_) {
+            actualCoverWidth = previewWidth_;
             actualCoverHeight = bmp.getHeight() * actualCoverWidth / bmp.getWidth();
           }
-          renderer.drawBitmap(bmp, previewX, previewY, actualCoverWidth, actualCoverHeight);
+          renderer.drawBitmap(bmp, previewX_, previewY_, actualCoverWidth, actualCoverHeight);
         }
         coverFile.close();
       }
     }
 
     if (actualCoverWidth > 0) {
-      previewTextX = previewX + actualCoverWidth + metrics.contentSidePadding;
+      previewTextX = previewX_ + actualCoverWidth + metrics.contentSidePadding;
     }
 
     const int previewTextWidth = contentRect.x + contentRect.width - metrics.contentSidePadding - previewTextX;
-    int infoY = previewY;
+    int infoY = previewY_;
     const auto titleLines = renderer.wrappedText(UI_12_FONT_ID, nextBookTitle_.c_str(), previewTextWidth, 3);
     const auto authorLines = renderer.wrappedText(UI_10_FONT_ID, nextBookAuthor_.c_str(), previewTextWidth, 3);
     const auto seriesLines = renderer.wrappedText(UI_10_FONT_ID, nextBookSeries_.c_str(), previewTextWidth, 2);
@@ -629,18 +646,5 @@ void FinishedBookActivity::render(RenderLock&&) {
         infoY += renderer.getLineHeight(UI_10_FONT_ID);
       }
     }
-    y = std::max(y + previewHeight, infoY) + metrics.verticalSpacing;
   }
-
-  const RowModel model = buildRowModel();
-  const int selected = std::clamp(selectedIndex_, 0, std::max(0, model.count() - 1));
-
-  const Rect listRect{contentRect.x, y, contentRect.width, contentBottom - y};
-  GUI.drawList(
-      renderer, listRect, model.count(), selected, [&model](int index) { return model.titles[index]; }, nullptr,
-      nullptr, [&model](int index) { return model.values[index]; }, true);
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
 }

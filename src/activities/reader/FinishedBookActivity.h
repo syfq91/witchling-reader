@@ -1,11 +1,11 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 
-#include "../Activity.h"
 #include "CrossPointState.h"
-#include "util/ButtonNavigator.h"
+#include "activities/UiListActivity.h"
 
 namespace BookFinished {
 std::string findNextBookInDirectory(const std::string& currentBookPath, const std::string& currentBookSeries,
@@ -34,36 +34,22 @@ void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputMa
                             void* onMenuClosedCtx = nullptr);
 }  // namespace BookFinished
 
-class FinishedBookActivity : public Activity {
+class FinishedBookActivity final : public UiListActivity {
  public:
   FinishedBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string currentBookPath,
                        std::string nextBookPath, std::string currentBookAuthor = {});
 
   void onEnter() override;
-  void loop() override;
-  void render(RenderLock&&) override;
+
+ protected:
+  int listCount() const override;
+  const char* headerTitle() const override;
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  void onBackButton() override;
+  void afterUiRender() override;
 
  private:
-  // Selection movement goes through ButtonNavigator (as in StarredPagesActivity and the other
-  // child-of-reader lists), NOT through consumed button events. This activity sits on top of the
-  // reader on the activity stack, so main.cpp still sees "in the reader" and routes reader-scoped
-  // actions (Up/Down/Left/Right commonly map to PREV/NEXT_SECTION) to dispatchButtonAction()
-  // instead of delivering them here — consumeEvent() never sees them. ButtonNavigator reads the
-  // mapped input state directly and is unaffected.
-  ButtonNavigator buttonNavigator;
-
-  // The menu's rows are conditional (next-book and OPDS-search each appear only when
-  // applicable), so the row count and every row's index depend on the same booleans.
-  // Those were previously re-derived independently in onEnter(), loop() and render(); any
-  // divergence between the count handed to GUI.drawList and the vectors its callbacks index
-  // is an out-of-bounds read. Building the model once per use keeps the count, the indices
-  // and the row content in sync by construction.
-  //
-  // Rows are single-line (title + right-aligned value, no subtitle): with up to five rows now
-  // possible, the two-line "with subtitle" row height would push the list well past what fits
-  // alongside the header and next-book preview. Anything a subtitle used to carry (next-book
-  // author/series, which author an OPDS search) either duplicates the preview panel above or
-  // fits in the title itself.
   struct RowModel {
     enum class Action { GoHome, OpenNext, SearchOpds, ToggleForget };
     std::vector<Action> actions;
@@ -86,5 +72,15 @@ class FinishedBookActivity : public Activity {
   bool nextBookAvailable_ = false;
   bool nextBookMetadataLoaded_ = false;
   bool removeFinishedBooksFromRecents_ = false;
-  int selectedIndex_ = 0;
+
+  static constexpr size_t MAX_ROWS = 6;
+  std::array<std::string, MAX_ROWS> rowTitles_;
+  std::array<std::string, MAX_ROWS> rowValues_;
+  std::array<freeink::ui::ListItem, MAX_ROWS> items_;
+
+  int previewX_ = 0;
+  int previewY_ = 0;
+  int previewWidth_ = 0;
+  int previewHeight_ = 0;
+  int previewTextWidth_ = 0;
 };

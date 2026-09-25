@@ -2,17 +2,18 @@
 #include <I18n.h>
 #include <PngToBmpConverter.h>
 
+#include <array>
 #include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "../Activity.h"
 #include "RecentBooksStore.h"
+#include "activities/UiListActivity.h"
 #include "activities/reader/ReaderActivity.h"
 
-class RecentBooksActivity final : public Activity {
+class RecentBooksActivity final : public UiListActivity {
  public:
   // Stored BMP dimensions — shared with FinishedBookActivity so one file serves both.
   // The grid scales this BMP down to the runtime cell size for display (never up).
@@ -29,6 +30,22 @@ class RecentBooksActivity final : public Activity {
   // On the 480 px-wide X4/X3 panels that works out to 2x2 — at the previous hard-coded 3 columns a
   // cell was ~136 px and covers drew at roughly 105x158, too small to recognise the artwork.
   static constexpr int GRID_MAX_CELL_HEIGHT = GRID_THUMB_HEIGHT + 2;
+
+  explicit RecentBooksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int focusIndex = -1)
+      : UiListActivity("RecentBooks", renderer, mappedInput), initialFocusIndex(focusIndex) {}
+  void onEnter() override;
+  void onExit() override;
+  void loop() override;
+  void render(RenderLock&&) override;
+
+ protected:
+  int listCount() const override;
+  const char* headerTitle() const override;
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  void onBackButton() override;
+  bool handleCustomInput() override;
+  void drawFooter() override;
 
  private:
   int selectorIndex = 0;
@@ -65,6 +82,15 @@ class RecentBooksActivity final : public Activity {
   // transition into the reader.
   bool openingBook = false;
 
+  static constexpr size_t LIST_WINDOW_CAPACITY = 24;
+  std::array<std::string, LIST_WINDOW_CAPACITY> windowTitles;
+  std::array<std::string, LIST_WINDOW_CAPACITY> windowSubtitles;
+  std::array<std::string, LIST_WINDOW_CAPACITY> windowValues;
+  std::array<freeink::ui::ListItem, LIST_WINDOW_CAPACITY> windowItems;
+  uint16_t windowFirst = 0;
+  uint16_t windowCount = 0;
+
+  void materializeListWindow();
   void loadRecentBooks();
   // Generates the next missing grid thumbnail (one per call). Returns true when all done.
   bool loadNextCover();
@@ -76,18 +102,9 @@ class RecentBooksActivity final : public Activity {
   // Draws a single grid cell (used for both full render and partial selection update).
   void renderGridCell(int index, bool selected, int cellX, int cellY, int tw, int th, int labelW);
 
-  void renderListView(RenderLock&&);
   void renderGridView(RenderLock&&);
   // Columns currently on screen — derived from the panel size and theme metrics, not a constant.
   int gridColumns() const;
   // Open the book under the selection. Shared by Confirm and by a tap, so the two agree.
   void openSelectedBook(bool longPress);
-
- public:
-  explicit RecentBooksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int focusIndex = -1)
-      : Activity("RecentBooks", renderer, mappedInput), initialFocusIndex(focusIndex) {}
-  void onEnter() override;
-  void onExit() override;
-  void loop() override;
-  void render(RenderLock&&) override;
 };
