@@ -442,10 +442,10 @@ void FileBrowserActivity::drawFooter() {
                              : selectingFirmwareFile ? tr(STR_SELECT)
                              : confirmOpensOptions() ? tr(STR_OPTIONS)
                                                      : tr(STR_OPEN);
-  // The Options menu is available for every entry in Books mode. The menu always
-  // offers the browser display options (sort + visibility); supported files get
-  // extra file-specific actions appended. So the hint shows for files and dirs alike.
-  const bool showOptionsHint = model.getMode() == Mode::Books && hasEntries;
+  // The Options menu is available for every entry in Books and PickFirmware modes.
+  // The menu always offers the browser display options (sort + visibility); supported
+  // files get extra file-specific actions appended. So the hint shows for files and dirs alike.
+  const bool showOptionsHint = model.getMode() != Mode::PickFolder && hasEntries;
   // In a folder worth paging through, Left/Right are the page buttons and the hints say so —
   // Options is then the long press on Right. In a folder that fits on one screen there is nothing
   // to page, so the strip looks exactly as it always did.
