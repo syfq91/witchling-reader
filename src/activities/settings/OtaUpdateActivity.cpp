@@ -167,12 +167,9 @@ void OtaUpdateActivity::render(RenderLock&&) {
                              contentRect.width - metrics.contentSidePadding * 2, metrics.progressBarHeight},
                         static_cast<int>(updaterProgress * 100), 100);
 
-    y += metrics.progressBarHeight + metrics.verticalSpacing;
-    renderer.drawCenteredText(UI_10_FONT_ID, y,
-                              (std::to_string(static_cast<int>(updaterProgress * 100)) + "%").c_str());
-    y += height + metrics.verticalSpacing;
+    const int bytesY = y + metrics.progressBarHeight + 15 + height + 6;
     renderer.drawCenteredText(
-        UI_10_FONT_ID, y,
+        UI_10_FONT_ID, bytesY,
         (std::to_string(updater.getProcessedSize()) + " / " + std::to_string(updater.getTotalSize())).c_str());
   } else if (state == NO_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NO_UPDATE), true, EpdFontFamily::BOLD);
@@ -218,7 +215,14 @@ void OtaUpdateActivity::render(RenderLock&&) {
         break;
     }
     if (reason[0] != '\0') {
-      renderer.drawCenteredText(SMALL_FONT_ID, top + height + metrics.verticalSpacing, reason);
+      const int maxW = contentRect.width - metrics.contentSidePadding * 2;
+      const auto reasonLines = renderer.wrappedText(SMALL_FONT_ID, reason, maxW, 3);
+      int rY = top + height + metrics.verticalSpacing;
+      const int smallH = renderer.getLineHeight(SMALL_FONT_ID);
+      for (const auto& line : reasonLines) {
+        renderer.drawCenteredText(SMALL_FONT_ID, rY, line.c_str());
+        rY += smallH + 2;
+      }
     }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

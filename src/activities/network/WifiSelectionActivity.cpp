@@ -1064,10 +1064,23 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
       screen.footer(footerActions, footerCount);
 
       if (networks.empty()) {
-        screen.spacer(40);
-        screen.centeredText(tr(STR_NO_NETWORKS));
-        screen.spacer(10);
-        screen.centeredText(tr(STR_PRESS_OK_SCAN));
+        fui::TextStyle msgStyle = screen.theme().bodyText;
+        msgStyle.align = fui::TextAlign::Center;
+        const int16_t msgH = screen.target().lineHeight(msgStyle.font);
+
+        fui::TextStyle hintStyle = screen.theme().smallText;
+        hintStyle.align = fui::TextAlign::Center;
+        const int16_t hintH = screen.target().lineHeight(hintStyle.font);
+
+        const int16_t gap = screen.theme().spaceSm;
+        const int16_t totalH = static_cast<int16_t>(msgH + gap + hintH);
+        const int16_t topMargin = static_cast<int16_t>((screen.body().height - totalH) / 2);
+        if (topMargin > 0) {
+          screen.spacer(topMargin);
+        }
+        screen.target().text(screen.takeTop(msgH), tr(STR_NO_NETWORKS), msgStyle);
+        screen.spacer(gap);
+        screen.target().text(screen.takeTop(hintH), tr(STR_PRESS_OK_SCAN), hintStyle);
       } else {
         fui::ListProps props;
         props.count = static_cast<uint16_t>(networks.size());
@@ -1088,7 +1101,6 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
     }
     case WifiSelectionState::SCANNING: {
       screen.header(tr(STR_WIFI_NETWORKS), cachedMacAddress.c_str());
-      screen.spacer(60);
       fui::TextStyle titleStyle = screen.theme().titleText;
       titleStyle.bold = true;
       titleStyle.align = fui::TextAlign::Center;
@@ -1099,18 +1111,29 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
     case WifiSelectionState::AUTO_CYCLING:
     case WifiSelectionState::CONNECTING: {
       screen.header(tr(STR_WIFI_NETWORKS), cachedMacAddress.c_str());
-      screen.spacer(40);
       fui::TextStyle titleStyle = screen.theme().titleText;
       titleStyle.bold = true;
       titleStyle.align = fui::TextAlign::Center;
-      screen.centeredText(tr(STR_CONNECTING), titleStyle);
+      const int16_t titleH = screen.target().lineHeight(titleStyle.font);
 
-      screen.spacer(20);
+      fui::TextStyle infoStyle = screen.theme().bodyText;
+      infoStyle.align = fui::TextAlign::Center;
+      const int16_t infoH = screen.target().lineHeight(infoStyle.font);
+
       std::string ssidInfo = std::string(tr(STR_TO_PREFIX)) + selectedSSID;
       if (ssidInfo.length() > 25) {
         ssidInfo.replace(22, ssidInfo.length() - 22, "...");
       }
-      screen.centeredText(ssidInfo.c_str());
+
+      const int16_t gap = screen.theme().spaceMd;
+      const int16_t totalH = static_cast<int16_t>(titleH + gap + infoH);
+      const int16_t topMargin = static_cast<int16_t>((screen.body().height - totalH) / 2);
+      if (topMargin > 0) {
+        screen.spacer(topMargin);
+      }
+      screen.target().text(screen.takeTop(titleH), tr(STR_CONNECTING), titleStyle);
+      screen.spacer(gap);
+      screen.target().text(screen.takeTop(infoH), ssidInfo.c_str(), infoStyle);
       break;
     }
     case WifiSelectionState::CONNECTED: {
@@ -1119,19 +1142,29 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
       footerActions[0] = {tr(STR_DONE), ACTION_BACK};
       screen.footer(footerActions, 1);
 
-      screen.spacer(40);
       fui::TextStyle titleStyle = screen.theme().titleText;
       titleStyle.bold = true;
       titleStyle.align = fui::TextAlign::Center;
-      screen.centeredText(tr(STR_CONNECTED), titleStyle);
+      const int16_t titleH = screen.target().lineHeight(titleStyle.font);
 
-      screen.spacer(15);
+      fui::TextStyle infoStyle = screen.theme().bodyText;
+      infoStyle.align = fui::TextAlign::Center;
+      const int16_t infoH = screen.target().lineHeight(infoStyle.font);
+
       std::string ssidInfo = std::string(tr(STR_NETWORK_PREFIX)) + selectedSSID;
-      screen.centeredText(ssidInfo.c_str());
-
-      screen.spacer(15);
       std::string ipInfo = std::string(tr(STR_IP_ADDRESS_PREFIX)) + connectedIP;
-      screen.centeredText(ipInfo.c_str());
+
+      const int16_t gap = screen.theme().spaceSm;
+      const int16_t totalH = static_cast<int16_t>(titleH + gap * 2 + infoH * 2);
+      const int16_t topMargin = static_cast<int16_t>((screen.body().height - totalH) / 2);
+      if (topMargin > 0) {
+        screen.spacer(topMargin);
+      }
+      screen.target().text(screen.takeTop(titleH), tr(STR_CONNECTED), titleStyle);
+      screen.spacer(gap);
+      screen.target().text(screen.takeTop(infoH), ssidInfo.c_str(), infoStyle);
+      screen.spacer(gap);
+      screen.target().text(screen.takeTop(infoH), ipInfo.c_str(), infoStyle);
       break;
     }
     case WifiSelectionState::SAVE_PROMPT: {
@@ -1190,16 +1223,32 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
       footerActions[1] = {tr(STR_CAPTIVE_PORTAL_DONE), ACTION_CAPTIVE_DONE};
       screen.footer(footerActions, 2);
 
-      screen.spacer(20);
-      std::string hintText = std::string(tr(STR_CAPTIVE_PORTAL_HINT_1)) + " " + tr(STR_CAPTIVE_PORTAL_HINT_2);
-      screen.centeredText(hintText.c_str());
+      fui::TextStyle hintStyle = screen.theme().bodyText;
+      hintStyle.align = fui::TextAlign::Center;
+      hintStyle.maxLines = 2;
+      const int16_t hintH = static_cast<int16_t>(screen.target().lineHeight(hintStyle.font) * 2);
 
-      screen.spacer(20);
       constexpr int16_t QR_SIZE = 220;
+
+      fui::TextStyle urlStyle = screen.theme().smallText;
+      urlStyle.align = fui::TextAlign::Center;
+      const int16_t urlH = screen.target().lineHeight(urlStyle.font);
+
+      const int16_t gap = screen.theme().spaceMd;
+      const int16_t totalH = static_cast<int16_t>(hintH + gap + QR_SIZE + gap + urlH);
+      const int16_t topMargin = static_cast<int16_t>((screen.body().height - totalH) / 2);
+      if (topMargin > 0) {
+        screen.spacer(topMargin);
+      }
+
+      std::string hintText = std::string(tr(STR_CAPTIVE_PORTAL_HINT_1)) + " " + tr(STR_CAPTIVE_PORTAL_HINT_2);
+      screen.target().text(screen.takeTop(hintH), hintText.c_str(), hintStyle);
+
+      screen.spacer(gap);
       captiveQrRect_ = fui::centeredRect(screen.takeTop(QR_SIZE), fui::Size{QR_SIZE, QR_SIZE});
 
-      screen.spacer(10);
-      screen.centeredText(captivePortalUrl.c_str());
+      screen.spacer(gap);
+      screen.target().text(screen.takeTop(urlH), captivePortalUrl.c_str(), urlStyle);
       break;
     }
     case WifiSelectionState::PASSWORD_ENTRY:

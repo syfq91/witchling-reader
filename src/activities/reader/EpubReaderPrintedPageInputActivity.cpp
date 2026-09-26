@@ -139,6 +139,8 @@ void EpubReaderPrintedPageInputActivity::buildScreen(UiScreen& screen) {
   // Reserve space for numeric readout and active digit underline rendered in afterUiRender
   screen.spacer(90);
 
+  const int16_t lineH = screen.target().lineHeight(screen.theme().smallText.font);
+
   // Range hint: "Range: 1 - 305"
   char rangeBuf[48];
   snprintf(rangeBuf, sizeof(rangeBuf), tr(STR_GO_TO_PRINTED_PAGE_RANGE), static_cast<unsigned>(minValue),
@@ -148,7 +150,7 @@ void EpubReaderPrintedPageInputActivity::buildScreen(UiScreen& screen) {
   rangeHint.style = screen.theme().smallText;
   rangeHint.style.align = fui::TextAlign::Center;
   rangeHint.showCaret = false;
-  screen.textArea(rangeHint);
+  screen.textArea(rangeHint, lineH);
 
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
@@ -158,7 +160,7 @@ void EpubReaderPrintedPageInputActivity::buildScreen(UiScreen& screen) {
   stepHint.style = screen.theme().smallText;
   stepHint.style.align = fui::TextAlign::Center;
   stepHint.showCaret = false;
-  screen.textArea(stepHint);
+  screen.textArea(stepHint, static_cast<int16_t>(lineH * 2));
 }
 
 void EpubReaderPrintedPageInputActivity::afterUiRender() {

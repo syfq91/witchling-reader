@@ -489,9 +489,11 @@ void CrossPointWebServerActivity::afterUiRender() {
     renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding + QR_CODE_WIDTH + metrics.verticalSpacing, startY + 100,
                       ipUrl.c_str());
 
+    startY += QR_CODE_HEIGHT + metrics.verticalSpacing;
+
     const int signalHeight = 22;
     const int signalWidth = contentRect.width - metrics.contentSidePadding * 2;
-    const int signalY = startY + 120;
+    const int signalY = startY;
     drawWifiSignalStrength(renderer, contentRect.x + metrics.contentSidePadding, signalY, signalWidth, signalHeight, 0);
     renderer.drawCenteredText(SMALL_FONT_ID, signalY + signalHeight + 2, tr(STR_HOTSPOT_MODE));
   } else {
@@ -499,7 +501,7 @@ void CrossPointWebServerActivity::afterUiRender() {
 
     // STA mode display (original behavior)
     renderer.drawCenteredText(UI_10_FONT_ID, startY, tr(STR_OPEN_URL_HINT), true, EpdFontFamily::BOLD);
-    startY += height10;
+    startY += height10 + 4;
     renderer.drawCenteredText(UI_10_FONT_ID, startY, tr(STR_SCAN_QR_HINT), true, EpdFontFamily::BOLD);
     startY += height10 + metrics.verticalSpacing * 2;
 

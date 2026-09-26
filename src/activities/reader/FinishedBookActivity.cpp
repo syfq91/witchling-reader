@@ -539,7 +539,21 @@ void FinishedBookActivity::buildScreen(UiScreen& screen) {
     previewWidth_ = std::min(contentWidth / 2, kFinishedBookCoverMaxWidth);
     previewX_ = contentRect.x + metrics.contentSidePadding;
     previewY_ = previewY;
-    topSectionHeight += previewHeight_ + metrics.verticalSpacing;
+
+    const int lineH12 = renderer.getLineHeight(UI_12_FONT_ID);
+    const int lineH10 = renderer.getLineHeight(UI_10_FONT_ID);
+    int metaTextHeight = 0;
+    if (!nextBookTitle_.empty()) {
+      metaTextHeight += 3 * lineH12 + 4;
+    }
+    if (!nextBookAuthor_.empty()) {
+      metaTextHeight += 3 * lineH10 + 4;
+    }
+    if (!nextBookSeries_.empty()) {
+      metaTextHeight += 2 * lineH10;
+    }
+    const int reservedPreviewH = std::max(previewHeight_, metaTextHeight);
+    topSectionHeight += reservedPreviewH + metrics.verticalSpacing;
   } else {
     previewHeight_ = 0;
     previewWidth_ = 0;
