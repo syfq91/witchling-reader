@@ -1,5 +1,9 @@
 #pragma once
 
+#include <HalStorage.h>
+
+#include <cstdint>
+
 class CrossPointSettings;
 class CrossPointState;
 class WifiCredentialStore;

@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "Epub/BookMetadataCache.h"
@@ -17,7 +18,8 @@
 #include "Epub/css/CssParser.h"
 
 class ZipFile;
-class BuildArena;  // lib/Memory — optional scratch for the extraction inflate ring
+class BuildArena;         // lib/Memory — optional scratch for the extraction inflate ring
+class CoverThumbSession;  // Epub/CoverThumbSession.h
 
 enum class OpfCacheMode { Disabled, Enabled };
 
@@ -123,7 +125,12 @@ class Epub {
   }
   ~Epub() = default;
   std::string& getBasePath() { return contentBasePath; }
-  bool load(bool buildIfMissing = true, bool skipLoadingCss = false);
+  // `scratch`: a region lent for the duration of the load (the secondary framebuffer, on a
+  // first open). The inflate rings the OPF/NCX/nav/CSS reads need (up to 33 KB each, one at a
+  // time) come from it instead of the heap, so the load never has to free the framebuffer to
+  // find room -- the release + realloc that used to bracket first-open indexing was where a
+  // block landing in the freed hole left the reader without its buffer (memory audit 2026-09).
+  bool load(bool buildIfMissing = true, bool skipLoadingCss = false, BuildArena* scratch = nullptr);
 
   // Lightweight load for COVER thumbnails only: populate the cover image reference WITHOUT building
   // the spine/TOC book.bin. Uses book.bin if it already exists; otherwise does a metadata-only OPF
@@ -131,7 +138,8 @@ class Epub {
   // (e.g. 1732 spines) avoids both the cost and the fragile large-index build of a full load(). After
   // this, only the cover path is valid (getCoverImageCachePath / generateThumbBmp / cover extraction)
   // — the spine/TOC accessors are NOT populated. Returns false if the cover reference can't be found.
-  bool loadForCover();
+  // `scratch`: as for load(); the content.opf read takes its inflate ring from it.
+  bool loadForCover(BuildArena* scratch = nullptr);
 
   // Lightweight load for CATALOGUE METADATA only (title/author/series/seriesIndex/language), WITHOUT
   // building the spine/TOC book.bin. Same rationale and mechanism as loadForCover(): uses book.bin if
@@ -209,8 +217,23 @@ class Epub {
   // cover present but in an unsupported format). Every transient failure returns TransientFail
   // WITHOUT a sentinel so the next pass — or the next boot — retries; the caller (HomeActivity)
   // owns a session-scoped counter that promotes a repeatedly-transient book to a sentinel.
-  ThumbResult generateThumbBmp(int height, bool allowExtract = true) const;
-  ThumbResult generateThumbBmp(int width, int height, bool allowExtract = true) const;
+  // `scratch`: a lent region for the JPEG decoder's working memory (see JpegToBmpConverter).
+  ThumbResult generateThumbBmp(int height, bool allowExtract = true, BuildArena* scratch = nullptr) const;
+  ThumbResult generateThumbBmp(int width, int height, bool allowExtract = true, BuildArena* scratch = nullptr) const;
+  // Every size in `sizes` (width, height) that is not already a complete thumbnail, from ONE decode
+  // of a JPEG cover (a PNG cover is converted once per size). Same sentinel / transient contract as
+  // the single-size overload, answered for the cover as a whole: Ok when every size is complete.
+  // At most JpegToBmpConverter::kMaxTargets sizes. See JpegToBmpConverter::jpegFileTo1BitBmpStreamsWithSizes.
+  ThumbResult generateThumbBmps(const std::pair<int, int>* sizes, int count, bool allowExtract = true,
+                                BuildArena* scratch = nullptr) const;
+  // generateThumbBmps in slices (Home's cover pass): starts converting every size that is not yet a
+  // complete thumbnail when the cover is a JPEG that is already cached or stored in place, and the
+  // sliced converter takes it (see JpegThumbSession). Null otherwise -- nothing needed, a sentinel,
+  // no cover, a PNG, not extracted yet, a DC-preview-only progressive, no memory -- with no thumbnail
+  // written: the caller then runs generateThumbBmps, which gives every structural and transient
+  // answer. `scratch` must stay lent, and untouched by anyone else, while the session lives.
+  std::unique_ptr<CoverThumbSession> beginThumbSession(const std::pair<int, int>* sizes, int count,
+                                                       BuildArena* scratch = nullptr) const;
   uint8_t* readItemContentsToBytes(const std::string& itemHref, size_t* size = nullptr,
                                    bool trailingNullByte = false) const;
   bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize) const;
@@ -329,6 +352,9 @@ class Epub {
   bool extractItemToFileOnce(const std::string& itemHref, const std::string& destPath, BuildArena* arena) const;
   // Drain one ZIP entry into `out` through an arena-backed EntryReader.
   bool readItemContentsToStreamWithArena(const std::string& itemHref, Print& out, BuildArena* arena) const;
+  // Set for the duration of load() / a cover session: readItemContentsToStream takes its inflate
+  // ring from here when the region has room, else from the heap as before. Not owned.
+  BuildArena* loadScratch_ = nullptr;
 
   // Streams pagelist.bin at path into visit(href, anchor, label) per entry; visit returns false to
   // stop early. The single place that knows the on-disk format, so no caller reserves the whole
