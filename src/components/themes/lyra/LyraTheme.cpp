@@ -420,15 +420,13 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
 
     auto titleLines = renderer.wrappedText(UI_12_FONT_ID, book.title.c_str(), textWidth, 3, EpdFontFamily::BOLD);
     auto authorLines = renderer.wrappedText(UI_10_FONT_ID, book.author.c_str(), textWidth, 2);
-    auto seriesLines = renderer.wrappedText(UI_10_FONT_ID, book.series.c_str(), textWidth, 2);
 
     const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
     const int smallLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
     const int titleBlockHeight = titleLineHeight * static_cast<int>(titleLines.size());
     const int authorHeight = static_cast<int>(authorLines.size()) * smallLineHeight;
-    const int seriesHeight = static_cast<int>(seriesLines.size()) * smallLineHeight;
     const int statusHeight = statusLine.empty() ? 0 : smallLineHeight;
-    const bool hasAuthorBlock = !authorLines.empty() || !seriesLines.empty();
+    const bool hasAuthorBlock = !authorLines.empty();
 
     // What you have put into the book, under what is left of it. This column is only the part of
     // the tile the cover does not use, so the sentence usually needs two lines; it is set in the
@@ -447,7 +445,7 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     // order, first one that fits wins -- the sentence with roomy gaps, the sentence with tight
     // ones, the short form with tight ones, and only then nothing.
     const auto blockHeight = [&](int gap, size_t historyRows) {
-      return titleBlockHeight + (hasAuthorBlock ? gap : 0) + authorHeight + seriesHeight +
+      return titleBlockHeight + (hasAuthorBlock ? gap : 0) + authorHeight +
              (statusLine.empty() ? 0 : gap) + statusHeight + (historyRows == 0 ? 0 : gap) +
              static_cast<int>(historyRows) * historyLineHeight;
     };
@@ -475,14 +473,10 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
       renderer.drawText(UI_12_FONT_ID, textX, titleY, line.c_str(), true, EpdFontFamily::BOLD);
       titleY += titleLineHeight;
     }
-    if (!authorLines.empty() || !seriesLines.empty()) {
+    if (!authorLines.empty()) {
       titleY += titleAuthorSpacing;
     }
     for (const auto& line : authorLines) {
-      renderer.drawText(UI_10_FONT_ID, textX, titleY, line.c_str(), true);
-      titleY += smallLineHeight;
-    }
-    for (const auto& line : seriesLines) {
       renderer.drawText(UI_10_FONT_ID, textX, titleY, line.c_str(), true);
       titleY += smallLineHeight;
     }
