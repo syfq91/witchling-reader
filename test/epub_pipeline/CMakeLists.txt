@@ -1,4 +1,4 @@
-# Full-pipeline equivalence harness (docs/compiled-book-pipeline-plan.md Phase 0):
+# Full-pipeline equivalence harness:
 # builds the REAL Epub/Section/ParsedText/CssParser pipeline for the host against
 # deterministic stubs (GfxRenderer metrics, ESP heap/wdt, I18n) and the real-I/O
 # HalStorage shim from test/zip_entry_reader.
@@ -10,6 +10,7 @@ set(PIPELINE_SOURCES
   # lib/Epub — the code under test
   ${REPO_ROOT}/lib/Epub/Epub.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/SpinePageIndex.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Page.cpp
   ${REPO_ROOT}/lib/Epub/Epub/ParsedText.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
@@ -92,6 +93,7 @@ add_executable(EpubPipelineTest
   MetadataSidecarTest.cpp
   SidecarFilesTest.cpp
   SectionAbortTest.cpp
+  SpinePageIndexTest.cpp
   FootnotePreviewStoreTest.cpp
   FootnoteResolveSliceTest.cpp
   ParagraphAnchorTest.cpp
@@ -100,9 +102,11 @@ add_executable(EpubPipelineTest
   ImageExtractionTest.cpp
   ImageManifestTest.cpp
   ImageWrapperWidthTest.cpp
+  SpineCacheLayoutTest.cpp
   SaxStateInArenaTest.cpp
   JpegDownscaleTest.cpp
   CompanionCacheTest.cpp
+  ImageParkTest.cpp
   StoredEntryDecodeTest.cpp
   PixelCacheWriteTest.cpp
   BufferedPrintTest.cpp
@@ -146,12 +150,16 @@ target_link_libraries(epub_pipeline_dump PRIVATE
 
 # Heap-peak regression gate (memory audit 2026-09, R5): the dump tool's --bench peak, per
 # fixture and build mode, against test/epub_pipeline/heap_peak_baseline.txt. See heap_peak_check.py.
-add_test(NAME HeapPeakRegression
-  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/heap_peak_check.py
-          $<TARGET_FILE:epub_pipeline_dump> ${REPO_ROOT}/test
-          ${CMAKE_CURRENT_SOURCE_DIR}/heap_peak_baseline.txt
-)
-set_tests_properties(HeapPeakRegression PROPERTIES TIMEOUT 600)
+# Not registered under ASan: HeapTrack's malloc interposer segfaults against ASan's own before
+# main(), and a sanitizer build's peaks are not comparable to the baseline anyway.
+if(NOT CMAKE_CXX_FLAGS MATCHES "-fsanitize=[^ ]*address")
+  add_test(NAME HeapPeakRegression
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/heap_peak_check.py
+            $<TARGET_FILE:epub_pipeline_dump> ${REPO_ROOT}/test
+            ${CMAKE_CURRENT_SOURCE_DIR}/heap_peak_baseline.txt
+  )
+  set_tests_properties(HeapPeakRegression PROPERTIES TIMEOUT 600)
+endif()
 
 # Exact allocation inventory of section builds (memory audit 2026-09): the heap profiler's
 # per-build window plus BuildArena's host-only trace hooks, with debug info and frame pointers so

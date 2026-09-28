@@ -322,14 +322,30 @@ uint32_t Section::calculatePropertyHash(const BuildParams& p) {
 
 std::string Section::getSectionFilePath(uint32_t propertyHash) const {
   char buf[32];
-  snprintf(buf, sizeof(buf), "%d_%08x", spineIndex, propertyHash);
-  return epub->getCachePath() + "/sections/" + buf + ".bin";
+  snprintf(buf, sizeof(buf), "/%d_%08x.bin", spineIndex, propertyHash);
+  return Epub::spineCacheDir(epub->getCachePath(), spineIndex) + buf;
+}
+
+void Section::recordPageCount(const uint32_t requestedHash) const {
+  if (truncatedCache || pageCount == 0) return;
+  // Inflated size, from the same cumulative table the reader sums a chapter's bytes from.
+  const size_t end = epub->getCumulativeSpineItemSize(spineIndex);
+  const size_t start = spineIndex > 0 ? epub->getCumulativeSpineItemSize(spineIndex - 1) : 0;
+  SpinePageIndex::record(epub->getCachePath(), {requestedHash, SECTION_FILE_VERSION}, epub->getSpineItemsCount(),
+                         spineIndex, pageCount, static_cast<uint32_t>(end - start));
+}
+
+SpinePageIndex::Totals Section::indexedPageTotals(const std::string& bookCachePath, const BuildParams& p,
+                                                  const int spineCount, const int first, const int last,
+                                                  const int current) {
+  return SpinePageIndex::sumRange(bookCachePath, {calculatePropertyHash(p), SECTION_FILE_VERSION}, spineCount, first,
+                                  last, current);
 }
 
 std::string Section::sectionHtmlCachePath(const std::string& bookCachePath, const int spineIndex) {
   char buf[32];
-  snprintf(buf, sizeof(buf), "html_%d", spineIndex);
-  return bookCachePath + "/sections/" + buf + ".bin";
+  snprintf(buf, sizeof(buf), "/html_%d.bin", spineIndex);
+  return Epub::spineCacheDir(bookCachePath, spineIndex) + buf;
 }
 
 std::string Section::getSectionHtmlCachePath() const { return sectionHtmlCachePath(epub->getCachePath(), spineIndex); }
@@ -339,7 +355,7 @@ std::string Section::getSectionHtmlCachePath() const { return sectionHtmlCachePa
 // success and the abort path -- a leftover is harmless (the next build truncates it on open)
 // but there is no reason to leave one.
 std::string Section::getAnchorSpillPath() const {
-  return epub->getCachePath() + "/sections/anchors_" + std::to_string(spineIndex) + ".tmp";
+  return Epub::spineCacheDir(epub->getCachePath(), spineIndex) + "/anchors_" + std::to_string(spineIndex) + ".tmp";
 }
 
 // Appends the spill's bytes to the open section file. The parser wrote them in the anchor map's
@@ -378,22 +394,28 @@ void Section::evictOldVariants() const {
   // We keep up to 5 most recently accessed/modified variants to prevent SD card bloat
   constexpr size_t MAX_VARIANTS = 5;
 
-  std::string sectionsDir = epub->getCachePath() + "/sections";
-  auto files = Storage.listFiles(sectionsDir.c_str(), 100);
-
+  const std::string bucketDir = Epub::spineCacheDir(epub->getCachePath(), spineIndex);
   std::vector<SectionVariant> variants;
 
-  // Find all cache variants belonging to this spineIndex
+  // Find all cache variants belonging to this spineIndex. Walked handle by handle: the entry's own
+  // handle has the dates, where a name list would cap the scan and reopen every match by path.
   char prefix[16];
   snprintf(prefix, sizeof(prefix), "%d_", spineIndex);
-
-  for (const auto& file : files) {
-    if (!file.startsWith(prefix) || !file.endsWith(".bin")) continue;
-    uint16_t md = 0, mt = 0;
-    HalFile hf = Storage.open((sectionsDir + "/" + file.c_str()).c_str(), O_RDONLY);
-    if (hf) hf.getModifyDateTime(&md, &mt);
-    variants.push_back({file.c_str(), md, mt});
+  const size_t prefixLen = strlen(prefix);
+  FsFile dir = Storage.open(bucketDir.c_str());
+  if (!dir || !dir.isDirectory()) return;
+  char name[40];
+  for (FsFile f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    f.getName(name, sizeof(name));
+    const size_t len = strlen(name);
+    if (len > prefixLen + 4 && strncmp(name, prefix, prefixLen) == 0 && strcmp(name + len - 4, ".bin") == 0) {
+      uint16_t md = 0, mt = 0;
+      f.getModifyDateTime(&md, &mt);
+      variants.push_back({name, md, mt});
+    }
+    f.close();
   }
+  dir.close();
 
   if (variants.size() <= MAX_VARIANTS) return;
 
@@ -405,7 +427,7 @@ void Section::evictOldVariants() const {
 
   // Delete everything after MAX_VARIANTS limit
   for (size_t i = MAX_VARIANTS; i < variants.size(); ++i) {
-    std::string targetPath = sectionsDir + "/" + variants[i].filename;
+    std::string targetPath = bucketDir + "/" + variants[i].filename;
     Storage.remove(targetPath.c_str());
     LOG_DBG("SCT", "Evicted old section cache: %s", targetPath.c_str());
 
@@ -659,6 +681,10 @@ bool Section::loadSectionFile(const BuildParams& p) {
   // matching only the TOC anchors we need (avoids loading all anchors into memory).
   buildTocBoundariesFromFile(file);
   buildPageBreakLabelsFromFile(file);
+
+  // Under the hash the reader asked for, even when the no-CSS fallback answered: these are the
+  // pages it will show for this spine.
+  recordPageCount(propertyHash);
 
   // File is intentionally left open; subsequent loadPageFromSectionFile() calls
   // seek within this handle instead of re-opening the file each time.
@@ -972,10 +998,10 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   LOG_INF("SCT", "createSectionFile spine=%d start: %s (free=%lu)", spineIndex, st.localPath.c_str(),
           esp_get_free_heap_size());
 
-  // Create cache directory if it doesn't exist
+  // Create this spine's cache bucket (and the spines/ root) if they don't exist
   {
-    const auto sectionsDir = epub->getCachePath() + "/sections";
-    Storage.mkdir(sectionsDir.c_str());
+    const auto bucketDir = Epub::spineCacheDir(epub->getCachePath(), spineIndex);
+    Storage.mkdir(bucketDir.c_str());
   }
 
   // Get inflated size up-front so the parser can choose progress granularity. Resolve the
@@ -1927,7 +1953,14 @@ Section::BuildStep Section::stepSectionBuild(const BuildParams& params, const ui
     }
 
     buildState_.reset();
-    return fin == BuildPhaseResult::Done ? BuildStep::Done : BuildStep::Failed;
+    if (fin != BuildPhaseResult::Done) return BuildStep::Failed;
+    // Recorded under the variant the reader asked for (requestedHash), also when the no-CSS
+    // restart above produced it. A degraded build is left out: Background-B discards those for a
+    // clean rebuild, and one the reader keeps is recorded when it is next loaded.
+    if (!imageHeaderDegraded_ && !tableRowDegraded_ && !cssLowHeapDegraded_ && !footnotePreviewsUnresolved_) {
+      recordPageCount(requestedHash);
+    }
+    return BuildStep::Done;
   }
 }
 
@@ -2378,27 +2411,40 @@ std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) con
   return std::nullopt;
 }
 
-std::optional<std::string> Section::getPrintedPageLabelFromCache(const std::string& sectionsDir, int spineIndex,
+std::optional<std::string> Section::getPrintedPageLabelFromCache(const std::string& bookCachePath, int spineIndex,
                                                                  uint16_t page) {
   // Find any cache variant for spineIndex. Filename format: "<spineIndex>_<hash>.bin".
   // We pick the first match — all variants for the same spine share the same printed-page
-  // anchors (those are content-derived, not render-parameter-derived).
+  // anchors (those are content-derived, not render-parameter-derived). Walked handle by handle
+  // rather than through a capped name list, which missed every spine past the first few dozen
+  // files of the old flat directory.
+  const std::string bucketDir = Epub::spineCacheDir(bookCachePath, spineIndex);
   char prefix[16];
   snprintf(prefix, sizeof(prefix), "%d_", spineIndex);
-  const auto files = Storage.listFiles(sectionsDir.c_str(), 50);
+  const size_t prefixLen = strlen(prefix);
   std::string match;
-  for (const auto& f : files) {
-    if (f.startsWith(prefix) && f.endsWith(".bin")) {
-      match = f.c_str();
-      break;
+  {
+    FsFile dir = Storage.open(bucketDir.c_str());
+    if (!dir || !dir.isDirectory()) {
+      return std::nullopt;
     }
+    char name[40];
+    for (FsFile f = dir.openNextFile(); f && match.empty(); f = dir.openNextFile()) {
+      f.getName(name, sizeof(name));
+      const size_t len = strlen(name);
+      if (len > prefixLen + 4 && strncmp(name, prefix, prefixLen) == 0 && strcmp(name + len - 4, ".bin") == 0) {
+        match = name;
+      }
+      f.close();
+    }
+    dir.close();
   }
   if (match.empty()) {
     return std::nullopt;
   }
 
   FsFile file;
-  if (!Storage.openFileForRead("SCT", sectionsDir + "/" + match, file)) {
+  if (!Storage.openFileForRead("SCT", bucketDir + "/" + match, file)) {
     return std::nullopt;
   }
 

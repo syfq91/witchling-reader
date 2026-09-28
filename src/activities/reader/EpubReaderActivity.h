@@ -17,7 +17,9 @@
 #include <atomic>
 
 #include "BookmarkStore.h"
+#include "ChapterPageSpan.h"
 #include "CrossPointState.h"
+#include "EpubProgressRecord.h"
 #include "EpubReaderMenuActivity.h"
 #include "ReaderUtils.h"
 #include "activities/Activity.h"
@@ -54,6 +56,12 @@ class EpubReaderActivity final : public Activity {
     // when the lookup misses. Only meaningful for Kind::Paragraph / Kind::ListItem /
     // Kind::Anchor — for Kind::Page the `page` field is the baseline.
     int fallbackPage = 0;
+    // Kind::Page restored from progress.bin: the paragraph LUT index of the saved page (0 = none).
+    // Used only once the chapter turns out to have been laid out anew (its page count differs from
+    // cachedPageCount), in place of rescaling the page number. Otherwise the saved page stands: it
+    // is exact, while the paragraph resolves to the page where that paragraph STARTS, a page early
+    // whenever the reader had turned into a paragraph running over a page break.
+    uint16_t restoreParagraph = 0;
 
     NavigationTarget() : kind(Kind::Page), page(0) {}
 
@@ -107,6 +115,9 @@ class EpubReaderActivity final : public Activity {
     // Resolves the target into section.currentPage. Must be called on the render task
     // after the section has been loaded (pageCount is known).
     void resolveInto(Section& section, int spineIndex) const;
+    // The page restoreParagraph lands on when `section` has been laid out anew since the position
+    // was saved; nullopt when there is no paragraph, the layout is unchanged or the LUT misses.
+    std::optional<int> relaidOutRestorePage(const Section& section, int spineIndex) const;
   };
 
   // Phase lifecycle for memory management at chapter boundaries.
@@ -773,6 +784,31 @@ class EpubReaderActivity final : public Activity {
   // SleepActivity's OVERLAY mode — rely on when transitioning out of the reader.
   void restoreCurrentPageToBufferIfPreRendered();
   void renderStatusBar() const;
+  // The status bar's chapter page counter: the current file's page and total, widened to the
+  // whole TOC chapter when that spans several spine items (#325; see ChapterPageSpan).
+  ChapterPageSpan::Display chapterPageDisplay() const;
+  // Re-reads the recorded page counts of the current chapter's other spine items from the book's
+  // SpinePageIndex on SD. Runs when chapterSpanSpine_ is not the current spine: -1 after a section
+  // is created (spine change, settings change, cache clear) or a Background-B build completes,
+  // i.e. whenever a sibling's count may have been recorded. Page turns within a spine cost nothing.
+  void refreshChapterSpan() const;
+  // The run of spine items making up TOC entry `toc`'s chapter. first == last means the counter
+  // stays per spine. A function of the book alone, so it is resolved once per chapter entered.
+  struct ChapterBounds {
+    int toc = -2;  // -2: nothing resolved yet (-1 is a real answer: no TOC entry)
+    int first = -1;
+    int last = -1;
+  };
+  ChapterBounds resolveChapterBounds(int toc) const;
+  // Longer runs are a coarse TOC (parts, not chapters): the counter stays per spine rather than
+  // walk the spine table that far.
+  static constexpr int MAX_CHAPTER_SPAN_FILES = 256;
+  mutable ChapterBounds chapterBounds_;
+  mutable ChapterPageSpan chapterSpan_;
+  mutable int chapterSpanSpine_ = -1;
+  // What the counter last showed, so a completed look-ahead build can tell whether it changed it.
+  mutable int lastStatusBarChapterTotal_ = -1;
+  mutable bool lastStatusBarChapterApprox_ = false;
   // Debug overlay: draws the background-work indicators (A: '.'/'x', B: section build %)
   // in a status-bar corner. Compiled to a no-op unless DEBUG_BACKGROUND_WORK is set.
   void renderBackgroundDebugOverlay() const;
@@ -782,13 +818,15 @@ class EpubReaderActivity final : public Activity {
   mutable int lastStatusBarPage = -1;
   mutable int lastStatusBarBattery = -1;
   bool maybeRestartForFragmentedHeap(uint32_t freeHeap, uint32_t contigHeap);
-  void saveProgress(int spineIndex, int currentPage, int pageCount);
-  // Writes the canonical EPUB progress.bin layout: spine(2) + page(2) + pageCount(2) + percent(1).
-  // Used by the per-page saveProgress() and by transient writers (sync restore, bookmark jump) so
-  // the on-disk format stays consistent regardless of caller. Static (and shared across the split
+  void saveProgress(int spineIndex, int currentPage, int pageCount,
+                    std::optional<uint16_t> paragraphIndex = std::nullopt);
+  // Writes the canonical EPUB progress.bin record (EpubProgressRecord): spine(2) + page(2) +
+  // pageCount(2) + percent(1), plus paragraph(2) when one is given. Used by the per-page
+  // saveProgress() and by transient writers (sync restore, bookmark jump) so the on-disk format
+  // stays consistent regardless of caller. Static (and shared across the split
   // EpubReaderActivity/EpubReaderSync translation units) since it needs no instance state.
   static bool writeReaderProgressCache(const std::string& cachePath, int spineIndex, int currentPage, int pageCount,
-                                       uint8_t percent);
+                                       uint8_t percent, std::optional<uint16_t> paragraphIndex = std::nullopt);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
   void syncProgression(bool interactive = true);

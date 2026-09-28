@@ -16,8 +16,9 @@ struct WifiNetworkInfo {
   std::string ssid;
   int32_t rssi;
   bool isEncrypted;
-  bool hasSavedPassword;  // Whether we have saved credentials for this network
-  std::string ipAddress;  // Populated after connection for display
+  bool hasSavedPassword;             // Whether we have saved credentials for this network
+  std::string ipAddress;             // Populated after connection for display
+  bool isHiddenPlaceholder = false;  // Synthetic "Add hidden network..." list entry
 };
 
 // WiFi selection states
@@ -26,6 +27,7 @@ enum class WifiSelectionState {
   AUTO_CYCLING,       // Cycling through remaining saved credentials after AUTO_CONNECTING failed
   SCANNING,           // Scanning for networks
   NETWORK_LIST,       // Displaying available networks
+  HIDDEN_SSID_ENTRY,  // Entering SSID for a hidden network
   PASSWORD_ENTRY,     // Entering password for selected network
   CONNECTING,         // Attempting to connect
   CONNECTED,          // Successfully connected
@@ -64,6 +66,8 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
   WifiSelectionState state = WifiSelectionState::SCANNING;
   int selectedNetworkIndex = 0;
   std::vector<WifiNetworkInfo> networks;
+  // Number of real (scanned) networks, excluding the synthetic hidden-network entry
+  size_t realNetworkCount = 0;
 
   // Selected network for connection
   std::string selectedSSID;
@@ -130,9 +134,16 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
 
   void startWifiScan();
   void processWifiScanResults();
+  void appendHiddenNetworkEntry();
   void buildAutoCycleCandidates();
   void tryNextAutoCycleCandidate();
+  // True while the saved-network flow runs on its own (last-network attempt, the scan feeding the
+  // cycle, the cycle itself) - the phases Back cancels and Confirm interrupts to show the list.
+  bool isAutoConnectInProgress() const;
+  void showNetworkListFromAutoConnect();
   void selectNetwork(int index);
+  void promptHiddenSsid();
+  void promptPasswordEntry();
   void attemptConnection();
   void checkConnectionStatus();
   void issueWifiBegin();

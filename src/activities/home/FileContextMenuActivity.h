@@ -12,6 +12,10 @@
 // Display options are cycled inline (DynamicEnum) and the resulting state is
 // returned to FileBrowserActivity when the menu closes. File actions finish the
 // activity immediately with the chosen Action.
+//
+// Opened from the firmware picker (offerFileManagement == false) the menu keeps only what helps
+// pick an image: sorting, searching, and removing an old .bin. Organising the card -- new folders,
+// moving files, deleting folders -- is the library browser's business, not the updater's.
 class FileContextMenuActivity final : public MenuListActivity {
  public:
   enum class Action {
@@ -24,17 +28,21 @@ class FileContextMenuActivity final : public MenuListActivity {
     Info,
     DeleteCache,
     SetAsSleepCover,
-    FlashFirmware,
     Remove,
     MoveTo,
     NewFolder,
+    Search,
+    SearchAll,
+    ClearSearch,
+    GoToFolder,
   };
 
   explicit FileContextMenuActivity(
       GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& filePath = "",
       CrossPointSettings::FILE_SORT_MODE sortMode = CrossPointSettings::SORT_BY_NAME,
       CrossPointSettings::FILE_SORT_DIRECTION sortDirection = CrossPointSettings::SORT_ASCENDING,
-      bool offerDirectoryActions = false);
+      bool offerDirectoryActions = false, bool searchActive = false, bool offerGoToFolder = false,
+      bool offerFileManagement = true);
 
   void render(RenderLock&&) override;
 
@@ -44,6 +52,12 @@ class FileContextMenuActivity final : public MenuListActivity {
   // Browser mode with a DIRECTORY selected: it gets Open and Remove of its own, which the
   // display options alone cannot express.
   bool offerDirectoryActions;
+  // Whether a search is currently narrowing the folder, so the menu can offer to clear it.
+  bool searchActive;
+  // A row from a card-wide search: offer to go to the folder it actually lives in.
+  bool offerGoToFolder;
+  // New folder, Move to folder and Remove on a directory. Off in the firmware picker.
+  bool offerFileManagement;
 
   // Display option state, edited inline via DynamicEnum and returned on close.
   // Sort state is per-session (held by FileBrowserActivity); visibility toggles

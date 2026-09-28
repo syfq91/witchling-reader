@@ -20,23 +20,8 @@ void SdFirmwareUpdateActivity::onEnter() {
   app.setScreen(screenTrampoline, this);
   app.on(ACTION_BACK, actionTrampoline, this);
   LOG_INF("FW", "SdFirmwareUpdateActivity build=%s %s recovery=%d", __DATE__, __TIME__, recoveryMode ? 1 : 0);
-  if (!firmwarePath.empty()) {
-    // Pre-selected path: skip picker and go straight to validation.
-    {
-      RenderLock lock(*this);
-      state = State::VALIDATING;
-    }
-    requestUpdateAndWait();
-    if (!validateFirmware()) {
-      state = State::FAILED;
-      requestUpdate();
-      return;
-    }
-    promptConfirmation();
-  } else {
-    state = State::PICKING;
-    launchPicker();
-  }
+  state = State::PICKING;
+  launchPicker();
 }
 
 void SdFirmwareUpdateActivity::onExit() {

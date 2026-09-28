@@ -854,7 +854,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, BuildArena
         }
         parseCssFiles();
         // Invalidate section caches so they are rebuilt with the new CSS
-        Storage.removeDir((cachePath + "/sections").c_str());
+        removeSpineCaches();
       }
     }
     applyMetadataSidecar();
@@ -975,7 +975,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, BuildArena
     discoverCssFilesFromZip();
     // Parse CSS files after cache reload
     parseCssFiles();
-    Storage.removeDir((cachePath + "/sections").c_str());
+    removeSpineCaches();
   }
 
   // Pin the content this cache was built from (see the staleness check above).
@@ -987,6 +987,9 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, BuildArena
 }
 
 std::string Epub::metadataSidecarPath(const std::string& bookPath) { return SidecarFiles::metadataPath(bookPath); }
+
+static_assert(SidecarFiles::kMetadataStampBytes >= Epub::MAX_METADATA_SIDECAR_BYTES,
+              "the recent-books staleness stamp must hash every sidecar byte applyMetadataSidecar() reads");
 
 // Calibre writes an OPF beside each exported book. Where one sits next to the
 // EPUB it is authoritative for that book's descriptive metadata, so a user can
@@ -1170,8 +1173,8 @@ bool Epub::clearCache(const bool preserveThumbs) const {
     return true;
   }
 
-  // Delete sections subdirectory (bulk removal).
-  Storage.removeDir((cachePath + "/sections").c_str());
+  // Delete the per-spine caches (bulk removal).
+  removeSpineCaches();
 
   // Iterate the cache root and remove parsing artifacts, but preserve thumbnail
   // and cover BMPs so the home screen doesn't have to regenerate them (slow).
@@ -1218,6 +1221,23 @@ void Epub::setupCacheDir() const {
 }
 
 const std::string& Epub::getCachePath() const { return cachePath; }
+
+std::string Epub::spineCacheRoot(const std::string& cachePath) { return cachePath + "/spines"; }
+
+std::string Epub::spineCacheDir(const std::string& cachePath, const int spineIndex) {
+  return spineCacheRoot(cachePath) + "/" + std::to_string(spineIndex / SPINE_CACHE_BUCKET_SIZE);
+}
+
+void Epub::removeSpineCaches() const {
+  Storage.removeDir(spineCacheRoot(cachePath).c_str());
+  // Nothing reads the old flat layout any more; it only goes when the caches are invalidated or
+  // cleared anyway, rather than as a migration on book open: removing a directory deletes each
+  // entry by path, which re-scans it every time and is quadratic in its size.
+  const std::string legacy = cachePath + "/sections";
+  if (Storage.exists(legacy.c_str())) {
+    Storage.removeDir(legacy.c_str());
+  }
+}
 
 const std::string& Epub::getPath() const { return filepath; }
 

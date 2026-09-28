@@ -18,7 +18,6 @@
 #include "../ActivityManager.h"
 #include "../ActivityResult.h"
 #include "../reader/FinishedBookActivity.h"
-#include "../settings/SdFirmwareUpdateActivity.h"
 #include "../util/BmpViewerActivity.h"
 #include "../util/ConfirmationActivity.h"
 #include "../util/KeyboardEntryActivity.h"
@@ -144,6 +143,19 @@ bool FileBrowserActivity::handleCustomInput() {
           return true;
         }
         // PickFirmware: long Back = same as short Back (cancel / up dir)
+      }
+      // A search is the first thing Back undoes. Without this, a search that matched nothing in
+      // the root folder leaves the screen empty with Home as the only way out, which throws away
+      // where you were standing.
+      if (model.isFiltered() || model.isDeepSearch()) {
+        {
+          RenderLock lock(*this);
+          model.setFilter("");
+          model.clearSearch();
+          resetNavigation(0);
+        }
+        requestUpdate();
+        return true;
       }
       if (ev.type == ButtonEventManager::PressType::Short || ev.type == ButtonEventManager::PressType::Long) {
         if (model.path() != "/") {
@@ -429,6 +441,10 @@ void FileBrowserActivity::drawChrome() {
           // row under the highlight, and the first reading of it is the other way round.
           ? std::string(tr(STR_MOVE_TO_FOLDER)) + ": " + destination
           : ((model.path() == "/") ? std::string(tr(STR_SD_CARD)) : model.path().substr(model.path().rfind('/') + 1));
+  // A narrowed folder is indistinguishable from a small one unless the header says otherwise.
+  if (model.isFiltered()) {
+    folderName += ": \"" + model.filter() + "\"";
+  }
   GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer), folderName.c_str());
 }
 
@@ -445,10 +461,12 @@ void FileBrowserActivity::drawFooter() {
                              : !hasEntries         ? ""
                              : selectingFirmwareFile ? tr(STR_SELECT)
                                                      : tr(STR_OPEN);
-  // The Options menu is available for every entry in Books and PickFirmware modes.
-  // The menu always offers the browser display options (sort + visibility); supported
-  // files get extra file-specific actions appended. So the hint shows for files and dirs alike.
-  const bool showOptionsHint = model.getMode() != Mode::PickFolder;
+  // The Options menu is available for every entry in Books mode and in the firmware picker, where
+  // it is the only place a .bin can be removed (Books mode never lists one). The menu always
+  // offers the browser display options (sort + visibility); supported files get
+  // extra file-specific actions appended. So the hint shows for files and dirs alike.
+  // Same gate as the Right press in handleCustomInput(), so the label and the key never disagree.
+  const bool showOptionsHint = model.getMode() != Mode::PickFolder && hasEntries;
   // In a folder worth paging through, Left/Right are the page buttons and the hints say so —
   // Options is then the long press on Right. In a folder that fits on one screen there is nothing
   // to page, so the strip looks exactly as it always did.
@@ -488,8 +506,11 @@ void FileBrowserActivity::openContextMenu() {
   if (cleanBase.back() != '/') cleanBase += "/";
   const std::string fullPath = cleanBase + entry;
 
-  startActivityForResult(std::make_unique<FileContextMenuActivity>(renderer, mappedInput, fullPath, model.getSortMode(),
-                                                                   model.getSortDirection()),
+  startActivityForResult(std::make_unique<FileContextMenuActivity>(
+                             renderer, mappedInput, fullPath, model.getSortMode(), model.getSortDirection(),
+                             /*offerDirectoryActions=*/false, model.isFiltered() || model.isDeepSearch(),
+                             /*offerGoToFolder=*/model.isDeepSearch(),
+                             /*offerFileManagement=*/model.getMode() == Mode::Books),
                          [this, fullPath, entry](const ActivityResult& res) {
                            if (res.isCancelled) {
                              requestUpdate();
@@ -598,6 +619,73 @@ bool FileBrowserActivity::confirmOpensOptions() const {
   return model.getMode() != Mode::PickFolder && !HalCapabilities::hasBackAndConfirmButtons();
 }
 
+// Asks for a query, then either narrows this folder or walks the whole card for it.
+//
+// One prompt rather than a live filter: on a folder large enough to be worth searching the model
+// is reading names off the card to match them, which is the right price for pressing Search and
+// the wrong one for every letter typed.
+void FileBrowserActivity::startSearch(const bool everywhere) {
+  startActivityForResult(
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, everywhere ? tr(STR_SEARCH_ALL) : tr(STR_SEARCH),
+                                              model.filter(), 64, InputType::Text),
+      [this, everywhere](const ActivityResult& result) {
+        if (result.isCancelled) {
+          requestUpdate();
+          return;
+        }
+        const auto& kb = std::get<KeyboardResult>(result.data);
+        if (!everywhere) {
+          applyFilter(kb.text);
+          return;
+        }
+        // The walk reads the card and takes a moment on a full one, so say so
+        // rather than looking frozen.
+        {
+          RenderLock lock(*this);
+          GUI.drawPopup(renderer, tr(STR_SEARCHING));
+          renderer.displayBuffer(HalDisplay::RefreshMode::FAST_REFRESH);
+          model.searchEverywhere(kb.text);
+          resetNavigation(0);
+        }
+        requestUpdate();
+      });
+}
+
+// Applies a query (or "" to clear) and puts the selection somewhere sensible: a search that
+// matches nothing still shows the folder's own empty state rather than a stale row.
+// Leaves the results and opens the folder the selected one actually lives in, with it selected.
+// A card-wide search tells you where a book is; this is how you go and stand there.
+void FileBrowserActivity::goToResultFolder() {
+  if (!model.isDeepSearch() || nav.selected < 0) return;
+  const std::string folder = model.resultFolder(static_cast<size_t>(nav.selected));
+  const std::string full = model.entryFullPath(static_cast<size_t>(nav.selected));
+  if (folder.empty()) return;
+  const size_t slash = full.rfind('/');
+  focusName = (slash == std::string::npos) ? full : full.substr(slash + 1);
+  // As above: drop contacts aimed at the rows this search is about to replace.
+#if CP_TOUCH_UI
+  mappedInput.flushTouchEvents();
+#endif
+  {
+    RenderLock lock(*this);
+    model.setPath(folder);  // also ends the search
+    model.load();
+    const size_t idx = model.findEntry(focusName);
+    focusName.clear();
+    resetNavigation(idx < model.entryCount() ? static_cast<int>(idx) : 0);
+  }
+  requestUpdate();
+}
+
+void FileBrowserActivity::applyFilter(const std::string& query) {
+  {
+    RenderLock lock(*this);
+    model.setFilter(query);
+    resetNavigation(0);
+  }
+  requestUpdate();
+}
+
 void FileBrowserActivity::showBrowserOptionsMenu(const std::string& dirEntry) {
   // Resolved now rather than in the handler: the menu cannot change the selection while it is
   // open, but reading it back afterwards would be a dependency on that staying true.
@@ -607,8 +695,10 @@ void FileBrowserActivity::showBrowserOptionsMenu(const std::string& dirEntry) {
     if (dirPath.back() != '/') dirPath += "/";
     dirPath += dirEntry.substr(0, dirEntry.length() - 1);
   }
-  startActivityForResult(std::make_unique<FileContextMenuActivity>(renderer, mappedInput, "", model.getSortMode(),
-                                                                   model.getSortDirection(), isDir),
+  startActivityForResult(std::make_unique<FileContextMenuActivity>(
+                             renderer, mappedInput, "", model.getSortMode(), model.getSortDirection(), isDir,
+                             model.isFiltered() || model.isDeepSearch(), /*offerGoToFolder=*/false,
+                             /*offerFileManagement=*/model.getMode() == Mode::Books),
                          [this, isDir, dirPath, dirEntry](const ActivityResult& res) {
                            if (res.isCancelled) {
                              requestUpdate();
@@ -637,6 +727,26 @@ void FileBrowserActivity::handleContextMenuAction(int action, const std::string&
   using Action = FileContextMenuActivity::Action;
   const Action actionEnum = static_cast<Action>(action);
 
+  if (actionEnum == Action::Search) {
+    startSearch(/*everywhere=*/false);
+    return;
+  }
+  if (actionEnum == Action::SearchAll) {
+    startSearch(/*everywhere=*/true);
+    return;
+  }
+  if (actionEnum == Action::ClearSearch) {
+    {
+      RenderLock lock(*this);
+      model.clearSearch();
+    }
+    applyFilter("");
+    return;
+  }
+  if (actionEnum == Action::GoToFolder) {
+    goToResultFolder();
+    return;
+  }
   if (actionEnum == Action::NewFolder) {
     createFolderHere();
     return;
@@ -699,9 +809,6 @@ void FileBrowserActivity::handleContextMenuAction(int action, const std::string&
       return;
     case Action::SetAsSleepCover:
       doSetAsSleepCover(fullPath);
-      return;
-    case Action::FlashFirmware:
-      doFlashFirmware(fullPath);
       return;
     case Action::Remove:
       doRemove(fullPath, entry, false);
@@ -841,12 +948,6 @@ void FileBrowserActivity::doRemove(const std::string& fullPath, const std::strin
                              requestUpdate();
                            }
                          });
-}
-
-void FileBrowserActivity::doFlashFirmware(const std::string& fullPath) {
-  // Use the pre-selected-path constructor to skip the picker inside SdFirmwareUpdateActivity.
-  startActivityForResult(std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInput, fullPath),
-                         [this](const ActivityResult&) { requestUpdate(); });
 }
 
 int FileBrowserActivity::listCount() const {

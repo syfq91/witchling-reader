@@ -73,6 +73,16 @@ static FontSizeLadder buildReaderFontSizeLadder(int bodyFontId);
 namespace {
 // pagesPerRefresh now comes from SETTINGS.getRefreshFrequency()
 
+// Whether the status bar prints a page count. This fork's bar has no chapter progress bar, so
+// the chapter counter is on screen only when one of the three slots is a page-count slot.
+bool chapterCounterShown() {
+  const auto showsPageCount = [](const uint8_t slot) {
+    return slot == CrossPointSettings::SLOT_PAGE_COUNT || slot == CrossPointSettings::SLOT_PAGE_AND_PERCENTAGE;
+  };
+  return showsPageCount(SETTINGS.statusBarLeft) || showsPageCount(SETTINGS.statusBarMiddle) ||
+         showsPageCount(SETTINGS.statusBarRight);
+}
+
 // Human-readable effective refresh mode for the page-summary diagnostic log.
 const char* refreshModeName(HalDisplay::RefreshMode mode) {
   switch (mode) {
@@ -670,17 +680,19 @@ void EpubReaderActivity::onEnter() {
   FsFile f;
   bool hadSavedProgress = false;
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
-    uint8_t data[6];
-    int dataSize = f.read(data, 6);
-    if (dataSize == 4 || dataSize == 6) {
-      currentSpineIndex = data[0] + (data[1] << 8);
-      navTarget = NavigationTarget::makePage(data[2] + (data[3] << 8));
+    uint8_t data[EpubProgressRecord::kMaxSize];
+    const int dataSize = f.read(data, sizeof(data));
+    if (const auto record = EpubProgressRecord::decode(data, dataSize > 0 ? static_cast<size_t>(dataSize) : 0)) {
+      currentSpineIndex = record->spineIndex;
+      // A Page target even when the paragraph is known: a Page target is shown the moment its
+      // page is built (Background-C), and the paragraph only matters after a relayout.
+      navTarget = NavigationTarget::makePage(record->page);
+      navTarget.restoreParagraph = record->paragraph.value_or(0);
       navTarget.cachedSpineIdx = currentSpineIndex;
+      navTarget.cachedPageCount = record->pageCount;
       hadSavedProgress = true;
-      LOG_DBG("ERS", "Loaded cache: %d, %d", currentSpineIndex, navTarget.page);
-    }
-    if (dataSize == 6) {
-      navTarget.cachedPageCount = data[4] + (data[5] << 8);
+      LOG_DBG("ERS", "Loaded cache: %d, %d (paragraph %d)", currentSpineIndex, record->page,
+              record->paragraph ? *record->paragraph : -1);
     }
     f.close();
   }
@@ -796,6 +808,17 @@ void EpubReaderActivity::onExit() {
   // next activity (notably SleepActivity's OVERLAY mode) sees what the user was looking at.
   // Must run before section.reset() and the orientation reset below.
   restoreCurrentPageToBufferIfPreRendered();
+
+  // Record the paragraph under the saved page, so a reopen under a different layout lands on it
+  // (EpubProgressRecord). Here, not per page turn: the lookup opens the section cache, and the
+  // per-page saves only need to survive a reboot, which comes back to the same layout. Past the
+  // last spine the finished-book flow has written its own 100% record; leave that alone.
+  if (section && readerPhase_ == ReaderPhase::READING && !section->hasActiveBuild() && section->pageCount > 0 && epub &&
+      currentSpineIndex < epub->getSpineItemsCount()) {
+    if (const auto paragraph = section->getParagraphIndexForPage(static_cast<uint16_t>(section->currentPage))) {
+      saveProgress(currentSpineIndex, section->currentPage, section->pageCount, paragraph);
+    }
+  }
 
   // Save bookmarks before exit
   bookmarkStore.save();
@@ -1212,6 +1235,23 @@ void EpubReaderActivity::startActivityForResult(std::unique_ptr<Activity>&& acti
     const uint8_t preemptionsBeforeOverlay = backgroundPreemptCount_;
     endBackgroundBorrow();
     backgroundPreemptCount_ = preemptionsBeforeOverlay;
+    // The child draws over the page, so nothing staged for this screen survives it: the owed
+    // deferred AA of the page on it, and a queued or finished pre-render of the next page (it lives
+    // in the write framebuffer, which the child draws into). Left armed, the render that follows
+    // the child's return was classified as that pre-render and drew nothing -- the menu stayed on
+    // screen until the next page turn (X3 run 23: a lane redraw finished 11 ms before the menu
+    // press, arming the pre-render, which the heap floor then skipped). Dropped, that render is a
+    // Normal pass that redraws the page and stages its AA afresh.
+    if (pendingGrayscale_.active || pendingPreRender || usePreRenderedBuffer || preRenderedPage.ready) {
+      LOG_DBG("ERS", "Overlay '%s' opening; dropping the%s%s%s staged for the page under it",
+              activity ? activity->getName().c_str() : "<null>", pendingGrayscale_.active ? " deferred AA" : "",
+              pendingPreRender ? " pre-render request" : "", preRenderedPage.ready ? " pre-rendered page" : "");
+    }
+    pendingGrayscale_ = {};
+    pendingPreRender = false;
+    usePreRenderedBuffer = false;
+    preRenderedPage = {};
+    preRenderedPlanesStaged_ = false;
   }
   Activity::startActivityForResult(std::move(activity), std::move(resultHandler));
 }
@@ -1619,6 +1659,16 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
 #endif
           backgroundWindowPagesBuilt_ += backgroundSection_->pageCount;  // count this section toward the page budget
           LOG_INF("ERS", "Background build spine=%d complete: %u pages", targetSpine, backgroundSection_->pageCount);
+          // The build recorded its page count (SpinePageIndex). If that firms up the chapter
+          // counter on screen, redraw it now rather than at the next page turn:
+          // endBackgroundBorrow() below requests the deferred status refresh.
+          chapterSpanSpine_ = -1;
+          if (section && chapterCounterShown()) {
+            const ChapterPageSpan::Display chapter = chapterPageDisplay();
+            if (chapter.total != lastStatusBarChapterTotal_ || chapter.approximate != lastStatusBarChapterApprox_) {
+              statusRefreshDeferred_ = true;
+            }
+          }
           // The image lane's window may reach into this section: a window marked clean before
           // its cache existed has to be looked at again.
           imageWarmCleanSpine_ = -1;
@@ -1735,6 +1785,14 @@ bool EpubReaderActivity::warmPageForImageLane(const Page& page, const int spine,
   // workspace), exactly as the page-turn warm borrows it; the framebuffer is not written at
   // all (ScopedCacheOnlyImageWrites), so the page on screen -- or a pre-rendered next page --
   // is untouched and no clearScreen follows. One page per tick.
+  // At the offsets the page render draws the images at, not (0, 0): the ordered dither baked into a
+  // .pxc follows screen position, so a lane-warmed cache used to differ in phase from the one a
+  // page render writes -- and a decode the lane parks (see RenderConfig::checkpointPath) resumes
+  // only for the very same configuration, so a page turn onto the image could never pick it up.
+  const RenderLayout layout = computeRenderLayout();
+  const int viewportHeight = std::max(0, renderer.getScreenHeight() - layout.marginTop - layout.marginBottom);
+  const int contentTop = layout.marginTop + getImageOnlyPageYOffset(page, viewportHeight);
+
   size_t borrowedSize = 0;
   uint8_t* borrowed = renderer.borrowSecondaryBuffer(&borrowedSize);
   if (!borrowed) return false;
@@ -1745,7 +1803,8 @@ bool EpubReaderActivity::warmPageForImageLane(const Page& page, const int spine,
   {
     image_scratch::ScopedArena scratchScope(scratch && scratch->valid() ? scratch.get() : nullptr);
     GfxRenderer::ScopedCacheOnlyImageWrites cacheOnly(renderer);
-    page.warmImageCaches(renderer, 0, 0, /*forceLoad=*/true, /*monochromeOutput=*/true, warmGrayscale);
+    page.warmImageCaches(renderer, layout.marginLeft, contentTop, /*forceLoad=*/true, /*monochromeOutput=*/true,
+                         warmGrayscale);
   }
   // Preempted by input: not a failure, the next quiet moment retries.
   const bool preempted = CooperativeAbort::consumeAborted();
@@ -1983,6 +2042,13 @@ void EpubReaderActivity::stepCurrentSectionBuild() {
   // original page). Clamp it; if they ran past the end while building, cross into the next spine.
   const int spineCount = epub->getSpineItemsCount();
   if (navTarget.kind == NavigationTarget::Kind::Page) {
+    // A restored position whose chapter this build laid out anew lands on its paragraph, unless the
+    // reader has already turned away from the page shown while it built.
+    if (section->currentPage == navTarget.page) {
+      if (const auto p = navTarget.relaidOutRestorePage(*section, currentSpineIndex)) {
+        section->currentPage = *p;
+      }
+    }
     if (section->currentPage >= section->pageCount) {
       if (currentSpineIndex + 1 < spineCount) {
         navTarget = NavigationTarget::makePage(0);
@@ -2710,6 +2776,19 @@ static FontSizeLadder buildReaderFontSizeLadder(const int bodyFontId) {
   return ladder;  // SD font or unknown id: empty ladder = scale-only fallback
 }
 
+std::optional<int> EpubReaderActivity::NavigationTarget::relaidOutRestorePage(const Section& sec,
+                                                                              const int spineIndex) const {
+  if (restoreParagraph == 0 || cachedSpineIdx != spineIndex || cachedPageCount <= 0 ||
+      sec.pageCount == cachedPageCount) {
+    return std::nullopt;
+  }
+  const auto p = sec.getPageForParagraphIndex(restoreParagraph);
+  if (!p) return std::nullopt;
+  LOG_DBG("ERS", "Chapter relaid out (%d -> %d pages): restoring p[%u] -> page %u", cachedPageCount, sec.pageCount,
+          restoreParagraph, *p);
+  return *p;
+}
+
 void EpubReaderActivity::NavigationTarget::resolveInto(Section& sec, int spineIndex) const {
   // Resolve to a baseline page first. Each branch records whether it produced a
   // precise page (LUT/anchor hit, percent jump, explicit page) or only an estimate.
@@ -2796,6 +2875,10 @@ void EpubReaderActivity::NavigationTarget::resolveInto(Section& sec, int spineIn
     case Kind::Page: {
       sec.currentPage = page;
       isEstimate = true;
+      if (const auto p = relaidOutRestorePage(sec, spineIndex)) {
+        sec.currentPage = *p;
+        isEstimate = false;
+      }
       break;
     }
   }
@@ -3879,6 +3962,7 @@ bool EpubReaderActivity::buildSection(const RenderLayout& layout) {
   } else {
     section = std::make_unique<Section>(epub, currentSpineIndex, renderer);
   }
+  chapterSpanSpine_ = -1;  // new spine or new settings: the siblings' caches must be looked up again
   resetBackgroundBuild();
   const unsigned long sectionStart = millis();
 
@@ -4636,29 +4720,31 @@ bool EpubReaderActivity::maybeRestartForFragmentedHeap(const uint32_t freeHeap, 
 }
 
 bool EpubReaderActivity::writeReaderProgressCache(const std::string& cachePath, const int spineIndex,
-                                                  const int currentPage, const int pageCount, const uint8_t percent) {
+                                                  const int currentPage, const int pageCount, const uint8_t percent,
+                                                  const std::optional<uint16_t> paragraphIndex) {
   FsFile f;
   if (!Storage.openFileForWrite("ERS", cachePath + "/progress.bin", f)) {
     LOG_ERR("ERS", "Failed to open progress cache: %s", cachePath.c_str());
     return false;
   }
 
-  uint8_t data[7];
-  data[0] = spineIndex & 0xFF;
-  data[1] = (spineIndex >> 8) & 0xFF;
-  data[2] = currentPage & 0xFF;
-  data[3] = (currentPage >> 8) & 0xFF;
-  data[4] = pageCount & 0xFF;
-  data[5] = (pageCount >> 8) & 0xFF;
-  data[6] = percent;
-  f.write(data, 7);
+  EpubProgressRecord record;
+  record.spineIndex = spineIndex;
+  record.page = currentPage;
+  record.pageCount = pageCount;
+  record.percent = percent;
+  record.paragraph = paragraphIndex;
+  uint8_t data[EpubProgressRecord::kMaxSize] = {};
+  const size_t size = record.encode(data);
+  f.write(data, size);
   f.close();
   return true;
 }
 
-void EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
+void EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount,
+                                      const std::optional<uint16_t> paragraphIndex) {
   const uint8_t percent = epubProgressPercentByte(*epub, spineIndex, currentPage, pageCount);
-  if (!writeReaderProgressCache(epub->getCachePath(), spineIndex, currentPage, pageCount, percent)) {
+  if (!writeReaderProgressCache(epub->getCachePath(), spineIndex, currentPage, pageCount, percent, paragraphIndex)) {
     LOG_ERR("ERS", "Could not save progress!");
     return;
   }
@@ -5484,6 +5570,11 @@ void EpubReaderActivity::renderStatusBar() const {
   const float pageCount = static_cast<float>(displayPageCount);
   const float sectionChapterProg = (pageCount > 0) ? (static_cast<float>(currentPage) / pageCount) : 0;
   const float bookProgress = epub->calculateProgress(currentSpineIndex, sectionChapterProg) * 100;
+  // The page counter and the chapter progress bar count the whole TOC chapter, which can span
+  // several spine items (#325). The book percentage above stays per spine.
+  const ChapterPageSpan::Display chapter = chapterPageDisplay();
+  lastStatusBarChapterTotal_ = chapter.total;
+  lastStatusBarChapterApprox_ = chapter.approximate;
 
   const std::string bookTitle = epub ? epub->getTitle() : "";
   std::string chapterTitle;
@@ -5511,8 +5602,8 @@ void EpubReaderActivity::renderStatusBar() const {
     }
   }
   const auto& markers = epub ? epub->getChapterProgressMarkers() : std::vector<float>{};
-  GUI.drawStatusBar(renderer, bookProgress, currentPage, displayPageCount, bookTitle, chapterTitle, 0, isStarred,
-                    printedPageLabel, /*fillMargin=*/true, /*pageCountApproximate=*/building, markers);
+  GUI.drawStatusBar(renderer, bookProgress, chapter.page, chapter.total, bookTitle, chapterTitle, 0, isStarred,
+                    printedPageLabel, /*fillMargin=*/true, /*pageCountApproximate=*/chapter.approximate, markers);
 
 #if DEBUG_BACKGROUND_WORK
   renderBackgroundDebugOverlay();
@@ -5524,6 +5615,85 @@ void EpubReaderActivity::renderStatusBar() const {
        SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY);
   lastStatusBarPage = currentPage;
   lastStatusBarBattery = hasBattery ? static_cast<int>(powerManager.getBatteryPercentage()) : -1;
+}
+
+ChapterPageSpan::Display EpubReaderActivity::chapterPageDisplay() const {
+  const bool building = section->hasActiveBuild();
+  const int pageCount = building ? section->estimatedTotalPages() : section->pageCount;
+  if (chapterSpanSpine_ != currentSpineIndex) {
+    refreshChapterSpan();
+  }
+  ChapterPageSpan::Display chapter = chapterSpan_.apply(section->currentPage + 1, pageCount);
+  chapter.approximate = chapter.approximate || building;
+  return chapter;
+}
+
+EpubReaderActivity::ChapterBounds EpubReaderActivity::resolveChapterBounds(const int toc) const {
+  ChapterBounds bounds;
+  bounds.toc = toc;
+  bounds.first = bounds.last = currentSpineIndex;
+  // Without a TOC that names at least a quarter of the files there is no chapter list to group
+  // them by (and getTocIndexForSpineIndex may already be answering one chapter per file).
+  if (toc < 0 || !epub->hasReliableToc()) return bounds;
+  const auto entry = epub->getTocItem(toc);
+  const int first = entry.spineIndex;
+  // An anchored entry starts mid-file, and a file holding several entries shares its pages between
+  // them. Both are the per-page TOC lookup's business (Section::getTocIndexForPage), not a run of
+  // whole files, so the counter stays per spine there.
+  if (first < 0 || first > currentSpineIndex || !entry.anchor.empty()) return bounds;
+  if (toc + 1 < epub->getTocItemsCount() && epub->getTocItem(toc + 1).spineIndex == first) return bounds;
+
+  // A file with no TOC entry of its own inherits the one before it (BookMetadataCache), so the
+  // chapter is the file the entry points at plus the run of inheritors after it. Walking forward by
+  // spine rather than to the next TOC entry's spine also survives a TOC out of reading order.
+  const int spineCount = epub->getSpineItemsCount();
+  int last = currentSpineIndex;
+  while (last + 1 < spineCount && epub->getTocIndexForSpineIndex(last + 1) == toc) {
+    ++last;
+    if (last - first + 1 > MAX_CHAPTER_SPAN_FILES) return bounds;
+  }
+  if (last - first + 1 > MAX_CHAPTER_SPAN_FILES) return bounds;
+  bounds.first = first;
+  bounds.last = last;
+  return bounds;
+}
+
+void EpubReaderActivity::refreshChapterSpan() const {
+  chapterSpanSpine_ = currentSpineIndex;
+  chapterSpan_ = {};
+  const int toc = epub->getTocIndexForSpineIndex(currentSpineIndex);
+  if (toc != chapterBounds_.toc) {
+    chapterBounds_ = resolveChapterBounds(toc);
+  }
+  const int first = chapterBounds_.first;
+  const int last = chapterBounds_.last;
+  if (first >= last || currentSpineIndex < first || currentSpineIndex > last) return;
+
+  // Nothing per spine is held here (books with 1700+ spine items exist): the siblings' page counts
+  // come from the book's SpinePageIndex on SD in one open and one sequential read, and their byte
+  // sizes from four lookups in the cumulative spine table, whatever the chapter's length.
+  const SpinePageIndex::Totals indexed = Section::indexedPageTotals(
+      epub->getCachePath(), makeSectionBuildParams(), epub->getSpineItemsCount(), first, last, currentSpineIndex);
+  const size_t chapterStart = first > 0 ? epub->getCumulativeSpineItemSize(first - 1) : 0;
+  const size_t currentStart = currentSpineIndex > 0 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
+  const size_t currentEnd = epub->getCumulativeSpineItemSize(currentSpineIndex);
+  const size_t chapterEnd = epub->getCumulativeSpineItemSize(last);
+  const auto bytesBefore = static_cast<uint32_t>(currentStart - chapterStart);
+  const auto bytesAfter = static_cast<uint32_t>(chapterEnd - currentEnd);
+
+  ChapterPageSpan span;
+  span.pagesBefore = indexed.pagesBefore;
+  span.pagesAfter = indexed.pagesAfter;
+  span.knownBytes = indexed.bytesBefore + indexed.bytesAfter;
+  span.currentBytes = static_cast<uint32_t>(currentEnd - currentStart);
+  span.unknownBefore = static_cast<uint16_t>(currentSpineIndex - first - indexed.filesBefore);
+  span.unknownAfter = static_cast<uint16_t>(last - currentSpineIndex - indexed.filesAfter);
+  span.unknownBytesBefore = bytesBefore - std::min(bytesBefore, indexed.bytesBefore);
+  span.unknownBytesAfter = bytesAfter - std::min(bytesAfter, indexed.bytesAfter);
+  chapterSpan_ = span;
+  LOG_DBG("ERS", "Chapter span: toc=%d spines %d-%d, recorded %u+%u pages, %u+%u files estimated", toc, first, last,
+          static_cast<unsigned>(span.pagesBefore), static_cast<unsigned>(span.pagesAfter),
+          static_cast<unsigned>(span.unknownBefore), static_cast<unsigned>(span.unknownAfter));
 }
 
 void EpubReaderActivity::renderBackgroundDebugOverlay() const {

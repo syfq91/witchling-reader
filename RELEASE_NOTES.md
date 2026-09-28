@@ -8,6 +8,55 @@ User-facing changes only. Full commit history is in git log.
 
 - **Simplified Customise Status Bar page.** Replaced the 10 separate status bar options with 5 streamlined settings: status bar location (Top / Bottom), configurable content slots for Left, Middle, and Right (Hide, Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title), and a single progress bar (Book / Chapter / Hide) that automatically follows the status bar location and always uses thin thickness. Existing user configurations are seamlessly migrated.
 
+### Synced from upstream 2.35
+
+Changes pulled in from `jpirnay/witchhunt-reader` 2.35 that this fork carries. The parts of
+2.35 that target subsystems this fork removed (Reading Statistics, Weather, the software Clock,
+KOReader Sync, the home-screen chooser, USB Drive and the extra themes) are not listed here.
+
+#### Library and file browser
+
+- **New Folder, Move to folder, and deleting a folder**, all from the file browser's options menu. Move opens a folder picker for the folder being browsed, is instant (nothing is copied) and never overwrites an existing file.
+- **Search** in the options menu: **Search** narrows the current folder to the names you type, **Search all folders** lists matches below it with their paths, and **Go to folder** opens the folder a result lives in. Back ends a search.
+- A recent book's metadata refreshes when its `.opf` sidecar changes on the card.
+
+#### Pictures
+
+- **Progressive JPEGs are decoded in full**, one band at a time, instead of from their first pass at an eighth of the resolution. Home-screen thumbnails and sleep covers built from a progressive cover are decoded completely too.
+- **Percentage widths no longer shrink pictures below their real size** — a `width: 60%` box keeps an image close to its native width on a narrow page.
+- **Thin lines survive being scaled down**: shrinking a picture averages the pixels instead of keeping one per block.
+- **Pictures on the next few pages are prepared while you read**, and the work is saved to the card and resumed if you turn the page mid-decode.
+- Fix: pictures showed only their alt text and stayed that way (#249) — Photoshop/Lightroom colour metadata is now read in stages instead of costing a 32 KB allocation the reader does not have.
+- Fix: a large image loaded with Confirm no longer reverts to its placeholder on returning to the page, and a picture interrupted mid-unpack is unpacked again rather than left blank.
+
+#### Layout
+
+- **Lists are indented the way their stylesheet says**: a list's own margin and padding are honoured, an item's marker stays with its text, and spacing is applied above and below the list.
+- **Spacing below an element comes after the whole element** — a split heading, a box around two paragraphs, or a figure caption no longer picks up the space in the middle.
+- **The second line of a split `<br>` heading keeps heading size**, and an empty heading no longer enlarges the paragraph after it.
+- `<section>`, `<article>`, `<aside>` and `<main>` now get their margins.
+- **Books converted from PDF no longer draw their invisible text layer** (a 1,206-page result instead of the real 154), and building those chapters drops from 180 KB to 74 KB of peak memory.
+- Portuguese hyphenation.
+- Fixes: up to 64 footnotes per page (was 16), books with more than 1,500 stylesheet rules no longer re-read their styles on every open, and documents nested deeper than 64 elements no longer lose formatting.
+
+#### Reading
+
+- **Chapter page counts cover the whole chapter** as the table of contents lists it, even when the book splits it across several spine files (#325). A `~` before the total means part of it is still an estimate.
+- Reopening a book that was just relaid out resumes at its paragraph rather than a rescaled page.
+- Page-back wraps from the first row under a section header instead of stopping at it.
+
+#### WiFi
+
+- **Add hidden network...** at the end of the network list joins an access point that does not broadcast its name; a password saved for that name is reused.
+- **Back** abandons a manual connect and returns to the list; **Confirm** stops a saved-network auto-connect and shows the list.
+
+#### Display, fonts and navigation
+
+- The displayed frame is kept when the secondary buffer is lent out, and RED RAM is seeded before every switch to single-buffer fast diff.
+- Hinted Bookerly and Noto Sans glyphs are re-centred so the auto-hinter's sideways drift no longer offsets UI and reader text.
+- Side button labels read the right way up in landscape CCW.
+- The firmware picker labels **Options** and its Options menu is trimmed to what it can actually do.
+
 ## 2.31 — 2026-09-20
 
 Everything since 2.30. Four larger reading sizes, a text size for the menus, and a firmware that came out smaller than 2.30 despite gaining both.

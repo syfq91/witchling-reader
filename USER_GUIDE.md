@@ -81,11 +81,27 @@ The Browse Files screen is a full-featured file and folder browser.
 
 * **Navigate List:** Use **Left** (or **Volume Up**), or **Right** (or **Volume Down**) to move the selection cursor up and down through folders and books. Long-pressing these buttons scrolls a full page at a time.
 * **Open Selection:** Press **Confirm** to open a folder or read a selected book.
-* **Context Menu:** Hold and release **Confirm** to open a context menu for the selected item. Actions include: open, mark as read, view book info, set as sleep screen, flash a `.bin` firmware file, and delete.
+* **Options menu:** Hold **Right** (the page-forward button) to open the menu for the selected item. In a folder short enough to fit on one screen, a short press of Right opens it too. On a device without a Confirm key, such as the X4 Pro, **Confirm** opens the menu instead, and a tap on a row opens the item. The button hints always show which button does what.
+  * For a book or file: **Open**, **Mark as read**, **Info**, **Delete Book Cache**, **Remove**, **Set as sleep screen** (images), **Move to folder**, **New Folder**, **Search** and **Search all folders**.
+  * For a folder: **Open**, the sort and visibility options, **Search**, **Search all folders**, **New Folder** and **Remove**, which deletes the folder and everything in it.
 
 #### Sorting
 
-Files and folders can be sorted by **name**, **date**, **size**, or **type**, in either ascending or descending order. The sort order is configurable from the context menu or a dedicated sort button in the browser toolbar.
+Files and folders can be sorted by **name**, **date**, **size**, or **type**, in either ascending or descending order. The sort order is set from the options menu.
+
+#### Organising files
+
+* **New Folder** makes a folder inside the one you are browsing. A name the SD card cannot hold is corrected rather than refused.
+* **Move to folder** opens a folder picker that shows folders only. Browse to where the file should go: the move puts it in the folder you are *browsing*, which the header names in full, not in the row under the highlight. Press **Right** (the page-forward button; labelled **Move**) to move it there, or **Left** (the page-back button; labelled **New**) to make a new folder first. **Back** cancels.
+* A move is instant whatever the size of the file, because nothing is copied. It never overwrites anything: if a file of the same name is already there, or the file is already in that folder, the move is refused and the reason shown.
+* **Remove** on a folder deletes it and everything in it. It sits last in the menu because it cannot be undone.
+
+#### Searching
+
+* **Search** narrows the folder you are in to the names that contain what you type (upper and lower case are treated the same). The search text is shown in the header.
+* **Search all folders** searches this folder and every folder below it, and lists the matches with their path, so two books with the same name can be told apart. Opening a result opens it where it lives. **Go to folder** opens the folder a result is in, with the file selected.
+* **Back** ends a search; so does changing folder. **Clear search** in the folder's menu does the same.
+* The card is searched when you ask rather than indexed in advance, so results always reflect what is on the card, including anything copied over USB. **Show Hidden Files** applies to search as it does to browsing.
 
 #### Large folders
 
@@ -160,7 +176,7 @@ The Settings screen is organized into four top-level tabs: **[Display](#371-disp
 
 **EPUB Font** (submenu):
 - **Font Family**: Font used for EPUB reading. Includes built-in fonts (Bookerly, Noto Sans) plus any fonts installed on the SD card (which are memory-mapped directly from storage for minimal RAM usage).
-- **Font Size**: "Tiny", "Small", "Medium" (default), "Large", "X Large"
+- **Font Size**: 10pt to 26pt. 10pt to 20pt are typefaces designed at that size; 22, 24 and 26pt are the 20pt face enlarged.
 - **Text Anti-Aliasing**: Smooth grey edges on text. Slows page turns slightly. "ON" / "OFF"
 - **Text Darkness**: Ink density for rendered text: "Normal" (default), "Dark", "Extra Dark", "Max Dark"
 
@@ -180,6 +196,7 @@ The Settings screen is organized into four top-level tabs: **[Display](#371-disp
 - **Hyphenation**: Automatic hyphenation while reading. "ON" / "OFF"
 - **Synthetic TOC Fallback**: Generate a table of contents from headings when the EPUB has an invalid or missing TOC. "ON" / "OFF"
 - **Customise Status Bar**: Opens a submenu to configure the reading status bar: location (Top / Bottom), content slots for Left, Middle, and Right (Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title, or Hide), and a single progress bar (Book / Chapter / Hide) that sits at the selected status bar edge.
+  The chapter page count and the chapter progress bar cover the whole chapter as the table of contents lists it, even when the book splits that chapter into several files. A `~` before the total means part of it is still an estimate; it firms up as the rest of the chapter is laid out.
 
 #### 3.7.3 Controls
 
@@ -194,6 +211,8 @@ The Settings screen is organized into four top-level tabs: **[Display](#371-disp
 
 **Network**:
 - **WiFi Networks**: Add, remove, and connect to WiFi networks.
+  - To join a network that does not broadcast its name, choose **Add hidden network...** at the end of the list and type its name (SSID). A password saved for that name is reused; otherwise you are asked for one (leave it empty for an open network). While it connects, **Back** abandons the attempt and returns to the list.
+  - Whenever the reader needs WiFi it first tries the network it last connected to, then any other saved network in range, strongest first. While it does, **Back** cancels and **Confirm** stops it and shows the network list.
 - **OPDS Servers**: Manage OPDS libraries. See [OPDS Servers (Multiple Libraries)](#375-opds-servers-multiple-libraries).
 
 **System**:
@@ -202,7 +221,7 @@ The Settings screen is organized into four top-level tabs: **[Display](#371-disp
 
 **Firmware Update**:
 - **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi.
-- **SD Firmware Update**: Flash a firmware `.bin` file from the SD card.
+- **SD Firmware Update**: Flash a firmware `.bin` file from the SD card. The **Options** button hint in the picker opens the browser's sort and visibility options, **Search**, and **Remove** to delete a `.bin` you no longer need.
 
 #### 3.7.5 OPDS Servers (Multiple Libraries)
 
@@ -241,7 +260,7 @@ Behavior notes:
 
 - Passwords are never shown back in the web UI after saving.
 - Leaving Password blank while editing keeps the existing saved password unchanged.
-- The web UI can save hidden-network SSIDs, but connecting to hidden networks still depends on device-side WiFi connection flow.
+- The web UI can save hidden-network SSIDs. On the device, join one through **Add hidden network...** in the network list; its saved password is reused.
 
 ### 3.8 Sleep Screen
 

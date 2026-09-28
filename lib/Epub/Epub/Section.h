@@ -7,6 +7,7 @@
 
 #include "Epub.h"
 #include "FontSizeLadder.h"
+#include "SpinePageIndex.h"
 
 class Page;
 class GfxRenderer;
@@ -56,6 +57,9 @@ class Section {
   // the missing image would otherwise be permanent — background callers discard instead.
   bool imageHeaderDegraded_ = false;
 
+  // Records this spine's page count in the book's SpinePageIndex under `requestedHash`. No-op for
+  // a truncated or empty section.
+  void recordPageCount(uint32_t requestedHash) const;
   void writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                               uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
                               bool embeddedStyle, uint8_t imageRendering);
@@ -158,6 +162,11 @@ class Section {
   // re-inflating the ZIP entry. Says nothing about whether the file exists or is complete;
   // callers must validate its size against the spine's inflated size, as the builder does.
   static std::string sectionHtmlCachePath(const std::string& bookCachePath, int spineIndex);
+
+  // The page counts recorded for spines [first, last] under `p` (see SpinePageIndex), so the
+  // reader can count a chapter split over several spine items without opening their caches.
+  static SpinePageIndex::Totals indexedPageTotals(const std::string& bookCachePath, const BuildParams& p,
+                                                  int spineCount, int first, int last, int current);
 
   uint16_t pageCount = 0;
   int currentPage = 0;
@@ -337,12 +346,12 @@ class Section {
   // printed-page anchor exists on this or any earlier page in the section.
   std::optional<std::string> getNearestPrintedPageLabelAtOrBefore(uint16_t page) const;
 
-  // Standalone lookup that doesn't require a loaded Section. Walks the book's sections cache
-  // directory, finds any cache variant for `spineIndex`, reads its printed-page label map,
+  // Standalone lookup that doesn't require a loaded Section. Walks the spine's cache bucket
+  // (Epub::spineCacheDir), finds any cache variant for `spineIndex`, reads its printed-page label map,
   // and returns the parenthesised label for `page` if one is recorded. Returns nullopt when
   // no cache exists or the page carries no printed-page anchor. Used by SleepActivity to
   // augment the overlay without instantiating a full Section + render parameters.
-  static std::optional<std::string> getPrintedPageLabelFromCache(const std::string& sectionsDir, int spineIndex,
+  static std::optional<std::string> getPrintedPageLabelFromCache(const std::string& bookCachePath, int spineIndex,
                                                                  uint16_t page);
 
   // Look up the page number for a paragraph index (1-based, from XPath p[N]).

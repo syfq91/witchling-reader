@@ -29,7 +29,6 @@ class FileBrowserActivity final : public UiListActivity {
   void doSetAsSleepCover(const std::string& fullPath);
   void doDeleteCache(const std::string& fullPath, const std::string& entry);
   void doRemove(const std::string& fullPath, const std::string& entry, bool isDirectory);
-  void doFlashFirmware(const std::string& fullPath);
 
   static constexpr size_t LIST_WINDOW_CAPACITY = 24;
   std::array<std::string, LIST_WINDOW_CAPACITY> windowLabels;
@@ -52,6 +51,10 @@ class FileBrowserActivity final : public UiListActivity {
   void showBrowserOptionsMenu(const std::string& dirEntry = {});
   void activateSelected(bool longPress);
   void resetNavigation(int selected = 0);
+  // Search: prompt for a query, then narrow the folder to the names containing it.
+  void startSearch(bool everywhere);
+  void applyFilter(const std::string& query);
+  void goToResultFolder();
   void materializeListWindow();
 
  public:
