@@ -168,7 +168,7 @@ void BootDiagnosticsActivity::actionTrampoline(const freeink::ui::ActionEvent& e
 }
 
 void BootDiagnosticsActivity::buildScreen(UiScreen& screen) {
-  screen.header(tr(STR_BOOT_DIAGNOSTICS), CROSSPOINT_VERSION);
+  screen.header(tr(STR_BOOT_DIAGNOSTICS), nullptr, CROSSPOINT_VERSION);
   screen.takeBottom(screen.theme().footerHeight);
   bodyRect_ = screen.body();
 }

@@ -97,7 +97,7 @@ void ButtonActionsOverviewActivity::actionTrampoline(const freeink::ui::ActionEv
 
 void ButtonActionsOverviewActivity::buildScreen(UiScreen& screen) {
   namespace fui = freeink::ui;
-  screen.header(tr(STR_BTN_ACTIONS_OVERVIEW), CROSSPOINT_VERSION);
+  screen.header(tr(STR_BTN_ACTIONS_OVERVIEW), nullptr, CROSSPOINT_VERSION);
 
   fui::FooterAction footerActions[1];
   footerActions[0].label = tr(STR_BACK);

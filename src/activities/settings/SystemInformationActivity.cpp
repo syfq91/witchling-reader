@@ -168,7 +168,7 @@ void SystemInformationActivity::actionTrampoline(const freeink::ui::ActionEvent&
 void SystemInformationActivity::buildScreen(UiScreen& screen) {
   const bool paged = pageCount_ > 1;
   const std::string pageOfPages = std::to_string(page_ + 1) + " / " + std::to_string(pageCount_);
-  screen.header(tr(STR_SYSTEM_INFO), paged ? pageOfPages.c_str() : CROSSPOINT_VERSION);
+  screen.header(tr(STR_SYSTEM_INFO), nullptr, paged ? pageOfPages.c_str() : CROSSPOINT_VERSION);
 
   screen.takeBottom(screen.theme().footerHeight);
 
