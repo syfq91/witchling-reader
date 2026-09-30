@@ -26,7 +26,6 @@ struct Profile {
   bool hyphenationEnabled = false;
   bool fontSizeNormalization = true;
   bool embeddedStyle = true;
-  bool bionicReadingEnabled = false;
   bool inlineFootnotePreviews = true;
   uint8_t imageRendering = 0;
   // When non-zero, every section build is lent a heap-backed BuildArena of this many bytes, the

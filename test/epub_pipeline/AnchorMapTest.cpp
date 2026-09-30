@@ -51,7 +51,6 @@ Section::BuildParams params() {
   p.hyphenationEnabled = false;
   p.fontSizeNormalization = false;
   p.embeddedStyle = false;
-  p.bionicReadingEnabled = false;
   p.inlineFootnotePreviews = false;
   p.imageRendering = 0;
   return p;

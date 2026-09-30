@@ -66,6 +66,13 @@ struct ThemeMetrics {
   int progressBarMarginTop;
   int statusBarHorizontalMargin;
   int statusBarVerticalMargin;
+  int keyboardKeyWidth;
+  int keyboardKeyHeight;
+  int keyboardKeySpacing;
+  bool keyboardCenteredText;
+  int keyboardVerticalOffset;
+  int keyboardTextFieldWidthPercent;
+  int keyboardKeyCornerRadius = 0;
 };
 
 enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Ellipsis };
@@ -100,7 +107,13 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .progressBarHeight = 16,
                                  .progressBarMarginTop = 1,
                                  .statusBarHorizontalMargin = 5,
-                                 .statusBarVerticalMargin = 19};
+                                 .statusBarVerticalMargin = 19,
+                                 .keyboardKeyWidth = 22,
+                                 .keyboardKeyHeight = 40,
+                                 .keyboardKeySpacing = 0,
+                                 .keyboardCenteredText = false,
+                                 .keyboardVerticalOffset = -13,
+                                 .keyboardTextFieldWidthPercent = 85};
 }
 
 enum class SyncIndicator : uint8_t { None, Active, Failed };
@@ -144,6 +157,9 @@ class BaseTheme {
                              const std::string& printedPageLabel = std::string(), const bool fillMargin = true,
                              const bool pageCountApproximate = false,
                              const std::vector<float>& chapterMarkers = {}) const;
+  virtual void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;
+  virtual void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
+                             int contentStartX = 0, int contentWidth = 0) const;
   virtual bool showsFileIcons() const { return false; }
 
   // ---- Home screen navigation / rendering contract ----

@@ -8,6 +8,45 @@ User-facing changes only. Full commit history is in git log.
 
 - **Simplified Customise Status Bar page.** Replaced the 10 separate status bar options with 5 streamlined settings: status bar location (Top / Bottom), configurable content slots for Left, Middle, and Right (Hide, Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title), and a single progress bar (Book / Chapter / Hide) that automatically follows the status bar location and always uses thin thickness. Existing user configurations are seamlessly migrated.
 
+### Synced from upstream 2.37
+
+Changes pulled in from `jpirnay/witchhunt-reader` 2.37 that this fork carries. Subsystems this fork does not include (Reading Statistics, Weather, non-English UI translations, touch gestures, and multi-device hardware abstraction) are omitted.
+
+#### Reading
+
+- **The page counter counts the whole chapter** (#325). Some books split a chapter into several files. J-Novel Club light novels, for example, start a new file at every illustration. The counter and the Chapter progress bar now run across all of the chapter's files. A file that has not been laid out yet is estimated from its size, and the total shows a `~` until the rest of the chapter has been prepared in the background. The status bar then updates without waiting for a page turn.
+- **A book whose layout changed reopens at the paragraph you were reading.** Your place used to be kept as a page number and scaled by the chapter's new page count, which could land several pages away in a chapter with pictures, tables or headings. The reader now also saves the paragraph when you leave a book, and uses it whenever the chapter's page count has changed. If nothing changed, you return to exactly the same page, even one that starts mid-paragraph.
+- **Chapters open faster in books with a great many files.** Every chapter's caches used to sit in one folder, and the card searches a folder from the start every time it opens a file in it. The caches are now split into folders of 32 chapters, reducing directory traversal times on the SD card.
+- **The reader menu's tabs are plain text**, like the tabs in Settings, and while the tab bar is selected, the Confirm hint names the tab it switches to.
+- **Fix: a double press or long press to jump pages left the old page on screen** (#351).
+- **Fix (X4): Left and Right in the reader menu worked only every second or third press.** Screens opened from the reader (the menu, the contents, the printed-page dialog) are no longer subject to reader button release gating that dropped presses.
+- **Fix: Refresh Screen** now refreshes the screen you are looking at. Over the reader menu and the other screens opened from a book, it did nothing. The TXT, Markdown and XTC readers ignored it. On other screens it briefly showed the previous screen.
+
+#### Keyboard
+
+- **Keyboard layouts for additional languages**: Support for configurable keyboard layouts (QWERTY, QWERTZ, AZERTY, Spanish, and Cyrillic). Choose which layouts you use in **Settings → System → Keyboard Layouts**. Once two or more are on, a globe key switches between them.
+- Whole-character UTF-8 cursor navigation and deletion.
+- Compact keyboard rendering from `freeink-sdk`: Shift applies to one letter only, and symbol layout improvements.
+
+#### Home, settings and navigation
+
+- **The home screen picks up changed book details** when a metadata file next to a book (`Some Book.opf`) changes.
+- **System Information is split into pages** now that it no longer fits one screen. The page buttons move between pages and the header shows the page indicator ("1 / 2").
+- **Fix:** in **SD Firmware Update**, the button that opens the Options menu had no label (#329), and the menu options were trimmed to valid actions.
+- **Fix:** in landscape counter-clockwise, the side button labels ("« Page", "Page »") were upside down (#336).
+
+#### The screen and fonts
+
+- **Fix: letter spacing in menus.** Built-in UI fonts Bookerly and Noto Sans have been regenerated with re-centred hinting to eliminate uneven gaps before "i".
+- **Fix (X4): entering Settings from Home could leave parts of the Home screen showing through.**
+
+#### Upgrade notes
+
+- **Every book re-indexes each chapter once, the first time you open it**, because the chapter caches have moved to new bucketed folders. Your place in every book is kept. **Settings → System → Clear Reading Cache** removes stale caches and re-indexes books.
+- Reopening at the paragraph works for books you leave after updating. A place saved by an older version still uses the scaled page number once.
+- **Keyboard layouts start as English.** Turn on additional layouts in **Settings → System → Keyboard Layouts**.
+
+
 ### Synced from upstream 2.35
 
 Changes pulled in from `jpirnay/witchhunt-reader` 2.35 that this fork carries. The parts of

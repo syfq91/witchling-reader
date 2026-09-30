@@ -30,7 +30,13 @@ constexpr ThemeMetrics values = {.batteryWidth = 16,
                                  .progressBarHeight = 16,
                                  .progressBarMarginTop = 1,
                                  .statusBarHorizontalMargin = 5,
-                                 .statusBarVerticalMargin = 19};
+                                 .statusBarVerticalMargin = 19,
+                                 .keyboardKeyWidth = 31,
+                                 .keyboardKeyHeight = 40,
+                                 .keyboardKeySpacing = 0,
+                                 .keyboardCenteredText = false,
+                                 .keyboardVerticalOffset = -7,
+                                 .keyboardTextFieldWidthPercent = 85};
 }
 
 class LyraTheme : public BaseTheme {
@@ -55,6 +61,8 @@ class LyraTheme : public BaseTheme {
   Rect drawPopup(const GfxRenderer& renderer, const char* message, bool overlayDisplayedFrame = true,
                  PopupShip ship = PopupShip::Blocking) const override;
   void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const override;
+  void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
+                     int contentStartX = 0, int contentWidth = 0) const override;
   bool showsFileIcons() const override { return true; }
 
  protected:

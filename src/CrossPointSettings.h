@@ -462,6 +462,10 @@ class CrossPointSettings {
   uint8_t inlineFootnotePreviews = 0;
   // Remove finished book from Recent Books when the end-of-book screen action is selected.
   uint8_t removeFinishedBooksFromRecents = 0;
+  // Keyboard layouts the language key cycles through: bit i enables keyboard_layouts::ALL[i]
+  // (see activities/util/KeyboardLayoutSet.h). 0 means "not configured" -- the UI language's
+  // layout plus English -- so a reader who never opens the screen follows the UI language.
+  uint16_t keyboardLayouts = 0;
   // Which entries sit on the home screen (1) rather than behind its "More" entry (0). An entry
   // with nothing behind it (no bookmarks, no OPDS server) shows in neither place.
   // Settings has no switch: it is where these are turned back on. See HomeMenu.cpp.

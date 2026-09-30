@@ -33,8 +33,8 @@ std::string tagFor(const std::string& board) { return std::string(MAGIC) + board
 }  // namespace
 
 TEST(FirmwareBoardTag, TagNamesThisBuild) {
-  EXPECT_EQ(selfName(), "lilygo");
-  EXPECT_STREQ(board_tag::TAG, "CROSSPOINT-BOARD-V1:lilygo;");
+  EXPECT_EQ(selfName(), "x4");
+  EXPECT_STREQ(board_tag::TAG, "CROSSPOINT-BOARD-V1:x4;");
   // boardName() points into TAG rather than duplicating the literal, so an
   // image contains exactly one copy of the needle.
   EXPECT_EQ(board_tag::boardName(), board_tag::TAG + std::strlen(MAGIC));
@@ -49,15 +49,15 @@ TEST(FirmwareBoardTag, MagicFirstCharIsUnique) {
 }
 
 TEST(FirmwareBoardTag, OwnTagIsNotAMismatch) {
-  EXPECT_FALSE(scanChunked("padding" + tagFor("lilygo") + "trailing", 4096));
+  EXPECT_FALSE(scanChunked("padding" + tagFor("x4") + "trailing", 4096));
 }
 
 TEST(FirmwareBoardTag, ForeignTagIsAMismatch) {
   board_tag::Scanner s;
-  const std::string img = "padding" + tagFor("x4") + "trailing";
+  const std::string img = "padding" + tagFor("lilygo") + "trailing";
   s.feed(reinterpret_cast<const uint8_t*>(img.data()), img.size());
   EXPECT_TRUE(s.mismatch());
-  EXPECT_STREQ(s.foundName(), "x4");
+  EXPECT_STREQ(s.foundName(), "lilygo");
 }
 
 TEST(FirmwareBoardTag, SiblingS3BoardIsAMismatch) {
@@ -80,7 +80,7 @@ TEST(FirmwareBoardTag, UntaggedImagePasses) {
 TEST(FirmwareBoardTag, DetectedAtEveryChunkBoundary) {
   // A real download splits the stream at arbitrary offsets; the tag must still
   // be found when a chunk boundary falls anywhere inside it.
-  const std::string img = std::string(37, 'x') + tagFor("x4") + std::string(41, 'y');
+  const std::string img = std::string(37, 'x') + tagFor("lilygo") + std::string(41, 'y');
   for (size_t chunk = 1; chunk <= img.size(); chunk++) {
     EXPECT_TRUE(scanChunked(img, chunk)) << "chunk size " << chunk;
   }
@@ -89,11 +89,11 @@ TEST(FirmwareBoardTag, DetectedAtEveryChunkBoundary) {
 TEST(FirmwareBoardTag, RestartsAfterAPartialMagic) {
   // A truncated magic immediately followed by the real one: the single-byte
   // lookback has to pick the second occurrence up.
-  const std::string img = "CROSSPOINT-BOARD-V" + tagFor("x4");
+  const std::string img = "CROSSPOINT-BOARD-V" + tagFor("lilygo");
   board_tag::Scanner s;
   s.feed(reinterpret_cast<const uint8_t*>(img.data()), img.size());
   EXPECT_TRUE(s.mismatch());
-  EXPECT_STREQ(s.foundName(), "x4");
+  EXPECT_STREQ(s.foundName(), "lilygo");
 }
 
 TEST(FirmwareBoardTag, OverlongNameIsIgnored) {
@@ -111,11 +111,11 @@ TEST(FirmwareBoardTag, NonPrintableNameIsIgnored) {
 TEST(FirmwareBoardTag, MismatchIsSticky) {
   // Callers abort a transfer on mismatch(); later bytes must not clear it.
   board_tag::Scanner s;
-  const std::string bad = tagFor("x4");
+  const std::string bad = tagFor("lilygo");
   s.feed(reinterpret_cast<const uint8_t*>(bad.data()), bad.size());
   ASSERT_TRUE(s.mismatch());
-  const std::string good = tagFor("lilygo");
+  const std::string good = tagFor("x4");
   s.feed(reinterpret_cast<const uint8_t*>(good.data()), good.size());
   EXPECT_TRUE(s.mismatch());
-  EXPECT_STREQ(s.foundName(), "x4");
+  EXPECT_STREQ(s.foundName(), "lilygo");
 }

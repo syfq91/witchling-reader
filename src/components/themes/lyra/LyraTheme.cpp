@@ -602,3 +602,15 @@ void LyraTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
 
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
+void LyraTheme::drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode,
+                              int contentStartX, int contentWidth) const {
+  int lineY = rect.y + rect.height + renderer.getLineHeight(UI_12_FONT_ID) + LyraMetrics::values.verticalSpacing;
+  const int thickness = cursorMode ? 3 : 2;
+  if (contentWidth > 0) {
+    renderer.drawLine(rect.x + contentStartX, lineY, rect.x + contentStartX + contentWidth, lineY, thickness, true);
+  } else {
+    int lineW = textWidth + hPaddingInSelection * 2;
+    renderer.drawLine(rect.x + (rect.width - lineW) / 2, lineY, rect.x + (rect.width + lineW) / 2, lineY, thickness,
+                      true);
+  }
+}

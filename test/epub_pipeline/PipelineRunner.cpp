@@ -149,7 +149,6 @@ bool runAndDump(const std::string& epubPath, const std::string& cacheDir, const 
     p.hyphenationEnabled = profile.hyphenationEnabled;
     p.fontSizeNormalization = profile.fontSizeNormalization;
     p.embeddedStyle = profile.embeddedStyle;
-    p.bionicReadingEnabled = profile.bionicReadingEnabled;
     p.inlineFootnotePreviews = profile.inlineFootnotePreviews;
     p.imageRendering = profile.imageRendering;
     if (g_buildBracket) g_buildBracket(i, true, lentArena.get());

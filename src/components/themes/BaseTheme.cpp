@@ -904,3 +904,33 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     }
   }
 }
+
+void BaseTheme::drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  auto truncatedLabel =
+      renderer.truncatedText(SMALL_FONT_ID, label, rect.width - metrics.contentSidePadding * 2, EpdFontFamily::REGULAR);
+  renderer.drawCenteredText(SMALL_FONT_ID, rect.y, truncatedLabel.c_str());
+}
+
+void BaseTheme::drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode,
+                              int contentStartX, int contentWidth) const {
+  (void)textWidth;
+  (void)contentStartX;
+  (void)contentWidth;
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  const int bracketHeight = lineHeight;
+  const int fieldLeft = rect.x + 15;
+  const int fieldRight = rect.x + rect.width - 15;
+  const int topY = rect.y - 7;
+  const int bottomY = rect.y + rect.height + lineHeight + 7;
+  const int tickLen = bracketHeight / 2;
+  const int thickness = cursorMode ? 3 : 1;
+
+  renderer.fillRect(fieldLeft, topY, thickness, bottomY - topY + 1, true);
+  renderer.drawLine(fieldLeft, topY, fieldLeft + tickLen, topY, thickness, true);
+  renderer.drawLine(fieldLeft, bottomY, fieldLeft + tickLen, bottomY, thickness, true);
+
+  renderer.fillRect(fieldRight - thickness + 1, topY, thickness, bottomY - topY + 1, true);
+  renderer.drawLine(fieldRight, topY, fieldRight - tickLen, topY, thickness, true);
+  renderer.drawLine(fieldRight, bottomY, fieldRight - tickLen, bottomY, thickness, true);
+}

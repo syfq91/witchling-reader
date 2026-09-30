@@ -5,7 +5,7 @@ add_executable(FirmwareBoardTagTest
 
 # The board name is a compile-time choice; build the tests as the lilygo image
 # so a foreign tag has something to disagree with.
-target_compile_definitions(FirmwareBoardTagTest PRIVATE FREEINK_DEVICE_LILYGO=1)
+target_compile_definitions(FirmwareBoardTagTest PRIVATE FREEINK_DEVICE_X4=1)
 
 target_include_directories(FirmwareBoardTagTest PRIVATE
   ${REPO_ROOT}/test/shims

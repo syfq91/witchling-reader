@@ -10,6 +10,7 @@
 #include "DictionarySelectionActivity.h"
 #include "EnumSelectionActivity.h"
 #include "FontSelectionActivity.h"
+#include "KeyboardLayoutsActivity.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
 #include "ScreenRepairActivity.h"
@@ -41,6 +42,8 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<OtaUpdateActivity>(renderer, mappedInput);
     case SettingAction::SdFirmwareUpdate:
       return std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInput);
+    case SettingAction::KeyboardLayouts:
+      return std::make_unique<KeyboardLayoutsActivity>(renderer, mappedInput);
     case SettingAction::SystemInfo:
       return std::make_unique<SystemInformationActivity>(renderer, mappedInput);
     case SettingAction::BootDiagnostics:

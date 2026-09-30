@@ -352,6 +352,7 @@ void CrossPointWebServer::begin() {
   server->on("/api/settings", HTTP_GET, [this] { handleGetSettings(); });
   server->on("/api/settings", HTTP_POST, [this] { handlePostSettings(); });
 
+
   server->on("/fonts", HTTP_GET, [this] { handleFontsPage(); });
   server->on("/api/fonts", HTTP_GET, [this] { handleFontList(); });
   server->on("/api/fonts/upload", HTTP_POST, [this] { handleFontUpload(); }, [this] { handleFontUploadData(); });
@@ -606,6 +607,7 @@ void CrossPointWebServer::handleSystemInfoPage() const {
   int32_t t1 = millis();
   LOG_DBG("WEB", "Served system info page in %d ms", t1 - t0);
 }
+
 
 void CrossPointWebServer::handleJszip() const {
   if (rejectIfLowMemory(server.get(), MIN_HEAP_FOR_HTML)) return;

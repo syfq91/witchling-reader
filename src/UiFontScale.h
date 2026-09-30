@@ -72,6 +72,7 @@ constexpr void applyTo(ThemeMetrics& metrics, const Step& growth) {
   metrics.menuRowHeight += growth.body;
   metrics.tabBarHeight += growth.body;
   metrics.buttonHintsHeight += growth.body;
+  metrics.keyboardKeyHeight += growth.body;
 
   // A title line plus up to two subtitle lines.
   metrics.listWithSubtitleRowHeight += growth.body + growth.small * 2;

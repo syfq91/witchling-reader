@@ -534,10 +534,6 @@ void ActivityManager::popActivity() {
 
 bool ActivityManager::preventAutoSleep() const { return currentActivity && currentActivity->preventAutoSleep(); }
 
-bool ActivityManager::isCurrentReaderActivity() const {
-  return currentActivity && currentActivity->isReaderActivity();
-}
-
 bool ActivityManager::keepAwake() const { return currentActivity && currentActivity->keepAwake(); }
 
 bool ActivityManager::requiresExclusiveStorageLoop() const {
@@ -545,20 +541,25 @@ bool ActivityManager::requiresExclusiveStorageLoop() const {
 }
 
 bool ActivityManager::isReaderActivity() const {
-  if (isCurrentReaderActivity()) return true;
+  if (currentIsReaderActivity()) return true;
   return std::any_of(stackActivities.begin(), stackActivities.end(),
                      [](const auto& activity) { return activity->isReaderActivity(); });
 }
+
+bool ActivityManager::currentIsReaderActivity() const { return currentActivity && currentActivity->isReaderActivity(); }
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
 
 
 void ActivityManager::dispatchButtonAction(const CrossPointSettings::BUTTON_ACTION action) {
-  if (isCurrentReaderActivity()) {
+  if (currentIsReaderActivity()) {
     currentActivity->onButtonAction(action);
   }
 }
 
+bool ActivityManager::handleForcedRefresh(const HalDisplay::RefreshMode mode) {
+  return currentActivity && currentActivity->handleForcedRefresh(mode);
+}
 void ActivityManager::requestUpdate(bool immediate) {
   if (immediate) {
     if (renderTaskHandle) {

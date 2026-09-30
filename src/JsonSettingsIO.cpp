@@ -128,6 +128,8 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
     doc["sdFontFamilyName"] = s.sdFontFamilyName;
   }
   doc["removeFinishedBooksFromRecents"] = s.removeFinishedBooksFromRecents;
+  // Left out while unconfigured, so the default keeps following the UI language.
+  if (s.keyboardLayouts != 0) doc["keyboardLayouts"] = s.keyboardLayouts;
 
   String json;
   serializeJson(doc, json);
@@ -291,6 +293,8 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
     }
     if (migrated && needsResave) *needsResave = true;
   }
+  // Unknown bits (a file from a build with more layouts) are dropped by keyboard_layouts::enabled().
+  s.keyboardLayouts = doc["keyboardLayouts"] | (uint16_t)0;
 
   const uint8_t quickResumeBeforeNormalize = s.quickResumeSleepScreen;
   CrossPointSettings::normalizeDependentSettings(s);

@@ -21,10 +21,14 @@ class SystemInformationActivity final : public Activity, private UiAppHost {
  private:
   static constexpr freeink::ui::ActionId ACTION_BACK = 1;
   static constexpr freeink::ui::ActionId ACTION_UPDATE_SD = 2;
+  static constexpr freeink::ui::ActionId ACTION_PAGE_PREV = 3;
+  static constexpr freeink::ui::ActionId ACTION_PAGE_NEXT = 4;
 
   std::optional<SystemStatus> status_;
   bool sdStatusReady_ = false;
   bool sdLoadRequested_ = false;
+  int page_ = 0;
+  int pageCount_ = 1;
   freeink::ui::Rect bodyRect_{};
 
   void buildScreen(UiScreen& screen);

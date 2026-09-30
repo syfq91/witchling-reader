@@ -151,6 +151,7 @@ class CrossPointWebServer {
   void handlePostWifiNetwork();
   void handleDeleteWifiNetwork();
 
+
   // Web-UI plugins: JS on the SD card that the Settings and File Manager pages
   // discover and load, so the web interface can be extended without a firmware
   // build. The firmware only lists the folders and serves their files - plugin

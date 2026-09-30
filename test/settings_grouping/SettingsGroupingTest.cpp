@@ -21,12 +21,17 @@
 
 namespace {
 
-// The two id groups used below. Any distinct StrIds would do; these read as what they stand for.
-constexpr StrId kSubmenu = StrId::STR_MENU_GESTURE_ACTIONS;
-constexpr StrId kGroupA = StrId::STR_GEST_SWIPE_GROUP;
-constexpr StrId kGroupB = StrId::STR_GEST_TAP_GROUP;
-constexpr StrId kGroupC = StrId::STR_GEST_LONG_TAP_GROUP;
+constexpr StrId kSubmenu = StrId::STR_MENU_BTN_ACTIONS;
+constexpr StrId kGroupA = StrId::STR_MENU_BTN_PHYSICAL;
+constexpr StrId kGroupB = StrId::STR_MENU_SYS_NETWORK;
+constexpr StrId kGroupC = StrId::STR_MENU_SYS_SYSTEM;
 constexpr StrId kOther = StrId::STR_MENU_DISP_REFRESH;
+
+constexpr StrId kRowA1 = StrId::STR_NEXT;
+constexpr StrId kRowA2 = StrId::STR_PREV;
+constexpr StrId kRowB1 = StrId::STR_BACK;
+constexpr StrId kRowB2 = StrId::STR_CONFIRM;
+constexpr StrId kRowC1 = StrId::STR_UPDATE;
 
 SettingInfo row(const StrId label, const StrId submenu, const StrId subcategory) {
   auto s = SettingInfo::Action(label, SettingAction::None);
@@ -77,11 +82,11 @@ int countSeparators(const std::vector<SettingInfo>& items) {
 // The gesture shape: one submenu, several headings among its rows.
 TEST(SettingsGrouping, SubmenuRowsCarryTheirHeadingsIntoTheSubmenu) {
   std::vector<SettingInfo> tab;
-  tab.push_back(row(StrId::STR_GEST_SWIPE_LEFT, kSubmenu, kGroupA));
-  tab.push_back(row(StrId::STR_GEST_SWIPE_RIGHT, kSubmenu, kGroupA));
-  tab.push_back(row(StrId::STR_GEST_TAP_LEFT, kSubmenu, kGroupB));
-  tab.push_back(row(StrId::STR_GEST_TAP_RIGHT, kSubmenu, kGroupB));
-  tab.push_back(row(StrId::STR_GEST_LONG_TAP_LEFT, kSubmenu, kGroupC));
+  tab.push_back(row(kRowA1, kSubmenu, kGroupA));
+  tab.push_back(row(kRowA2, kSubmenu, kGroupA));
+  tab.push_back(row(kRowB1, kSubmenu, kGroupB));
+  tab.push_back(row(kRowB2, kSubmenu, kGroupB));
+  tab.push_back(row(kRowC1, kSubmenu, kGroupC));
   std::vector<SettingInfo::SubmenuData> submenus;
   buildLikeTheSettingsScreen(tab, submenus);
 
@@ -101,9 +106,9 @@ TEST(SettingsGrouping, SubmenuRowsCarryTheirHeadingsIntoTheSubmenu) {
 // ...and the tab it left keeps only the row that opens it, with none of those headings.
 TEST(SettingsGrouping, TheTabKeepsNoHeadingForRowsThatMovedAway) {
   std::vector<SettingInfo> tab;
-  tab.push_back(row(StrId::STR_GEST_SWIPE_LEFT, kSubmenu, kGroupA));
-  tab.push_back(row(StrId::STR_GEST_TAP_LEFT, kSubmenu, kGroupB));
-  tab.push_back(row(StrId::STR_GEST_LONG_TAP_LEFT, kSubmenu, kGroupC));
+  tab.push_back(row(kRowA1, kSubmenu, kGroupA));
+  tab.push_back(row(kRowB1, kSubmenu, kGroupB));
+  tab.push_back(row(kRowC1, kSubmenu, kGroupC));
   std::vector<SettingInfo::SubmenuData> submenus;
   buildLikeTheSettingsScreen(tab, submenus);
 
@@ -118,8 +123,8 @@ TEST(SettingsGrouping, TheTabKeepsNoHeadingForRowsThatMovedAway) {
 // the heading really is about the row that opens it (Refresh, Front light).
 TEST(SettingsGrouping, ASubmenuWhoseRowsAgreeStillHeadsItsOwnRow) {
   std::vector<SettingInfo> tab;
-  tab.push_back(row(StrId::STR_GEST_SWIPE_LEFT, kOther, kOther));
-  tab.push_back(row(StrId::STR_GEST_SWIPE_RIGHT, kOther, kOther));
+  tab.push_back(row(kRowA1, kOther, kOther));
+  tab.push_back(row(kRowA2, kOther, kOther));
   std::vector<SettingInfo::SubmenuData> submenus;
   buildLikeTheSettingsScreen(tab, submenus);
 
@@ -133,9 +138,9 @@ TEST(SettingsGrouping, ASubmenuWhoseRowsAgreeStillHeadsItsOwnRow) {
 // Rows that stay in the tab are grouped there exactly as before.
 TEST(SettingsGrouping, PlainRowsAreStillGroupedInTheTab) {
   std::vector<SettingInfo> tab;
-  tab.push_back(row(StrId::STR_GEST_SWIPE_LEFT, StrId::STR_NONE_OPT, kGroupA));
-  tab.push_back(row(StrId::STR_GEST_SWIPE_RIGHT, StrId::STR_NONE_OPT, kGroupA));
-  tab.push_back(row(StrId::STR_GEST_TAP_LEFT, StrId::STR_NONE_OPT, kGroupB));
+  tab.push_back(row(kRowA1, StrId::STR_NONE_OPT, kGroupA));
+  tab.push_back(row(kRowA2, StrId::STR_NONE_OPT, kGroupA));
+  tab.push_back(row(kRowB1, StrId::STR_NONE_OPT, kGroupB));
   std::vector<SettingInfo::SubmenuData> submenus;
   buildLikeTheSettingsScreen(tab, submenus);
 
@@ -153,8 +158,8 @@ TEST(SettingsGrouping, PlainRowsAreStillGroupedInTheTab) {
 TEST(SettingsGrouping, AnExistingHeadingIsNotDuplicated) {
   std::vector<SettingInfo> tab;
   tab.push_back(SettingInfo::Separator(kGroupA));
-  tab.push_back(row(StrId::STR_GEST_SWIPE_LEFT, StrId::STR_NONE_OPT, kGroupA));
-  tab.push_back(row(StrId::STR_GEST_TAP_LEFT, StrId::STR_NONE_OPT, kGroupB));
+  tab.push_back(row(kRowA1, StrId::STR_NONE_OPT, kGroupA));
+  tab.push_back(row(kRowB1, StrId::STR_NONE_OPT, kGroupB));
   std::vector<SettingInfo::SubmenuData> submenus;
   buildLikeTheSettingsScreen(tab, submenus);
 
@@ -164,8 +169,8 @@ TEST(SettingsGrouping, AnExistingHeadingIsNotDuplicated) {
 
 TEST(SettingsGrouping, ExtractedSubmenuRowsRemainFlatWhenPreparedAgain) {
   std::vector<SettingInfo> tab;
-  tab.push_back(row(StrId::STR_GEST_SWIPE_LEFT, kSubmenu, StrId::STR_NONE_OPT));
-  tab.push_back(row(StrId::STR_GEST_SWIPE_RIGHT, kSubmenu, StrId::STR_NONE_OPT));
+  tab.push_back(row(kRowA1, kSubmenu, StrId::STR_NONE_OPT));
+  tab.push_back(row(kRowA2, kSubmenu, StrId::STR_NONE_OPT));
   std::vector<SettingInfo::SubmenuData> submenus;
   SettingInfo::prepareSubmenus(tab, submenus);
 
@@ -175,6 +180,6 @@ TEST(SettingsGrouping, ExtractedSubmenuRowsRemainFlatWhenPreparedAgain) {
 
   EXPECT_TRUE(nestedSubmenus.empty()) << "opening a prepared submenu must not recreate itself";
   ASSERT_EQ(items.size(), 2u);
-  EXPECT_EQ(items[0].nameId, StrId::STR_GEST_SWIPE_LEFT);
-  EXPECT_EQ(items[1].nameId, StrId::STR_GEST_SWIPE_RIGHT);
+  EXPECT_EQ(items[0].nameId, kRowA1);
+  EXPECT_EQ(items[1].nameId, kRowA2);
 }

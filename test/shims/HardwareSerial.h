@@ -12,4 +12,6 @@ class HWCDC : public Print {
   void flush() override {}
 };
 
+using HardwareSerial = HWCDC;
+
 inline HWCDC Serial;
