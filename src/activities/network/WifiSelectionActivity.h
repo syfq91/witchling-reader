@@ -109,7 +109,6 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
   uint16_t windowFirst = 0;
   uint16_t windowCount = 0;
   freeink::ui::ListNav nav{};
-  freeink::ui::Rect captiveQrRect_{};
 
   // Connection timeouts
   static constexpr unsigned long CONNECTION_TIMEOUT_MS = 15000;

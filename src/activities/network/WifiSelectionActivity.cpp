@@ -26,7 +26,6 @@
 #include "components/ConfirmDialog.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/QrUtils.h"
 
 namespace {
 
@@ -1368,14 +1367,13 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
       hintStyle.maxLines = 2;
       const int16_t hintH = static_cast<int16_t>(screen.target().lineHeight(hintStyle.font) * 2);
 
-      constexpr int16_t QR_SIZE = 220;
-
-      fui::TextStyle urlStyle = screen.theme().smallText;
+      fui::TextStyle urlStyle = screen.theme().bodyText;
+      urlStyle.bold = true;
       urlStyle.align = fui::TextAlign::Center;
       const int16_t urlH = screen.target().lineHeight(urlStyle.font);
 
-      const int16_t gap = screen.theme().spaceMd;
-      const int16_t totalH = static_cast<int16_t>(hintH + gap + QR_SIZE + gap + urlH);
+      const int16_t gap = screen.theme().spaceLg;
+      const int16_t totalH = static_cast<int16_t>(hintH + gap + urlH);
       const int16_t topMargin = static_cast<int16_t>((screen.body().height - totalH) / 2);
       if (topMargin > 0) {
         screen.spacer(topMargin);
@@ -1383,9 +1381,6 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
 
       std::string hintText = std::string(tr(STR_CAPTIVE_PORTAL_HINT_1)) + " " + tr(STR_CAPTIVE_PORTAL_HINT_2);
       screen.target().text(screen.takeTop(hintH), hintText.c_str(), hintStyle);
-
-      screen.spacer(gap);
-      captiveQrRect_ = fui::centeredRect(screen.takeTop(QR_SIZE), fui::Size{QR_SIZE, QR_SIZE});
 
       screen.spacer(gap);
       screen.target().text(screen.takeTop(urlH), captivePortalUrl.c_str(), urlStyle);
@@ -1397,11 +1392,6 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
 }
 
 void WifiSelectionActivity::afterUiRender() {
-  if (state == WifiSelectionState::CAPTIVE_PORTAL && captiveQrRect_.width > 0) {
-    QrUtils::drawQrCode(renderer,
-                        Rect{captiveQrRect_.x, captiveQrRect_.y, captiveQrRect_.width, captiveQrRect_.height},
-                        captivePortalUrl);
-  }
 
   if (state == WifiSelectionState::NETWORK_LIST) {
     const bool hasSaved = !networks.empty() && networks[selectedNetworkIndex].hasSavedPassword;
