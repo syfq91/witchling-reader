@@ -39,6 +39,7 @@ class BookInfoActivity final : public Activity, private UiAppHost {
   void loadData();
   void buildScreen(UiScreen& screen);
   void afterUiRender();
+  void drawFooter();
   static void screenTrampoline(UiScreen& screen, void* user);
   static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
 

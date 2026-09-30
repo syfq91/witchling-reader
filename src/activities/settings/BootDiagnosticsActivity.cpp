@@ -168,14 +168,8 @@ void BootDiagnosticsActivity::actionTrampoline(const freeink::ui::ActionEvent& e
 }
 
 void BootDiagnosticsActivity::buildScreen(UiScreen& screen) {
-  namespace fui = freeink::ui;
   screen.header(tr(STR_BOOT_DIAGNOSTICS), CROSSPOINT_VERSION);
-
-  fui::FooterAction footerActions[1];
-  footerActions[0].label = tr(STR_BACK);
-  footerActions[0].action = ACTION_BACK;
-  screen.footer(footerActions, 1);
-
+  screen.takeBottom(screen.theme().footerHeight);
   bodyRect_ = screen.body();
 }
 
@@ -412,4 +406,7 @@ void BootDiagnosticsActivity::afterUiRender() {
       drawWide(buf);
     }
   }
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }

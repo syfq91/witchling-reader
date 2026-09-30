@@ -247,7 +247,7 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   const int buttonHeight = UITheme::getInstance().getMetrics().buttonHintsHeight;
   const int buttonY = buttonHeight;  // Distance from bottom
   constexpr int textYOffset = 7;     // Distance from top of button to text baseline
-  constexpr int x4ButtonPositions[] = {58, 146, 254, 342};
+  constexpr int x4ButtonPositions[] = {38, 143, 258, 363};
   int buttonPositions[4];
   const int sw = renderer.getScreenWidth();
   if (sw == 480) {

@@ -136,6 +136,7 @@ void BookInfoActivity::render(RenderLock&&) {
   renderer.clearScreen();
   renderUi();
   afterUiRender();
+  drawFooter();
   renderer.displayBuffer();
 }
 
@@ -161,21 +162,18 @@ void BookInfoActivity::actionTrampoline(const freeink::ui::ActionEvent& event, v
 }
 
 void BookInfoActivity::buildScreen(UiScreen& screen) {
-  namespace fui = freeink::ui;
   screen.header(tr(STR_INFO));
 
-  fui::FooterAction footerActions[3];
-  uint8_t footerCount = 0;
-  footerActions[footerCount++] = {tr(STR_BACK), ACTION_BACK};
-  if (descPage > 0) {
-    footerActions[footerCount++] = {tr(STR_PREV), ACTION_PREV};
-  }
-  if (descPage + 1 < descTotalPages) {
-    footerActions[footerCount++] = {tr(STR_NEXT), ACTION_NEXT};
-  }
-  screen.footer(footerActions, footerCount);
+  screen.takeBottom(screen.theme().footerHeight);
 
   bodyRect_ = screen.body();
+}
+
+void BookInfoActivity::drawFooter() {
+  const char* prevLabel = descPage > 0 ? tr(STR_PREV) : "";
+  const char* nextLabel = descPage + 1 < descTotalPages ? tr(STR_NEXT) : "";
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", prevLabel, nextLabel);
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
 void BookInfoActivity::afterUiRender() {

@@ -1206,15 +1206,7 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
     case WifiSelectionState::NETWORK_LIST: {
       screen.header(tr(STR_WIFI_NETWORKS), cachedMacAddress.c_str());
 
-      fui::FooterAction footerActions[3];
-      uint8_t footerCount = 0;
-      footerActions[footerCount++] = {tr(STR_BACK), ACTION_BACK};
-      footerActions[footerCount++] = {tr(STR_RETRY), ACTION_RESCAN};
-      const bool hasSaved = !networks.empty() && networks[selectedNetworkIndex].hasSavedPassword;
-      if (hasSaved) {
-        footerActions[footerCount++] = {tr(STR_OPTIONS_BUTTON), ACTION_OPTIONS};
-      }
-      screen.footer(footerActions, footerCount);
+      screen.takeBottom(screen.theme().footerHeight);
 
       if (networks.empty()) {
         fui::TextStyle msgStyle = screen.theme().bodyText;
@@ -1291,9 +1283,7 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
     }
     case WifiSelectionState::CONNECTED: {
       screen.header(tr(STR_WIFI_NETWORKS), cachedMacAddress.c_str());
-      fui::FooterAction footerActions[1];
-      footerActions[0] = {tr(STR_DONE), ACTION_BACK};
-      screen.footer(footerActions, 1);
+      screen.takeBottom(screen.theme().footerHeight);
 
       fui::TextStyle titleStyle = screen.theme().titleText;
       titleStyle.bold = true;
@@ -1371,10 +1361,7 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
     }
     case WifiSelectionState::CAPTIVE_PORTAL: {
       screen.header(tr(STR_CAPTIVE_PORTAL_DETECTED), cachedMacAddress.c_str());
-      fui::FooterAction footerActions[2];
-      footerActions[0] = {tr(STR_BACK), ACTION_BACK};
-      footerActions[1] = {tr(STR_CAPTIVE_PORTAL_DONE), ACTION_CAPTIVE_DONE};
-      screen.footer(footerActions, 2);
+      screen.takeBottom(screen.theme().footerHeight);
 
       fui::TextStyle hintStyle = screen.theme().bodyText;
       hintStyle.align = fui::TextAlign::Center;
@@ -1414,6 +1401,21 @@ void WifiSelectionActivity::afterUiRender() {
     QrUtils::drawQrCode(renderer,
                         Rect{captiveQrRect_.x, captiveQrRect_.y, captiveQrRect_.width, captiveQrRect_.height},
                         captivePortalUrl);
+  }
+
+  if (state == WifiSelectionState::NETWORK_LIST) {
+    const bool hasSaved = !networks.empty() && networks[selectedNetworkIndex].hasSavedPassword;
+    const char* confirmLabel = !networks.empty() ? tr(STR_CONNECT) : tr(STR_RETRY);
+    const char* optionsLabel = hasSaved ? tr(STR_OPTIONS_BUTTON) : "";
+    const char* rescanLabel = tr(STR_RETRY);
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, optionsLabel, rescanLabel);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == WifiSelectionState::CONNECTED) {
+    const auto labels = mappedInput.mapLabels(tr(STR_DONE), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == WifiSelectionState::CAPTIVE_PORTAL) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CAPTIVE_PORTAL_DONE), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 }
 

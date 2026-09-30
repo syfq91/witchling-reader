@@ -32,6 +32,7 @@ class SystemInformationActivity final : public Activity, private UiAppHost {
   freeink::ui::Rect bodyRect_{};
 
   void buildScreen(UiScreen& screen);
+  void drawFooter();
   static void screenTrampoline(UiScreen& screen, void* user);
   static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
 };

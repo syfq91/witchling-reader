@@ -135,6 +135,7 @@ void SystemInformationActivity::render(RenderLock&&) {
   renderer.clearScreen();
   renderUi();
   afterUiRender();
+  drawFooter();
   renderer.displayBuffer();
 }
 
@@ -165,32 +166,23 @@ void SystemInformationActivity::actionTrampoline(const freeink::ui::ActionEvent&
 }
 
 void SystemInformationActivity::buildScreen(UiScreen& screen) {
-  namespace fui = freeink::ui;
   const bool paged = pageCount_ > 1;
   const std::string pageOfPages = std::to_string(page_ + 1) + " / " + std::to_string(pageCount_);
   screen.header(tr(STR_SYSTEM_INFO), paged ? pageOfPages.c_str() : CROSSPOINT_VERSION);
 
-  fui::FooterAction footerActions[4];
-  uint8_t footerCount = 0;
-  footerActions[footerCount].label = tr(STR_BACK);
-  footerActions[footerCount].action = ACTION_BACK;
-  footerCount++;
-  if (!sdStatusReady_) {
-    footerActions[footerCount].label = tr(STR_UPDATE);
-    footerActions[footerCount].action = ACTION_UPDATE_SD;
-    footerCount++;
-  }
-  if (paged) {
-    footerActions[footerCount].label = tr(STR_PREV);
-    footerActions[footerCount].action = ACTION_PAGE_PREV;
-    footerCount++;
-    footerActions[footerCount].label = tr(STR_NEXT);
-    footerActions[footerCount].action = ACTION_PAGE_NEXT;
-    footerCount++;
-  }
-  screen.footer(footerActions, footerCount);
+  screen.takeBottom(screen.theme().footerHeight);
 
   bodyRect_ = screen.body();
+}
+
+void SystemInformationActivity::drawFooter() {
+  const bool paged = pageCount_ > 1;
+  const char* backLabel = tr(STR_BACK);
+  const char* confirmLabel = !sdStatusReady_ ? tr(STR_UPDATE) : "";
+  const char* prevLabel = paged ? tr(STR_PREV) : "";
+  const char* nextLabel = paged ? tr(STR_NEXT) : "";
+  const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, prevLabel, nextLabel);
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
 void SystemInformationActivity::afterUiRender() {

@@ -601,23 +601,17 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
     case BrowserState::CHECK_WIFI:
     case BrowserState::LOADING: {
       screen.centeredText(statusMessage.c_str());
-      const freeink::ui::FooterAction actions[] = {{tr(STR_BACK), ACTION_BACK}};
-      screen.footer(actions, 1);
+      screen.takeBottom(screen.theme().footerHeight);
       break;
     }
     case BrowserState::ERROR: {
       screen.centeredText(errorMessage.empty() ? tr(STR_ERROR_MSG) : errorMessage.c_str());
-      const freeink::ui::FooterAction actions[] = {
-          {tr(STR_BACK), ACTION_BACK},
-          {tr(STR_RETRY), ACTION_RETRY},
-      };
-      screen.footer(actions, 2);
+      screen.takeBottom(screen.theme().footerHeight);
       break;
     }
     case BrowserState::DOWNLOADING: {
       screen.centeredText(statusMessage.c_str());
-      const freeink::ui::FooterAction actions[] = {{tr(STR_BACK), ACTION_BACK}};
-      screen.footer(actions, 1);
+      screen.takeBottom(screen.theme().footerHeight);
       break;
     }
     case BrowserState::FORMAT_SELECTION: {
@@ -634,19 +628,11 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
         }
         screen.list(fItems, displayCount, formatSelectorIndex, ACTION_SELECT_FORMAT);
       }
-      const freeink::ui::FooterAction actions[] = {
-          {tr(STR_BACK), ACTION_BACK},
-          {tr(STR_DOWNLOAD), ACTION_CONFIRM},
-      };
-      screen.footer(actions, 2);
+      screen.takeBottom(screen.theme().footerHeight);
       break;
     }
     case BrowserState::BOOK_DETAIL: {
-      const freeink::ui::FooterAction actions[] = {
-          {tr(STR_BACK), ACTION_BACK},
-          {tr(STR_DOWNLOAD), ACTION_DOWNLOAD},
-      };
-      screen.footer(actions, 2);
+      screen.takeBottom(screen.theme().footerHeight);
       break;
     }
     case BrowserState::BROWSING: {
@@ -668,23 +654,7 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
         props.subtitleText.maxLines = 1;
         screen.list(props);
       }
-
-      const bool selectedIsBook = !entryOffsets.empty() && getEntry(selectorIndex).type == OpdsEntryType::BOOK;
-      const char* confirmLabel = selectedIsBook ? tr(STR_DOWNLOAD) : tr(STR_OPEN);
-      const char* searchLabel = !searchTemplate.empty() ? tr(STR_SEARCH) : nullptr;
-      const char* infoLabel = selectedIsBook ? tr(STR_INFO) : nullptr;
-
-      freeink::ui::FooterAction actions[4];
-      uint8_t aCount = 0;
-      actions[aCount++] = {tr(STR_BACK), ACTION_BACK};
-      if (searchLabel) {
-        actions[aCount++] = {searchLabel, ACTION_SEARCH};
-      }
-      if (infoLabel) {
-        actions[aCount++] = {infoLabel, ACTION_INFO};
-      }
-      actions[aCount++] = {confirmLabel, ACTION_CONFIRM};
-      screen.footer(actions, aCount);
+      screen.takeBottom(screen.theme().footerHeight);
       break;
     }
     default:
@@ -770,6 +740,26 @@ void OpdsBookBrowserActivity::afterUiRender() {
       const int barY = midY + 20;
       GUI.drawProgressBar(renderer, Rect{barX, barY, barWidth, barHeight}, downloadProgress, downloadTotal);
     }
+  }
+
+  if (state == BrowserState::BROWSING) {
+    const bool selectedIsBook = !entryOffsets.empty() && getEntry(selectorIndex).type == OpdsEntryType::BOOK;
+    const char* confirmLabel =
+        !entryOffsets.empty() ? (selectedIsBook ? tr(STR_DOWNLOAD) : tr(STR_OPEN)) : tr(STR_SELECT);
+    const char* searchLabel = !searchTemplate.empty() ? tr(STR_SEARCH) : "";
+    const char* infoLabel = selectedIsBook ? tr(STR_INFO) : "";
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, searchLabel, infoLabel);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == BrowserState::FORMAT_SELECTION || state == BrowserState::BOOK_DETAIL) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DOWNLOAD), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == BrowserState::ERROR) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == BrowserState::CHECK_WIFI || state == BrowserState::LOADING ||
+             state == BrowserState::DOWNLOADING) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 }
 

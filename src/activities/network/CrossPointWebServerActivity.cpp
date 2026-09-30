@@ -431,10 +431,7 @@ void CrossPointWebServerActivity::buildScreen(UiScreen& screen) {
   const char* subtitle = connectedSSID.empty() ? nullptr : connectedSSID.c_str();
   screen.header(title, subtitle);
 
-  fui::FooterAction footerActions[1];
-  footerActions[0].label = tr(STR_BACK);
-  footerActions[0].action = ACTION_BACK;
-  screen.footer(footerActions, 1);
+  screen.takeBottom(screen.theme().footerHeight);
 
   if (state == WebServerActivityState::AP_STARTING) {
     screen.spacer(40);
@@ -445,9 +442,8 @@ void CrossPointWebServerActivity::buildScreen(UiScreen& screen) {
 }
 
 void CrossPointWebServerActivity::afterUiRender() {
-  if (state != WebServerActivityState::SERVER_RUNNING) return;
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
+  if (state == WebServerActivityState::SERVER_RUNNING) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect contentRect{bodyRect_.x, bodyRect_.y, bodyRect_.width, bodyRect_.height};
 
   int startY = contentRect.y + metrics.verticalSpacing;
@@ -526,4 +522,8 @@ void CrossPointWebServerActivity::afterUiRender() {
                            currentRssi);
     renderer.drawCenteredText(SMALL_FONT_ID, signalY + signalHeight + 2, rssiLabel(currentRssi).c_str(), true);
   }
+  }
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
