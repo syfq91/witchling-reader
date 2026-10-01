@@ -575,7 +575,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
     renderer.invertScreen();
   }
 
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
 }
 
 BookOverlayInfo SleepActivity::getBookOverlayInfo(const std::string& bookPath) const {
@@ -832,7 +832,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const BookOver
   }
 
   if (!hasGreyscale) {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.displayBuffer(HalDisplay::FULL_REFRESH);
   } else {
     // Absolute planes for the BMP sleep screen follow crosspoint-reader PR
     // #3469 (Bryan O'Sullivan / @bos), including its boundary: preserved-
@@ -851,12 +851,18 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const BookOver
     // consumes it as its base mode. Logged BEFORE that consume, so the line still says whether one
     // was pending (it was, on every reader -> cover sleep captured on X3, X4 and X4 Pro).
     LOG_DBG("SLP", "Gray base: overridePending=%d", renderer.hasRefreshOverridePending() ? 1 : 0);
+    // On controllers with Combined base (SSD1677), beginAbsoluteGrayPass() does not
+    // push or activate a B/W base to the glass. Run an async scrub of the 1-bit frame
+    // so the prior screen's text is wiped clean before the grayscale planes are drawn.
+    if (renderer.combinesGrayscaleBase()) {
+      renderer.triggerDisplayAsync(HalDisplay::HALF_REFRESH);
+    }
     const bool absolutePass = panelHasAbsolute && renderer.beginAbsoluteGrayPass();
     LOG_DBG("SLP", "Grayscale planes: %s",
             absolutePass ? "absolute"
                          : (panelHasAbsolute ? "differential (panel declined the absolute pass)"
                                              : "differential (panel has no absolute encoding)"));
-    if (!absolutePass) {
+    if (!absolutePass && !renderer.combinesGrayscaleBase()) {
       // Fire the BW scrub without waiting: the waveform runs on the controller's own RAM,
       // so the LSB draw below (CPU/SD-only work) overlaps it. copyGrayscaleLsbBuffers()
       // drains the pending finish before its SPI plane write.
@@ -988,7 +994,7 @@ void SleepActivity::renderCoverSleepScreen() const {
 
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
 }
 
 void SleepActivity::renderLastScreenSleepScreen() const {

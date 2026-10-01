@@ -384,6 +384,11 @@ bool HalDisplay::supportsAbsoluteGrayPlanes() const {
   return einkDisplay.grayscaleCapabilities(freeink::GrayscaleMode::Absolute).supported();
 }
 
+bool HalDisplay::combinesGrayscaleBase() const {
+  return einkDisplay.grayscaleCapabilities(freeink::GrayscaleMode::Absolute).base ==
+         freeink::GrayscaleBase::Combined;
+}
+
 bool HalDisplay::beginAbsoluteGrayPass(const RefreshMode fallback, const bool turnOffScreen) {
   HalSpiBus::Lock spiLock;
   // The base push happens inside the SDK call, so record the mode the way every

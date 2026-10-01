@@ -157,6 +157,9 @@ class HalDisplay {
   // DC-balanced XTH4 drive does not. It costs about a second per refresh
   // against the nudge's tenth, so it belongs on images, not on page turns.
   bool supportsAbsoluteGrayPlanes() const;
+  // True when the panel's absolute grayscale mode combines base activation into the gray pass
+  // (skipping displayGrayscaleBase), e.g. SSD1677 on X4.
+  bool combinesGrayscaleBase() const;
 
   // Open an absolute grayscale pass and push the framebuffer as its B/W base.
   // Returns false when the panel cannot run one, leaving the caller on the
