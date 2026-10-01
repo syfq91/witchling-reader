@@ -799,9 +799,9 @@ void EpubReaderActivity::onExit() {
   // (LgfxEpdDriver::epdModeFor). So a B/W page leaves the canvas holding the page just as a
   // grey one does, and the home screen's FAST diff runs against it. Reported from hardware
   // as the last reader page and the home screen superimposed, settling a refresh later.
-  // Leave the panel a clean baseline for whatever screen comes next (Home, Sleep, etc.)
-  // regardless of AA mode, clearing particle charge and character-edge ghosting.
-  ReaderUtils::enforceExitFullRefresh(renderer);
+  if (getEffectiveTextAntiAliasing() || renderer.supportsGrayFrame()) {
+    ReaderUtils::enforceExitFullRefresh(renderer);
+  }
 
 
   // If a pre-render left the next page in the frame buffer, redraw the current page so the

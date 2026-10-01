@@ -63,9 +63,10 @@ void XtcReaderActivity::onExit() {
   // even a 1-bit page leaves the canvas holding it. Either way the next screen's FAST diff runs
   // against a frame that is not what is on the panel. The EPUB reader's comment records the
   // device symptom. Until now this reader armed the refresh only on its submenu-launch paths,
-  // Leave the panel a clean baseline for whatever screen comes next (Home, Sleep, etc.)
-  // regardless of bit depth or AA, clearing particle charge and character-edge ghosting.
-  ReaderUtils::enforceExitFullRefresh(renderer);
+  // never on exit. Before xtc.reset() below, which this reads.
+  if ((xtc && xtc->getBitDepth() == 2) || renderer.supportsGrayFrame()) {
+    ReaderUtils::enforceExitFullRefresh(renderer);
+  }
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
 

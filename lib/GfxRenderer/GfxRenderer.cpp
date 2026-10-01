@@ -3490,8 +3490,6 @@ void GfxRenderer::displayGrayBuffer() const { display.displayGrayBuffer(fadingFi
 
 bool GfxRenderer::supportsAbsoluteGrayPlanes() const { return display.supportsAbsoluteGrayPlanes(); }
 
-bool GfxRenderer::combinesGrayscaleBase() const { return display.combinesGrayscaleBase(); }
-
 bool GfxRenderer::beginAbsoluteGrayPass(const HalDisplay::RefreshMode fallback) const {
   // Consume a pending setNextDisplayRefreshMode() override exactly as displayBuffer() and
   // triggerDisplay() do. This was the one display entry point that did not, so a reader exit's

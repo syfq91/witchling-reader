@@ -663,7 +663,6 @@ class GfxRenderer {
 
   // Passthroughs for the absolute-plane pass; see HalDisplay for the contract.
   bool supportsAbsoluteGrayPlanes() const;
-  bool combinesGrayscaleBase() const;
   bool beginAbsoluteGrayPass(HalDisplay::RefreshMode fallback = HalDisplay::HALF_REFRESH) const;
 
   // Text darkness control:
