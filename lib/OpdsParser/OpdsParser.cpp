@@ -133,7 +133,7 @@ void OpdsParser::startElement(void* userData, const char* name, const char** att
         }
       } else if (rel && strcmp(rel, "next") == 0 && !self->inEntry) {
         self->nextPageUrl = href;
-      } else if (rel && strcmp(rel, "previous") == 0 && !self->inEntry) {
+      } else if (rel && (strcmp(rel, "previous") == 0 || strcmp(rel, "prev") == 0) && !self->inEntry) {
         self->prevPageUrl = href;
       }
 

@@ -256,3 +256,45 @@ TEST(OpdsParser, SlashVariantHrefAcquisitionLinksAreDeduplicated) {
   ASSERT_EQ(links[0].formatKey, "epub");
   ASSERT_EQ(links[0].href, "/books/example.epub");
 }
+
+TEST(OpdsParser, FeedPaginationLinksNextAndPrevious) {
+  const char* xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <link rel="previous" href="/opds/books?page=1" type="application/atom+xml;profile=opds-catalog"/>
+  <link rel="next" href="/opds/books?page=3" type="application/atom+xml;profile=opds-catalog"/>
+  <entry>
+    <title>Page 2 Book</title>
+    <author><name>Author</name></author>
+    <id>book-page-2</id>
+    <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/p2.epub"/>
+  </entry>
+</feed>)";
+
+  std::vector<OpdsEntry> entries;
+  OpdsParser parser;
+  parser.onEntryParsed = [&](OpdsEntry e) { entries.push_back(std::move(e)); };
+  parser.write(reinterpret_cast<const uint8_t*>(xml), strlen(xml));
+  parser.flush();
+
+  ASSERT_TRUE(!parser.error());
+  ASSERT_EQ(entries.size(), static_cast<size_t>(1));
+  EXPECT_EQ(parser.getPrevPageUrl(), "/opds/books?page=1");
+  EXPECT_EQ(parser.getNextPageUrl(), "/opds/books?page=3");
+}
+
+TEST(OpdsParser, FeedPaginationLinksPrevVariant) {
+  const char* xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <link rel="prev" href="/opds/catalog?p=2" type="application/atom+xml;profile=opds-catalog"/>
+  <link rel="next" href="/opds/catalog?p=4" type="application/atom+xml;profile=opds-catalog"/>
+</feed>)";
+
+  OpdsParser parser;
+  parser.write(reinterpret_cast<const uint8_t*>(xml), strlen(xml));
+  parser.flush();
+
+  ASSERT_TRUE(!parser.error());
+  EXPECT_EQ(parser.getPrevPageUrl(), "/opds/catalog?p=2");
+  EXPECT_EQ(parser.getNextPageUrl(), "/opds/catalog?p=4");
+}
+

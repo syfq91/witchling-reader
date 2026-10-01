@@ -68,6 +68,7 @@ class OpdsBookBrowserActivity final : public Activity, private UiAppHost {
   std::string windowSubtitles[LIST_WINDOW_CAPACITY];
 
   ButtonNavigator buttonNavigator;
+  freeink::ui::ListNav listNav;
   BrowserState state = BrowserState::LOADING;
   std::vector<uint32_t> entryOffsets;
   std::vector<std::string> navigationHistory;

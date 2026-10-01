@@ -239,6 +239,7 @@ void OpdsBookBrowserActivity::onEnter() {
   currentPath = "";  // Root path - user provides full URL in settings
   searchTemplate.clear();
   selectorIndex = 0;
+  listNav.reset();
   selectedBookIndex = -1;
   formatSelectorIndex = 0;
   formatSelectionLabels.clear();
@@ -423,11 +424,27 @@ void OpdsBookBrowserActivity::loop() {
     }
 
     if (!entryOffsets.empty()) {
-      // Logical Left/Right are reserved for Search and Info, so restrict to logical Up/Down only.
-      buttonNavigator.onNextList(ButtonNavigator::getStepNextButtons(), selectorIndex,
-                                 static_cast<int>(entryOffsets.size()), [this] { requestUpdate(); });
-      buttonNavigator.onPreviousList(ButtonNavigator::getStepPreviousButtons(), selectorIndex,
-                                     static_cast<int>(entryOffsets.size()), [this] { requestUpdate(); });
+      const auto moveSelection = [this](const int index) {
+        selectorIndex = index;
+        listNav.selected = index;
+        listNav.follow(static_cast<int>(entryOffsets.size()));
+        requestUpdate();
+      };
+
+      buttonNavigator.onRelease(
+          ButtonNavigator::getStepNextButtons(),
+          [this, &moveSelection] { moveSelection(ButtonNavigator::nextIndex(selectorIndex, entryOffsets.size())); });
+      buttonNavigator.onRelease(
+          ButtonNavigator::getStepPreviousButtons(),
+          [this, &moveSelection] { moveSelection(ButtonNavigator::previousIndex(selectorIndex, entryOffsets.size())); });
+
+      const int pageSize = std::max(1, listNav.pageRowsFor(static_cast<int>(entryOffsets.size())));
+      buttonNavigator.onContinuous(ButtonNavigator::getStepNextButtons(), [this, &moveSelection, pageSize] {
+        moveSelection(ButtonNavigator::nextPageIndex(selectorIndex, entryOffsets.size(), pageSize));
+      });
+      buttonNavigator.onContinuous(ButtonNavigator::getStepPreviousButtons(), [this, &moveSelection, pageSize] {
+        moveSelection(ButtonNavigator::previousPageIndex(selectorIndex, entryOffsets.size(), pageSize));
+      });
     }
   }
 }
@@ -525,6 +542,8 @@ void OpdsBookBrowserActivity::handleAction(const freeink::ui::ActionEvent& event
     case ACTION_SELECT_ENTRY:
       selectorIndex = event.value;
       if (!entryOffsets.empty() && selectorIndex >= 0 && selectorIndex < static_cast<int>(entryOffsets.size())) {
+        listNav.selected = selectorIndex;
+        listNav.follow(static_cast<int>(entryOffsets.size()));
         const auto entry = getEntry(selectorIndex);
         entry.type == OpdsEntryType::BOOK ? chooseBookFormat(entry) : navigateToEntry(entry);
       }
@@ -558,11 +577,7 @@ void OpdsBookBrowserActivity::materializeListWindow() {
     windowCount = 0;
     return;
   }
-  if (selectorIndex < windowFirst) {
-    windowFirst = static_cast<uint16_t>(selectorIndex);
-  } else if (selectorIndex >= windowFirst + LIST_WINDOW_CAPACITY) {
-    windowFirst = static_cast<uint16_t>(selectorIndex - LIST_WINDOW_CAPACITY + 1);
-  }
+  windowFirst = static_cast<uint16_t>(std::max(0, std::min(listNav.top, count)));
   windowCount = static_cast<uint16_t>(std::min(static_cast<size_t>(count - windowFirst), LIST_WINDOW_CAPACITY));
 
   for (uint16_t offset = 0; offset < windowCount; ++offset) {
@@ -589,6 +604,11 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
   renderer.clearScreen();
   resetUi();
   renderUi();
+  for (int pass = 0; state == BrowserState::BROWSING && listNav.consumeRebuildNeeded() && pass < 8; ++pass) {
+    renderer.clearScreen();
+    resetUi();
+    renderUi();
+  }
   afterUiRender();
   renderer.displayBuffer();
 }
@@ -636,22 +656,24 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
       break;
     }
     case BrowserState::BROWSING: {
-      materializeListWindow();
       if (entryOffsets.empty()) {
         screen.centeredText(tr(STR_NO_ENTRIES));
       } else {
         freeink::ui::ListProps props;
         props.count = static_cast<uint16_t>(entryOffsets.size());
-        props.selectedIndex = static_cast<int16_t>(selectorIndex);
-        props.topIndex = windowFirst;
         props.action = ACTION_SELECT_ENTRY;
-        props.items = windowItems;
-        props.itemsWindowFirst = windowFirst;
-        props.itemsWindowCount = windowCount;
         props.labelText = screen.theme().bodyText;
         props.labelText.maxLines = 1;
         props.subtitleText = screen.theme().smallText;
         props.subtitleText.maxLines = 1;
+        props.partialTrailingRow = true;
+        listNav.selected = selectorIndex;
+        screen.syncListViewport(listNav, props, static_cast<int>(entryOffsets.size()));
+
+        materializeListWindow();
+        props.items = windowItems;
+        props.itemsWindowFirst = windowFirst;
+        props.itemsWindowCount = windowCount;
         screen.list(props);
       }
       screen.takeBottom(screen.theme().footerHeight);
@@ -872,6 +894,7 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
   }
 
   selectorIndex = 0;
+  listNav.reset();
   state = entryOffsets.empty() ? BrowserState::ERROR : BrowserState::BROWSING;
   if (entryOffsets.empty()) errorMessage = tr(STR_NO_ENTRIES);
   requestUpdate();
@@ -882,6 +905,7 @@ void OpdsBookBrowserActivity::navigateToEntry(const OpdsEntry& entry) {
   currentPath = entry.href;
   entryOffsets.clear();
   selectorIndex = 0;
+  listNav.reset();
   checkAndConnectWifi();
 }
 
@@ -893,6 +917,7 @@ void OpdsBookBrowserActivity::navigateBack() {
     navigationHistory.pop_back();
     entryOffsets.clear();
     selectorIndex = 0;
+    listNav.reset();
     checkAndConnectWifi();
   }
 }
