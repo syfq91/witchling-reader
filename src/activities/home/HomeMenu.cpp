@@ -5,7 +5,7 @@
 namespace {
 
 // What an entry needs before it appears anywhere.
-enum class Requires : uint8_t { Nothing, Bookmarks, OpdsServers };
+enum class Requires : uint8_t { Nothing, Bookmarks };
 
 struct HomeMenuRow {
   HomeMenuEntry entry;
@@ -25,9 +25,6 @@ constexpr HomeMenuRow kRows[] = {
     {{HomeMenuAction::GlobalBookmarks, StrId::STR_GLOBAL_BOOKMARKS, Book},
      Requires::Bookmarks,
      &CrossPointSettings::showBookmarksOnHome},
-    {{HomeMenuAction::OpdsBrowser, StrId::STR_OPDS_BROWSER, Library},
-     Requires::OpdsServers,
-     &CrossPointSettings::showOpdsBrowserOnHome},
     {{HomeMenuAction::FileTransfer, StrId::STR_FILE_TRANSFER, Transfer},
      Requires::Nothing,
      &CrossPointSettings::showFileTransferOnHome},
@@ -42,8 +39,6 @@ bool isAvailable(const Requires requirement, const HomeMenuAvailability& availab
       return true;
     case Requires::Bookmarks:
       return availability.hasBookmarks;
-    case Requires::OpdsServers:
-      return availability.hasOpdsServers;
   }
   return false;
 }

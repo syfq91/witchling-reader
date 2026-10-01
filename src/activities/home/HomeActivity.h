@@ -37,7 +37,6 @@ class HomeActivity final : public Activity, private UiAppHost {
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;
-  bool hasOpdsServers = false;
   bool coverRendered = false;
   bool coverBufferStored = false;
   // Home can be entered while Back is still held (e.g. leaving Settings with

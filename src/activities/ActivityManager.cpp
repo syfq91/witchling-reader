@@ -488,9 +488,6 @@ void ActivityManager::goToHomeMenuAction(const HomeMenuAction action) {
     case HomeMenuAction::GlobalBookmarks:
       goToGlobalBookmarks();
       break;
-    case HomeMenuAction::OpdsBrowser:
-      goToBrowser();
-      break;
     case HomeMenuAction::FileTransfer:
       goToFileTransfer();
       break;

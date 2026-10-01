@@ -29,17 +29,16 @@ class HomeMenuTest : public ::testing::Test {
     SETTINGS.showBrowseFilesOnHome = 1;
     SETTINGS.showRecentBooksOnHome = 1;
     SETTINGS.showBookmarksOnHome = 1;
-    SETTINGS.showOpdsBrowserOnHome = 1;
     SETTINGS.showFileTransferOnHome = 1;
   }
 
-  HomeMenuAvailability everything{.hasBookmarks = true, .hasOpdsServers = true};
-  HomeMenuAvailability nothingOptional{.hasBookmarks = false, .hasOpdsServers = false};
+  HomeMenuAvailability everything{.hasBookmarks = true};
+  HomeMenuAvailability nothingOptional{.hasBookmarks = false};
 };
 
 TEST_F(HomeMenuTest, DefaultsShowEverythingAvailableAndNoMore) {
   EXPECT_EQ(actionsAt(HomeMenuPlacement::Home, everything),
-            (std::vector<A>{A::FileBrowser, A::Recents, A::GlobalBookmarks, A::OpdsBrowser,
+            (std::vector<A>{A::FileBrowser, A::Recents, A::GlobalBookmarks,
                             A::FileTransfer, A::Settings}));
   EXPECT_TRUE(actionsAt(HomeMenuPlacement::More, everything).empty());
 }
@@ -53,23 +52,22 @@ TEST_F(HomeMenuTest, AHiddenEntryMovesBehindMoreWhichSitsAboveSettings) {
   SETTINGS.showFileTransferOnHome = 0;
 
   EXPECT_EQ(actionsAt(HomeMenuPlacement::Home, everything),
-            (std::vector<A>{A::FileBrowser, A::Recents, A::GlobalBookmarks, A::OpdsBrowser,
+            (std::vector<A>{A::FileBrowser, A::Recents, A::GlobalBookmarks,
                             A::More, A::Settings}));
   EXPECT_EQ(actionsAt(HomeMenuPlacement::More, everything), (std::vector<A>{A::FileTransfer}));
 }
 
 TEST_F(HomeMenuTest, MoreKeepsTheHomeScreenOrder) {
   SETTINGS.showBrowseFilesOnHome = 0;
-  SETTINGS.showOpdsBrowserOnHome = 0;
+  SETTINGS.showRecentBooksOnHome = 0;
 
   EXPECT_EQ(actionsAt(HomeMenuPlacement::More, everything),
-            (std::vector<A>{A::FileBrowser, A::OpdsBrowser}));
+            (std::vector<A>{A::FileBrowser, A::Recents}));
 }
 
-// Hiding OPDS with no server configured hides nothing the user could open, so a More row here
+// Hiding bookmarks with no bookmarks present hides nothing the user could open, so a More row here
 // would lead to an empty list.
 TEST_F(HomeMenuTest, HidingAnUnavailableEntryAddsNoMore) {
-  SETTINGS.showOpdsBrowserOnHome = 0;
   SETTINGS.showBookmarksOnHome = 0;
 
   const auto home = actionsAt(HomeMenuPlacement::Home, nothingOptional);
@@ -81,12 +79,11 @@ TEST_F(HomeMenuTest, SettingsStaysWhenEverythingElseIsHidden) {
   SETTINGS.showBrowseFilesOnHome = 0;
   SETTINGS.showRecentBooksOnHome = 0;
   SETTINGS.showBookmarksOnHome = 0;
-  SETTINGS.showOpdsBrowserOnHome = 0;
   SETTINGS.showFileTransferOnHome = 0;
 
   EXPECT_EQ(actionsAt(HomeMenuPlacement::Home, everything), (std::vector<A>{A::More, A::Settings}));
   EXPECT_EQ(actionsAt(HomeMenuPlacement::More, everything),
-            (std::vector<A>{A::FileBrowser, A::Recents, A::GlobalBookmarks, A::OpdsBrowser,
+            (std::vector<A>{A::FileBrowser, A::Recents, A::GlobalBookmarks,
                             A::FileTransfer}));
 }
 

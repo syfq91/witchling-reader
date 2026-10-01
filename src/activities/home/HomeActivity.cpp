@@ -27,7 +27,6 @@
 #include "CrossPointState.h"
 #include "GlobalBookmarkIndex.h"
 #include "MappedInputManager.h"
-#include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "activities/reader/ReaderActivity.h"
 #include "components/UITheme.h"
@@ -91,9 +90,8 @@ int getHomeCoverRenderHeight(const HomeScreenLayout& layout) { return std::max(1
 // dispatches Confirm based on action) and render() (which draws labels/icons).
 void HomeActivity::rebuildMenuEntries() {
   menuEntries.clear();
-  menuEntries.reserve(8);  // all eight shown, or seven plus More
-  const HomeMenuAvailability availability{.hasBookmarks = !GLOBAL_BOOKMARKS.isEmpty(),
-                                          .hasOpdsServers = hasOpdsServers};
+  menuEntries.reserve(7);
+  const HomeMenuAvailability availability{.hasBookmarks = !GLOBAL_BOOKMARKS.isEmpty()};
   collectHomeMenuEntries(HomeMenuPlacement::Home, availability, menuEntries);
   menuEntriesDirty = false;
 }
@@ -780,8 +778,6 @@ void HomeActivity::onEnter() {
   app.setScreen(screenTrampoline, this);
   app.on(ACTION_RECENT_BOOK, actionTrampoline, this);
   app.on(ACTION_MENU_ITEM, actionTrampoline, this);
-
-  hasOpdsServers = OPDS_STORE.hasServers();
 
   selectorIndex = 0;
   recentsLoading = false;
