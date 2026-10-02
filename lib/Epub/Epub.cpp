@@ -253,9 +253,8 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, OpfCac
 
       int score = 0;
       // Score 3: Exact primary cover stems
-      if (strcmp(lower, "cover") == 0 || strcmp(lower, "frontcover") == 0 ||
-          strcmp(lower, "cover-image") == 0 || strcmp(lower, "coverimage") == 0 ||
-          strcmp(lower, "bookcover") == 0) {
+      if (strcmp(lower, "cover") == 0 || strcmp(lower, "frontcover") == 0 || strcmp(lower, "cover-image") == 0 ||
+          strcmp(lower, "coverimage") == 0 || strcmp(lower, "bookcover") == 0) {
         score = 3;
       }
       // Score 2: Cover variants (e.g. cover_large, front_cover, book_cover)
@@ -277,8 +276,8 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, OpfCac
 
     if (!bestCandidate.empty()) {
       bookMetadata.coverItemHref = std::move(bestCandidate);
-      LOG_DBG("EBP", "Found cover image via ZIP scan (score=%d) in %lu ms: %s", bestScore,
-              millis() - coverBatchStart, bookMetadata.coverItemHref.c_str());
+      LOG_DBG("EBP", "Found cover image via ZIP scan (score=%d) in %lu ms: %s", bestScore, millis() - coverBatchStart,
+              bookMetadata.coverItemHref.c_str());
     } else {
       LOG_DBG("EBP", "Cover ZIP scan found no match (%lu ms)", millis() - coverBatchStart);
     }
@@ -474,8 +473,7 @@ bool Epub::parseTocNcxFile() const {
   // onto rendered pages without re-parsing the NCX.
   ncxPageListSink.finalize();
 
-  if (bookMetadataCache && bookMetadataCache->coreMetadata.coverItemHref.empty() &&
-      !ncxParser.getCoverHref().empty()) {
+  if (bookMetadataCache && bookMetadataCache->coreMetadata.coverItemHref.empty() && !ncxParser.getCoverHref().empty()) {
     std::string extracted;
     if (extractCoverImageFromPage(ncxParser.getCoverHref(), extracted)) {
       bookMetadataCache->coreMetadata.coverItemHref = extracted;
@@ -524,8 +522,7 @@ bool Epub::parseTocNavFile() const {
   // Flush u16 count + close pagelist.bin (or remove it if no entries were streamed).
   navPageListSink.finalize();
 
-  if (bookMetadataCache && bookMetadataCache->coreMetadata.coverItemHref.empty() &&
-      !navParser.getCoverHref().empty()) {
+  if (bookMetadataCache && bookMetadataCache->coreMetadata.coverItemHref.empty() && !navParser.getCoverHref().empty()) {
     std::string extracted;
     if (extractCoverImageFromPage(navParser.getCoverHref(), extracted)) {
       bookMetadataCache->coreMetadata.coverItemHref = extracted;
@@ -766,6 +763,7 @@ void Epub::parseCssFiles() const {
       Storage.remove(tmpCssPath.c_str());
       continue;
     }
+    cssParser->setStylesheetPath(cssPath);  // its url()s resolve against its own directory
     const bool compiledOk = cssParser->appendCompiledFromStream(tempCssFile);
     tempCssFile.close();
     Storage.remove(tmpCssPath.c_str());
@@ -2479,10 +2477,9 @@ const std::vector<float>& Epub::getChapterProgressMarkers() const {
 
   if (!chapterProgressMarkers.empty()) {
     std::sort(chapterProgressMarkers.begin(), chapterProgressMarkers.end());
-    chapterProgressMarkers.erase(
-        std::unique(chapterProgressMarkers.begin(), chapterProgressMarkers.end(),
-                    [](const float a, const float b) { return std::abs(a - b) < 0.001f; }),
-        chapterProgressMarkers.end());
+    chapterProgressMarkers.erase(std::unique(chapterProgressMarkers.begin(), chapterProgressMarkers.end(),
+                                             [](const float a, const float b) { return std::abs(a - b) < 0.001f; }),
+                                 chapterProgressMarkers.end());
   }
 
   return chapterProgressMarkers;

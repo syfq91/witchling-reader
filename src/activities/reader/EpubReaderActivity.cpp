@@ -111,8 +111,6 @@ std::optional<int> parsePrintedPageLabel(const std::string& label) {
   return value;
 }
 
-
-
 // Pre-render of the next page within the current chapter only runs when heap is healthy.
 // 44 KB, derived from what the pass actually consumes rather than from what happens to be
 // free — this floor was set the other way twice and was wrong both times:
@@ -229,6 +227,25 @@ constexpr uint32_t LARGEST_FREE_BLOCK_SLACK = 16;
 // races again and this is the number to raise.
 #ifndef BG_BUILD_BORROW_QUIET_MS
 #define BG_BUILD_BORROW_QUIET_MS 1500UL
+#endif
+
+// Build-through: on the last pages of a chapter, B's build of the NEXT chapter keeps the borrowed
+// buffer across page turns instead of being discarded by each one, and it starts without waiting
+// for BG_BUILD_BORROW_QUIET_MS. A reader moving fast enough never leaves a quiet window -- X3,
+// 2026-10-01: turns 1-2 s apart through a 26-page chapter, B waited 10 s without starting and the
+// next chapter opened on "Indexing". A text chapter builds in 0.4-1 s of slices, which fits into
+// the waveforms of the few turns left.
+//
+// The price is paid on those pages only, and only while the build runs: they draw in BW with the
+// normal refresh, without anti-aliasing or a pre-render of the page after. At that pace the AA was
+// already being lost ("AA replay skipped: page preempted by navigation"). If the reader reaches
+// the next chapter first, Background-C adopts the live build (see buildSection).
+//
+// X3 only: its controller keeps the displayed frame as the diff baseline, so a FAST refresh needs
+// no host-side copy of the previous frame. The X4 would first need its RED RAM seeded from the
+// frame on screen, which the buffer B borrows may no longer hold.
+#ifndef BG_BUILD_THROUGH_PAGES
+#define BG_BUILD_THROUGH_PAGES 3
 #endif
 
 // The image lane's settle after a page turn, a draw or a preempted decode (see
@@ -812,7 +829,6 @@ void EpubReaderActivity::onExit() {
     ReaderUtils::enforceExitFullRefresh(renderer);
   }
 
-
   // If a pre-render left the next page in the frame buffer, redraw the current page so the
   // next activity (notably SleepActivity's OVERLAY mode) sees what the user was looking at.
   // Must run before section.reset() and the orientation reset below.
@@ -1383,6 +1399,7 @@ void EpubReaderActivity::endBackgroundBorrow() {
   buildScratch_.reset();
   renderer.returnSecondaryBuffer();  // cannot fail: the region never entered the heap
   backgroundBorrowActive_ = false;
+  backgroundBuildThrough_ = false;
   secondaryBorrowed_ = false;
   secondaryBufferDegraded_ = false;
   backgroundBuildPercent_ = -1;
@@ -1455,7 +1472,7 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
   // nice-to-have (page-turn latency), not correctness — but a floor that rejects it constantly is
   // still evidence the floors are mistuned.
   const bool preRenderWanted =
-      !preRenderedPage.ready && section->currentPage + 1 < section->pageCount &&
+      !preRenderedPage.ready && !backgroundBuildThrough_ && section->currentPage + 1 < section->pageCount &&
       lastRenderedSpineIndex_ == currentSpineIndex && lastRenderedPageIndex_ == section->currentPage &&
       (preRenderRearmSpine_ != currentSpineIndex || preRenderRearmPage_ != section->currentPage);
   if (preRenderWanted && preRenderFree < PRE_RENDER_MIN_FREE_HEAP_BYTES) {
@@ -1482,8 +1499,22 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
   if (backgroundBuildBaseSpine_ != currentSpineIndex) {
     resetBackgroundBuild();
     backgroundPausedForChapter_ = false;  // a new chapter: B may try again
+    backgroundAbandonedSpine_ = -1;
     backgroundBuildBaseSpine_ = currentSpineIndex;
     backgroundBuildSpineIndex_ = currentSpineIndex + 1;
+    backgroundWindowPagesBuilt_ = 0;
+  }
+  // The next chapter lost its build to page turns mid-chapter and was left to the foreground. On
+  // the last pages a page turn no longer discards a build of it (BG_BUILD_THROUGH_PAGES), so it
+  // gets one more try there. The window restarts with it: the chapters after it are cached and
+  // settle for free, and their pages count against the budget again.
+  if (backgroundAbandonedSpine_ == currentSpineIndex + 1 && backgroundBuildState_ != BackgroundBuildState::Building &&
+      nearChapterEndForBuildThrough()) {
+    LOG_INF("ERS", "Background-B: retrying spine %d on the last pages, after it was abandoned mid-chapter",
+            backgroundAbandonedSpine_);
+    resetBackgroundBuild();
+    backgroundBuildSpineIndex_ = backgroundAbandonedSpine_;
+    backgroundAbandonedSpine_ = -1;
     backgroundWindowPagesBuilt_ = 0;
   }
   // Walk forward from currentSpineIndex+1 to the book end. The cursor advances as each target
@@ -1566,6 +1597,9 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
       if (backgroundPreemptCount_ >= BG_BUILD_MAX_PREEMPTIONS) {
         LOG_INF("ERS", "Background build spine=%d abandoned after %u preemptions; leaving it to foreground",
                 targetSpine, static_cast<unsigned>(backgroundPreemptCount_));
+        if (targetSpine == currentSpineIndex + 1 && !nearChapterEndForBuildThrough()) {
+          backgroundAbandonedSpine_ = targetSpine;  // retried on the last pages, see above
+        }
         backgroundSection_.reset();
         backgroundBuildState_ = BackgroundBuildState::Settled;
         return;
@@ -1591,11 +1625,19 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
       // when everything else it does lives in the borrowed arena, so it needs the margin on top.
       const uint32_t borrowFreeFloor =
           BG_BUILD_BORROW_MIN_FREE_HEAP_BYTES + (backgroundBuildNeedsResolve_ ? BG_BUILD_RESOLVE_EXTRA_HEAP_BYTES : 0);
-      if (!inputQueued && (now - lastActivityMs) >= BG_BUILD_BORROW_QUIET_MS &&
+      // The next chapter, a few pages away, does not wait for a quiet window: page turns no longer
+      // discard its build (see BG_BUILD_THROUGH_PAGES).
+      const bool buildThrough = targetSpine == currentSpineIndex + 1 && nearChapterEndForBuildThrough();
+      if (!inputQueued && (buildThrough || (now - lastActivityMs) >= BG_BUILD_BORROW_QUIET_MS) &&
           esp_get_free_heap_size() >= borrowFreeFloor &&
           heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT) >=
               BG_BUILD_BORROW_MIN_CONTIG_HEAP_BYTES - LARGEST_FREE_BLOCK_SLACK &&
           beginBackgroundBorrow()) {
+        backgroundBuildThrough_ = buildThrough;
+        if (buildThrough) {
+          LOG_INF("ERS", "Background-B: building spine %d through page turns (page %d of %u)", targetSpine,
+                  section->currentPage + 1, section->pageCount);
+        }
         backgroundBuildState_ = BackgroundBuildState::Building;
         return;
       }
@@ -2569,12 +2611,10 @@ void EpubReaderActivity::applyTextDarkness(const uint8_t textDarkness) {
   requestUpdate();
 }
 
-
 void EpubReaderActivity::applyBookReaderOverrides(
     const int8_t embeddedStyleOverride, const int8_t imageRenderingOverride, const int8_t fontFamilyOverride,
-    const std::string& sdFontFamilyOverride, const int8_t fontSizeOverride, 
-    const int8_t paragraphAlignmentOverride, const int8_t textAntiAliasingOverride, const int8_t hyphenationOverride,
-    const int8_t fontSizeNormalizationOverride,
+    const std::string& sdFontFamilyOverride, const int8_t fontSizeOverride, const int8_t paragraphAlignmentOverride,
+    const int8_t textAntiAliasingOverride, const int8_t hyphenationOverride, const int8_t fontSizeNormalizationOverride,
     const int8_t inlineFootnotePreviewsOverride) {
   if (!epub) {
     return;
@@ -2612,12 +2652,10 @@ void EpubReaderActivity::applyBookReaderOverrides(
   bookHyphenationOverride = hyphenationOverride;
   bookFontSizeNormalizationOverride = fontSizeNormalizationOverride;
   bookInlineFootnotePreviewsOverride = inlineFootnotePreviewsOverride;
-  RECENT_BOOKS.setReaderOverrides(
-      epub->getPath(), bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
-      bookSdFontFamilyOverride, bookFontSizeOverride, bookParagraphAlignmentOverride,
-      bookTextAntiAliasingOverride, bookHyphenationOverride, bookFontSizeNormalizationOverride,
-      bookInlineFootnotePreviewsOverride);
-
+  RECENT_BOOKS.setReaderOverrides(epub->getPath(), bookEmbeddedStyleOverride, bookImageRenderingOverride,
+                                  bookFontFamilyOverride, bookSdFontFamilyOverride, bookFontSizeOverride,
+                                  bookParagraphAlignmentOverride, bookTextAntiAliasingOverride, bookHyphenationOverride,
+                                  bookFontSizeNormalizationOverride, bookInlineFootnotePreviewsOverride);
 
   // A changed override forces a full section relayout (section.reset() below → rebuild with the
   // "Indexing…" popup). That popup FAST-refreshes against whatever is on the panel; when the change
@@ -2671,7 +2709,6 @@ bool EpubReaderActivity::getEffectiveEmbeddedStyle() const {
   return SETTINGS.embeddedStyle != 0;
 }
 
-
 uint8_t EpubReaderActivity::getEffectiveImageRendering() const {
   if (bookImageRenderingOverride >= 0) {
     return static_cast<uint8_t>(bookImageRenderingOverride);
@@ -2699,7 +2736,6 @@ bool EpubReaderActivity::getEffectiveFontSizeNormalization() const {
   }
   return SETTINGS.fontSizeNormalization != 0;
 }
-
 
 bool EpubReaderActivity::getEffectiveInlineFootnotePreviews() const {
   if (bookInlineFootnotePreviewsOverride >= 0) {
@@ -3112,8 +3148,8 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
       isForwardTurn && section && preRenderedPage.ready && preRenderedPage.spineIndex == currentSpineIndex;
   const int expectedNextPage = (section ? section->currentPage + 1 : -1);
 
-  if (isForwardTurn && section && preRenderedPage.ready && preRenderedPage.spineIndex == currentSpineIndex &&
-      preRenderedPage.pageIndex == section->currentPage + 1) {
+  if (isForwardTurn && section && preRenderedPage.ready && !preRenderedPage.incomplete &&
+      preRenderedPage.spineIndex == currentSpineIndex && preRenderedPage.pageIndex == section->currentPage + 1) {
     // Fast path: the frame buffer already holds the next page content. Advance state here on the
     // loop task, then hand off to render() via usePreRenderedBuffer — all display work (status
     // bar, flush, AA pass) stays on the render task where it belongs.
@@ -3281,7 +3317,28 @@ EpubReaderActivity::PageLinkInfo EpubReaderActivity::pageLinkInfoForCurrentPage(
   return info;
 }
 
+bool EpubReaderActivity::nearChapterEndForBuildThrough() const {
+  if (!renderer.isX3() || !section || section->hasActiveBuild() || section->pageCount == 0) return false;
+  return static_cast<int>(section->pageCount) - 1 - section->currentPage <= BG_BUILD_THROUGH_PAGES;
+}
+
 void EpubReaderActivity::recoverSecondaryBufferIfNeeded() {
+  // Build-through (BG_BUILD_THROUGH_PAGES): B is building the next chapter and the reader is
+  // finishing this one, so the build keeps the buffer and this page draws without it. Engaged by
+  // the first render that finds the reader that close, when B did not already start in that mode.
+  // Also kept when the reader has just turned INTO that chapter, so buildSection() adopts the
+  // live build instead of starting it over. Any other move takes the buffer back as below.
+  if (backgroundBorrowActive_ && backgroundSection_ && backgroundSection_->hasActiveBuild()) {
+    const bool nextChapter = backgroundBuildSpineIndex_ == currentSpineIndex + 1;
+    if (!backgroundBuildThrough_ && nextChapter && nearChapterEndForBuildThrough()) {
+      backgroundBuildThrough_ = true;
+      LOG_INF("ERS", "Background-B: page %d of %u reached mid-build; building spine %d through page turns",
+              section->currentPage + 1, section->pageCount, backgroundBuildSpineIndex_);
+    }
+    if (backgroundBuildThrough_ && (nextChapter || backgroundBuildSpineIndex_ == currentSpineIndex)) {
+      return;
+    }
+  }
   // A render is about to draw page content, and AA is gated on a RESIDENT secondary buffer
   // (see renderContents). If Background-B is building inside the borrowed one, take it back
   // first — otherwise this frame silently renders BW. No-op unless B holds it, which is the
@@ -3493,7 +3550,9 @@ bool EpubReaderActivity::renderBufferDisplayPass(const RenderLayout& layout) {
   pendingProgressSave.pageCount = section->pageCount;
   pendingProgressSave.pending.store(true, std::memory_order_release);
 
-  if (section->currentPage + 1 < section->pageCount) {
+  // Not during a build-through: the X3's frame buffer is the only one, and it must keep the page
+  // on screen until the buffer goes back (see BG_BUILD_THROUGH_PAGES).
+  if (!backgroundBuildThrough_ && section->currentPage + 1 < section->pageCount) {
     pendingPreRender = true;
     markStagedForCurrentPage();
     requestUpdate();
@@ -3506,7 +3565,7 @@ bool EpubReaderActivity::renderBufferDisplayPass(const RenderLayout& layout) {
 
 void EpubReaderActivity::renderPreRenderPass(const RenderLayout& layout) {
   // Pre-render pass: render next page content into the frame buffer (no status bar, no flush).
-  if (!section || preRenderedPage.ready || backgroundWorkSuspended_) {
+  if (!section || preRenderedPage.ready || backgroundWorkSuspended_ || backgroundBuildThrough_) {
     return;
   }
   const int nextPage = section->currentPage + 1;
@@ -3541,24 +3600,50 @@ void EpubReaderActivity::renderPreRenderPass(const RenderLayout& layout) {
   // The Page dies with `p` at the end of this function, so `end` also shows what is retained
   // (nothing but the pixels in the framebuffer).
   logReaderMemSnapshot("prerender_begin");
+  // What the pass really costs: the heap's low point between here and the end of the draw, the
+  // number the floor above has to be derived from. The allocator tracks it from here, the same
+  // way endBackgroundBorrow() reads Background B's. B is never live here (render() returns its
+  // buffer first), but if the monitor is somehow already running it is left alone.
+  const bool trackLow = heap_caps_monitor_local_minimum_free_size_start() == ESP_OK;
   const int savedPage = section->currentPage;
   section->currentPage = nextPage;
   auto p = buildActive ? section->loadPageFromActiveBuild(static_cast<uint16_t>(nextPage))
                        : section->loadPageFromSectionFile();
   section->currentPage = savedPage;
   logReaderMemSnapshot("prerender_after_load");
-  if (p && !p->hasImages()) {
-    const unsigned long preRenderStart = millis();
+  uint16_t glyphsDropped = 0;
+  const bool drawn = p && !p->hasImages();
+  const unsigned long preRenderStart = millis();
+  if (drawn) {
     section->currentPage = nextPage;
-    renderPageContentOnly(*p, layout.marginTop, layout.marginRight, layout.marginBottom, layout.marginLeft);
+    glyphsDropped =
+        renderPageContentOnly(*p, layout.marginTop, layout.marginRight, layout.marginBottom, layout.marginLeft);
     section->currentPage = savedPage;
     logReaderMemSnapshot("prerender_end");
-    const unsigned long preRenderDuration = millis() - preRenderStart;
-    preRenderedPage = {true, currentSpineIndex, nextPage, preRenderDuration, millis()};
+  }
+  const unsigned long preRenderDuration = millis() - preRenderStart;
+  p.reset();  // inside the tracked window: the page is part of the pass's cost
+  uint32_t lowest = 0;
+  if (trackLow) {
+    lowest = static_cast<uint32_t>(esp_get_minimum_free_heap_size());
+    heap_caps_monitor_local_minimum_free_size_stop();
+  }
+  if (drawn) {
+    // An incomplete draw keeps `ready` (the framebuffer does hold that page now; the sleep
+    // overlay and screenshots restore the current one from it) but is never shown: the turn
+    // renders afresh, without this pass's Page in the heap.
+    preRenderedPage = {true, currentSpineIndex, nextPage, preRenderDuration, millis(), glyphsDropped > 0};
 #if DEBUG_BACKGROUND_WORK
-    bgCounters_.aCompletes++;
+    if (glyphsDropped == 0) bgCounters_.aCompletes++;
 #endif
-    LOG_DBG("ERS", "Pre-rendered page %d/%d in %lums", nextPage, section->pageCount - 1, preRenderDuration);
+    LOG_DBG("ERS", "Pre-rendered page %d/%d in %lums (heap %lu at start, %lu lowest, cost %lu)%s", nextPage,
+            section->pageCount - 1, preRenderDuration, static_cast<unsigned long>(freeHeap),
+            static_cast<unsigned long>(lowest),
+            static_cast<unsigned long>(lowest && freeHeap > lowest ? freeHeap - lowest : 0),
+            glyphsDropped > 0 ? "; incomplete, will not be shown" : "");
+    if (glyphsDropped > 0) {
+      LOG_ERR("ERS", "Pre-render of page %d dropped %u glyphs for lack of memory", nextPage, glyphsDropped);
+    }
   }
   checkHeapIntegrity("after_prerender");
 }
@@ -3988,7 +4073,18 @@ bool EpubReaderActivity::buildSection(const RenderLayout& layout) {
     // endBackgroundBorrow() and yank the arena out from under the build we just adopted.
     if (backgroundBorrowActive_) {
       backgroundBorrowActive_ = false;
-      LOG_INF("ERS", "Background-B borrow transferred to Background-C for spine %d", currentSpineIndex);
+      backgroundBuildThrough_ = false;
+      // B's part of the build ends here: read its heap low now, or the monitor stays on for good
+      // (endBackgroundBorrow() never runs for a transferred borrow).
+      uint32_t lowWhileLent = 0;
+      if (backgroundHeapLowTracked_) {
+        lowWhileLent = static_cast<uint32_t>(esp_get_minimum_free_heap_size());
+        heap_caps_monitor_local_minimum_free_size_stop();
+        backgroundHeapLowTracked_ = false;
+      }
+      LOG_INF("ERS", "Background-B borrow transferred to Background-C for spine %d (heap %lu at start, %lu lowest)",
+              currentSpineIndex, static_cast<unsigned long>(backgroundBorrowFreeAtStart_),
+              static_cast<unsigned long>(lowWhileLent));
     }
     LOG_INF("ERS", "Adopting background section for spine %d (%s)", currentSpineIndex, adoptKind);
   } else {
@@ -4378,7 +4474,7 @@ void EpubReaderActivity::renderNormalPass(RenderLock& lock, const RenderLayout& 
       } else {
         pageLoadFailStage_ = 3;
       }
-  
+
       if (pageLoadFailStage_ == 1) {
         // Transient hypothesis: hand back everything the reader is holding that nobody is
         // waiting on, then reload the section from the SAME cache file. The evictions are the
@@ -4486,7 +4582,6 @@ void EpubReaderActivity::renderNormalPass(RenderLock& lock, const RenderLayout& 
         lastRenderStats.fontCacheMisses, fontHitRatePct, lastRenderStats.fontGetBitmapCalls,
         lastRenderStats.fontGetBitmapTimeUs);
 
-
     // Pre-render was already scheduled in renderContents() before the lock was
     // released, so the loop task could start it during the waveform wait.
   }
@@ -4576,8 +4671,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     renderFinishedBookPass(spineCount);
     return;
   }
-
-
 
   const RenderLayout layout = computeRenderLayout();
   lastRenderStats = {};
@@ -5026,7 +5119,9 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   // can render during the waveform (inline AA below); everywhere else the
   // trigger blocks through the waveform exactly as before.
   HalDisplay::RefreshMode pageRefreshMode;
-  if (secondaryBufferDegraded_) {
+  // A buffer lent for a build-through is not a degraded one: the X3 diffs against its own copy of
+  // the frame on screen, so it keeps the normal cadence (see BG_BUILD_THROUGH_PAGES).
+  if (secondaryBufferDegraded_ && !backgroundBuildThrough_) {
     // FULL_REFRESH already gives a clean baseline, same goal as forceHalfRefreshAfterPopup_;
     // consume it here too so it doesn't carry over and force an unrelated later page to HALF.
     forceHalfRefreshAfterPopup_ = false;
@@ -5231,7 +5326,9 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   // display controller scans the old one. If a page turn fires during the
   // waveform it will clear preRenderedPage.ready and the stale pre-render
   // result is discarded — no correctness issue.
-  if (!preRenderedPage.ready && section && section->currentPage + 1 < section->pageCount) {
+  // Not during a build-through: on the X3 the post-waveform frame sync reads this very buffer
+  // when there is no second one (see BG_BUILD_THROUGH_PAGES).
+  if (!preRenderedPage.ready && !backgroundBuildThrough_ && section && section->currentPage + 1 < section->pageCount) {
     pendingPreRender = true;
     markStagedForCurrentPage();
     // Do NOT request the update while a deferred AA is owed: isUpdateSuperseded()
@@ -5380,9 +5477,9 @@ void EpubReaderActivity::displayBuildPage(RenderLock& lock, const Page& page, co
   WakeTrace::logSummary();
 }
 
-void EpubReaderActivity::renderPageContentOnly(const Page& page, const int orientedMarginTop,
-                                               const int orientedMarginRight, const int orientedMarginBottom,
-                                               const int orientedMarginLeft) {
+uint16_t EpubReaderActivity::renderPageContentOnly(const Page& page, const int orientedMarginTop,
+                                                   const int orientedMarginRight, const int orientedMarginBottom,
+                                                   const int orientedMarginLeft) {
   auto* fcm = renderer.getFontCacheManager();
   fcm->resetStats();
 
@@ -5434,6 +5531,8 @@ void EpubReaderActivity::renderPageContentOnly(const Page& page, const int orien
   // Status bar intentionally omitted — superimposed at display time with live
   // values, and so outside the capture. It carries no anti-aliasing either way:
   // UI chrome is 1-bit and produces no AA pixels at all.
+  const FontDecompressor* fdc = fcm->getDecompressor();
+  return fdc ? fdc->getStats().fallbackOomGlyphs : 0;
 }
 
 bool EpubReaderActivity::usesDeferredAa() const {
@@ -5493,7 +5592,9 @@ void EpubReaderActivity::displayPreRenderedPage(const Page& page, const int orie
   // falls through to the B/W display plus the two-push AA replay below.
   const bool singlePushThisPage = preRenderedPlanesStaged_ && !secondaryBufferDegraded_;
   preRenderedPlanesStaged_ = false;
-  if (secondaryBufferDegraded_) {
+  // Lent for a build-through rather than lost to an OOM: the X3 diffs against its own copy of
+  // the frame on screen, so the normal cadence stays correct (and AA stays off below).
+  if (secondaryBufferDegraded_ && !backgroundBuildThrough_) {
     renderer.displayBuffer(HalDisplay::FULL_REFRESH);
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else if (singlePushThisPage) {
@@ -5611,8 +5712,8 @@ void EpubReaderActivity::renderStatusBar() const {
 
   const std::string bookTitle = epub ? epub->getTitle() : "";
   std::string chapterTitle;
-  const int tocIndex =
-      section ? section->getTocIndexForPage(section->currentPage) : (epub ? epub->getTocIndexForSpineIndex(currentSpineIndex) : -1);
+  const int tocIndex = section ? section->getTocIndexForPage(section->currentPage)
+                               : (epub ? epub->getTocIndexForSpineIndex(currentSpineIndex) : -1);
   if (tocIndex == -1) {
     chapterTitle = tr(STR_UNNAMED);
   } else {
@@ -5642,10 +5743,9 @@ void EpubReaderActivity::renderStatusBar() const {
   renderBackgroundDebugOverlay();
 #endif
 
-  const bool hasBattery =
-      (SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
-       SETTINGS.statusBarMiddle == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
-       SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY);
+  const bool hasBattery = (SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+                           SETTINGS.statusBarMiddle == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+                           SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY);
   lastStatusBarPage = currentPage;
   lastStatusBarBattery = hasBattery ? static_cast<int>(powerManager.getBatteryPercentage()) : -1;
 }
@@ -5787,10 +5887,9 @@ bool EpubReaderActivity::shouldSkipPeriodicUpdate() const {
   if (lastStatusBarPage < 0) return false;  // no baseline yet — let the first render happen
   const int currentPage = section ? section->currentPage + 1 : -1;
   if (currentPage != lastStatusBarPage) return false;
-  const bool hasBattery =
-      (SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
-       SETTINGS.statusBarMiddle == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
-       SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY);
+  const bool hasBattery = (SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+                           SETTINGS.statusBarMiddle == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+                           SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY);
   if (hasBattery) {
     if (static_cast<int>(powerManager.getBatteryPercentage()) != lastStatusBarBattery) return false;
   }
@@ -6036,16 +6135,14 @@ void EpubReaderActivity::openQuickOverrides() {
   startActivityForResult(
       std::make_unique<QuickOverridesActivity>(
           renderer, mappedInput, bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
-          bookSdFontFamilyOverride, bookFontSizeOverride, 
-          bookParagraphAlignmentOverride, bookTextAntiAliasingOverride, bookHyphenationOverride,
-          bookFontSizeNormalizationOverride, bookInlineFootnotePreviewsOverride),
+          bookSdFontFamilyOverride, bookFontSizeOverride, bookParagraphAlignmentOverride, bookTextAntiAliasingOverride,
+          bookHyphenationOverride, bookFontSizeNormalizationOverride, bookInlineFootnotePreviewsOverride),
       [this](const ActivityResult& result) {
         const auto& menu = std::get<MenuResult>(result.data);
-        applyBookReaderOverrides(
-            menu.embeddedStyleOverride, menu.imageRenderingOverride, menu.fontFamilyOverride, menu.sdFontFamilyOverride,
-            menu.fontSizeOverride, menu.paragraphAlignmentOverride,
-            menu.textAntiAliasingOverride, menu.hyphenationOverride, menu.fontSizeNormalizationOverride,
-            menu.inlineFootnotePreviewsOverride);
+        applyBookReaderOverrides(menu.embeddedStyleOverride, menu.imageRenderingOverride, menu.fontFamilyOverride,
+                                 menu.sdFontFamilyOverride, menu.fontSizeOverride, menu.paragraphAlignmentOverride,
+                                 menu.textAntiAliasingOverride, menu.hyphenationOverride,
+                                 menu.fontSizeNormalizationOverride, menu.inlineFootnotePreviewsOverride);
       });
 }
 
@@ -6084,19 +6181,17 @@ void EpubReaderActivity::openReaderMenu() {
       std::make_unique<EpubReaderMenuActivity>(
           renderer, mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent, SETTINGS.orientation,
           !currentPageFootnotes.empty(), bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
-          bookSdFontFamilyOverride, bookFontSizeOverride, SETTINGS.textDarkness,
-          bookParagraphAlignmentOverride, bookTextAntiAliasingOverride, bookHyphenationOverride,
-          bookFontSizeNormalizationOverride, bookInlineFootnotePreviewsOverride, !bookmarkStore.isEmpty(),
-          isCurrentPageStarred, hasPrintedPages),
+          bookSdFontFamilyOverride, bookFontSizeOverride, SETTINGS.textDarkness, bookParagraphAlignmentOverride,
+          bookTextAntiAliasingOverride, bookHyphenationOverride, bookFontSizeNormalizationOverride,
+          bookInlineFootnotePreviewsOverride, !bookmarkStore.isEmpty(), isCurrentPageStarred, hasPrintedPages),
       [this](const ActivityResult& result) {
         const auto& menu = std::get<MenuResult>(result.data);
         applyOrientation(menu.orientation);
         applyTextDarkness(menu.textDarkness);
-        applyBookReaderOverrides(
-            menu.embeddedStyleOverride, menu.imageRenderingOverride, menu.fontFamilyOverride, menu.sdFontFamilyOverride,
-            menu.fontSizeOverride, menu.paragraphAlignmentOverride,
-            menu.textAntiAliasingOverride, menu.hyphenationOverride, menu.fontSizeNormalizationOverride,
-            menu.inlineFootnotePreviewsOverride);
+        applyBookReaderOverrides(menu.embeddedStyleOverride, menu.imageRenderingOverride, menu.fontFamilyOverride,
+                                 menu.sdFontFamilyOverride, menu.fontSizeOverride, menu.paragraphAlignmentOverride,
+                                 menu.textAntiAliasingOverride, menu.hyphenationOverride,
+                                 menu.fontSizeNormalizationOverride, menu.inlineFootnotePreviewsOverride);
         if (!result.isCancelled) {
           onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
         }
