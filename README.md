@@ -10,8 +10,9 @@ For full original documentation, refer to the [upstream README](https://github.c
 
 ### Added
 - **OPDS Progression 1.0**: Automatically syncs reading progress with compatible OPDS servers (e.g., Kavita, Audiobookshelf).
+- **OPDS Pagination & Viewport Navigation**: Browse large catalogs smoothly with paginated listings and responsive navigation.
 - **Quick Resume**: Press the Back button on the home screen to instantly jump back into your current book.
-- **Simplified Status Bar**: Streamlined status bar customization options in Settings.
+- **Simplified Status Bar**: Streamlined status bar customization options in Settings with a toggleable progress bar and inverted chapter markers.
 - **OPDS in File Transfer**: Access your OPDS library directly from the File Transfer menu.
 - **Enhanced Tab Navigation**: Bottom buttons and dynamic tab labels make navigating reader menus faster.
 
@@ -26,11 +27,17 @@ For full original documentation, refer to the [upstream README](https://github.c
 - **Font Scaling Test**: Removed the developer font scaling test screen from System settings.
 - **UI Font Size & Unused Font Data**: Locked UI typography to Normal default and removed unused `inter_ui_14` font bitmaps to reclaim ~109 KB flash.
 - **Busy Indicator**: Removed the "Show Busy Indicator" setting and disabled transition screen overlays.
-- **Dead Code & Unused Assets**: Purged orphaned UI components (`CardLayout`, `FrontlightPanelActivity`, unused icons) and pruned 229 unreferenced translation strings.
+- **QR Codes**: Removed QR code displays across web server and Wi-Fi captive portal screens to save memory and clean up UI.
+- **Home Submenu in Display Settings**: Simplified display configuration by removing redundant home layout options.
+- **Series on Recent Card**: Dropped redundant series label on the home screen book card for a cleaner look.
+- **Dead Code & Unused Assets**: Purged orphaned UI components (`CardLayout`, `FrontlightPanelActivity`, unused icons) and pruned unreferenced translation strings.
 
 ### Fixed
 - **EPUB Cover Detection**: Fixed home screen sometimes displaying wrong images (like title banners or logos) by detecting covers from the Table of Contents, cover pages, and prioritizing real cover art.
 - **Reader Menu Navigation**: Fixed bottom button navigation issues inside reader menus.
+- **Header & Subtitle Layout**: Eliminated text and header overlap across all screens with custom non-overlapping header geometry.
+- **Front Button Alignment**: Aligned front button hints directly above the physical switches on the Xteink X4 hardware.
+- **Firmware Update UI**: Fixed progress bar positioning, eliminated text overlap, and restored the Options button in the firmware picker.
 
 ---
 
