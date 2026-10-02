@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "CrossPointSettings.h"
@@ -23,10 +24,35 @@
 // navigation stays with the screen.
 class FileBrowserModel {
  public:
-  // Books = the file types the reader can open; PickFirmware = .bin only.
-  // Books = the file types the reader can open; PickFirmware = .bin only;
+  // Books = the books the reader can open, and nothing else: images and the sidecars beside a
+  // book (its cover, its .opf) are left out, which is what keeps an OPDS download to one row;
+  // AllFiles = every file on the card, for housekeeping;
+  // PickFirmware = .bin only;
   // PickFolder = directories only, for choosing a destination to move a file into.
-  enum class Mode { Books, PickFirmware, PickFolder };
+  // Recents lists the books lately opened, newest first, from wherever they are on the card --
+  // the Recent Books screen. Its rows are paths, as a card-wide search's are.
+  enum class Mode { Books, AllFiles, PickFirmware, PickFolder, Recents };
+
+  // Whether the reader can open this file: a book, or an image for the viewer. Listing is the
+  // mode's business; this is what selecting a row can do with it.
+  [[nodiscard]] static bool isOpenable(std::string_view filename);
+
+  // Books in `dirPath` and every folder below it, by the same rules Browse Files lists them: the
+  // reader's book types, hidden entries only when they are shown. A folder card's number.
+  //
+  // Walks the tree, so it is for the loop task, not a frame being drawn. Stops at
+  // MAX_COUNTED_BOOKS (the card then says "999+"), and gives up -- returning -1 -- when the reader
+  // presses a button (CooperativeAbort), so a deep tree never holds up the screen; the caller asks
+  // again later.
+  //
+  // Every folder it finishes is remembered for the session (FolderCountMemo, 64 of them), and
+  // forgotten when the card changes (HalStorage::contentGeneration) or hidden entries are shown
+  // or hidden: a folder seen again is not walked again, and a count interrupted by a press picks
+  // up past the folders it finished.
+  static constexpr int MAX_COUNTED_BOOKS = 999;
+  [[nodiscard]] static int countBooksBelow(const std::string& dirPath);
+  // The remembered count for `dirPath`, without walking anything; -1 when there is none.
+  [[nodiscard]] static int knownBooksBelow(const std::string& dirPath);
 
   explicit FileBrowserModel(const Mode mode = Mode::Books) : mode(mode) {}
 
@@ -43,7 +69,8 @@ class FileBrowserModel {
     clearDeepSearch();
   }
 
-  // Re-read the directory: filter, then either build the SD index or sort in RAM.
+  // Re-read the directory: filter, then either build the SD index or sort in RAM. In Recents,
+  // re-read the recent-books list instead.
   void load();
   // Release both backends. Called on the way out so a browser sitting on the activity stack
   // is not holding a folder's worth of names, or an open index file.
@@ -85,10 +112,16 @@ class FileBrowserModel {
   // folders can be told apart. Capped: a reader wants to find one book, not enumerate the card.
   void searchEverywhere(const std::string& query);
   [[nodiscard]] bool isDeepSearch() const { return deepSearch; }
+  // The rows are paths from all over the card -- a card-wide search, or Recents -- rather than
+  // one folder's entries.
+  [[nodiscard]] bool listsPaths() const { return deepSearch || mode == Mode::Recents; }
   // True when the walk stopped at MAX_DEEP_RESULTS with more still out there.
   [[nodiscard]] bool deepResultsTruncated() const { return deepTruncated; }
   // Absolute path for a row, whichever mode is live. The caller no longer composes it.
   [[nodiscard]] std::string entryFullPath(size_t displayIndex);
+  // The row's file size in bytes, or 0 when not known: a directory, a card-wide search result
+  // (the walk keeps paths only), or an index read failure.
+  [[nodiscard]] uint32_t entrySize(size_t displayIndex);
   // Ends a card-wide search and returns the browser to the folder it was started from.
   void clearSearch() { clearDeepSearch(); }
   // Folder holding a result row, relative to the search root ("" when it sat at the root).
@@ -118,8 +151,9 @@ class FileBrowserModel {
   std::string filterQuery;
   std::vector<uint32_t> matches;
 
-  // Card-wide search results: paths relative to the search root. Held only while one is on
-  // screen; cleared with everything else in clear() and on any directory change.
+  // Card-wide search results, or the Recents list: paths relative to deepRoot ("/" for Recents).
+  // Held only while one is on screen; cleared with everything else in clear() and on any
+  // directory change.
   static constexpr size_t MAX_DEEP_RESULTS = 64;
   bool deepSearch = false;
   bool deepTruncated = false;
@@ -143,12 +177,14 @@ class FileBrowserModel {
   // One function per mode rather than one taking a Mode, because FileIndex::AcceptFn is a bare
   // function pointer with no user data: indexFilter() hands over the one that matches.
   static bool acceptForBooks(const char* name, bool isDir);
+  static bool acceptForAllFiles(const char* name, bool isDir);
   static bool acceptForFirmware(const char* name, bool isDir);
   static bool acceptForFolders(const char* name, bool isDir);
   [[nodiscard]] bool acceptEntry(const char* name, bool isDir) const;
   [[nodiscard]] FileIndex::AcceptFn indexFilter() const;
 
   void openIndexIfLarge();
+  void loadRecents();
   bool indexEntryAt(size_t displayIndex, FileIndex::Entry& out);
 
   Mode mode = Mode::Books;

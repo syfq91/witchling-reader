@@ -19,6 +19,7 @@
 #include "SilentRestart.h"
 #include "StatusBarSettingsActivity.h"
 #include "SystemInformationActivity.h"
+#include "activities/home/FileBrowserActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 
 std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRenderer& renderer,
@@ -42,6 +43,9 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<OtaUpdateActivity>(renderer, mappedInput);
     case SettingAction::SdFirmwareUpdate:
       return std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInput);
+    case SettingAction::AllFiles:
+      return std::make_unique<FileBrowserActivity>(renderer, mappedInput, "/", std::string{},
+                                                   FileBrowserActivity::Mode::AllFiles);
     case SettingAction::KeyboardLayouts:
       return std::make_unique<KeyboardLayoutsActivity>(renderer, mappedInput);
     case SettingAction::SystemInfo:

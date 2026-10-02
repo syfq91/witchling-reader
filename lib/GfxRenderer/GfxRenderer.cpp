@@ -150,12 +150,22 @@ static inline uint32_t floatBits(const float f) {
 // stable point puts it next to the other permanent allocations instead.
 //
 // Idempotent, and failure is non-fatal: scaled text renders uncached, exactly as before.
-bool GfxRenderer::ensureScaledGlyphCache() const {
-  if (scaledGlyphArena_) return true;
-  if (scaledGlyphOom_) return false;  // already failed once; don't thrash the heap
-  // Larger when a synthesised body size exists, because then the arena holds a whole page's
+bool GfxRenderer::ensureScaledGlyphCache(const int bodyFontId) const {
+  // Larger when the body text is a synthesised size, because then the arena holds a whole page's
   // glyphs at up to 26 pt rather than a few CSS-scaled words. See SCALED_GLYPH_ARENA_BYTES_SYNTH.
-  scaledGlyphArenaBytes_ = fontBaseScales.empty() ? SCALED_GLYPH_ARENA_BYTES : SCALED_GLYPH_ARENA_BYTES_SYNTH;
+  const uint16_t wanted = (bodyFontId != 0 && fontBaseScales.count(bodyFontId) != 0) ? SCALED_GLYPH_ARENA_BYTES_SYNTH
+                                                                                     : SCALED_GLYPH_ARENA_BYTES;
+  if (scaledGlyphArena_) {
+    if (bodyFontId == 0 || scaledGlyphArenaBytes_ == wanted) return true;
+    // The last book was read at the other kind of size. Replaced here, at the same stable point
+    // the first one was taken at; the entries go with it, as the masks they point at do.
+    scaledGlyphArena_.reset();
+    scaledGlyphEntries_.reset();
+    scaledGlyphCount_ = 0;
+    scaledGlyphUsed_ = 0;
+  }
+  if (scaledGlyphOom_) return false;  // already failed once; don't thrash the heap
+  scaledGlyphArenaBytes_ = wanted;
   auto entries = makeUniqueNoThrow<ScaledGlyphEntry[]>(SCALED_GLYPH_MAX_ENTRIES);
   auto arena = makeUniqueNoThrow<uint8_t[]>(scaledGlyphArenaBytes_);
   if (!entries || !arena) {
@@ -2678,8 +2688,10 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
     }
   }
 
-  // For 1-bit BMP, output is still 2-bit packed (for consistency with readNextRow)
-  const int outputRowSize = (bitmap.getWidth() + 3) / 4;
+  // For 1-bit BMP, output is still 2-bit packed (for consistency with readNextRow). Sized for
+  // Bitmap::expandOneBitRow, which writes whole source bytes: a byte more than readNextRow needs
+  // at some widths.
+  const int outputRowSize = 2 * ((bitmap.getWidth() + 7) / 8);
   auto* outputRow = static_cast<uint8_t*>(malloc(outputRowSize));
   auto* rowBytes = static_cast<uint8_t*>(malloc(bitmap.getRowBytes()));
 
@@ -2696,7 +2708,48 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
   const int widthBytes = getDisplayWidthBytes();
 
   // ── Unscaled fast path (scale == 1.0): draw each source row 1:1. ──────────────
+  //
+  // Rows are read a batch at a time and expanded to the 2-bit packing through a table built once
+  // for the image (Bitmap::oneBitExpansion), instead of readNextRow()'s per-pixel tone, adjust and
+  // quantise -- the same bytes, as a 1-bit image's pixels depend on their palette index alone.
+  // On the device that conversion was ~60% of a cover's draw and the per-row SD read another
+  // 20-40% (X3 and T5S3 logs, 2026-10-01). Without the memory for the batch it falls back to
+  // reading row by row, as before.
   if (!isScaled) {
+    const int srcW = bitmap.getWidth();
+    const int srcH = bitmap.getHeight();
+    const int srcRowBytes = bitmap.getRowBytes();
+    constexpr int kBatchBytes = 2048;
+    const int batchRows = std::max(1, std::min(srcH, kBatchBytes / std::max(1, srcRowBytes)));
+    auto* table = static_cast<uint16_t*>(malloc(256 * sizeof(uint16_t)));
+    auto* batch = static_cast<uint8_t*>(malloc(static_cast<size_t>(batchRows) * srcRowBytes));
+    if (table != nullptr && batch != nullptr) {
+      bitmap.oneBitExpansion(table);
+      for (int bmpY = 0; bmpY < srcH; bmpY += batchRows) {
+        const int rows = std::min(batchRows, srcH - bmpY);
+        if (bitmap.readRawRows(batch, rows) != BmpReaderError::Ok) {
+          LOG_ERR("GFX", "Failed to read rows %d-%d from 1-bit bitmap", bmpY, bmpY + rows - 1);
+          break;
+        }
+        for (int r = 0; r < rows; ++r) {
+          const int bmpYOffset = bitmap.isTopDown() ? bmpY + r : srcH - 1 - (bmpY + r);
+          const int screenY = y + bmpYOffset;
+          if (screenY < 0 || screenY >= getScreenHeight()) continue;
+          Bitmap::expandOneBitRow(table, batch + static_cast<size_t>(r) * srcRowBytes, outputRow, srcW);
+          // BW only (1-bit images are never rendered in grayscale passes)
+          bitmapFastRow<0x07>(frameBuffer, outputRow, 0, srcW, x, screenY, orientation, true, displayWidth,
+                              displayHeight, widthBytes);
+        }
+      }
+      free(table);
+      free(batch);
+      free(outputRow);
+      free(rowBytes);
+      return;
+    }
+    free(table);
+    free(batch);
+
     for (int bmpY = 0; bmpY < bitmap.getHeight(); bmpY++) {
       if (bitmap.readNextRow(outputRow, rowBytes) != BmpReaderError::Ok) {
         LOG_ERR("GFX", "Failed to read row %d from 1-bit bitmap", bmpY);

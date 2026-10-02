@@ -391,6 +391,10 @@ inline std::vector<SettingInfo> buildSettingsList() {
   settings.push_back(SettingInfo::Toggle(StrId::STR_SHOW_FILE_EXTENSIONS, &CrossPointSettings::showFileExtensions,
                                          "showFileExtensions", StrId::STR_CAT_SYSTEM)
                          .withSubmenu(StrId::STR_SHOW_FILES));
+  settings.push_back(SettingInfo::Enum(StrId::STR_BROWSER_VIEW, &CrossPointSettings::fileBrowserView,
+                                       {StrId::STR_VIEW_FILENAMES, StrId::STR_VIEW_DETAILS, StrId::STR_VIEW_COVERS},
+                                       "fileBrowserView", StrId::STR_CAT_SYSTEM)
+                         .withSubmenu(StrId::STR_SHOW_FILES));
   settings.push_back(SettingInfo::Toggle(StrId::STR_SKIP_HTTPS_VALIDATION, &CrossPointSettings::skipHttpsValidation,
                                          "skipHttpsValidation", StrId::STR_CAT_SYSTEM));
   // OPDS download settings are edited from the OPDS server list. Keep them

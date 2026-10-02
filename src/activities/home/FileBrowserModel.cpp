@@ -1,13 +1,19 @@
 #include "FileBrowserModel.h"
 
+#include <CooperativeAbort.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
+#include <HalSystem.h>
 #include <Logging.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
+
+#include "FolderCountMemo.h"
+#include "RecentBooksStore.h"
 
 namespace {
 
@@ -18,10 +24,14 @@ bool isListableName(const char* name) {
   return strcmp(name, "System Volume Information") != 0;
 }
 
-// The file types the reader can open.
+// The books the reader can open. Images are not books: the viewer opens them, but in the book
+// browser they are mostly covers saved beside the book they belong to, listed a second time.
 bool isReadableBook(const std::string_view filename) {
-  return FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
-         FsHelpers::hasBmpExtension(filename) || FsHelpers::hasJpgExtension(filename) ||
+  return FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename);
+}
+
+bool isViewableImage(const std::string_view filename) {
+  return FsHelpers::hasBmpExtension(filename) || FsHelpers::hasJpgExtension(filename) ||
          FsHelpers::hasPngExtension(filename);
 }
 
@@ -39,6 +49,10 @@ void FileBrowserModel::load() {
   files.clear();
   fileSizes.clear();
   fileDateTimes.clear();
+  if (mode == Mode::Recents) {
+    loadRecents();
+    return;
+  }
 
   auto root = Storage.open(basepath.c_str());
   if (!root || !root.isDirectory()) {
@@ -88,6 +102,116 @@ bool FileBrowserModel::acceptForBooks(const char* name, const bool isDir) {
   return isReadableBook(std::string_view{name});
 }
 
+bool FileBrowserModel::isOpenable(const std::string_view filename) {
+  return isReadableBook(filename) || isViewableImage(filename);
+}
+
+namespace {
+
+// Folder counts already worked out this session (see FolderCountMemo). One table for every
+// browser, so leaving Browse Files and coming back keeps them; 512 bytes, whatever the library.
+// The render task reads it (a folder card being drawn) while the loop task's walk writes it.
+FolderCountMemo folderCounts;
+std::mutex folderCountsMutex;
+
+int rememberedCount(const std::string& folder, const uint32_t stamp) {
+  std::lock_guard<std::mutex> guard(folderCountsMutex);
+  return folderCounts.find(folder, stamp);
+}
+
+void rememberCount(const std::string& folder, const int books, const uint32_t stamp) {
+  std::lock_guard<std::mutex> guard(folderCountsMutex);
+  folderCounts.store(folder, books, stamp);
+}
+
+// What a count depends on besides the folder: what is on the card, and whether hidden entries
+// are counted (isListableName).
+uint32_t countStamp() { return (Storage.contentGeneration() << 1) | (SETTINGS.showHiddenFiles ? 1u : 0u); }
+
+}  // namespace
+
+int FileBrowserModel::knownBooksBelow(const std::string& dirPath) { return rememberedCount(dirPath, countStamp()); }
+
+// Depth first, one open directory per level -- at most MAX_DEPTH + 1 of them, however wide the
+// tree -- so a folder's total is complete when its directory runs out, and is recorded then.
+// A folder already in the table is added without being entered, so a count interrupted by a
+// button press resumes past everything it finished, and counting a parent after a child (or the
+// other way round) walks each folder once.
+int FileBrowserModel::countBooksBelow(const std::string& dirPath) {
+  constexpr int MAX_DEPTH = 8;  // as deep as anyone files books; a cycle-proof bound besides
+  const uint32_t stamp = countStamp();
+  if (const int known = rememberedCount(dirPath, stamp); known >= 0) return known;
+
+  struct Level {
+    HalFile dir;
+    std::string path;
+    int books = 0;
+    bool complete = true;  // nothing below was cut off by MAX_DEPTH
+  };
+  std::vector<Level> levels;
+  levels.reserve(MAX_DEPTH + 1);  // references into it stay valid while it grows
+  {
+    auto root = Storage.open(dirPath.c_str());
+    if (!root || !root.isDirectory()) return 0;
+    root.rewindDirectory();
+    levels.push_back(Level{std::move(root), dirPath});
+  }
+  int counted = 0;  // every book found so far, for the cap
+  char name[500];
+  while (true) {
+    if (CooperativeAbort::shouldAbortLongTask()) return -1;  // the levels close their directories
+    if (counted > MAX_COUNTED_BOOKS) {
+      // More than the card can say. The folder asked about is recorded as such; the ones still
+      // open below it are not finished, so they are not recorded at all.
+      rememberCount(dirPath, MAX_COUNTED_BOOKS + 1, stamp);
+      return MAX_COUNTED_BOOKS + 1;
+    }
+    Level& level = levels.back();
+    auto entry = level.dir.openNextFile();
+    if (!entry) {
+      // This folder is done. Its total is recorded when nothing in it was cut off by depth, and
+      // always for the folder asked about -- that is the number on its card.
+      level.dir.close();
+      const int books = level.books;
+      const bool complete = level.complete;
+      if (complete || levels.size() == 1) rememberCount(level.path, books, stamp);
+      levels.pop_back();
+      if (levels.empty()) return std::min(books, MAX_COUNTED_BOOKS + 1);
+      levels.back().books += books;
+      levels.back().complete = levels.back().complete && complete;
+      HalSystem::feedWatchdog();
+      continue;
+    }
+    entry.getName(name, sizeof(name));
+    const bool isDir = entry.isDirectory();
+    entry.close();
+    if (!isListableName(name)) continue;
+    if (!isDir) {
+      if (isReadableBook(std::string_view{name})) {
+        ++level.books;
+        ++counted;
+      }
+      continue;
+    }
+    std::string child = level.path + "/" + name;
+    if (const int known = rememberedCount(child, stamp); known >= 0) {
+      level.books += known;
+      counted += known;
+      continue;
+    }
+    if (levels.size() > MAX_DEPTH) {
+      level.complete = false;  // deeper than we look: this total is a lower bound
+      continue;
+    }
+    auto sub = Storage.open(child.c_str());
+    if (!sub || !sub.isDirectory()) continue;
+    sub.rewindDirectory();
+    levels.push_back(Level{std::move(sub), std::move(child)});
+  }
+}
+
+bool FileBrowserModel::acceptForAllFiles(const char* name, const bool /*isDir*/) { return isListableName(name); }
+
 bool FileBrowserModel::acceptForFirmware(const char* name, const bool isDir) {
   if (!isListableName(name)) return false;
   if (isDir) return true;
@@ -105,7 +229,10 @@ bool FileBrowserModel::acceptEntry(const char* name, const bool isDir) const {
       return acceptForFirmware(name, isDir);
     case Mode::PickFolder:
       return acceptForFolders(name, isDir);
+    case Mode::AllFiles:
+      return acceptForAllFiles(name, isDir);
     case Mode::Books:
+    case Mode::Recents:
       break;
   }
   return acceptForBooks(name, isDir);
@@ -117,7 +244,10 @@ FileIndex::AcceptFn FileBrowserModel::indexFilter() const {
       return &acceptForFirmware;
     case Mode::PickFolder:
       return &acceptForFolders;
+    case Mode::AllFiles:
+      return &acceptForAllFiles;
     case Mode::Books:
+    case Mode::Recents:
       break;
   }
   return &acceptForBooks;
@@ -141,7 +271,7 @@ void FileBrowserModel::openIndexIfLarge() {
 size_t FileBrowserModel::unfilteredEntryCount() const { return fileIndex ? fileIndex->totalCount() : files.size(); }
 
 size_t FileBrowserModel::entryCount() const {
-  if (deepSearch) return deepResults.size();
+  if (listsPaths()) return deepResults.size();
   return isFiltered() ? matches.size() : unfilteredEntryCount();
 }
 
@@ -155,7 +285,7 @@ bool FileBrowserModel::indexEntryAt(const size_t displayIndex, FileIndex::Entry&
 // directory. For the in-RAM backend `files` already stores this form; for the SD
 // index we reconstruct it from the Entry. Out-of-range / index-read failure → "".
 std::string FileBrowserModel::entryName(const size_t displayIndex) {
-  if (deepSearch) {
+  if (listsPaths()) {
     return displayIndex < deepResults.size() ? deepResults[displayIndex] : "";
   }
   if (isFiltered()) {
@@ -177,6 +307,11 @@ std::string FileBrowserModel::backendEntryName(const size_t displayIndex) {
 }
 
 size_t FileBrowserModel::findEntry(const std::string& name) {
+  if (listsPaths()) {
+    for (size_t i = 0; i < deepResults.size(); i++)
+      if (deepResults[i] == name) return i;
+    return deepResults.size();
+  }
   if (isFiltered()) {
     for (size_t i = 0; i < matches.size(); i++)
       if (backendEntryName(matches[i]) == name) return i;
@@ -228,7 +363,7 @@ void FileBrowserModel::rebuildMatches() {
 std::string FileBrowserModel::entryFullPath(const size_t displayIndex) {
   const std::string name = entryName(displayIndex);
   if (name.empty()) return "";
-  const std::string& base = deepSearch ? deepRoot : basepath;
+  const std::string& base = listsPaths() ? deepRoot : basepath;
   std::string full = base;
   if (full.empty() || full.back() != '/') full += '/';
   full += name;
@@ -236,8 +371,21 @@ std::string FileBrowserModel::entryFullPath(const size_t displayIndex) {
   return full;
 }
 
+uint32_t FileBrowserModel::entrySize(const size_t displayIndex) {
+  if (listsPaths()) return 0;
+  size_t backendIndex = displayIndex;
+  if (isFiltered()) {
+    if (displayIndex >= matches.size()) return 0;
+    backendIndex = matches[displayIndex];
+  }
+  FileIndex::Entry e;
+  if (indexEntryAt(backendIndex, e)) return e.isDir ? 0 : e.size;
+  if (fileIndex || backendIndex >= fileSizes.size()) return 0;
+  return fileSizes[backendIndex];
+}
+
 std::string FileBrowserModel::resultFolder(const size_t displayIndex) {
-  if (!deepSearch || displayIndex >= deepResults.size()) return "";
+  if (!listsPaths() || displayIndex >= deepResults.size()) return "";
   const std::string& rel = deepResults[displayIndex];
   const size_t slash = rel.rfind('/');
   if (slash == std::string::npos) return deepRoot;  // it sat in the search root
@@ -307,7 +455,7 @@ void FileBrowserModel::searchEverywhere(const std::string& query) {
 }
 
 void FileBrowserModel::resort() {
-  if (fileIndex) return;  // the index is ordered at build time; see the header.
+  if (fileIndex || mode == Mode::Recents) return;  // ordered at build time / by recency
   // Whatever happens below renumbers the rows, so the match list is rebuilt at the end.
   // Create index array to preserve metadata array alignment
   std::vector<size_t> indices(files.size());
@@ -400,6 +548,23 @@ void FileBrowserModel::resort() {
   fileSizes = std::move(sorted_sizes);
   fileDateTimes = std::move(sorted_dateTimes);
   rebuildMatches();  // the rows were just renumbered
+}
+
+// The recent-books list, newest first, as paths relative to "/" -- the shape a card-wide search's
+// results already have, so every row accessor serves both. Books no longer on the card are dropped
+// from the list for good, as the Recent Books screen always did on the way in.
+void FileBrowserModel::loadRecents() {
+  clearDeepSearch();
+  // One load of the list for the prune, its save and the read below; the paths are copied out, so
+  // nothing here outlives the hold (RecentBooksStore::Hold).
+  const RecentBooksStore::Hold recents;
+  if (RECENT_BOOKS.pruneMissing()) RECENT_BOOKS.saveToFile();
+  deepRoot = "/";
+  const auto& books = RECENT_BOOKS.getBooks();
+  deepResults.reserve(books.size());
+  for (const auto& book : books) {
+    if (book.path.size() > 1 && book.path.front() == '/') deepResults.push_back(book.path.substr(1));
+  }
 }
 
 void FileBrowserModel::clear() {

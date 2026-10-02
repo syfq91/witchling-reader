@@ -21,7 +21,6 @@
 #include "home/HomeActivity.h"
 #include "home/HomeMoreActivity.h"
 #include "home/HomeMenu.h"
-#include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
@@ -376,8 +375,10 @@ void ActivityManager::goToFileBrowser(std::string path, std::string focusName) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path), std::move(focusName)));
 }
 
-void ActivityManager::goToRecentBooks(int focusIndex) {
-  replaceActivity(std::make_unique<RecentBooksActivity>(renderer, mappedInput, focusIndex));
+// Recent Books is Browse Files over the recent-books list: the same views, keys and Options.
+void ActivityManager::goToRecentBooks(std::string focusName) {
+  replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, "/", std::move(focusName),
+                                                        FileBrowserActivity::Mode::Recents));
 }
 
 void ActivityManager::goToGlobalBookmarks() { goToGlobalBookmarks({}); }
@@ -430,12 +431,6 @@ void ActivityManager::replaceWithFileBrowser(std::string path, ReturnHint hint, 
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path), std::move(focusName)));
 }
 
-void ActivityManager::replaceWithRecentBooks(ReturnHint hint) {
-  returnHint = std::move(hint);
-  hasReturnHint = true;
-  replaceActivity(std::make_unique<RecentBooksActivity>(renderer, mappedInput, -1));
-}
-
 void ActivityManager::returnFromChild() {
   if (!hasReturnHint) {
     goHome();
@@ -449,8 +444,13 @@ void ActivityManager::returnFromChild() {
     case ReturnTo::FileBrowser:
       goToFileBrowser(std::move(hint.path), std::move(hint.selectName));
       break;
+    case ReturnTo::AllFiles:
+      replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(hint.path),
+                                                            std::move(hint.selectName),
+                                                            FileBrowserActivity::Mode::AllFiles));
+      break;
     case ReturnTo::RecentBooks:
-      goToRecentBooks(hint.selectIndex);
+      goToRecentBooks(std::move(hint.selectName));
       break;
     case ReturnTo::GlobalBookmarks:
       goToGlobalBookmarks(std::move(hint));

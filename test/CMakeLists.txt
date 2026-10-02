@@ -116,6 +116,8 @@ add_subdirectory(${REPO_ROOT}/lib/SaxParser ${CMAKE_CURRENT_BINARY_DIR}/SaxParse
 
 add_subdirectory(buffered_io)
 add_subdirectory(natural_sort)
+add_subdirectory(sidecar_files)
+add_subdirectory(book_details_cache)
 add_subdirectory(path_containment)
 add_subdirectory(firmware_board_tag)
 add_subdirectory(cover_grid_layout)
@@ -162,3 +164,5 @@ add_subdirectory(gray8_writer)
 add_subdirectory(glyph_fallback)
 # After zip_entry_reader: reuses its inflate_reader_host target and HalStorage shim.
 add_subdirectory(dictionary)
+add_subdirectory(folder_count_memo)
+add_subdirectory(bitmap_rows)

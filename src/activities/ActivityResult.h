@@ -42,6 +42,8 @@ struct MenuResult {
   // Also appended for positional-initialiser safety. Tri-state like the other
   // reader overrides: -1 = default, 0 = off, 1 = on.
   int8_t inlineFootnotePreviewsOverride = -1;
+  // Browse Files view (CrossPointSettings::FILE_BROWSER_VIEW), appended like the above.
+  uint8_t browserView = 0;
 };
 
 struct ChapterResult {

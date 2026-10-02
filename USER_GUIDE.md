@@ -79,13 +79,25 @@ See [Reading Mode](#4-reading-mode) below for more information.
 
 ### 3.3 Browse Files Screen
 
-The Browse Files screen is a full-featured file and folder browser.
+The Browse Files screen is a full-featured browser for your books and the folders they are in. It lists the books the reader can open (EPUB, XTC/XTCH, TXT and Markdown) and nothing else: a cover image or `.opf` file saved beside a book (see [sidecar files](docs/sidecar-files.md)) is not listed on its own, so a book downloaded from an OPDS catalogue shows up once. Images and every other file are in **Settings → System → Tools → All Files**.
 
 * **Navigate List:** Use **Left** (or **Volume Up**), or **Right** (or **Volume Down**) to move the selection cursor up and down through folders and books. Long-pressing these buttons scrolls a full page at a time.
 * **Open Selection:** Press **Confirm** to open a folder or read a selected book.
 * **Options menu:** Hold **Right** (the page-forward button) to open the menu for the selected item. In a folder short enough to fit on one screen, a short press of Right opens it too. On a device without a Confirm key, such as the X4 Pro, **Confirm** opens the menu instead, and a tap on a row opens the item. The button hints always show which button does what.
-  * For a book or file: **Open**, **Mark as read**, **Info**, **Delete Book Cache**, **Remove**, **Set as sleep screen** (images), **Move to folder**, **New Folder**, **Search** and **Search all folders**.
+  * For a book: **Open**, **Mark as read**, **Info**, **Delete Book Cache**, **Remove**, **Move to folder**, **New Folder**, **Search** and **Search all folders**.
   * For a folder: **Open**, the sort and visibility options, **Search**, **Search all folders**, **New Folder** and **Remove**, which deletes the folder and everything in it.
+
+#### Book view
+
+**Book view** in the options menu switches how books are shown:
+
+* **Filenames** (the default) lists each book by its filename.
+* **Details** shows each EPUB's title from its metadata, with the author and series underneath (for example "Thomas Mann · Werke #3"), and how far you have read on the right: a percentage, or **Finished**. An `.opf` metadata file beside the book overrides what is inside the book, as everywhere else. TXT, Markdown and XTC books keep their filename, with the percentage.
+
+* **Covers** shows the folder as a grid of covers, with the title and author under each. Each cover is shown whole, scaled to fit, never cropped. A finished book has a folded corner and one you are reading a bar along the bottom. A folder appears as a folder the size of a cover, with the number of books in it and in all the folders below it (up to "999+"; "..." while they are being counted). The grid holds as many covers as the screen has room for: two rows of two on the X3 and X4, three of three on the LilyGo T5S3. **Up**/**Down** move a row and **Left**/**Right** one cover, wrapping round at the ends, and the page follows the selection. On a touch screen a tap selects a cover, a second tap opens it, and a swipe turns the page. Hold **Right** for the options menu: its hint reads **Right / Options**.
+  * A book whose cover has not been made yet shows a card with its title at first. The covers of the page on screen are then made one at a time, and each appears as soon as it is ready. Pressing a button pauses this, so the screen stays responsive. A large cover can take several seconds. A cover is made once and kept, and Recent Books and the "book finished" screen use the same ones. A book with no cover at all keeps its title card; if making a cover fails, it is tried again the next time you open the folder.
+
+The first time a folder shows an EPUB you have never opened, its row or card shows the filename for a moment while the book is read. The screen then redraws once with the details, and after that they come up at once. Sorting and **Search** still go by filename, and **Search all folders** lists its results by filename in every view.
 
 #### Sorting
 
@@ -96,6 +108,7 @@ Files and folders can be sorted by **name**, **date**, **size**, or **type**, in
 * **New Folder** makes a folder inside the one you are browsing. A name the SD card cannot hold is corrected rather than refused.
 * **Move to folder** opens a folder picker that shows folders only. Browse to where the file should go: the move puts it in the folder you are *browsing*, which the header names in full, not in the row under the highlight. Press **Right** (the page-forward button; labelled **Move**) to move it there, or **Left** (the page-back button; labelled **New**) to make a new folder first. **Back** cancels.
 * A move is instant whatever the size of the file, because nothing is copied. It never overwrites anything: if a file of the same name is already there, or the file is already in that folder, the move is refused and the reason shown.
+* A book's cover image and `.opf` file go with it when you move or remove the book here, since this screen does not list them. In **All Files** each file is moved or removed on its own.
 * **Remove** on a folder deletes it and everything in it. It sits last in the menu because it cannot be undone.
 
 #### Searching
@@ -111,7 +124,11 @@ Folders with many entries are handled via an SD-card-backed index so memory use 
 
 ### 3.4 Recent Books Screen
 
-The Recent Books screen shows recently opened books as a **cover grid**, displaying cover art, title, and author. Selecting a book opens it at the last read position.
+The Recent Books screen lists the books you opened last, newest first, from wherever they are on the card. Selecting a book opens it at the last read position, and a long **Confirm** on an EPUB fetches your KOReader progress first, as in Browse Files.
+
+It is Browse Files over that list, with the same three views — **Covers** (the default), **Details** and **Filenames** — chosen in the options menu under **Book view**. Recent Books remembers its own choice, so changing it here leaves Browse Files as it was. The keys are Browse Files' too: in Covers, **Up**/**Down** move a row and **Left**/**Right** one book, wrapping round at the ends; hold **Right** for the options menu. **Back** returns to the Home screen.
+
+The options menu has what you can do with the selected book: open it, mark it as read, show its details, delete its cache, **Remove from recents** (it stays on the card) and **Go to folder**, which opens Browse Files in the folder the book is in.
 
 ### 3.5 Book Info Screen
 
@@ -214,12 +231,16 @@ The Settings screen is organized into four top-level tabs: **[Display](#371-disp
   - On the keyboard, hold **Confirm** on a key for its alternate letter, such as an accented one or Ukrainian ґ and the extra Kazakh letters, or for the other case. Holding **Confirm** on Delete clears the whole text. Shift applies to the next letter only, and `-`, `=`, `.` and `,` are on the symbols page (**?123**).
 - **Show Hidden Files**: Show files and folders whose names start with `.`. "ON" / "OFF"
 - **Show File Extensions**: Show file extensions in the file browser. "ON" / "OFF"
+- **Book view**: How [Browse Files](#33-browse-files-screen) shows books. "Filenames" / "Details" / "Covers"
 
 **Network**:
 - **WiFi Networks**: Add, remove, and connect to WiFi networks.
   - To join a network that does not broadcast its name, choose **Add hidden network...** at the end of the list and type its name (SSID). A password saved for that name is reused; otherwise you are asked for one (leave it empty for an open network). While it connects, **Back** abandons the attempt and returns to the list.
   - Whenever the reader needs WiFi it first tries the network it last connected to, then any other saved network in range, strongest first. While it does, **Back** cancels and **Confirm** stops it and shows the network list.
 - **OPDS Servers**: Manage OPDS libraries. See [OPDS Servers (Multiple Libraries)](#375-opds-servers-multiple-libraries).
+
+- **All Files**: Browse every file on the SD card, not just books: images, cover and `.opf` files, firmware images and anything else. It works like [Browse Files](#33-browse-files-screen): **Confirm** opens a book or image, and on any other file it opens the menu, where you can **Move to folder** or **Remove** it. Images offer **Set as sleep screen**. Moving or removing a book here moves or removes that file only, not the cover and `.opf` beside it. **Back** at the top folder returns to Settings.
+
 
 **System**:
 - **Clear Reading Cache**: Clear the internal SD card cache.

@@ -1,12 +1,16 @@
 #include "FileBrowserActivity.h"
 
+#include <Bitmap.h>
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalCapabilities.h>
 #include <HalDisplay.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <Memory.h>
+#include <SidecarFiles.h>
 #include <Utf8.h>
 #include <Xtc.h>
 
@@ -14,27 +18,57 @@
 #include <cctype>
 #include <cstring>
 #include <limits>
+#include <optional>
 
 #include "../ActivityManager.h"
 #include "../ActivityResult.h"
+#include "../ListRowTap.h"
 #include "../reader/FinishedBookActivity.h"
+#include "../reader/ReaderActivity.h"
 #include "../util/BmpViewerActivity.h"
 #include "../util/ConfirmationActivity.h"
 #include "../util/KeyboardEntryActivity.h"
 #include "BookInfoActivity.h"
+#include "CoverThumbLoader.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "FileContextMenuActivity.h"
 #include "MappedInputManager.h"
 #include "TouchUi.h"
+#include "RecentBooksStore.h"
+#include "components/BookProgressPresentation.h"
 #include "components/UITheme.h"
+#include "components/icons/folder.h"
 #include "fontIds.h"
 
 namespace fui = freeink::ui;
 
+FileBrowserActivity::FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                         std::string initialPath, std::string focusName, const Mode mode)
+    : UiListActivity("FileBrowser", renderer, mappedInput),
+      model(mode),
+      focusName(std::move(focusName)),
+      coverLoader(std::make_unique<CoverThumbLoader>()) {
+  model.setPath(std::move(initialPath));
+}
+
+FileBrowserActivity::~FileBrowserActivity() = default;
+
+// A row's display name (defined with materializeListWindow below).
+std::string getFileName(std::string filename);
 
 void FileBrowserActivity::onEnter() {
+  // Recent Books keeps the home screen's snapshot of each book's details current, as the screen
+  // it replaced did on the way in: a metadata sidecar may have changed since the book was read.
+  // One load of the recent-books list for both the refresh and the rows (loadRecents copies the
+  // paths out), let go again before the screen draws: the list is not kept while browsing.
+  std::optional<RecentBooksStore::Hold> recents;
+  if (model.getMode() == Mode::Recents) {
+    recents.emplace();
+    RECENT_BOOKS.refreshSidecarMetadata(static_cast<size_t>(RECENT_BOOKS.getCount()));
+  }
   model.load();
+  recents.reset();
   int selectedIndex = 0;
 
   if (!focusName.empty()) {
@@ -45,6 +79,12 @@ void FileBrowserActivity::onEnter() {
     focusName.clear();
   }
 
+  // The thumbnail the grid's cells take on this panel -- the Recent Books grid's, cell for cell.
+  // The UI is always portrait and the theme only changes in Settings, so it holds while this is open.
+  const CoverGridLayout::Layout cells = coverGrid().cells;
+  const std::pair<int, int> gridThumb{cells.thumbWidth, cells.thumbHeight};
+  coverLoader->configure(&gridThumb, 1, CoverGridLayout::kThumbCrop);
+
   RenderLock lock(*this);
   UiListActivity::onEnter();
   resetNavigation(selectedIndex);
@@ -53,6 +93,398 @@ void FileBrowserActivity::onEnter() {
 void FileBrowserActivity::onExit() {
   UiListActivity::onExit();
   model.clear();
+  bookRows.release();
+  // ActivityManager::exitActivity holds the render lock around onExit().
+  returnLentBuffer(/*callerHoldsRenderLock=*/true);
+  coverFailed.clear();
+  coverFailed.shrink_to_fit();
+}
+
+void FileBrowserActivity::startActivityForResult(std::unique_ptr<Activity>&& activity,
+                                                 ActivityResultHandler resultHandler) {
+  returnLentBuffer(/*callerHoldsRenderLock=*/false);
+  UiListActivity::startActivityForResult(std::move(activity), std::move(resultHandler));
+}
+
+void FileBrowserActivity::loop() {
+  UiListActivity::loop();
+  if (bookRows.hasPending()) {
+    // Titles first: they are quick, and a title card wants its title. An OPF parse's inflate ring
+    // is up to 32 KB of contiguous memory, more than an X3 holding both framebuffers can spare
+    // ("Failed to init inflate reader" on a 350 KB OPF), so it runs in the borrowed framebuffer as
+    // the covers do. A cover in progress holds blocks of that region: it is dropped, and started
+    // again once the titles are done.
+    if (!renderer.isComposingFrame()) {
+      coverLoader->reset();
+      lendForBackgroundWork();
+    }
+    if (bookRows.resolveOne(renderer, coverScratch.get())) requestUpdate();
+    return;
+  }
+  generateCovers();
+}
+
+// The view chosen for this list in Options: Browse Files has one, Recent Books its own
+// (APP_STATE.recentBooksView), and the other browsers list files by name.
+uint8_t FileBrowserActivity::chosenView() const {
+  switch (model.getMode()) {
+    case Mode::Books:
+      return SETTINGS.fileBrowserView;
+    case Mode::Recents:
+      return APP_STATE.recentBooksView;
+    default:
+      return CrossPointSettings::BROWSER_VIEW_FILES;
+  }
+}
+
+// Details chosen. A card-wide search keeps filenames: its rows are paths, and the folder they sit
+// in is what tells two same-named results apart.
+bool FileBrowserActivity::detailsView() const {
+  return chosenView() == CrossPointSettings::BROWSER_VIEW_DETAILS && !model.isDeepSearch();
+}
+
+// Covers chosen, on the same terms as detailsView().
+bool FileBrowserActivity::coversView() const {
+  return chosenView() == CrossPointSettings::BROWSER_VIEW_COVERS && !model.isDeepSearch();
+}
+
+// What a row is called before its details are known: its filename -- for a Recent Books row, whose
+// name is a path from the root, the last part of it.
+std::string FileBrowserActivity::rowName(const std::string& entry) const {
+  if (model.getMode() != Mode::Recents) return getFileName(entry);
+  const size_t slash = entry.rfind('/');
+  return getFileName(slash == std::string::npos ? entry : entry.substr(slash + 1));
+}
+
+// The cover grid on this panel: one layout for Browse Files and Recent Books alike, so a book has one
+// grid thumbnail, made at the size the cells come out at and drawn 1:1 -- never resampled, which
+// would alias its dither into a visible grid.
+FileBrowserActivity::CoverGrid FileBrowserActivity::coverGrid() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  CoverGrid g;
+  g.content = UITheme::getContentRect(renderer, true, true);
+  g.top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  // The 12 px floor at the bottom is where the scroll arrows go.
+  g.cells = CoverGridLayout::compute({.contentWidth = g.content.width,
+                                      .contentHeight = g.content.height - g.top - metrics.verticalSpacing,
+                                      .bottomReserve = 12,
+                                      .maxCellHeight = CoverGridLayout::kMaxCellHeight,
+                                      .maxCellWidth = CoverGridLayout::kMaxCellWidth});
+  g.perPage = std::max(1, g.cells.cols * g.cells.rows);
+  return g;
+}
+
+void FileBrowserActivity::afterUiRender() {
+  if (coversView()) drawCoverGrid();
+}
+
+void FileBrowserActivity::drawCoverGrid() {
+  const int total = listCount();
+  if (total == 0) return;
+  const CoverGrid g = coverGrid();
+  const int start = (nav.selected / g.perPage) * g.perPage;
+  const int end = std::min(total, start + g.perPage);
+  for (int i = start; i < end; ++i) {
+    const int slot = i - start;
+    const int x =
+        g.content.x + CoverGridLayout::kMargin + (slot % g.cells.cols) * (g.cells.cellWidth + CoverGridLayout::kMargin);
+    const int y = g.top + (slot / g.cells.cols) * g.cells.rowStride;
+    drawCoverCell(i, x, y, g.cells, i == nav.selected);
+  }
+}
+
+// One cell: the cover slot, then two lines under it. The slot is a 2:3 card centred in the cell --
+// the shape of the usual cover, so fitted covers, title cards and folders line up. Selection is
+// the recent-books grid's: the whole cell inverted, the cover itself left as it is.
+void FileBrowserActivity::drawCoverCell(const int index, const int x, const int y, const CoverGridLayout::Layout& cells,
+                                        const bool selected) {
+  const int tw = cells.cellWidth;
+  const int th = cells.cellHeight;
+  if (selected) renderer.fillRect(x, y, tw, th + CoverGridLayout::kLabelHeight + 3);
+  const int cardH = th - 2;
+  const int cardW = std::min(tw - 2, cardH * 2 / 3);
+  const Rect card{x + (tw - cardW) / 2, y + 1, cardW, cardH};
+
+  const std::string entry = model.entryName(static_cast<size_t>(index));
+  if (entry.empty()) return;
+  const std::string path = model.entryFullPath(static_cast<size_t>(index));
+  std::string title;
+  std::string subtitle;
+  if (entry.back() == '/') {
+    title = utf8NfcNorm(entry.substr(0, entry.size() - 1));
+    const int books = bookRows.folder(path).bookCount;
+    drawFolderCard(card, books);
+  } else {
+    const BookRowResolver::Row& row = bookRows.row(path, model.entrySize(static_cast<size_t>(index)));
+    title = row.title.empty() ? rowName(entry) : row.title;
+    subtitle = row.subtitle;
+    const int percent = row.percent;  // copied before anything else can reuse the row's slot
+    Rect cover = card;
+    const CoverThumb thumb = drawCoverThumb(path, x, y, tw, th, cover);
+    if (thumb != CoverThumb::Drawn) drawTitleCard(title, card);
+    if (thumb == CoverThumb::Missing) coverWork = true;
+    // Framed tight round what is drawn: a fitted cover is narrower than the cell.
+    renderer.drawRect(cover.x - 1, cover.y - 1, cover.width + 2, cover.height + 2, !selected);
+    BookProgressPresentation::drawIndicator(renderer, Rect{cover.x - 1, cover.y - 1, cover.width + 2, cover.height + 2},
+                                            percent);
+  }
+
+  const int labelY = y + th + 3;
+  const bool black = !selected;
+  renderer.drawText(SMALL_FONT_ID, x + 2, labelY,
+                    renderer.truncatedText(SMALL_FONT_ID, title.c_str(), cells.labelWidth).c_str(), black);
+  if (!subtitle.empty()) {
+    renderer.drawText(SMALL_FONT_ID, x + 2, labelY + 17,
+                      renderer.truncatedText(SMALL_FONT_ID, subtitle.c_str(), cells.labelWidth).c_str(), black);
+  }
+}
+
+// The book's cover, from the grid thumbnail the recent-books grid or generateCovers() made (on a
+// panel whose cells take the full-size box, the finished-book screen's too), centred in the cell; `drawn` is where it
+// landed. NoCover is the 1x1 placeholder of a book that has none; Missing is a thumbnail not made yet, or cut short.
+FileBrowserActivity::CoverThumb FileBrowserActivity::drawCoverThumb(const std::string& bookPath, const int x,
+                                                                    const int y, const int tw, const int th,
+                                                                    Rect& drawn) {
+  FsFile file;
+  if (!Storage.openFileForRead("FBR", coverLoader->thumbPath(bookPath), file)) return CoverThumb::Missing;
+  Bitmap bmp(file);
+  CoverThumb result = CoverThumb::Missing;  // unreadable, or cut short by an interrupted write
+  if (bmp.parseHeaders() == BmpReaderError::Ok && bmp.isComplete()) {
+    if (bmp.getWidth() <= 1 || bmp.getHeight() <= 1) {
+      result = CoverThumb::NoCover;
+    } else {
+      // Never upscaled -- and a current thumbnail always fits, so never scaled at all.
+      const float scale = std::min(
+          1.0f, std::min(static_cast<float>(tw - 2) / bmp.getWidth(), static_cast<float>(th - 2) / bmp.getHeight()));
+      drawn.width = static_cast<int>(bmp.getWidth() * scale);
+      drawn.height = static_cast<int>(bmp.getHeight() * scale);
+      drawn.x = x + std::max(1, (tw - drawn.width) / 2);
+      drawn.y = y + std::max(1, (th - drawn.height) / 2);
+      renderer.fillRect(drawn.x, drawn.y, drawn.width, drawn.height, false);  // white under it, on a selection
+      renderer.drawBitmap1Bit(bmp, drawn.x, drawn.y, drawn.width, drawn.height);
+      result = CoverThumb::Drawn;
+    }
+  }
+  file.close();
+  return result;
+}
+
+// A book without a cover thumbnail: its title, set large on a blank card.
+void FileBrowserActivity::drawTitleCard(const std::string& title, const Rect& card) {
+  renderer.fillRect(card.x, card.y, card.width, card.height, false);
+  constexpr int pad = 10;
+  const int lineH = renderer.getLineHeight(UI_12_FONT_ID);
+  const int maxLines = std::max(1, std::min(6, (card.height - 2 * pad) / lineH));
+  const auto lines =
+      renderer.wrappedText(UI_12_FONT_ID, title.c_str(), card.width - 2 * pad, maxLines, EpdFontFamily::BOLD);
+  int lineY = card.y + (card.height - static_cast<int>(lines.size()) * lineH) / 2;
+  for (const auto& line : lines) {
+    const int lineW = renderer.getTextWidth(UI_12_FONT_ID, line.c_str(), EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, card.x + (card.width - lineW) / 2, lineY, line.c_str(), true, EpdFontFamily::BOLD);
+    lineY += lineH;
+  }
+}
+
+// A folder at the size of a cover: a tab over a body, drawn in outline, and in the body how many
+// books are in it and below it -- "..." until BookRowResolver has counted them.
+void FileBrowserActivity::drawFolderCard(const Rect& card, const int books) {
+  constexpr int line = 3;
+  const int tabW = card.width * 2 / 5;
+  const int tabH = std::max(12, card.height / 14);
+  const int bodyTop = card.y + card.height / 8;  // a folder is wider than tall; a cover is not
+  const int bodyH = card.height - (bodyTop - card.y) - card.height / 8;
+  renderer.fillRect(card.x, bodyTop - tabH, tabW, tabH + line, false);
+  renderer.fillRect(card.x, bodyTop, card.width, bodyH, false);
+  for (int i = 0; i < line; ++i) {
+    renderer.drawRect(card.x + i, bodyTop - tabH + i, tabW - 2 * i, tabH + line);
+    renderer.drawRect(card.x + i, bodyTop + i, card.width - 2 * i, bodyH - 2 * i);
+  }
+
+  std::string number = "...";
+  if (books > FileBrowserModel::MAX_COUNTED_BOOKS) {
+    number = std::to_string(FileBrowserModel::MAX_COUNTED_BOOKS) + "+";
+  } else if (books >= 0) {
+    number = std::to_string(books);
+  }
+  const char* noun = books == 1 ? tr(STR_BOOK_SINGULAR) : tr(STR_BOOK_PLURAL);
+  const int numberH = renderer.getLineHeight(UI_12_FONT_ID);
+  const int nounH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int textY = bodyTop + (bodyH - numberH - nounH) / 2;
+  const int numberW = renderer.getTextWidth(UI_12_FONT_ID, number.c_str(), EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, card.x + (card.width - numberW) / 2, textY, number.c_str(), true,
+                    EpdFontFamily::BOLD);
+  if (books >= 0) {
+    const int nounW = renderer.getTextWidth(SMALL_FONT_ID, noun);
+    renderer.drawText(SMALL_FONT_ID, card.x + (card.width - nounW) / 2, textY + numberH, noun, true);
+  }
+}
+
+// One burst of cover making for the page on screen: carry on with the book in hand if it is still
+// on that page, else start on the first book there without a cover. A cover that lands is shown
+// at once -- one redraw per cover, not per decode slice -- and the next burst moves on.
+void FileBrowserActivity::generateCovers() {
+  if (!coversView()) {
+    returnLentBuffer(/*callerHoldsRenderLock=*/false);
+    return;
+  }
+  if (!coverWork && !coverLoader->busy()) return;
+  if (renderer.isComposingFrame() || mappedInput.hasPendingInput()) return;
+
+  if (!coverLoader->busy()) {
+    std::string next;
+    {
+      RenderLock lock(*this);  // the model's index file is the render task's too
+      const int total = listCount();
+      const int perPage = coverGrid().perPage;
+      const int start = (nav.selected / perPage) * perPage;
+      for (int i = start; i < std::min(total, start + perPage) && next.empty(); ++i) {
+        const std::string entry = model.entryName(static_cast<size_t>(i));
+        if (entry.empty() || entry.back() == '/') continue;
+        const std::string path = model.entryFullPath(static_cast<size_t>(i));
+        if (std::find(coverFailed.begin(), coverFailed.end(), path) != coverFailed.end()) continue;
+        if (!coverLoader->complete(path)) next = path;
+      }
+    }
+    if (next.empty()) {
+      coverWork = false;
+      returnLentBuffer(/*callerHoldsRenderLock=*/false);
+      return;
+    }
+    // Without the lend the decoders fall back to the heap, as the Recent Books grid always does.
+    lendForBackgroundWork();
+    coverLoader->begin(next, coverScratch ? coverScratch.get() : nullptr);
+  } else {
+    // The selection may have moved off the page since the last burst: then this book can wait.
+    RenderLock lock(*this);
+    const int perPage = coverGrid().perPage;
+    const int start = (nav.selected / perPage) * perPage;
+    bool onPage = false;
+    for (int i = start; i < std::min(listCount(), start + perPage) && !onPage; ++i) {
+      onPage = model.entryFullPath(static_cast<size_t>(i)) == coverLoader->book();
+    }
+    if (!onPage) {
+      coverLoader->reset();
+      coverWork = true;  // look again at the page that is on screen now
+      return;
+    }
+  }
+
+  constexpr uint32_t COVER_SLICE_BUDGET_MS = 150;
+  // Full speed for the burst: this runs between presses, which is when the governor has the clock
+  // down at 10 MHz.
+  HalPowerManager::Lock fullSpeed;
+  const uint32_t deadline = millis() + COVER_SLICE_BUDGET_MS;
+  const std::string book = coverLoader->book();
+  while (true) {
+    const CoverThumbLoader::Step step = coverLoader->step();
+    if (step == CoverThumbLoader::Step::Done) {
+      requestUpdate();
+      return;
+    }
+    if (step == CoverThumbLoader::Step::Failed) {
+      constexpr size_t MAX_REMEMBERED_FAILURES = 32;
+      if (coverFailed.size() >= MAX_REMEMBERED_FAILURES) coverFailed.erase(coverFailed.begin());
+      coverFailed.push_back(book);
+      return;
+    }
+    if (mappedInput.hasPendingInput() || renderer.isComposingFrame() ||
+        static_cast<int32_t>(millis() - deadline) >= 0) {
+      return;  // resume where it stands on the next loop()
+    }
+  }
+}
+
+// Borrows the secondary framebuffer for the title parses and the cover decoders, as
+// HomeActivity::loadRecentCovers does and for the same reasons it gives: decoding beside two full
+// framebuffers has taken free heap to a few KB. Before the lend: the write buffer is two frames old after the last
+// swap, so it is brought up to the frame on the panel, and on the X4 RED RAM is seeded with that frame, which
+// single-buffer fast diff requires.
+bool FileBrowserActivity::lendForBackgroundWork() {
+  if (lentRegion != nullptr) return true;
+  if (!renderer.hasSecondaryBuffer()) return false;
+  RenderLock lock(*this);
+  renderer.syncWriteBufferFromDisplayed();
+  if (!renderer.isX3()) renderer.syncRedRamFromFrameBuffer();
+  size_t size = 0;
+  uint8_t* region = renderer.borrowSecondaryBuffer(&size);
+  if (region == nullptr) return false;
+  coverScratch = makeUniqueNoThrow<BuildArena>(region, size);
+  if (!coverScratch || !coverScratch->valid()) {
+    coverScratch.reset();
+    renderer.returnSecondaryBuffer();  // cannot fail: the region never entered the heap
+    return false;
+  }
+  lentRegion = region;
+  renderer.setSingleBufferFastDiff(true);
+  LOG_INF("FBR", "Lent secondary framebuffer for titles and covers (%u bytes, free=%lu)", static_cast<unsigned>(size),
+          static_cast<unsigned long>(esp_get_free_heap_size()));
+  return true;
+}
+
+// Everything holding a block of the region goes first, then the region goes back to the display.
+// onExit() calls this under the render lock ActivityManager already holds; taking it again would
+// deadlock, hence the flag.
+void FileBrowserActivity::returnLentBuffer(const bool callerHoldsRenderLock) {
+  // Nothing borrowed and nothing in hand is the common case, checked every loop() outside Covers:
+  // answer it without the lock.
+  if (lentRegion == nullptr && !coverLoader->busy()) return;
+  const auto doReturn = [this] {
+    coverLoader->reset();
+    if (lentRegion == nullptr) return;
+    coverScratch.reset();
+    renderer.returnSecondaryBuffer();  // cannot fail: the region never entered the heap
+    renderer.setSingleBufferFastDiff(false);
+    lentRegion = nullptr;
+    Epub::clearCoverMetadataMemo();
+    LOG_INF("FBR", "Returned secondary framebuffer after titles and covers (free=%lu contig=%lu)",
+            static_cast<unsigned long>(esp_get_free_heap_size()),
+            static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT)));
+  };
+  if (callerHoldsRenderLock) {
+    doReturn();
+  } else {
+    RenderLock lock(*this);
+    doReturn();
+  }
+}
+
+// A tap on a cover: the first selects it, a second opens it -- the list's two-step, through the
+// same hit test the recent-books grid uses. A swipe turns the page.
+bool FileBrowserActivity::handleCoverTouch() {
+#if CP_TOUCH_UI
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
+    pageSelection(swipe == MappedInputManager::SwipeDir::Up ? 1 : -1);
+    return true;
+  }
+  const int total = listCount();
+  if (total == 0) return false;
+  const CoverGrid g = coverGrid();
+  const int pageStartRow = (nav.selected / g.perPage) * g.cells.rows;
+  int index = -1;
+  const auto hit = [&](const int px, const int py) {
+    index = CoverGridLayout::hitTest(g.cells, g.content.x, g.top, pageStartRow, total, px, py);
+    return index >= 0;
+  };
+  int px = 0;
+  int py = 0;
+  // Down is claimed but not acted on, so the same contact cannot also be read by anything else.
+  if (mappedInput.wasScreenTouchDown(px, py) && hit(px, py)) return true;
+  if (!(mappedInput.wasScreenTapped(px, py) && hit(px, py))) return false;
+  switch (ListRowTap::apply(index, total, nav.selected)) {
+    case ListRowTap::Result::Rejected:
+      return true;
+    case ListRowTap::Result::Selected:
+      requestUpdate();
+      return true;
+    case ListRowTap::Result::Activate:
+      activateIndex(index);
+      return true;
+  }
+  return true;
+#else
+  return false;
+#endif
 }
 
 void FileBrowserActivity::clearFileMetadata(const std::string& fullPath) {
@@ -134,9 +566,16 @@ bool FileBrowserActivity::removeDirRecursive(const std::string& fullPath) {
 }
 
 bool FileBrowserActivity::handleCustomInput() {
+  // The grid has no list for the base class to route a touch to.
+  if (coversView() && handleCoverTouch()) return true;
   ButtonEventManager::ButtonEvent ev;
   while (buttonEvents.consumeEvent(ev)) {
     if (ev.button == MappedInputManager::Button::Back) {
+      // Recent Books is one list with nowhere to go up to: Back, short or long, is Home.
+      if (model.getMode() == Mode::Recents) {
+        onGoHome();
+        return true;
+      }
       if (ev.type == ButtonEventManager::PressType::Long) {
         if (model.getMode() == Mode::Books) {
           onGoHome();
@@ -216,6 +655,14 @@ bool FileBrowserActivity::handleCustomInput() {
       }
     }
 
+    // The cover grid moves as the Recent Books grid does: Up/Down a row, Left/Right a cover, all
+    // wrapping at the ends, and the page follows the selection. Left and Right are needed here even
+    // on a board without those keys -- on the T5S3 they are the hint strip's boxes -- and a press
+    // that paged would skip the covers beside the selection. Options stays on a long Right.
+    if (coversView() && ev.type == ButtonEventManager::PressType::Short && moveInCoverGrid(ev.button)) {
+      return true;
+    }
+
     // Logical Left/Right page through the list, one screenful per press — the same thing they do in
     // the chapter selector, and the reason the context menu moved to a long press on Right. Paging
     // is driven from the event stream rather than ButtonNavigator: the navigator acts on the press
@@ -239,7 +686,7 @@ bool FileBrowserActivity::handleCustomInput() {
     // one screen and there is nothing to page. Either way the button hint says which one it is.
     const bool optionsPress = (ev.type == ButtonEventManager::PressType::Long) ||
                               (ev.type == ButtonEventManager::PressType::Short &&
-                               (!listPages() || model.getMode() == Mode::PickFirmware));
+                               (!listPages() || model.getMode() == Mode::PickFirmware) && !coversView());
     if (model.getMode() != Mode::PickFolder &&
         MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) && optionsPress) {
       // Open the context menu for any selection. openContextMenu() shows
@@ -253,17 +700,18 @@ bool FileBrowserActivity::handleCustomInput() {
 }
 
 void FileBrowserActivity::navigateButtons() {
+  if (coversView()) return;  // the grid moves by rows and covers, from handleCustomInput()
   bool changed = false;
   {
     RenderLock lock(*this);
     const int previous = nav.selected;
+    const int pageSize = listPageSize();
     buttonNavigator.onNextList(
-        ButtonNavigator::getStepNextButtons(), nav.selected, listCount(), [&changed] { changed = true; },
-        nav.pageRowsFor(listCount()));
+        ButtonNavigator::getStepNextButtons(), nav.selected, listCount(), [&changed] { changed = true; }, pageSize);
     buttonNavigator.onPreviousList(
-        ButtonNavigator::getStepPreviousButtons(), nav.selected, listCount(), [&changed] { changed = true; },
-        nav.pageRowsFor(listCount()));
-    if (changed) {
+        ButtonNavigator::getStepPreviousButtons(), nav.selected, listCount(), [&changed] { changed = true; }, pageSize);
+    // The grid shows whichever page holds the selection; only the list keeps a viewport to follow.
+    if (changed && !coversView()) {
       if (std::abs(nav.selected - previous) > 2) {
         nav.top = nav.selected;
       } else {
@@ -304,12 +752,18 @@ void FileBrowserActivity::activateSelected(const bool longPress) {
     finish();
     return;
   }
+  // All files lists what the reader cannot open too. Selecting one of those offers what can be
+  // done with it -- move it, remove it -- instead of handing the reader a file it would reject.
+  if (model.getMode() == Mode::AllFiles && !FileBrowserModel::isOpenable(entry)) {
+    openContextMenu();
+    return;
+  }
 
   std::string fullPath = model.path();
   if (fullPath.back() != '/') fullPath += "/";
   fullPath += entry;
   ReturnHint hint;
-  hint.target = ReturnTo::FileBrowser;
+  hint.target = returnTarget();
   hint.path = model.path();
   hint.selectName = entry;
   activityManager.replaceWithReader(std::move(fullPath), std::move(hint));
@@ -330,7 +784,9 @@ void FileBrowserActivity::resetNavigation(const int selected) {
 
 // Rows one Left/Right press moves. nav reports what the last render fit — which for wrapped
 // rows is not a constant — and before the first render there is nothing to report yet.
-int FileBrowserActivity::listPageSize() const { return nav.pageRowsFor(listCount()); }
+int FileBrowserActivity::listPageSize() const {
+  return coversView() ? coverGrid().perPage : nav.pageRowsFor(listCount());
+}
 
 // True when the folder is longer than one screen. When it is not, paging has nothing to do, so
 // Right keeps its old short-press meaning (Options) instead of quietly stepping the selection.
@@ -356,6 +812,29 @@ void FileBrowserActivity::pageSelection(const int direction) {
   nav.top = nav.selected;
   nav.followPending = false;
   requestUpdate();
+}
+
+// One step in the cover grid for a short press on a direction key, wrapping at the ends; false for
+// any other key. Up/Down take a whole row (CoverGridLayout::rowAbove/rowBelow), Left/Right one cover.
+bool FileBrowserActivity::moveInCoverGrid(const MappedInputManager::Button button) {
+  const int total = listCount();
+  using Direction = MappedInputManager::Direction;
+  const bool up = MappedInputManager::isDirection(button, Direction::Up);
+  const bool down = MappedInputManager::isDirection(button, Direction::Down);
+  const bool left = MappedInputManager::isDirection(button, Direction::Left);
+  const bool right = MappedInputManager::isDirection(button, Direction::Right);
+  if (!up && !down && !left && !right) return false;
+  if (total <= 0) return true;
+  {
+    RenderLock lock(*this);
+    const int cols = coverGrid().cells.cols;
+    if (up) nav.selected = CoverGridLayout::rowAbove(nav.selected, total, cols);
+    if (down) nav.selected = CoverGridLayout::rowBelow(nav.selected, total, cols);
+    if (left) nav.selected = ButtonNavigator::previousIndex(nav.selected, total);
+    if (right) nav.selected = ButtonNavigator::nextIndex(nav.selected, total);
+  }
+  requestUpdate();
+  return true;
 }
 
 // Display copy only. FileBrowserModel's entry names, and every path built from them, keep the
@@ -388,11 +867,26 @@ void FileBrowserActivity::materializeListWindow() {
   windowFirst = static_cast<uint16_t>(std::max(0, std::min(nav.top, total)));
   windowCount = static_cast<uint16_t>(
       std::min(static_cast<size_t>(total - windowFirst), static_cast<size_t>(LIST_WINDOW_CAPACITY)));
+  // Details are looked up for the rows that will be drawn, not the whole window: the window runs
+  // past the bottom of the screen, and each lookup is a few small file reads.
+  const bool details = detailsView();
+  const int drawnEnd = nav.top + nav.pageRowsFor(total);
   for (uint16_t offset = 0; offset < windowCount; ++offset) {
     const uint16_t index = static_cast<uint16_t>(windowFirst + offset);
-    windowLabels[offset] = getFileName(model.entryName(index));
+    const std::string entry = model.entryName(index);
+    windowLabels[offset] = rowName(entry);
+    windowSubtitles[offset].clear();
+    windowValues[offset].clear();
+    if (details && !entry.empty() && entry.back() != '/' && index < drawnEnd) {
+      const BookRowResolver::Row& row = bookRows.row(model.entryFullPath(index), model.entrySize(index));
+      if (!row.title.empty()) windowLabels[offset] = row.title;
+      windowSubtitles[offset] = row.subtitle;
+      windowValues[offset] = row.value;
+    }
     windowItems[offset] = {};
     windowItems[offset].label = windowLabels[offset].c_str();
+    if (!windowSubtitles[offset].empty()) windowItems[offset].subtitle = windowSubtitles[offset].c_str();
+    if (!windowValues[offset].empty()) windowItems[offset].value = windowValues[offset].c_str();
     windowItems[offset].actionValue = static_cast<int16_t>(index);
   }
 }
@@ -409,20 +903,27 @@ void FileBrowserActivity::buildScreen(UiScreen& screen) {
 
   if (listCount() == 0) {
     fui::TextAreaProps empty;
-    empty.text = model.getMode() == Mode::PickFirmware ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND);
+    empty.text = model.getMode() == Mode::PickFirmware ? tr(STR_NO_BIN_FILES)
+                 : model.getMode() == Mode::Recents    ? tr(STR_NO_RECENT_BOOKS)
+                                                       : tr(STR_NO_FILES_FOUND);
     empty.style = screen.theme().bodyText;
     empty.showCaret = false;
     screen.textArea(empty);
     return;
   }
 
+  // The grid is drawn straight to the frame after the (otherwise empty) screen, in afterUiRender().
+  if (coversView()) return;
+
   fui::ListProps props;
   props.count = static_cast<uint16_t>(listCount());
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;
   props.labelText = screen.theme().bodyText;
-  props.labelText.maxLines = 3;
-  syncListViewport(screen, props);
+  // A filename may wrap; a Details row is a title over a subtitle at a fixed two-line height.
+  const bool details = detailsView();
+  props.labelText.maxLines = details ? 1 : 3;
+  syncListViewport(screen, props, /*hasSubtitle=*/details);
   materializeListWindow();
   props.items = windowItems.data();
   props.itemsWindowFirst = windowFirst;
@@ -435,12 +936,16 @@ void FileBrowserActivity::drawChrome() {
   const Rect contentRect = UITheme::getContentRect(renderer, true, true);
   const std::string destination = (model.path() == "/") ? std::string(tr(STR_SD_CARD)) : model.path();
   std::string folderName =
-      (model.getMode() == Mode::PickFirmware) ? std::string(tr(STR_SELECT_FIRMWARE_FILE))
+      (model.getMode() == Mode::Recents)        ? std::string(tr(STR_MENU_RECENT_BOOKS))
+      : (model.getMode() == Mode::PickFirmware) ? std::string(tr(STR_SELECT_FIRMWARE_FILE))
       : (model.getMode() == Mode::PickFolder)
           // Names the DESTINATION in full: "Move here" means the folder being browsed, never the
           // row under the highlight, and the first reading of it is the other way round.
           ? std::string(tr(STR_MOVE_TO_FOLDER)) + ": " + destination
-          : ((model.path() == "/") ? std::string(tr(STR_SD_CARD)) : model.path().substr(model.path().rfind('/') + 1));
+          : (model.path() != "/") ? model.path().substr(model.path().rfind('/') + 1)
+            // At the root, All files says which browser this is: the rows alone look like the book one.
+            : (model.getMode() == Mode::AllFiles) ? std::string(tr(STR_ALL_FILES))
+                                                  : std::string(tr(STR_SD_CARD));
   // A narrowed folder is indistinguishable from a small one unless the header says otherwise.
   if (model.isFiltered()) {
     folderName += ": \"" + model.filter() + "\"";
@@ -449,8 +954,11 @@ void FileBrowserActivity::drawChrome() {
 }
 
 void FileBrowserActivity::drawFooter() {
+  // Only the book browser leaves to Home; the others were opened from somewhere and go back there.
   const char* backLabel =
-      (model.path() == "/") ? (model.getMode() == Mode::PickFirmware ? tr(STR_BACK) : tr(STR_HOME)) : tr(STR_BACK);
+      (model.path() == "/")
+          ? (model.getMode() == Mode::Books || model.getMode() == Mode::Recents ? tr(STR_HOME) : tr(STR_BACK))
+          : tr(STR_BACK);
   const bool hasEntries = listCount() > 0;
   bool selectingFirmwareFile = false;
   if (model.getMode() == Mode::PickFirmware && hasEntries) {
@@ -474,12 +982,23 @@ void FileBrowserActivity::drawFooter() {
   const char* prevLabel = (model.getMode() == Mode::PickFolder) ? tr(STR_NEW) : pages ? tr(STR_LIST_PAGE_PREV) : "";
   // In a folder small enough not to page, this slot carries Options. Where Confirm already
   // carries it that would draw the same word twice on one strip, and the second copy would sit on
-  // a slot such a board has no key for.
-  const char* nextLabel = (model.getMode() == Mode::PickFolder)         ? tr(STR_MOVE_HERE)
-                          : (model.getMode() == Mode::PickFirmware)     ? (confirmOpensOptions() ? "" : tr(STR_OPTIONS))
-                          : pages                                       ? tr(STR_LIST_PAGE_NEXT)
-                          : (showOptionsHint && !confirmOpensOptions()) ? tr(STR_OPTIONS)
-                                                                        : "";
+  // Where it pages, the same key still opens Options on a hold, so the label says both rather
+  // than hiding the menu.
+  const bool optionsOnRight = showOptionsHint && !confirmOpensOptions();
+  const char* nextLabel = (model.getMode() == Mode::PickFolder)   ? tr(STR_MOVE_HERE)
+                          : (model.getMode() == Mode::PickFirmware) ? (optionsOnRight ? tr(STR_OPTIONS) : "")
+                          : pages ? (optionsOnRight ? tr(STR_LIST_PAGE_NEXT_OR_OPTIONS) : tr(STR_LIST_PAGE_NEXT))
+                          : optionsOnRight ? tr(STR_OPTIONS)
+                                           : "";
+  // The cover grid steps a cover on Left and Right (moveInCoverGrid), short press first and the
+  // long one after the slash, as the Recent Books grid names them. Always labelled: on the T5S3 the
+  // boxes are the only Left and Right there are, and an unlabelled box is not tappable.
+  std::string gridRight;
+  if (coversView() && hasEntries) {
+    prevLabel = tr(STR_DIR_LEFT);
+    gridRight = optionsOnRight ? std::string(tr(STR_DIR_RIGHT)) + " / " + tr(STR_OPTIONS) : tr(STR_DIR_RIGHT);
+    nextLabel = gridRight.c_str();
+  }
   // Paging is bound to logical Left/Right and stepping to logical Up/Down, so which physical pair
   // carries which — and therefore which hint strip each label belongs on — is the orientation's
   // business, not this screen's.
@@ -502,15 +1021,15 @@ void FileBrowserActivity::openContextMenu() {
     return;
   }
 
-  std::string cleanBase = model.path();
-  if (cleanBase.back() != '/') cleanBase += "/";
-  const std::string fullPath = cleanBase + entry;
+  const std::string fullPath = model.entryFullPath(static_cast<size_t>(nav.selected));
 
   startActivityForResult(std::make_unique<FileContextMenuActivity>(
                              renderer, mappedInput, fullPath, model.getSortMode(), model.getSortDirection(),
                              /*offerDirectoryActions=*/false, model.isFiltered() || model.isDeepSearch(),
-                             /*offerGoToFolder=*/model.isDeepSearch(),
-                             /*offerFileManagement=*/model.getMode() == Mode::Books),
+                             /*offerGoToFolder=*/model.listsPaths(),
+                             /*offerFileManagement=*/managesFiles(),
+                             /*offerViewChoice=*/offersViewChoice(),
+                             /*recentsList=*/model.getMode() == Mode::Recents),
                          [this, fullPath, entry](const ActivityResult& res) {
                            if (res.isCancelled) {
                              requestUpdate();
@@ -567,10 +1086,15 @@ void FileBrowserActivity::createFolderHere() {
 // A move on a FAT volume is a rename: the bytes never move, so this is instant whatever the size
 // of the book and cannot leave half a file behind if power is lost. The cost is that it works
 // within the one volume, which is all there is here.
+//
+// The book browser does not list a book's sidecars, so a book moved from there takes them along:
+// left behind, its cover and metadata corrections would be lost to it and invisible where they
+// stayed. All files lists them as files of their own, and moves exactly the one selected.
 void FileBrowserActivity::moveToFolder(const std::string& fullPath, const std::string& entry) {
+  const bool withSidecars = model.getMode() == Mode::Books;
   startActivityForResult(
       std::make_unique<FileBrowserActivity>(renderer, mappedInput, "/", std::string{}, Mode::PickFolder),
-      [this, fullPath, entry](const ActivityResult& res) {
+      [this, fullPath, entry, withSidecars](const ActivityResult& res) {
         const auto* picked = res.isCancelled ? nullptr : std::get_if<FilePathResult>(&res.data);
         if (picked == nullptr) {
           requestUpdate();
@@ -584,12 +1108,15 @@ void FileBrowserActivity::moveToFolder(const std::string& fullPath, const std::s
         const char* message = nullptr;
         if (target == fullPath) {
           message = tr(STR_MOVE_SAME_FOLDER);
-        } else if (Storage.exists(target.c_str())) {
+        } else if (Storage.exists(target.c_str()) || (withSidecars && SidecarFiles::anyTargetTaken(fullPath, target))) {
           // Renaming onto an existing name is not ours to resolve silently, and FAT would not
           // report which of the two survived.
           message = tr(STR_MOVE_NAME_TAKEN);
         } else if (!Storage.rename(fullPath.c_str(), target.c_str())) {
           message = tr(STR_MOVE_FAILED);
+        } else if (withSidecars && !SidecarFiles::moveAll(fullPath, target)) {
+          // The book is already in its new folder; saying the move failed would be wrong.
+          LOG_ERR("FBR", "Moved %s but not all of its sidecars", fullPath.c_str());
         }
 
         if (message != nullptr) {
@@ -598,6 +1125,7 @@ void FileBrowserActivity::moveToFolder(const std::string& fullPath, const std::s
           GUI.drawPopup(renderer, message);
         } else {
           clearFileMetadata(fullPath);
+          bookRows.clear();
           model.load();
           resetNavigation(nav.selected);
         }
@@ -616,7 +1144,56 @@ void FileBrowserActivity::moveToFolder(const std::string& fullPath, const std::s
 //
 // A board with the keys keeps Confirm as Open, and its menu one hold of Right away.
 bool FileBrowserActivity::confirmOpensOptions() const {
-  return model.getMode() != Mode::PickFolder && !HalCapabilities::hasBackAndConfirmButtons();
+  return managesFiles() && !HalCapabilities::hasBackAndConfirmButtons();
+}
+
+// The two browsers a reader organises the card from, rather than picks something in. Both get
+// New folder, Move to folder and Remove; the pickers keep to what their pick needs.
+bool FileBrowserActivity::managesFiles() const {
+  return model.getMode() == Mode::Books || model.getMode() == Mode::AllFiles;
+}
+
+// Where the reader comes back to: the browser it was opened from, in the mode it was in.
+// Off the list, not off the card: a confirmation naming the book, as the Recent Books screen
+// asked before it was a list.
+void FileBrowserActivity::removeFromRecents(const std::string& bookPath) {
+  std::string title;
+  {
+    RenderLock lock(*this);  // the render task reads the same rows
+    title = bookRows.row(bookPath, 0).title;
+  }
+  if (title.empty()) {
+    const size_t slash = bookPath.rfind('/');
+    title = getFileName(slash == std::string::npos ? bookPath : bookPath.substr(slash + 1));
+  }
+  const std::string heading = std::string(tr(STR_REMOVE_FROM_RECENTS)) + "?";
+  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, title),
+                         [this, bookPath](const ActivityResult& res) {
+                           if (!res.isCancelled) {
+                             RECENT_BOOKS.removeBook(bookPath);
+                             RenderLock lock(*this);
+                             bookRows.clear();
+                             model.load();
+                             resetNavigation(nav.selected);
+                           }
+                           requestUpdate();
+                         });
+}
+
+// The views are for books: Browse Files and Recent Books list them; the others list files.
+bool FileBrowserActivity::offersViewChoice() const {
+  return model.getMode() == Mode::Books || model.getMode() == Mode::Recents;
+}
+
+ReturnTo FileBrowserActivity::returnTarget() const {
+  switch (model.getMode()) {
+    case Mode::AllFiles:
+      return ReturnTo::AllFiles;
+    case Mode::Recents:
+      return ReturnTo::RecentBooks;
+    default:
+      return ReturnTo::FileBrowser;
+  }
 }
 
 // Asks for a query, then either narrows this folder or walks the whole card for it.
@@ -656,11 +1233,16 @@ void FileBrowserActivity::startSearch(const bool everywhere) {
 // Leaves the results and opens the folder the selected one actually lives in, with it selected.
 // A card-wide search tells you where a book is; this is how you go and stand there.
 void FileBrowserActivity::goToResultFolder() {
-  if (!model.isDeepSearch() || nav.selected < 0) return;
+  if (!model.listsPaths() || nav.selected < 0) return;
   const std::string folder = model.resultFolder(static_cast<size_t>(nav.selected));
   const std::string full = model.entryFullPath(static_cast<size_t>(nav.selected));
   if (folder.empty()) return;
   const size_t slash = full.rfind('/');
+  // Recent Books is not a folder browser: Browse Files opens the folder, the book selected in it.
+  if (model.getMode() == Mode::Recents) {
+    activityManager.goToFileBrowser(folder, slash == std::string::npos ? full : full.substr(slash + 1));
+    return;
+  }
   focusName = (slash == std::string::npos) ? full : full.substr(slash + 1);
   // As above: drop contacts aimed at the rows this search is about to replace.
 #if CP_TOUCH_UI
@@ -698,7 +1280,9 @@ void FileBrowserActivity::showBrowserOptionsMenu(const std::string& dirEntry) {
   startActivityForResult(std::make_unique<FileContextMenuActivity>(
                              renderer, mappedInput, "", model.getSortMode(), model.getSortDirection(), isDir,
                              model.isFiltered() || model.isDeepSearch(), /*offerGoToFolder=*/false,
-                             /*offerFileManagement=*/model.getMode() == Mode::Books),
+                             /*offerFileManagement=*/managesFiles(),
+                             /*offerViewChoice=*/offersViewChoice(),
+                             /*recentsList=*/model.getMode() == Mode::Recents),
                          [this, isDir, dirPath, dirEntry](const ActivityResult& res) {
                            if (res.isCancelled) {
                              requestUpdate();
@@ -762,6 +1346,18 @@ void FileBrowserActivity::handleContextMenuAction(int action, const std::string&
       requestUpdate();
       return;
     }
+    // Recent Books offers only its view and the extensions toggle: no sort (it is ordered by
+    // recency) and no hidden files (it lists books, wherever they are).
+    if (model.getMode() == Mode::Recents) {
+      APP_STATE.recentBooksView = menuRes->browserView;
+      APP_STATE.saveToFile();
+      SETTINGS.showFileExtensions = menuRes->showFileExtensions;
+      SETTINGS.saveToFile();
+      bookRows.clear();
+      resetNavigation(nav.selected);
+      requestUpdate();
+      return;
+    }
     model.setSort(static_cast<CrossPointSettings::FILE_SORT_MODE>(menuRes->sortMode),
                   static_cast<CrossPointSettings::FILE_SORT_DIRECTION>(menuRes->sortDirection));
 
@@ -769,7 +1365,12 @@ void FileBrowserActivity::handleContextMenuAction(int action, const std::string&
     const bool hiddenChanged = (SETTINGS.showHiddenFiles != menuRes->showHiddenFiles);
     SETTINGS.showHiddenFiles = menuRes->showHiddenFiles;
     SETTINGS.showFileExtensions = menuRes->showFileExtensions;
+    // Only Browse Files offers the view; the other browsers hand back what they were given.
+    if (model.getMode() == Mode::Books) SETTINGS.fileBrowserView = menuRes->browserView;
     SETTINGS.saveToFile();
+    // A row with no title of its own is titled by its filename, whose extension just may have
+    // changed.
+    bookRows.clear();
 
     // Re-apply ordering. The SD index is built for a specific sort mode, so when it's
     // active any sort change must re-open it (open() rebuilds on a mode mismatch);
@@ -790,13 +1391,12 @@ void FileBrowserActivity::handleContextMenuAction(int action, const std::string&
   switch (actionEnum) {
     case Action::Open: {
       ReturnHint hint;
-      hint.target = ReturnTo::FileBrowser;
+      hint.target = returnTarget();
       hint.path = model.path();
       hint.selectName = entry;
       activityManager.replaceWithReader(std::string(fullPath), std::move(hint));
       return;
     }
-
     case Action::MarkAsRead:
       doMarkAsRead(fullPath);
       return;
@@ -812,6 +1412,9 @@ void FileBrowserActivity::handleContextMenuAction(int action, const std::string&
       return;
     case Action::Remove:
       doRemove(fullPath, entry, false);
+      return;
+    case Action::RemoveFromRecents:
+      removeFromRecents(fullPath);
       return;
     default:
       requestUpdate();
@@ -873,7 +1476,7 @@ void FileBrowserActivity::doMarkAsRead(const std::string& fullPath) {
                                RECENT_BOOKS.removeBook(fullPath);
                              }
                              ReturnHint hint;
-                             hint.target = ReturnTo::FileBrowser;
+                             hint.target = returnTarget();
                              hint.path = model.path();
                              activityManager.replaceWithReader(nextBookPath, std::move(hint));
                              return;
@@ -882,6 +1485,7 @@ void FileBrowserActivity::doMarkAsRead(const std::string& fullPath) {
                            if (SETTINGS.removeFinishedBooksFromRecents) {
                              RECENT_BOOKS.removeBook(fullPath);
                            }
+                           bookRows.clear();  // its row now says Finished
                            model.load();
                            resetNavigation(nav.selected);
                            requestUpdate(true);
@@ -903,7 +1507,7 @@ void FileBrowserActivity::doSetAsSleepCover(const std::string& fullPath) {
   } else {
     // JPG/PNG: must render to framebuffer — open the image viewer so the user can use its Set Sleep button.
     ReturnHint hint;
-    hint.target = ReturnTo::FileBrowser;
+    hint.target = returnTarget();
     hint.path = model.path();
     hint.selectName = model.entryName(static_cast<size_t>(nav.selected));
     activityManager.replaceWithReader(std::string(fullPath), std::move(hint));
@@ -916,16 +1520,20 @@ void FileBrowserActivity::doDeleteCache(const std::string& fullPath, const std::
                          [this, fullPath](const ActivityResult& res) {
                            if (!res.isCancelled) {
                              clearFileMetadata(fullPath);
+                             bookRows.clear();  // its progress went with the cache
                              LOG_INF("FBR", "Cache deleted for: %s", fullPath.c_str());
                            }
                            requestUpdate();
                          });
 }
 
+// As with a move: deleting a book from the book browser deletes the sidecars that browser never
+// showed, and deleting a file from All files deletes that file alone.
 void FileBrowserActivity::doRemove(const std::string& fullPath, const std::string& entry, bool isDirectory) {
+  const bool withSidecars = !isDirectory && model.getMode() == Mode::Books;
   startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput,
                                                                 tr(STR_DELETE) + std::string("? "), utf8NfcNorm(entry)),
-                         [this, fullPath, isDirectory](const ActivityResult& res) {
+                         [this, fullPath, isDirectory, withSidecars](const ActivityResult& res) {
                            if (!res.isCancelled) {
                              LOG_DBG("FBR", "Attempting to delete: %s", fullPath.c_str());
                              bool deleted;
@@ -934,9 +1542,13 @@ void FileBrowserActivity::doRemove(const std::string& fullPath, const std::strin
                              } else {
                                clearFileMetadata(fullPath);
                                deleted = Storage.remove(fullPath.c_str());
+                               if (deleted && withSidecars && !SidecarFiles::removeAll(fullPath)) {
+                                 LOG_ERR("FBR", "Deleted %s but not all of its sidecars", fullPath.c_str());
+                               }
                              }
                              if (deleted) {
                                LOG_DBG("FBR", "Deleted successfully");
+                               bookRows.clear();
                                model.load();
                                resetNavigation(nav.selected);
                                requestUpdate(true);

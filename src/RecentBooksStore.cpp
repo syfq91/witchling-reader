@@ -24,8 +24,28 @@ std::string seriesLabel(const Epub& epub) {
 
 RecentBooksStore RecentBooksStore::instance;
 
+RecentBooksStore::Hold::Hold() {
+  ++instance.holds;
+  instance.ensureLoaded();
+}
+
+RecentBooksStore::Hold::~Hold() {
+  if (instance.holds > 0) --instance.holds;
+  if (instance.holds == 0 && instance.loaded) {
+    std::vector<RecentBook>().swap(instance.recentBooks);  // clear() would keep the capacity
+    instance.loaded = false;
+  }
+}
+
+void RecentBooksStore::ensureLoaded() const {
+  if (loaded) return;
+  // loadFromFile() is the one place the list is filled; const only to the caller's eye.
+  const_cast<RecentBooksStore*>(this)->loadFromFile();
+}
+
 void RecentBooksStore::addBook(const std::string& path, const std::string& title, const std::string& author,
                                const std::string& series, const std::string& coverBmpPath) {
+  const Hold hold;
   RecentBook newBook{path, title, author, series, coverBmpPath};
   // The EPUB reader passes metadata it has just loaded, sidecar applied; stamp
   // the sidecar it came from so refreshSidecarMetadata() does not redo it.
@@ -61,6 +81,7 @@ void RecentBooksStore::addBook(const std::string& path, const std::string& title
 }
 
 void RecentBooksStore::removeBook(const std::string& path) {
+  const Hold hold;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it != recentBooks.end()) {
@@ -70,6 +91,7 @@ void RecentBooksStore::removeBook(const std::string& path) {
 }
 
 bool RecentBooksStore::refreshSidecarMetadata(const size_t maxBooks) {
+  const Hold hold;
   bool changed = false;
   size_t seen = 0;
   for (RecentBook& book : recentBooks) {
@@ -102,6 +124,7 @@ bool RecentBooksStore::refreshSidecarMetadata(const size_t maxBooks) {
 bool RecentBooksStore::isMissing(const RecentBook& book) { return !Storage.exists(book.path.c_str()); }
 
 bool RecentBooksStore::pruneMissing() {
+  const Hold hold;
   const size_t before = recentBooks.size();
   recentBooks.erase(std::remove_if(recentBooks.begin(), recentBooks.end(), &isMissing), recentBooks.end());
   return recentBooks.size() != before;
@@ -109,6 +132,7 @@ bool RecentBooksStore::pruneMissing() {
 
 void RecentBooksStore::updateBook(const std::string& path, const std::string& title, const std::string& author,
                                   const std::string& series, const std::string& coverBmpPath) {
+  const Hold hold;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it != recentBooks.end()) {
@@ -122,6 +146,7 @@ void RecentBooksStore::updateBook(const std::string& path, const std::string& ti
 }
 
 RecentBook RecentBooksStore::getBookByPath(const std::string& path) const {
+  const Hold hold;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it != recentBooks.end()) {
@@ -132,6 +157,7 @@ RecentBook RecentBooksStore::getBookByPath(const std::string& path) const {
 
 bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t embeddedStyleOverride,
                                           const int8_t imageRenderingOverride) {
+  const Hold hold;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it == recentBooks.end()) {
@@ -144,6 +170,7 @@ bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t 
 bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t embeddedStyleOverride,
                                           const int8_t imageRenderingOverride, const int8_t fontFamilyOverride,
                                           const int8_t fontSizeOverride) {
+  const Hold hold;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it == recentBooks.end()) {
@@ -157,6 +184,7 @@ bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t 
 bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t embeddedStyleOverride,
                                           const int8_t imageRenderingOverride, const int8_t fontFamilyOverride,
                                           const std::string& sdFontFamilyOverride, const int8_t fontSizeOverride) {
+  const Hold hold;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it == recentBooks.end()) {
@@ -170,6 +198,7 @@ bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t 
                                           const int8_t imageRenderingOverride, const int8_t fontFamilyOverride,
                                           const std::string& sdFontFamilyOverride, const int8_t fontSizeOverride,
                                           const int8_t paragraphAlignmentOverride) {
+  const Hold hold;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it == recentBooks.end()) {
@@ -188,6 +217,7 @@ bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t 
                                           const int8_t textAntiAliasingOverride, const int8_t hyphenationOverride,
                                           const int8_t fontSizeNormalizationOverride, 
                                           const int8_t inlineFootnotePreviewsOverride) {
+  const Hold hold;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it == recentBooks.end()) {
@@ -208,6 +238,10 @@ bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t 
 }
 
 bool RecentBooksStore::saveToFile() const {
+  if (!loaded) {
+    LOG_ERR("RBS", "Not saving recent books: the list is not loaded, and would overwrite the file empty");
+    return false;
+  }
   Storage.mkdir("/.crosspoint");
   return JsonSettingsIO::saveRecentBooks(*this, RECENT_BOOKS_FILE_JSON);
 }
@@ -238,6 +272,10 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
 }
 
 bool RecentBooksStore::loadFromFile() {
+  // Loaded from here on, file or no file: no file (or a broken one) is an empty list, which a
+  // later addBook() then saves as the new file.
+  std::vector<RecentBook>().swap(recentBooks);
+  loaded = true;
   if (Storage.exists(RECENT_BOOKS_FILE_JSON)) {
     String json = Storage.readFile(RECENT_BOOKS_FILE_JSON);
     if (!json.isEmpty()) {
