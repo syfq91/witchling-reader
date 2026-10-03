@@ -68,10 +68,6 @@ void ClearCacheActivity::buildWarningScreen(UiScreen& screen) {
   spec.title = tr(STR_CLEAR_CACHE_WARNING_1);
   spec.headline = tr(STR_CLEAR_CACHE_WARNING_2);
   spec.message = warningBody.c_str();
-  spec.cancelLabel = tr(STR_CANCEL);
-  spec.acceptLabel = tr(STR_CLEAR_BUTTON);
-  spec.cancelAction = ACTION_CANCEL;
-  spec.acceptAction = ACTION_CLEAR;
   // Warning 1 is a sentence, not a caption, so it may wrap.
   spec.titleMaxLines = 3;
   ConfirmDialog::draw(screen, spec);

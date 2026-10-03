@@ -11,6 +11,7 @@
 #include "activities/home/FileBrowserActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/ConfirmDialog.h"
+#include "components/UITheme.h"
 #include "components/controls/progress-bar.h"
 #include "network/FirmwareFlasher.h"
 
@@ -209,6 +210,10 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
   }
   renderer.clearScreen();
   renderUi();
+  if (state == State::FAILED) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
   renderer.displayBuffer();
 }
 
@@ -335,8 +340,6 @@ void SdFirmwareUpdateActivity::buildScreen(UiScreen& screen) {
     ConfirmDialog::Spec spec;
     spec.headline = tr(STR_UPDATE_FAILED);
     spec.message = errorMessage.empty() ? nullptr : errorMessage.c_str();
-    spec.acceptLabel = tr(STR_BACK);
-    spec.acceptAction = ACTION_BACK;
     ConfirmDialog::draw(screen, spec);
   } else {
     // PICKING / CONFIRMING: a sub-activity is on top, nothing to draw.

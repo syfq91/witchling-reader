@@ -4,23 +4,14 @@
 #include "../Activity.h"
 #include "components/UiAppHost.h"
 
-// Yes/No prompt. Built on fui::optionDialog rather than hand-drawn text, so the two answers are
-// on-screen buttons a finger can hit.
-//
-// That is the point of the change: this screen used to draw a heading, a body line and nothing
-// else, leaving the button-hint strip as its ONLY touch affordance. On a touch board there was no
-// Cancel or Confirm target anywhere on the prompt itself.
-//
-// The hint strip is still drawn, because it is how the physical buttons are labelled and it is the
-// only affordance a non-touch board has. The two are alternatives, not duplicates.
-//
-// The constructor and the ActivityResult contract are unchanged, so the six callers are untouched.
+// Yes/No prompt. Built on ConfirmDialog (fui::optionDialog). Prompts do not draw on-screen
+// touch buttons, relying on the physical button hint strip.
 class ConfirmationActivity : public Activity, private UiAppHost {
  private:
   std::string heading;
   std::string body;
   bool inputArmed = false;
-  bool showButtons = true;
+  bool showButtons = false;
 
   static void dialogScreen(UiScreen& screen, void* user);
   static void onCancelEvent(const freeink::ui::ActionEvent& event, void* user);
@@ -31,7 +22,7 @@ class ConfirmationActivity : public Activity, private UiAppHost {
 
  public:
   ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& heading,
-                       const std::string& body, bool showButtons = true);
+                       const std::string& body, bool showButtons = false);
 
   void onEnter() override;
   void onExit() override;

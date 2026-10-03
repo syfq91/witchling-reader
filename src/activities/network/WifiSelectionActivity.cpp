@@ -898,28 +898,13 @@ void WifiSelectionActivity::loop() {
 
   // Handle save prompt state
   if (state == WifiSelectionState::SAVE_PROMPT) {
-    if (mappedInput.wasLogicalPressed(MappedInputManager::Direction::Up) ||
-        mappedInput.wasLogicalPressed(MappedInputManager::Direction::Left)) {
-      if (savePromptSelection > 0) {
-        savePromptSelection--;
-        requestUpdate();
-      }
-    } else if (mappedInput.wasLogicalPressed(MappedInputManager::Direction::Down) ||
-               mappedInput.wasLogicalPressed(MappedInputManager::Direction::Right)) {
-      if (savePromptSelection < 1) {
-        savePromptSelection++;
-        requestUpdate();
-      }
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      if (savePromptSelection == 0) {
-        // User chose "Yes" - save the password
-        RenderLock lock(*this);
-        WIFI_STORE.addCredential(selectedSSID, enteredPassword);
-      }
-      // Complete - parent will start web server
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      // User chose "Yes" - save the password
+      RenderLock lock(*this);
+      WIFI_STORE.addCredential(selectedSSID, enteredPassword);
       onComplete(true);
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      // Skip saving, complete anyway
+      // User chose "No" - skip saving, complete anyway
       onComplete(true);
     }
     return;
@@ -927,42 +912,30 @@ void WifiSelectionActivity::loop() {
 
   // Handle forget prompt state (connection failed with saved credentials)
   if (state == WifiSelectionState::FORGET_PROMPT) {
-    if (mappedInput.wasLogicalPressed(MappedInputManager::Direction::Up) ||
-        mappedInput.wasLogicalPressed(MappedInputManager::Direction::Left)) {
-      if (forgetPromptSelection > 0) {
-        forgetPromptSelection--;
-        requestUpdate();
-      }
-    } else if (mappedInput.wasLogicalPressed(MappedInputManager::Direction::Down) ||
-               mappedInput.wasLogicalPressed(MappedInputManager::Direction::Right)) {
-      if (forgetPromptSelection < 2) {
-        forgetPromptSelection++;
-        requestUpdate();
-      }
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      if (forgetPromptSelection == 1) {
-        RenderLock lock(*this);
-        // User chose "Reset info" - drop the recorded BSSID/channel + IP/gw/mask/DNS but keep
-        // the saved password. Connects already do a full scan + DHCP unconditionally, so this is
-        // now about clearing the diagnostic record rather than changing what the next connect
-        // does.
-        WIFI_STORE.clearConnectionCache(selectedSSID);
-      } else if (forgetPromptSelection == 2) {
-        RenderLock lock(*this);
-        // User chose "Forget network" - forget the network
-        WIFI_STORE.removeCredential(selectedSSID);
-        // Update the network list to reflect the change
-        const auto network = find_if(networks.begin(), networks.end(),
-                                     [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
-        if (network != networks.end()) {
-          network->hasSavedPassword = false;
-        }
-      }
-      // Go back to network list (whichever action, including Cancel, was selected)
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+      // Cancel, go back to network list
       startWifiScan();
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      // Skip forgetting, go back to network list
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      // User chose "Forget network"
+      RenderLock lock(*this);
+      WIFI_STORE.removeCredential(selectedSSID);
+      const auto network = find_if(networks.begin(), networks.end(),
+                                   [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
+      if (network != networks.end()) {
+        network->hasSavedPassword = false;
+      }
       startWifiScan();
+      return;
+    }
+    if (mappedInput.wasLogicalPressed(MappedInputManager::Direction::Left) ||
+        mappedInput.wasPressed(MappedInputManager::frontStripPrevious())) {
+      // User chose "Reset info"
+      RenderLock lock(*this);
+      WIFI_STORE.clearConnectionCache(selectedSSID);
+      startWifiScan();
+      return;
     }
     return;
   }
@@ -1315,46 +1288,21 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
       spec.title = title.c_str();
       spec.headline = tr(STR_CONNECTED);
       spec.message = tr(STR_SAVE_PASSWORD);
-      spec.cancelLabel = tr(STR_NO);
-      spec.cancelAction = ACTION_PROMPT_NO;
-      spec.acceptLabel = tr(STR_YES);
-      spec.acceptAction = ACTION_PROMPT_YES;
       ConfirmDialog::draw(screen, spec);
       break;
     }
     case WifiSelectionState::FORGET_PROMPT: {
       std::string title = std::string(tr(STR_NETWORK_PREFIX)) + selectedSSID;
-      fui::DialogOption options[3];
-      options[0] = {tr(STR_CANCEL), ACTION_FORGET_CANCEL};
-      options[1] = {tr(STR_RESET_INFO_BUTTON), ACTION_FORGET_RESET};
-      options[2] = {tr(STR_FORGET_BUTTON), ACTION_FORGET_CONFIRM};
-
-      fui::OptionDialogProps props;
-      props.title = title.c_str();
-      props.headline = tr(STR_NETWORK_OPTIONS);
-      props.options = options;
-      props.optionCount = 3;
-      props.verticalOptions = true;
-      props.titleText = screen.theme().smallText;
-      props.titleText.align = fui::TextAlign::Center;
-      props.headlineText = screen.theme().titleText;
-      props.headlineText.bold = true;
-      props.headlineText.align = fui::TextAlign::Center;
-      props.buttonText = screen.theme().bodyText;
-      props.buttonText.bold = true;
-      props.buttonText.align = fui::TextAlign::Center;
-      props.buttonHeight = screen.theme().minTouchSize;
-      props.gap = screen.theme().spaceMd;
-
-      screen.dialog(props);
+      ConfirmDialog::Spec spec;
+      spec.title = title.c_str();
+      spec.headline = tr(STR_NETWORK_OPTIONS);
+      ConfirmDialog::draw(screen, spec);
       break;
     }
     case WifiSelectionState::CONNECTION_FAILED: {
       ConfirmDialog::Spec spec;
       spec.headline = tr(STR_CONNECTION_FAILED);
       spec.message = connectionError.empty() ? nullptr : connectionError.c_str();
-      spec.acceptLabel = tr(STR_BACK);
-      spec.acceptAction = ACTION_FAILED_DONE;
       ConfirmDialog::draw(screen, spec);
       break;
     }
@@ -1402,6 +1350,15 @@ void WifiSelectionActivity::afterUiRender() {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == WifiSelectionState::CONNECTED) {
     const auto labels = mappedInput.mapLabels(tr(STR_DONE), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == WifiSelectionState::SAVE_PROMPT) {
+    const auto labels = mappedInput.mapLabels(tr(STR_NO), tr(STR_YES), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == WifiSelectionState::FORGET_PROMPT) {
+    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_FORGET_BUTTON), tr(STR_RESET_INFO_BUTTON), "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == WifiSelectionState::CONNECTION_FAILED) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == WifiSelectionState::CAPTIVE_PORTAL) {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CAPTIVE_PORTAL_DONE), "", "");

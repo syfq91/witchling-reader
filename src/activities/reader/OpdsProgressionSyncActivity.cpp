@@ -155,37 +155,25 @@ void OpdsProgressionSyncActivity::buildScreen(UiScreen& screen) {
                  static_cast<int>(remoteData.progression * 100.0f + 0.5f));
       }
       spec.message = detailBuf;
-      spec.acceptLabel = tr(STR_CONFIRM);
-      spec.acceptAction = ACTION_CONFIRM;
       break;
     case SUCCESS_PUSHED:
       spec.headline = tr(STR_SYNC_PROGRESS_SUCCESS);
       snprintf(detailBuf, sizeof(detailBuf), "Saved to server: %d%%",
                static_cast<int>(localProgression * 100.0f + 0.5f));
       spec.message = detailBuf;
-      spec.acceptLabel = tr(STR_CONFIRM);
-      spec.acceptAction = ACTION_CONFIRM;
       break;
     case SUCCESS_SAME:
       spec.headline = tr(STR_SYNC_PROGRESS_IN_SYNC);
       snprintf(detailBuf, sizeof(detailBuf), "Current position: %d%%",
                static_cast<int>(localProgression * 100.0f + 0.5f));
       spec.message = detailBuf;
-      spec.acceptLabel = tr(STR_CONFIRM);
-      spec.acceptAction = ACTION_CONFIRM;
       break;
     case NO_CONFIG:
       spec.headline = tr(STR_SYNC_PROGRESS_NO_SERVER);
-      spec.acceptLabel = tr(STR_CONFIRM);
-      spec.acceptAction = ACTION_CONFIRM;
       break;
     case FAILED:
       spec.headline = tr(STR_SYNC_PROGRESS_FAILED);
       spec.message = statusMessage.empty() ? nullptr : statusMessage.c_str();
-      spec.cancelLabel = tr(STR_BACK);
-      spec.cancelAction = ACTION_CANCEL;
-      spec.acceptLabel = tr(STR_RETRY);
-      spec.acceptAction = ACTION_CONFIRM;
       break;
     default:
       break;

@@ -59,10 +59,6 @@ void ScreenRepairActivity::warningScreen(UiScreen& screen, void* user) {
 void ScreenRepairActivity::buildWarningScreen(UiScreen& screen) {
   ConfirmDialog::Spec spec;
   spec.message = tr(STR_SCREEN_REPAIR_BODY);
-  spec.cancelLabel = tr(STR_CANCEL);
-  spec.acceptLabel = tr(STR_START);
-  spec.cancelAction = ACTION_CANCEL;
-  spec.acceptAction = ACTION_START;
   ConfirmDialog::draw(screen, spec);
 }
 
