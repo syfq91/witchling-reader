@@ -352,10 +352,10 @@ class CrossPointSettings {
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
   // Status bar settings
   uint8_t statusBarPosition = STATUS_BAR_BOTTOM;
-  uint8_t statusBarLeft = SLOT_BATTERY;
+  uint8_t statusBarLeft = SLOT_BOOK_PERCENTAGE;
   uint8_t statusBarMiddle = SLOT_CHAPTER_TITLE;
-  uint8_t statusBarRight = SLOT_PAGE_AND_PERCENTAGE;
-  uint8_t statusBarProgressBar = HIDE_PROGRESS;
+  uint8_t statusBarRight = SLOT_PAGE_COUNT;
+  uint8_t statusBarProgressBar = BOOK_PROGRESS;
   // Printed ("physical") page number from the book's page-list. Drawn in parentheses to the left of
   // the device page counter when both share a location; otherwise on its own. Default on.
   uint8_t statusBarPrintedPage = 1;

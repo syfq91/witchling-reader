@@ -53,13 +53,13 @@ const StatusBarItem statusBarItems[] = {
     enumItem(StrId::STR_STATUS_BAR_LOCATION, &CrossPointSettings::statusBarPosition, statusPositionNames,
              CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_BOTTOM),
     enumItem(StrId::STR_STATUS_BAR_LEFT, &CrossPointSettings::statusBarLeft, slotContentNames,
-             CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY),
+             CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BOOK_PERCENTAGE),
     enumItem(StrId::STR_STATUS_BAR_MIDDLE, &CrossPointSettings::statusBarMiddle, slotContentNames,
              CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_CHAPTER_TITLE),
     enumItem(StrId::STR_STATUS_BAR_RIGHT, &CrossPointSettings::statusBarRight, slotContentNames,
-             CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_PAGE_AND_PERCENTAGE),
+             CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_PAGE_COUNT),
     toggleItem(StrId::STR_PROGRESS_BAR, &CrossPointSettings::statusBarProgressBar,
-               CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS),
+               CrossPointSettings::STATUS_BAR_PROGRESS_BAR::BOOK_PROGRESS),
 };
 
 const StatusBarItem& visibleItem(int visibleIndex) {
