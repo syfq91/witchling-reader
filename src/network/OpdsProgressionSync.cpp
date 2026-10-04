@@ -21,7 +21,10 @@ namespace OpdsProgressionSync {
 namespace {
 
 constexpr const char* TAG = "OPDS_SYNC";
-constexpr const char* SYNC_FILENAME = "/opds_sync.json";
+
+// The filename is the HAL's kBookCacheStateFile: every cache wipe keeps that name at the root of
+// the cache dir (HalStorage::removeDir's keepFile), so the config outlives a wipe of its own dir.
+std::string syncFilePath(const std::string& cachePath) { return cachePath + "/" + kBookCacheStateFile; }
 
 // Parses an ISO 8601 string (e.g. "2026-09-01T12:00:00Z" or "2026-09-01T12:00:00.000Z") to time_t in UTC.
 time_t parseIso8601(const std::string& iso) {
@@ -95,7 +98,7 @@ std::string computeCachePath(const std::string& filePath, const std::string& cac
 
 bool hasSyncConfig(const std::string& cachePath) {
   if (cachePath.empty()) return false;
-  return Storage.exists((cachePath + SYNC_FILENAME).c_str());
+  return Storage.exists(syncFilePath(cachePath).c_str());
 }
 
 bool saveSyncConfig(const std::string& cachePath, const std::string& progressionUrl, const std::string& serverUrl) {
@@ -116,13 +119,14 @@ bool saveSyncConfig(const std::string& cachePath, const std::string& progression
   serializeJson(doc, jsonStr);
 
   FsFile f;
-  if (!Storage.openFileForWrite(TAG, cachePath + SYNC_FILENAME, f)) {
-    LOG_ERR(TAG, "Failed to open %s for writing", (cachePath + SYNC_FILENAME).c_str());
+  const std::string configPath = syncFilePath(cachePath);
+  if (!Storage.openFileForWrite(TAG, configPath, f)) {
+    LOG_ERR(TAG, "Failed to open %s for writing", configPath.c_str());
     return false;
   }
   f.write(reinterpret_cast<const uint8_t*>(jsonStr.data()), jsonStr.size());
   f.close();
-  LOG_DBG(TAG, "Saved sync config to %s", (cachePath + SYNC_FILENAME).c_str());
+  LOG_DBG(TAG, "Saved sync config to %s", configPath.c_str());
   return true;
 }
 
@@ -130,7 +134,7 @@ bool loadSyncConfig(const std::string& cachePath, SyncConfig& config) {
   if (cachePath.empty()) return false;
 
   FsFile f;
-  if (!Storage.openFileForRead(TAG, cachePath + SYNC_FILENAME, f)) {
+  if (!Storage.openFileForRead(TAG, syncFilePath(cachePath), f)) {
     return false;
   }
 

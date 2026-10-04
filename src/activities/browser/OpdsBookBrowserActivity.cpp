@@ -1019,14 +1019,6 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const OpdsAcqu
 
     LOG_DBG("OPDS", "Download complete: %s", filename.c_str());
 
-    if (!book.progressionHref.empty()) {
-      const std::string progUrl = (book.progressionHref.rfind("http", 0) == 0)
-                                      ? book.progressionHref
-                                      : UrlUtils::buildUrl(server.url, book.progressionHref);
-      const std::string bookCachePath = OpdsProgressionSync::computeCachePath(filename);
-      OpdsProgressionSync::saveSyncConfig(bookCachePath, progUrl, server.url);
-    }
-
     // Clear any existing cache for this book just in case it's a redownload of
     // a previously opened book.
     if (acquisition.mimeType == "application/epub+zip") {
@@ -1081,6 +1073,18 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const OpdsAcqu
       epub.clearCache();
     } else if (acquisition.formatKey == "xtc" || acquisition.formatKey == "xtch") {
       Xtc(filename, "/.crosspoint").clearCache();
+    }
+
+    // Written after the cache wipe above: clearCache() removes the whole cache
+    // directory, so saving first would delete opds_sync.json on every download.
+    if (!book.progressionHref.empty()) {
+      const std::string progUrl = (book.progressionHref.rfind("http", 0) == 0)
+                                      ? book.progressionHref
+                                      : UrlUtils::buildUrl(server.url, book.progressionHref);
+      const std::string bookCachePath = OpdsProgressionSync::computeCachePath(filename);
+      if (!OpdsProgressionSync::saveSyncConfig(bookCachePath, progUrl, server.url)) {
+        LOG_ERR("OPDS", "Failed to save progression sync config for %s", filename.c_str());
+      }
     }
     selectedBookIndex = -1;
     formatSelectionLabels.clear();

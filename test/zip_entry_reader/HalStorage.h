@@ -256,6 +256,9 @@ class HalFile : public Print {
 
 using FsFile = HalFile;
 
+// Mirrors lib/hal/HalStorage.h: the OPDS Progression sync config at a per-book cache dir root.
+inline constexpr const char* kBookCacheStateFile = "opds_sync.json";
+
 class HalStorage {
  public:
   bool openFileForRead(const char*, const std::string& path, HalFile& f) { return f.openForRead(path); }
@@ -290,10 +293,45 @@ class HalStorage {
     std::filesystem::rename(oldPath, newPath, ec);
     return !ec;
   }
-  bool removeDir(const char* path) {
+  // Device parity: with keepFile, a file of that name at the root of `path` survives the wipe and
+  // the directory is recreated around it if the wipe took the directory down.
+  bool removeDir(const char* path, const char* keepFile = nullptr) {
+    namespace fs = std::filesystem;
+    const fs::path dir(path);
     std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-    return !ec;
+
+    if (keepFile == nullptr) {
+      fs::remove_all(dir, ec);
+      return !ec;
+    }
+
+    const fs::path kept = dir / keepFile;
+    const fs::path stashed = std::string(path) + "." + keepFile + ".stashed";
+    const bool hadKept = fs::exists(kept, ec);
+    if (hadKept) {
+      ec.clear();
+      fs::remove(stashed, ec);
+      ec.clear();
+      fs::rename(kept, stashed, ec);
+      if (ec) return false;
+    }
+
+    ec.clear();
+    fs::remove_all(dir, ec);
+    const bool wiped = !ec;
+
+    if (hadKept) {
+      ec.clear();
+      const bool dirGone = !fs::exists(dir, ec);
+      ec.clear();
+      if (dirGone) {
+        fs::create_directories(dir, ec);
+        if (ec) return false;
+      }
+      fs::rename(stashed, kept, ec);
+      if (ec) return false;
+    }
+    return wiped;
   }
   using oflag_t = int;
   HalFile open(const char* path, oflag_t = O_RDONLY) {

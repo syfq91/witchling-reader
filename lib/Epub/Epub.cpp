@@ -1238,7 +1238,9 @@ bool Epub::clearCache(const bool preserveThumbs) const {
   }
 
   if (!preserveThumbs) {
-    if (!Storage.removeDir(cachePath.c_str())) {
+    // kBookCacheStateFile rides along: the OPDS Progression endpoint in it cannot be rebuilt from
+    // the book, so it outlives the wipe that drops everything else.
+    if (!Storage.removeDir(cachePath.c_str(), kBookCacheStateFile)) {
       LOG_ERR("EPB", "Failed to clear cache");
       return false;
     }
@@ -1266,6 +1268,9 @@ bool Epub::clearCache(const bool preserveThumbs) const {
     f.close();
 
     const std::string name(nameBuf);
+    // User state, not a cache artifact — kept on every wipe, as removeDir's keepFile does for the
+    // full clear above.
+    if (!isDir && name == kBookCacheStateFile) continue;
     // Keep thumbnail and cover BMPs, and the cached raw cover image — all are
     // expensive to regenerate (require ZIP decompression or format conversion).
     if (FsHelpers::hasBmpExtension(name) || name == "cover.img") continue;

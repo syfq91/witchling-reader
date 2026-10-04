@@ -12,6 +12,13 @@
 
 class HalFile;
 
+// Name of the file at the root of a per-book cache directory that holds user state rather than
+// derived cache: the OPDS Progression sync config, written once at download by
+// src/network/OpdsProgressionSync. Sections, thumbnails and progress are rebuildable from the
+// book; the progression endpoint is not -- nothing rewrites it but another download -- so every
+// cache wipe passes it to removeDir()'s keepFile.
+inline constexpr const char* kBookCacheStateFile = "opds_sync.json";
+
 class HalStorage {
  public:
   HalStorage();
@@ -60,7 +67,10 @@ class HalStorage {
   // text as the reader moves through a book). Fails when the file does not exist.
   bool openFileForUpdate(const char* moduleName, const char* path, HalFile& file);
   bool openFileForUpdate(const char* moduleName, const std::string& path, HalFile& file);
-  bool removeDir(const char* path);
+  // Deletes `path` and everything under it. With `keepFile`, a file of that name at the root of
+  // `path` survives the wipe: the SDK takes `path` itself down with it, so the directory is then
+  // recreated around the kept file. Fails if the wipe fails or that file cannot be put back.
+  bool removeDir(const char* path, const char* keepFile = nullptr);
   bool copyFile(const char* moduleName, const std::string& srcPath, const char* dstPath);
 
   uint64_t sdTotalBytes() const;

@@ -42,7 +42,8 @@ bool Xtc::clearCache() const {
     return true;
   }
 
-  if (!Storage.removeDir(cachePath.c_str())) {
+  // kBookCacheStateFile (the OPDS Progression sync config) is user state, not cache: it stays.
+  if (!Storage.removeDir(cachePath.c_str(), kBookCacheStateFile)) {
     LOG_ERR("XTC", "Failed to clear cache");
     return false;
   }

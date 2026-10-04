@@ -153,7 +153,9 @@ void ClearCacheActivity::clearCache() {
 
       file.close();  // Close before attempting to delete
 
-      if (Storage.removeDir(fullPath.c_str())) {
+      // Book cache dirs can hold kBookCacheStateFile (OPDS Progression sync config): user state,
+      // so it survives a bulk clear even though everything derived from the book goes.
+      if (Storage.removeDir(fullPath.c_str(), kBookCacheStateFile)) {
         clearedCount++;
       } else {
         LOG_ERR("CLEAR_CACHE", "Failed to remove: %s", fullPath.c_str());

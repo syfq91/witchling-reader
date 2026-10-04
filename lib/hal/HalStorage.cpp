@@ -294,9 +294,40 @@ bool HalStorage::openFileForUpdate(const char* moduleName, const std::string& pa
   return openFileForUpdate(moduleName, path.c_str(), file);
 }
 
-bool HalStorage::removeDir(const char* path) {
+bool HalStorage::removeDir(const char* path, const char* keepFile) {
   noteContentChange(path);
-  HAL_STORAGE_WRAPPED_CALL(removeDir, path);
+  if (keepFile == nullptr) {
+    HAL_STORAGE_WRAPPED_CALL(removeDir, path);
+  }
+
+  StorageLock lock;
+  const std::string dir(path);
+  const std::string kept = dir + "/" + keepFile;
+  const std::string stashed = dir + "." + keepFile + ".stashed";
+
+  if (!SDCard.exists(kept.c_str())) {
+    return SDCard.removeDir(dir.c_str());
+  }
+
+  // The SDK wipe takes the directory down with it, so the file to keep has to be outside while it
+  // runs. A stashed copy left by an interrupted wipe is the older of the two: drop it.
+  if (SDCard.exists(stashed.c_str())) SDCard.remove(stashed.c_str());
+  if (!SDCard.rename(kept.c_str(), stashed.c_str())) {
+    LOG_ERR("SD", "Could not set %s aside before wiping %s", kept.c_str(), dir.c_str());
+    return false;
+  }
+
+  const bool wiped = SDCard.removeDir(dir.c_str());
+
+  if (!SDCard.exists(dir.c_str()) && !SDCard.mkdir(dir.c_str(), true)) {
+    LOG_ERR("SD", "Could not recreate %s; %s left at %s", dir.c_str(), keepFile, stashed.c_str());
+    return false;
+  }
+  if (!SDCard.rename(stashed.c_str(), kept.c_str())) {
+    LOG_ERR("SD", "Could not restore %s; left at %s", kept.c_str(), stashed.c_str());
+    return false;
+  }
+  return wiped;
 }
 
 bool HalStorage::copyFile(const char* moduleName, const std::string& srcPath, const char* dstPath) {

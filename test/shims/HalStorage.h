@@ -126,6 +126,9 @@ class HalFile : public Print {
 
 using FsFile = HalFile;
 
+// Mirrors lib/hal/HalStorage.h: the OPDS Progression sync config at a per-book cache dir root.
+inline constexpr const char* kBookCacheStateFile = "opds_sync.json";
+
 class HalStorage {
  public:
   bool begin() { return false; }
@@ -174,7 +177,7 @@ class HalStorage {
     file = HalFile::opened();
     return false;
   }
-  bool removeDir(const char*) { return false; }
+  bool removeDir(const char*, const char* = nullptr) { return false; }
   bool copyFile(const char*, const std::string&, const char*) { return false; }
   uint64_t sdTotalBytes() const { return 0; }
   uint64_t sdUsedBytes() { return 0; }

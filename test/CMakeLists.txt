@@ -138,6 +138,8 @@ add_subdirectory(image_dimensions_guard)
 add_subdirectory(word_size_layout)
 add_subdirectory(text_block_range)
 add_subdirectory(zip_entry_reader)
+# After zip_entry_reader: reuses its HalStorage shim.
+add_subdirectory(hal_storage)
 # After zip_entry_reader: reuses its inflate_reader_host target.
 add_subdirectory(png_decoder)
 # After zip_entry_reader: reuses its inflate_reader_host target.
