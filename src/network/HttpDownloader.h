@@ -25,6 +25,7 @@ class HttpDownloader {
     HTTP_ERROR,
     FILE_ERROR,
     ABORTED,
+    AUTH_ERROR,  // HTTP 401 / 403 — wrong or missing credentials
   };
 
   /**
@@ -84,8 +85,12 @@ class HttpDownloader {
   static bool fetchUrl(const std::string& url, std::string& outContent, const std::string& username = "",
                        const std::string& password = "", TlsPolicy tls = TlsPolicy::Verified);
 
-  static bool fetchUrl(const std::string& url, Stream& stream, const std::string& username = "",
-                       const std::string& password = "", TlsPolicy tls = TlsPolicy::Verified);
+  /**
+   * Stream fetch. Returns the DownloadError so callers can tell an auth
+   * failure (401/403) apart from an arbitrary HTTP error.
+   */
+  static DownloadError fetchUrl(const std::string& url, Stream& stream, const std::string& username = "",
+                                const std::string& password = "", TlsPolicy tls = TlsPolicy::Verified);
 
   static bool fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username = "",
                        const std::string& password = "");

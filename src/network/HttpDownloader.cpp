@@ -155,6 +155,12 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
     return HttpDownloader::HTTP_ERROR;
   }
   if (rc != 200) {
+    // Distinguish bad credentials so callers can say "check the password"
+    // instead of a generic network failure.
+    if (rc == 401 || rc == 403) {
+      LOG_ERR("HTTP", "SecureNet GET unauthorized: %d", rc);
+      return HttpDownloader::AUTH_ERROR;
+    }
     LOG_ERR("HTTP", "SecureNet unexpected status: %d", rc);
     return HttpDownloader::HTTP_ERROR;
   }
@@ -226,6 +232,10 @@ HttpDownloader::DownloadError runGetSecureOnSession(HttpDownloader::Session& ses
 
   const int rc = impl->http->get(url, bodySink, progress);
   if (rc == crosspoint::SecureHttpClient::ERR_ABORTED) return HttpDownloader::ABORTED;
+  if (rc == 401 || rc == 403) {
+    LOG_ERR("HTTP", "SecureNet session GET unauthorized: rc=%d url=%s", rc, url.c_str());
+    return HttpDownloader::AUTH_ERROR;
+  }
   if (rc != 200) {
     LOG_ERR("HTTP", "SecureNet session GET failed: rc=%d url=%s", rc, url.c_str());
     return HttpDownloader::HTTP_ERROR;
@@ -240,12 +250,13 @@ HttpDownloader::DownloadError runGetOnSession(HttpDownloader::Session& session, 
 }
 }  // namespace
 
-bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const std::string& username,
-                              const std::string& password, TlsPolicy tls) {
+HttpDownloader::DownloadError HttpDownloader::fetchUrl(const std::string& url, Stream& outContent,
+                                                       const std::string& username, const std::string& password,
+                                                       TlsPolicy tls) {
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
   Sink sink;
   sink.write = [&outContent](const uint8_t* data, size_t len) { return outContent.write(data, len) == len; };
-  return runGetDispatch(url, username, password, sink, tls) == OK;
+  return runGetDispatch(url, username, password, sink, tls);
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username,

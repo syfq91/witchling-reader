@@ -593,7 +593,10 @@ void OpdsBookBrowserActivity::materializeListWindow() {
       windowSubtitles[offset] = "";
     } else {
       windowLabels[offset] = entry.title;
-      windowSubtitles[offset] = entry.author;
+      // Books whose only formats this reader cannot open say so in place of the
+      // author; the detail screen still shows both.
+      windowSubtitles[offset] =
+          entry.acquisitionLinks.empty() ? std::string(tr(STR_FORMAT_NOT_SUPPORTED)) : entry.author;
     }
     row.label = windowLabels[offset].c_str();
     row.subtitle = windowSubtitles[offset].empty() ? nullptr : windowSubtitles[offset].c_str();
@@ -751,6 +754,9 @@ void OpdsBookBrowserActivity::afterUiRender() {
       }
       auto fmtsStr = renderer.truncatedText(UI_10_FONT_ID, fmts.c_str(), contentRect.width - 20);
       renderer.drawCenteredText(UI_10_FONT_ID, fmtY, fmtsStr.c_str());
+    } else {
+      auto fmtsStr = renderer.truncatedText(UI_10_FONT_ID, tr(STR_FORMAT_NOT_SUPPORTED), contentRect.width - 20);
+      renderer.drawCenteredText(UI_10_FONT_ID, fmtY, fmtsStr.c_str());
     }
   } else if (state == BrowserState::DOWNLOADING) {
     if (downloadTotal > 0) {
@@ -843,9 +849,11 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
 
   {
     OpdsParserStream stream{parser};
-    if (!HttpDownloader::fetchUrl(url, stream, server.username, server.password)) {
+    const HttpDownloader::DownloadError fetchErr =
+        HttpDownloader::fetchUrl(url, stream, server.username, server.password);
+    if (fetchErr != HttpDownloader::OK) {
       state = BrowserState::ERROR;
-      errorMessage = tr(STR_FETCH_FEED_FAILED);
+      errorMessage = fetchErr == HttpDownloader::AUTH_ERROR ? tr(STR_AUTH_FAILED) : tr(STR_FETCH_FEED_FAILED);
       requestUpdate();
       return;
     }
@@ -927,8 +935,10 @@ void OpdsBookBrowserActivity::navigateBack() {
 // download is started immediately.
 void OpdsBookBrowserActivity::chooseBookFormat(const OpdsEntry& book) {
   if (book.acquisitionLinks.empty()) {
+    // A BOOK with no acquisition links: the catalog only offers formats this
+    // reader cannot open (PDF, mobi, …). Say that rather than "download failed".
     state = BrowserState::ERROR;
-    errorMessage = tr(STR_DOWNLOAD_FAILED);
+    errorMessage = tr(STR_FORMAT_NOT_SUPPORTED);
     requestUpdate();
     return;
   }
@@ -1080,6 +1090,12 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const OpdsAcqu
     selectedBookIndex = -1;
     formatSelectionLabels.clear();
     state = BrowserState::BROWSING;
+    requestUpdate();
+  } else if (result == HttpDownloader::AUTH_ERROR) {
+    selectedBookIndex = -1;
+    formatSelectionLabels.clear();
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_AUTH_FAILED);
     requestUpdate();
   } else {
     selectedBookIndex = -1;

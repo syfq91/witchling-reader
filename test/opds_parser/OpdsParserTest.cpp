@@ -117,7 +117,7 @@ TEST(OpdsParser, DistinctAcquisitionFormatsRemainSeparate) {
   ASSERT_EQ(links[2].formatKey, "xtc");
 }
 
-TEST(OpdsParser, UnsupportedMimeType) {
+TEST(OpdsParser, UnsupportedMimeTypeEntriesAreSurfaced) {
   const char* xml = R"(<?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>
@@ -135,7 +135,111 @@ TEST(OpdsParser, UnsupportedMimeType) {
   parser.flush();
 
   ASSERT_TRUE(!parser.error());
-  ASSERT_EQ(entries.size(), static_cast<size_t>(0));
+  ASSERT_EQ(entries.size(), static_cast<size_t>(1));
+  // The entry is kept as a BOOK with no supported acquisition links — the UI's
+  // signal that the catalog only offers formats this reader cannot open.
+  EXPECT_EQ(entries.front().type, OpdsEntryType::BOOK);
+  EXPECT_EQ(entries.front().href, "/books/example.mobi");
+  EXPECT_TRUE(entries.front().acquisitionLinks.empty());
+}
+
+TEST(OpdsParser, MixedSupportedAndUnsupportedFormatsKeepSupported) {
+  const char* xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Unsupported First</title>
+    <author><name>Example Author</name></author>
+    <id>book-mixed-1</id>
+    <link rel="http://opds-spec.org/acquisition" type="application/pdf" href="/books/mixed-1.pdf"/>
+    <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/mixed-1.epub"/>
+  </entry>
+  <entry>
+    <title>Supported First</title>
+    <author><name>Example Author</name></author>
+    <id>book-mixed-2</id>
+    <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/mixed-2.epub"/>
+    <link rel="http://opds-spec.org/acquisition" type="application/pdf" href="/books/mixed-2.pdf"/>
+  </entry>
+</feed>)";
+
+  std::vector<OpdsEntry> entries;
+  OpdsParser parser;
+  parser.onEntryParsed = [&](OpdsEntry e) { entries.push_back(std::move(e)); };
+  parser.write(reinterpret_cast<const uint8_t*>(xml), strlen(xml));
+  parser.flush();
+
+  ASSERT_TRUE(!parser.error());
+  ASSERT_EQ(entries.size(), static_cast<size_t>(2));
+  // The unsupported link contributes nothing; the entry points at the
+  // supported download in either link order.
+  EXPECT_EQ(entries[0].href, "/books/mixed-1.epub");
+  ASSERT_EQ(entries[0].acquisitionLinks.size(), static_cast<size_t>(1));
+  EXPECT_EQ(entries[0].acquisitionLinks[0].formatKey, "epub");
+  EXPECT_EQ(entries[1].href, "/books/mixed-2.epub");
+  ASSERT_EQ(entries[1].acquisitionLinks.size(), static_cast<size_t>(1));
+  EXPECT_EQ(entries[1].acquisitionLinks[0].formatKey, "epub");
+}
+
+TEST(OpdsParser, CoverImageLinkWithoutTypeIsAccepted) {
+  const char* xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Example Book</title>
+    <author><name>Example Author</name></author>
+    <id>book-cover-1</id>
+    <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/example.epub"/>
+    <link rel="http://opds-spec.org/image" href="/covers/1.jpg"/>
+  </entry>
+  <entry>
+    <title>Typed Cover</title>
+    <author><name>Example Author</name></author>
+    <id>book-cover-2</id>
+    <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/example2.epub"/>
+    <link rel="http://opds-spec.org/image" type="image/png" href="/covers/2.png"/>
+  </entry>
+</feed>)";
+
+  std::vector<OpdsEntry> entries;
+  OpdsParser parser;
+  parser.onEntryParsed = [&](OpdsEntry e) { entries.push_back(std::move(e)); };
+  parser.write(reinterpret_cast<const uint8_t*>(xml), strlen(xml));
+  parser.flush();
+
+  ASSERT_TRUE(!parser.error());
+  ASSERT_EQ(entries.size(), static_cast<size_t>(2));
+  EXPECT_EQ(entries[0].imageHref, "/covers/1.jpg");
+  EXPECT_EQ(entries[1].imageHref, "/covers/2.png");
+}
+
+TEST(OpdsParser, CoverLinkRejectsThumbnailAndNonImageType) {
+  const char* xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Thumbnail Only</title>
+    <author><name>Example Author</name></author>
+    <id>book-cover-3</id>
+    <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/example.epub"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="/covers/thumb.jpg"/>
+  </entry>
+  <entry>
+    <title>Non-Image Cover</title>
+    <author><name>Example Author</name></author>
+    <id>book-cover-4</id>
+    <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/example2.epub"/>
+    <link rel="http://opds-spec.org/image" type="text/html" href="/covers/page.html"/>
+  </entry>
+</feed>)";
+
+  std::vector<OpdsEntry> entries;
+  OpdsParser parser;
+  parser.onEntryParsed = [&](OpdsEntry e) { entries.push_back(std::move(e)); };
+  parser.write(reinterpret_cast<const uint8_t*>(xml), strlen(xml));
+  parser.flush();
+
+  ASSERT_TRUE(!parser.error());
+  ASSERT_EQ(entries.size(), static_cast<size_t>(2));
+  EXPECT_TRUE(entries[0].imageHref.empty());
+  EXPECT_TRUE(entries[1].imageHref.empty());
 }
 
 TEST(OpdsParser, EmptyHrefOrType) {
@@ -174,7 +278,18 @@ TEST(OpdsParser, EmptyHrefOrType) {
   parser.flush();
 
   ASSERT_TRUE(!parser.error());
-  ASSERT_EQ(entries.size(), static_cast<size_t>(0));
+  // Empty/missing href gives nowhere to point, so those two entries drop. A
+  // missing or empty type with a usable href is surfaced as an unsupported
+  // BOOK instead of vanishing.
+  ASSERT_EQ(entries.size(), static_cast<size_t>(2));
+  EXPECT_EQ(entries[0].title, "Empty Type");
+  EXPECT_EQ(entries[0].type, OpdsEntryType::BOOK);
+  EXPECT_EQ(entries[0].href, "/books/example.epub");
+  EXPECT_TRUE(entries[0].acquisitionLinks.empty());
+  EXPECT_EQ(entries[1].title, "Missing Type");
+  EXPECT_EQ(entries[1].type, OpdsEntryType::BOOK);
+  EXPECT_EQ(entries[1].href, "/books/example.epub");
+  EXPECT_TRUE(entries[1].acquisitionLinks.empty());
 }
 
 TEST(OpdsParser, DuplicateAcquisitionLinks) {

@@ -49,6 +49,25 @@ std::string formatIso8601(time_t t) {
   return std::string(buf);
 }
 
+// Parses an OPDS Progression document body into `out`. Returns a non-Ok
+// ArduinoJson error when the body is not valid JSON.
+DeserializationError parseProgressionBody(const std::string& body, RemoteProgression& out) {
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, body);
+  if (err) return err;
+  out.progression = doc["progression"] | 0.0f;
+  out.modified = doc["modified"] | "";
+  out.title = doc["title"] | "";
+  if (doc["references"].is<JsonArray>() && doc["references"].as<JsonArray>().size() > 0) {
+    out.reference = doc["references"][0].as<std::string>();
+  }
+  if (doc["device"].is<JsonObject>()) {
+    out.deviceId = doc["device"]["id"] | "";
+    out.deviceName = doc["device"]["name"] | "";
+  }
+  return DeserializationError::Ok;
+}
+
 const OpdsServer* findServerCredentials(const std::string& serverUrl, const std::string& progressionUrl) {
   const auto& servers = OPDS_STORE.getServers();
   for (const auto& server : servers) {
@@ -179,24 +198,13 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
   bool remoteValid = false;
 
   if (getStatus == 200) {
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, client.getBody());
-    if (!err) {
-      remote.progression = doc["progression"] | 0.0f;
-      remote.modified = doc["modified"] | "";
-      remote.title = doc["title"] | "";
-      if (doc["references"].is<JsonArray>() && doc["references"].as<JsonArray>().size() > 0) {
-        remote.reference = doc["references"][0].as<std::string>();
-      }
-      if (doc["device"].is<JsonObject>()) {
-        remote.deviceId = doc["device"]["id"] | "";
-        remote.deviceName = doc["device"]["name"] | "";
-      }
+    const DeserializationError parseErr = parseProgressionBody(client.getBody(), remote);
+    if (!parseErr) {
       remoteValid = true;
       LOG_INF(TAG, "Remote: progress=%.3f modified=%s title=%s ref=%s", remote.progression, remote.modified.c_str(),
               remote.title.c_str(), remote.reference.c_str());
     } else {
-      LOG_ERR(TAG, "Failed to parse remote progression JSON: %s", err.c_str());
+      LOG_ERR(TAG, "Failed to parse remote progression JSON: %s", parseErr.c_str());
     }
   } else if (getStatus != 404 && getStatus != 204) {
     LOG_ERR(TAG, "Failed GET progression: HTTP %d", getStatus);
@@ -256,12 +264,39 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
   LOG_INF(TAG, "Pushing local progress (%.1f%%) to %s", localProgression * 100.0f, config.progressionUrl.c_str());
   const int putStatus = client.PUT(config.progressionUrl, putBody);
 
-  if (putStatus == 200 || putStatus == 204) {
+  if (putStatus == 200 || putStatus == 201 || putStatus == 204) {
+    // 201 is the spec answer for a progression row this PUT created (200 updates
+    // an existing one); both mean the push landed.
     config.lastSyncedModified = nowIso;
     config.lastSyncedProgression = localProgression;
     saveSyncConfig(cachePath, config.progressionUrl, config.serverUrl);
     LOG_INF(TAG, "Progress pushed successfully");
     return {SyncStatus::SUCCESS_LOCAL_PUSHED, {}, ""};
+  }
+
+  if (putStatus == 401 || putStatus == 403) {
+    LOG_ERR(TAG, "Authentication failed pushing progress (HTTP %d)", putStatus);
+    return {SyncStatus::AUTH_ERROR, {}, "Authentication required"};
+  }
+
+  if (putStatus == 409) {
+    // Stale precondition: another device stored a newer progression. Re-fetch it
+    // and adopt the remote position rather than overwriting newer state.
+    const int regetStatus = client.GET(config.progressionUrl);
+    if (regetStatus == 401 || regetStatus == 403) {
+      LOG_ERR(TAG, "Authentication failed re-fetching progression (HTTP %d)", regetStatus);
+      return {SyncStatus::AUTH_ERROR, {}, "Authentication required"};
+    }
+    RemoteProgression remoteNow;
+    if (regetStatus == 200 && !parseProgressionBody(client.getBody(), remoteNow)) {
+      config.lastSyncedModified = remoteNow.modified;
+      config.lastSyncedProgression = remoteNow.progression;
+      saveSyncConfig(cachePath, config.progressionUrl, config.serverUrl);
+      LOG_INF(TAG, "Push rejected as stale; adopting remote %.1f%%", remoteNow.progression * 100.0f);
+      return {SyncStatus::SUCCESS_REMOTE_NEWER, remoteNow, ""};
+    }
+    LOG_ERR(TAG, "Re-fetch after progression conflict failed: HTTP %d", regetStatus);
+    return {SyncStatus::NETWORK_ERROR, {}, "Failed to update progression (HTTP 409)"};
   }
 
   LOG_ERR(TAG, "Failed to push progress: HTTP %d", putStatus);

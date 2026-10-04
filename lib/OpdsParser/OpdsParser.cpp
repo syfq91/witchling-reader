@@ -149,10 +149,20 @@ void OpdsParser::startElement(void* userData, const char* name, const char** att
               self->currentEntry.acquisitionLinks.reserve(3);
             }
             self->currentEntry.acquisitionLinks.push_back(acquisition);
+          } else if (acquisition.formatKey.empty()) {
+            // An acquisition link in a format this reader cannot open. Keep the
+            // entry — as a BOOK with no supported links — so catalogs that mix
+            // formats (PDF, mobi, …) are not silently rendered empty; the UI
+            // shows a "format not supported" note instead of downloading.
+            self->currentEntry.type = OpdsEntryType::BOOK;
+            if (self->currentEntry.href.empty()) {
+              self->currentEntry.href = href;
+            }
           }
-        } else if (rel && type && strstr(rel, "opds-spec.org/image") != nullptr &&
-                   strstr(rel, "thumbnail") == nullptr && strncmp(type, "image/", 6) == 0 &&
-                   self->currentEntry.imageHref.empty()) {
+        } else if (rel && strstr(rel, "opds-spec.org/image") != nullptr && strstr(rel, "thumbnail") == nullptr &&
+                   (!type || strncmp(type, "image/", 6) == 0) && self->currentEntry.imageHref.empty()) {
+          // Some servers omit type= on cover links; accept those too and only
+          // reject an explicitly non-image type.
           self->currentEntry.imageHref = href;
         } else if ((rel && strstr(rel, "opds-spec.org/progression") != nullptr) ||
                    (type && strcmp(type, "application/opds-progression+json") == 0)) {
