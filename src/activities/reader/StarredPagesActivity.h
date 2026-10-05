@@ -25,6 +25,8 @@ class StarredPagesActivity final : public UiListActivity {
   void onBackButton() override;
   bool handleCustomInput() override;
   void drawFooter() override;
+  // A swipe must not reach Left/Right, which are Rename and Delete here. Consumed without effect.
+  bool pageList(ListPageDirection direction) override;
 
  private:
   std::shared_ptr<Epub> epub;  // nullptr for TXT files
@@ -41,4 +43,5 @@ class StarredPagesActivity final : public UiListActivity {
   std::string getDefaultLabel(int index) const;
   void startRename();
   void deleteSelected();
+
 };

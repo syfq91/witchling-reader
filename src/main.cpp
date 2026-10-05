@@ -948,6 +948,7 @@ void setup() {
   OPDS_STORE.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
+  buttonEventManager.setReaderOnTopQuery([] { return activityManager.currentIsReaderActivity(); });
 
 
   // Navigation follows the screen, not the panel: rotating the device rotates which physical
@@ -1449,7 +1450,7 @@ void loop() {
     }
 
     for (auto it = defaultEvents.rbegin(); it != defaultEvents.rend(); ++it) {
-      buttonEventManager.pushEventFront(it->button, it->type);
+      buttonEventManager.pushEventFront(*it);
     }
   }
 

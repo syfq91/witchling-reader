@@ -53,10 +53,10 @@ void SettingsActivity::onEnter() {
   auto addTo = [](std::vector<SettingInfo>& vec, const SettingInfo& s) { vec.push_back(s); };
   auto addToMoved = [](std::vector<SettingInfo>& vec, SettingInfo s) { vec.push_back(std::move(s)); };
 
-  for (const auto& setting : getSettingsList()) {
-    if (setting.category == StrId::STR_NONE_OPT) continue;
+  forEachSetting([&](const SettingInfo& setting) {
+    if (setting.category == StrId::STR_NONE_OPT) return;
     // Enrich font-family entries with SD card families discovered at boot.
-    // The list itself is a namespace-static; we only mutate our local copy here.
+    // The row is the walk's temporary; the screen keeps its own copy, and only that is enriched.
     SettingInfo enriched = setting;
     if (setting.key && std::strcmp(setting.key, "fontFamily") == 0) {
       const uint8_t n = fontFamilyOptionCount();
@@ -76,7 +76,7 @@ void SettingsActivity::onEnter() {
     }
 
     // Web-only categories (e.g. OPDS Browser) are skipped for device UI
-  }
+  });
 
   // Device-only ACTION items — subcategory drives separator insertion automatically.
   controlsSettings.insert(controlsSettings.begin(),
@@ -161,9 +161,6 @@ void SettingsActivity::enterCategory(const int categoryIndex) {
       break;
   }
   settingsCount = static_cast<int>(currentSettings->size());
-  // -1 is the tab bar: switching category always hands focus back to the bar, so the reader
-  // sees which tab they landed on rather than an arbitrary row of it.
-  nav.reset(-1);
   listTapActivation.reset();
 }
 
@@ -238,7 +235,7 @@ void SettingsActivity::activateIndex(const int index) {
   SETTINGS.saveToFile();
   // Repaint: nothing else will. Every other way this list changes asks for an
   // update -- moveSelectionTo(), the swipe handler, routeListTouch() -- but the
-  // Confirm path in UiListActivity::handleButtons() calls activateIndex() and
+  // Confirm path in the list controller calls activateIndex() and
   // returns, so an inline toggle would change and persist the value while the
   // row kept showing the old one until some later event forced a render.
   // MenuListActivity::toggleCurrentItem() does this too, which is why the
@@ -250,7 +247,7 @@ void SettingsActivity::activateIndex(const int index) {
 }
 
 void SettingsActivity::materializeListWindow() {
-  windowFirst = static_cast<uint16_t>(std::max(0, std::min(nav.top, settingsCount)));
+  windowFirst = static_cast<uint16_t>(std::max(0, std::min(activeNav().top, settingsCount)));
   windowCount = static_cast<uint16_t>(
       std::min(static_cast<size_t>(settingsCount - windowFirst), static_cast<size_t>(LIST_WINDOW_CAPACITY)));
   for (uint16_t offset = 0; offset < windowCount; ++offset) {
@@ -279,7 +276,7 @@ void SettingsActivity::materializeListWindow() {
 
 void SettingsActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+  const Rect contentRect = listContentRect();
   screen.setContentMarginFromScreen(
       fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
                   static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
@@ -314,18 +311,16 @@ void SettingsActivity::onBackFromTabs() {
 
 void SettingsActivity::drawChrome() {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-  GUI.drawHeader(renderer, Rect{contentRect.x, metrics.topPadding, contentRect.width, metrics.headerHeight},
+  const Rect contentRect = listContentRect();
+  GUI.drawHeader(renderer,
+                 Rect{contentRect.x, contentRect.y + metrics.topPadding, contentRect.width, metrics.headerHeight},
                  tr(STR_SETTINGS_TITLE), CROSSPOINT_VERSION);
 }
 
-void SettingsActivity::drawFooter() {
+const char* SettingsActivity::footerConfirmLabel() const {
   // Confirm means "next tab" while the bar holds focus and "toggle" on a row, so the hint names
   // the category it would move to rather than a generic label.
-  const auto confirmLabel =
-      tabsFocused() ? I18N.get(categoryNames[(selectedTab() + 1) % categoryCount]) : tr(STR_TOGGLE);
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  return selectedPosition() == 0 ? I18N.get(categoryNames[(selectedTab() + 1) % categoryCount]) : tr(STR_TOGGLE);
 }
 
 // Identical to UiListActivity::render() apart from the last line: this screen returns from a
@@ -335,11 +330,12 @@ void SettingsActivity::render(RenderLock&&) {
   renderer.clearScreen();
   drawChrome();
   renderUi();
-  for (int pass = 0; nav.consumeRebuildNeeded() && pass < 8; ++pass) {
+  for (int pass = 0; activeNav().consumeRebuildNeeded() && pass < 8; ++pass) {
     renderer.clearScreen();
     drawChrome();
     renderUi();
   }
+  publishListWindow();
   drawFooter();
 
 

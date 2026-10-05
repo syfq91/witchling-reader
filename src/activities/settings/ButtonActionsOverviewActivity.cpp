@@ -5,6 +5,7 @@
 
 #include <array>
 #include <string>
+#include <vector>
 
 #include "MappedInputManager.h"
 #include "SettingInfo.h"
@@ -28,13 +29,31 @@ constexpr std::array<ButtonRow, 7> kButtonRows = {{
     {StrId::STR_BTN_CONFIRM, StrId::STR_BTN_CONFIRM},
 }};
 
-// Find the SettingInfo for a given (button submenu, press kind) pair in the shared settings list.
-std::string cellValue(const std::vector<SettingInfo>& settings, StrId submenu, StrId pressKind) {
-  auto it = std::find_if(settings.begin(), settings.end(), [submenu, pressKind](const SettingInfo& s) {
-    return s.submenu == submenu && s.nameId == pressKind && s.category == StrId::STR_CAT_CONTROLS;
+// The table's columns, left to right.
+constexpr std::array<StrId, 3> kPressKinds = {StrId::STR_BTN_SHORT_PRESS, StrId::STR_BTN_DOUBLE_PRESS,
+                                              StrId::STR_BTN_LONG_PRESS};
+
+// On the heap: 21 strings are ~500 bytes, too much for a render's stack frame.
+using CellValues = std::vector<std::array<std::string, kPressKinds.size()>>;
+
+// Every (button, press kind) cell's display value, read in ONE walk of the settings: a cell is the
+// first Controls row with that button's submenu and that press kind. Looked up cell by cell, the
+// table needs the whole list at hand, which is one 11.5 KB block (see forEachSetting()).
+CellValues cellValues() {
+  CellValues values(kButtonRows.size());
+  std::array<std::array<bool, kPressKinds.size()>, kButtonRows.size()> found{};
+  forEachSetting([&](const SettingInfo& s) {
+    if (s.category != StrId::STR_CAT_CONTROLS) return;
+    for (size_t r = 0; r < kButtonRows.size(); r++) {
+      if (kButtonRows[r].submenu != s.submenu) continue;
+      for (size_t k = 0; k < kPressKinds.size(); k++) {
+        if (s.nameId != kPressKinds[k] || found[r][k]) continue;
+        values[r][k] = s.getDisplayValue();
+        found[r][k] = true;
+      }
+    }
   });
-  if (it == settings.end()) return {};
-  return it->getDisplayValue();
+  return values;
 }
 
 }  // namespace
@@ -104,10 +123,13 @@ void ButtonActionsOverviewActivity::buildScreen(UiScreen& screen) {
   footerActions[0].action = ACTION_BACK;
   screen.footer(footerActions, 1);
 
-  const auto settings = getSettingsList();
+  const CellValues cells = cellValues();
 
+  // The fui table wants a flat const char* grid, so the header row and the seven
+  // per-button rows are staged in one string block first; the cell values come out
+  // of the single settings walk cellValues() already did.
   std::string strings[32];
-  const char* cells[32];
+  const char* tableCells[32];
 
   strings[0] = tr(STR_BTN_OVERVIEW_HEADER_BUTTON);
   strings[1] = tr(STR_BTN_OVERVIEW_HEADER_SHORT);
@@ -115,20 +137,18 @@ void ButtonActionsOverviewActivity::buildScreen(UiScreen& screen) {
   strings[3] = tr(STR_BTN_OVERVIEW_HEADER_LONG);
 
   size_t idx = 4;
-  for (const auto& row : kButtonRows) {
-    strings[idx] = I18N.get(row.labelStrId);
-    strings[idx + 1] = cellValue(settings, row.submenu, StrId::STR_BTN_SHORT_PRESS);
-    strings[idx + 2] = cellValue(settings, row.submenu, StrId::STR_BTN_DOUBLE_PRESS);
-    strings[idx + 3] = cellValue(settings, row.submenu, StrId::STR_BTN_LONG_PRESS);
+  for (size_t r = 0; r < kButtonRows.size(); r++) {
+    strings[idx] = I18N.get(kButtonRows[r].labelStrId);
+    for (size_t k = 0; k < kPressKinds.size(); k++) strings[idx + 1 + k] = cells[r][k];
     idx += 4;
   }
 
   for (size_t i = 0; i < 32; ++i) {
-    cells[i] = strings[i].c_str();
+    tableCells[i] = strings[i].c_str();
   }
 
   fui::TableProps props;
-  props.cells = cells;
+  props.cells = tableCells;
   props.rows = 8;
   props.cols = 4;
   props.headerRow = true;

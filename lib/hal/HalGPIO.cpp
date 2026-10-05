@@ -203,16 +203,17 @@ void HalGPIO::updateUsbState(const unsigned long now) {
 
 bool HalGPIO::wasUsbStateChanged() const { return usbStateChanged; }
 
-void HalGPIO::injectPress(const uint8_t buttonIndex, const bool longPress) {
+void HalGPIO::injectPress(const uint8_t buttonIndex, const bool longPress, const uint32_t atMs) {
   if (buttonIndex > BTN_POWER) return;
   const uint32_t now = millis();
+  const uint32_t releaseAt = atMs != 0 && atMs <= now ? atMs : now;
   const uint32_t holdMs = longPress ? INJECTED_LONG_PRESS_MS : 0;
-  const uint32_t pressAt = now > holdMs ? now - holdMs : 0;
+  const uint32_t pressAt = releaseAt > holdMs ? releaseAt - holdMs : 0;
   portENTER_CRITICAL(&inputMux_);
   accumPressed_ |= (1u << buttonIndex);
   accumReleased_ |= (1u << buttonIndex);
   pushEdgeLocked(buttonIndex, true, pressAt);
-  pushEdgeLocked(buttonIndex, false, now);
+  pushEdgeLocked(buttonIndex, false, releaseAt);
   portEXIT_CRITICAL(&inputMux_);
 }
 

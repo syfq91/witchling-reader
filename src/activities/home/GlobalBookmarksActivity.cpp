@@ -343,3 +343,5 @@ void GlobalBookmarksActivity::drawFooter() {
   GUI.drawButtonHints(renderer, hints.front.btn1, hints.front.btn2, hints.front.btn3, hints.front.btn4);
   GUI.drawSideButtonHints(renderer, hints.side.up, hints.side.down);
 }
+
+bool GlobalBookmarksActivity::pageList(ListPageDirection /*direction*/) { return true; }

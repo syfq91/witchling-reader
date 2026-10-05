@@ -8,6 +8,22 @@ User-facing changes only. Full commit history is in git log.
 
 - **Simplified Customise Status Bar page.** Replaced the 10 separate status bar options with 5 streamlined settings: status bar location (Top / Bottom), configurable content slots for Left, Middle, and Right (Hide, Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title), and a single progress bar (Book / Chapter / Hide) that automatically follows the status bar location and always uses thin thickness. Existing user configurations are seamlessly migrated.
 
+### Synced from upstream (post-2.37)
+
+Changes pulled in from `jpirnay/witchhunt-reader` since 2.37 that this fork carries. Subsystems this fork does not include (touch gestures, reading statistics, weather, non-English UI translations, and the OPDS touch list scheme) are omitted.
+
+#### Home
+
+- **The home screen's book cards give way instead of overflowing** (#375). A long title, a co-author list and the "Continue Reading" sentence on one card ran into the label below it. The parts now shorten in a fixed order -- title first, then the history sentence, to its short form -- rather than overlapping. This fork's home cards still show no series line.
+
+#### Buttons
+
+- **Lists that wait for a double press no longer lag behind Left and Right.** Outside a book, the file browser, the pickers and the chapter lists waited 0.3 s after every Left/Right press to see whether a double press would follow, because the double press is bound to a reading action by default. Two quick presses then moved nothing at all in the file browser. The wait now happens only where the double press means something.
+
+#### Lists
+
+- **Settings, the reader menu, the pickers and the menus page the same way.** Up/Down and Left/Right move one row; hold Left/Right to page a screenful; hold Up/Down to jump to the first / last row; tap Up or Down twice quickly to jump a page. A page jump keeps the selection on the same line of the screen. The side hints show the page glyphs ("«" / "»") where a short Left/Right is not bound to an action.
+
 ### Synced from upstream 2.37
 
 Changes pulled in from `jpirnay/witchhunt-reader` 2.37 that this fork carries. Subsystems this fork does not include (Reading Statistics, Weather, non-English UI translations, touch gestures, and multi-device hardware abstraction) are omitted.

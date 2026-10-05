@@ -5,6 +5,7 @@ Welcome to **Witchling Reader** firmware. This guide outlines the hardware contr
 - [Witchling Reader User Guide](#witchling-reader-user-guide)
   - [1. Hardware Overview](#1-hardware-overview)
     - [Button Layout](#button-layout)
+    - [Moving through lists](#moving-through-lists)
   - [2. Power \& Startup](#2-power--startup)
     - [Power On / Off](#power-on--off)
     - [First Launch](#first-launch)
@@ -156,6 +157,11 @@ The Settings screen is organized into four top-level tabs: **[Display](#371-disp
 - **Change Tab:** With the tab bar focused, press **Confirm** to advance to the next tab, or use **Left** / **Right** (or side buttons, depending on orientation) to cycle between tabs.
 - **Enter Tab / Toggle Setting:** Pressing **Up** / **Down** steps from the tab bar down into the category's settings. Pressing **Confirm** on a setting row toggles its value or opens its dedicated picker/submenu.
 
+The settings are grouped into tabs. The screen opens on the tab bar: **Confirm** moves to the next
+tab, **Down** enters its list, and **Back** on a row returns to the bar (on the bar it saves and
+returns Home). **Hold Up / Down** to switch to the previous / next tab: it opens where you left it.
+Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
+
 #### 3.7.1 Display
 
 - **Time to Sleep**: Slider from 0 (Never) to 60 minutes; sets the inactivity period before the device sleeps.
@@ -275,6 +281,14 @@ You can also manage OPDS servers from the web interface while in File Transfer m
 2. Open `http://<device-ip>/settings`.
 3. Use the **OPDS Servers** card to add, edit, or delete entries.
 For web-based WiFi network management, see [Web Settings (WiFi + OPDS)](#376-web-settings-wifi--opds).
+
+**Browsing a catalog.** The catalog follows **[Moving through lists](#moving-through-lists)**.
+A short **Left** opens **Search** when the catalog offers one, and a short **Right** opens **Info**
+for the selected book. Where either does not apply, that button does nothing on a short press,
+and its hint shows only the arrow. Hold **Left** / **Right**, or swipe on a touch screen, to page
+through a long catalog; **Up** / **Down** move one row. **Confirm** opens a folder or downloads a
+book. When a book comes in several formats, you choose one from a short list that works the same
+way.
 
 #### 3.7.6 Web Settings (WiFi + OPDS)
 

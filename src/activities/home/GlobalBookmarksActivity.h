@@ -34,6 +34,8 @@ class GlobalBookmarksActivity final : public UiListActivity {
   bool handleCustomInput() override;
   void drawFooter() override;
   ListRowTap::Result selectListRow(int index) override;
+  // A swipe must not reach Left/Right, which are Rename and Delete here. Consumed without effect.
+  bool pageList(ListPageDirection direction) override;
 
  private:
   struct Row {
