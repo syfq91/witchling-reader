@@ -26,11 +26,11 @@ class SleepActivity final : public Activity {
   void renderCustomSleepScreen() const;
   void renderCoverSleepScreen() const;
   void renderBitmapSleepScreen(const Bitmap& bitmap, const BookOverlayInfo& overlayInfo) const;
-  void renderBlankSleepScreen() const;
-  void renderOverlaySleepScreen() const;
   // Quick Resume: leaves the framebuffer (reader page) intact and overlays a small moon icon.
   void renderLastScreenSleepScreen() const;
   BookOverlayInfo getBookOverlayInfo(const std::string& bookPath) const;
 
-  const bool fromTimeout = false;
+  // No default member initializer: the constructor always sets it, and a `= false` here would
+  // make every read of it look statically false to cppcheck (knownConditionTrueFalse).
+  const bool fromTimeout;
 };

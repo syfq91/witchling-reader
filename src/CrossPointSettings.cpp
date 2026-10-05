@@ -50,9 +50,6 @@ void enforceFixedShortActions(CrossPointSettings& settings) {
 }  // namespace
 
 void CrossPointSettings::normalizeDependentSettings(CrossPointSettings& settings) {
-  if (settings.sleepScreen == SLEEP_SCREEN_MODE::QUICK_RESUME) {
-    settings.quickResumeSleepScreen = QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-  }
   settings.uiFontSize = UI_FONT_SIZE_DEFAULT;
 }
 

@@ -21,8 +21,6 @@
 #include <new>
 
 #include "../reader/EpubProgressRecord.h"
-#include "../reader/EpubReaderActivity.h"
-#include "../reader/XtcReaderActivity.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "components/UITheme.h"
@@ -139,9 +137,7 @@ bool renderSleepImageFromCache(GfxRenderer& renderer, const std::string& cachePa
   return true;
 }
 
-// Adaptive tone mapping applies to user-supplied sleep images only. The overlay
-// compositing path deliberately does not use it: it draws onto an already-rendered
-// screen, where a per-image level stretch would fight the image underneath.
+// Adaptive tone mapping applies to user-supplied sleep images only.
 BitmapToneMapping sleepImageToneMapping() {
   switch (SETTINGS.sleepScreenCoverFilter) {
     case CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::ADAPTIVE_TONE:
@@ -475,12 +471,10 @@ void SleepActivity::renderSleepScreen() {
   RenderLock lock(*this);
 
   // Quick Resume: paint a moon icon over the current page and keep the framebuffer
-  // intact for the next wake. Applies always when the user picked Quick Resume as
-  // sleep screen, or only on timeout sleeps when "Quick Resume on Timeout" is on.
+  // intact for the next wake, on timeout sleeps when "Quick Resume on Timeout" is on.
   const bool renderQuickResume =
-      SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
-      (fromTimeout &&
-       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT);
+      fromTimeout &&
+      SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
   if (renderQuickResume) {
     return renderLastScreenSleepScreen();
   }
@@ -492,25 +486,17 @@ void SleepActivity::renderSleepScreen() {
   // The renderers below all expect portrait: the cover BMP is generated portrait-sized
   // (getDisplayHeight x getDisplayWidth) and the custom/default screens are laid out
   // portrait. A timeout sleep bypasses the reader's onExit() orientation reset, so force
-  // portrait here or a landscape cover overflows the edges / mis-centers. OVERLAY manages
-  // its own orientation (renderOverlaySleepScreen), so leave it untouched here.
-  if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::OVERLAY) {
-    renderer.setOrientation(GfxRenderer::Portrait);
-  }
+  // portrait here or a landscape cover overflows the edges / mis-centers.
+  renderer.setOrientation(GfxRenderer::Portrait);
   switch (SETTINGS.sleepScreen) {
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::BLANK):
-      return renderBlankSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM):
       return renderCustomSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
       if (!APP_STATE.openEpubPath.empty()) {
         return renderCoverSleepScreen();
       } else {
         return renderCustomSleepScreen();
       }
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::OVERLAY):
-      return renderOverlaySleepScreen();
     default:
       return renderDefaultSleepScreen();
   }
@@ -522,7 +508,7 @@ void SleepActivity::renderCustomSleepScreen() const {
   // of a book can be short of both, and the picture silently gave way to the default screen
   // (#377). Free it, as renderCoverSleepScreen() does: nothing below needs the previous frame
   // (shipSleepGrayBase() covers the drivers that re-read it), and enterDeepSleep() powers down
-  // right after. COVER_CUSTOM falls back to this screen with the buffer already gone.
+  // right after.
   if (renderer.hasSecondaryBuffer()) renderer.releaseSecondaryBuffer();
 
   const BookOverlayInfo overlayInfo{};
@@ -935,18 +921,8 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const BookOver
 }
 
 void SleepActivity::renderCoverSleepScreen() const {
-  void (SleepActivity::*renderNoCoverSleepScreen)() const;
-  switch (SETTINGS.sleepScreen) {
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
-      renderNoCoverSleepScreen = &SleepActivity::renderCustomSleepScreen;
-      break;
-    default:
-      renderNoCoverSleepScreen = &SleepActivity::renderDefaultSleepScreen;
-      break;
-  }
-
   if (APP_STATE.openEpubPath.empty()) {
-    return (this->*renderNoCoverSleepScreen)();
+    return renderDefaultSleepScreen();
   }
 
   std::string coverBmpPath;
@@ -1004,7 +980,7 @@ void SleepActivity::renderCoverSleepScreen() const {
   if (coverNeedsPreparing) renderer.finishDisplayAsync();
 
   if (coverBmpPath.empty()) {
-    return (this->*renderNoCoverSleepScreen)();
+    return renderDefaultSleepScreen();
   }
 
   FsFile file;
@@ -1026,12 +1002,7 @@ void SleepActivity::renderCoverSleepScreen() const {
     file.close();
   }
 
-  return (this->*renderNoCoverSleepScreen)();
-}
-
-void SleepActivity::renderBlankSleepScreen() const {
-  renderer.clearScreen();
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  return renderDefaultSleepScreen();
 }
 
 void SleepActivity::renderLastScreenSleepScreen() const {
@@ -1040,172 +1011,5 @@ void SleepActivity::renderLastScreenSleepScreen() const {
   // it before the boot screen would otherwise paint.
   const auto pageHeight = renderer.getScreenHeight();
   renderer.drawImage(MoonIcon, 0, pageHeight - MOONICON_HEIGHT, MOONICON_WIDTH, MOONICON_HEIGHT);
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-}
-
-void SleepActivity::renderOverlaySleepScreen() const {
-  // Overlay pictures always use portrait orientation regardless of the reader's orientation preference.
-  const auto savedOrientation = renderer.getOrientation();
-  renderer.setOrientation(GfxRenderer::Portrait);
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-
-  // Step 1: Ensure the frame buffer contains the reader page.
-  // When coming from a reader activity the frame buffer already holds the page.
-  // When coming from a non-reader activity we re-render it from the saved progress.
-  if (!APP_STATE.lastSleepFromReader && !APP_STATE.openEpubPath.empty()) {
-    const auto& path = APP_STATE.openEpubPath;
-    bool rendered = false;
-
-    if (FsHelpers::checkFileExtension(path, ".xtc") || FsHelpers::checkFileExtension(path, ".xtch")) {
-      rendered = XtcReaderActivity::drawCurrentPageToBuffer(path, renderer);
-    } else if (FsHelpers::checkFileExtension(path, ".epub")) {
-      rendered = EpubReaderActivity::drawCurrentPageToBuffer(path, renderer);
-    }
-
-    if (!rendered) {
-      LOG_DBG("SLP", "Page re-render failed, using white background");
-      renderer.clearScreen();
-    }
-  }
-
-  // Step 2: Load the overlay image using the same selection logic as renderCustomSleepScreen.
-  // BMP: white pixels are skipped (transparent via drawBitmap), black pixels composited on top.
-  // PNG: pixels with alpha < 128 are skipped; opaque pixels are drawn with their grayscale value.
-  auto tryDrawOverlay = [&](const std::string& filename) -> bool {
-    FsFile file;
-    if (!Storage.openFileForRead("SLP", filename, file)) return false;
-    Bitmap bitmap(file, true);
-    if (bitmap.parseHeaders() != BmpReaderError::Ok) {
-      file.close();
-      return false;
-    }
-
-    int x, y;
-    float cropX = 0, cropY = 0;
-    if (bitmap.getWidth() > pageWidth || bitmap.getHeight() > pageHeight) {
-      float ratio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
-      const float screenRatio = static_cast<float>(pageWidth) / static_cast<float>(pageHeight);
-      if (ratio > screenRatio) {
-        x = 0;
-        y = std::round((static_cast<float>(pageHeight) - static_cast<float>(pageWidth) / ratio) / 2);
-      } else {
-        x = std::round((static_cast<float>(pageWidth) - static_cast<float>(pageHeight) * ratio) / 2);
-        y = 0;
-      }
-    } else {
-      x = (pageWidth - bitmap.getWidth()) / 2;
-      y = (pageHeight - bitmap.getHeight()) / 2;
-    }
-
-    // Draw without clearScreen so the reader page remains in the frame buffer beneath
-    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
-    file.close();
-    return true;
-  };
-
-  auto tryDrawPngOverlay = [&](const std::string& filename) -> bool {
-    constexpr size_t MIN_FREE_HEAP = 36 * 1024;  // uzlib ring (≤32 KB) + scanline buffers
-    if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
-      LOG_ERR("SLP", "Not enough heap for PNG overlay decoder");
-      return false;
-    }
-
-    FsFile file;
-    if (!Storage.openFileForRead("SLP", filename, file)) {
-      LOG_DBG("SLP", "PNG open failed: %s", filename.c_str());
-      return false;
-    }
-    auto decoder = std::make_unique<PngStreamDecoder>();
-    PngStreamDecoder::Info info;
-    if (!decoder->begin(file, info)) {
-      LOG_DBG("SLP", "PNG decode start failed: %s", filename.c_str());
-      file.close();
-      return false;
-    }
-
-    const int srcW = static_cast<int>(info.width), srcH = static_cast<int>(info.height);
-    float yScale = 1.0f;
-    int dstW = srcW, dstH = srcH;
-    if (srcW > pageWidth || srcH > pageHeight) {
-      const float scaleX = (float)pageWidth / srcW, scaleY = (float)pageHeight / srcH;
-      const float scale = (scaleX < scaleY) ? scaleX : scaleY;
-      dstW = (int)(srcW * scale);
-      dstH = (int)(srcH * scale);
-      yScale = (float)dstH / srcH;
-    }
-    const int dstX = (pageWidth - dstW) / 2;
-    const int dstY = (pageHeight - dstH) / 2;
-
-    // Per-pixel alpha lets transparent pixels show the reader page beneath; opaque
-    // pixels draw in their grayscale brightness (dark → black, light → white).
-    std::unique_ptr<uint8_t[]> grayRow(new (std::nothrow) uint8_t[srcW]);
-    std::unique_ptr<uint8_t[]> alphaRow(new (std::nothrow) uint8_t[srcW]);
-    if (!grayRow || !alphaRow) {
-      file.close();
-      return false;
-    }
-
-    bool ok = true;
-    int lastDstY = -1;
-    for (int srcY = 0; srcY < srcH; srcY++) {
-      if (!decoder->nextRow(grayRow.get(), alphaRow.get())) {
-        ok = false;
-        break;
-      }
-      const int destY = dstY + (int)(srcY * yScale);
-      if (destY == lastDstY) continue;  // skip duplicate rows from Y scaling
-      lastDstY = destY;
-      if (destY < 0 || destY >= pageHeight) continue;
-
-      int srcX = 0, error = 0;
-      for (int dx = 0; dx < dstW; dx++) {
-        const int outX = dstX + dx;
-        if (outX >= 0 && outX < pageWidth && alphaRow[srcX] >= 128) {
-          renderer.drawPixel(outX, destY, grayRow[srcX] < 128);  // true = black, false = white
-        }
-        // Bresenham-style X stepping (handles downscaling; 1:1 when srcW == dstW)
-        error += srcW;
-        while (error >= dstW) {
-          error -= dstW;
-          srcX++;
-        }
-      }
-    }
-
-    decoder->end();
-    file.close();
-    return ok;
-  };
-
-  // Collect images from both /.sleep and /sleep directories (no preference between them).
-  // Accepts both .bmp and .png files; .bmp headers are validated during the scan.
-  bool overlayDrawn = false;
-  const auto files = collectSleepImages(/*allowPng=*/true);
-  const auto numFiles = files.size();
-  if (numFiles > 0) {
-    const auto pickedIndex = pickSleepImageIndex(numFiles);
-    APP_STATE.lastSleepImage = pickedIndex;
-    APP_STATE.saveToFile();
-    const std::string& selected = files[pickedIndex];
-    if (FsHelpers::hasPngExtension(selected)) {
-      overlayDrawn = tryDrawPngOverlay(selected);
-    } else {
-      overlayDrawn = tryDrawOverlay(selected);
-    }
-  }
-
-  if (!overlayDrawn) {
-    overlayDrawn = tryDrawOverlay("/sleep.bmp");
-  }
-  if (!overlayDrawn) {
-    overlayDrawn = tryDrawPngOverlay("/sleep.png");
-  }
-
-  if (!overlayDrawn) {
-    LOG_DBG("SLP", "No overlay image found, displaying page without overlay");
-  }
-
-  renderer.setOrientation(savedOrientation);
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }

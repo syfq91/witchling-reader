@@ -25,10 +25,6 @@ class CrossPointSettings {
     LIGHT = 1,
     CUSTOM = 2,
     COVER = 3,
-    BLANK = 4,
-    COVER_CUSTOM = 5,
-    OVERLAY = 6,
-    QUICK_RESUME = 7,
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
@@ -606,8 +602,8 @@ class CrossPointSettings {
   // wherever it is triggered.
   static bool isReaderScopedAction(uint8_t action);
 
-  // Enforce settings whose values depend on others (e.g. sleepScreen=QUICK_RESUME implies
-  // quickResumeSleepScreen=ON). Call after any setting mutation that could invalidate the pair.
+  // Enforce settings whose values depend on others. Call after any setting mutation that could
+  // invalidate such a pair.
   static void normalizeDependentSettings(CrossPointSettings& settings);
 
   float getReaderLineCompression() const;

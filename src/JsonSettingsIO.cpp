@@ -312,7 +312,6 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   // Unknown bits (a file from a build with more layouts) are dropped by keyboard_layouts::enabled().
   s.keyboardLayouts = doc["keyboardLayouts"] | (uint16_t)0;
 
-  const uint8_t quickResumeBeforeNormalize = s.quickResumeSleepScreen;
   CrossPointSettings::normalizeDependentSettings(s);
   // Font sizes were renumbered into pixel order; a file written before that holds the old
   // values. Done here rather than in the generic loop because the loop clamps against the
@@ -326,8 +325,6 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
       if (needsResave) *needsResave = true;
     }
   }
-
-  if (s.quickResumeSleepScreen != quickResumeBeforeNormalize && needsResave) *needsResave = true;
 
   LOG_DBG("CPS", "Settings loaded from file");
 

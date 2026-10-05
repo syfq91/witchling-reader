@@ -170,10 +170,6 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
   - "Light" - The same logo on a white background
   - "Custom" - Custom images from the SD card; see [Sleep Screen](#38-sleep-screen) for more information
   - "Cover" - The cover of the currently open book
-  - "None" - A blank screen
-  - "Cover + Custom" - Book cover with fallback to Custom behavior
-  - "Page Overlay" - A transparent PNG composited over the current reader page (book content shows through)
-  - "Quick Resume" - A minimal screen that resumes reading immediately on wake
 - **Sleep Screen Cover Mode**: How to display the cover image:
   - "Fit" (default) - Scale to fit, white borders
   - "Crop" - Scale and crop to fill the screen
@@ -181,12 +177,12 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
   - "None" (default) - Grayscale
   - "Contrast" - Black & white without grayscale conversion
   - "Inverted" - Inverted black & white
-- **Sleep Screen Overlay**: Tint overlay applied on top of the sleep image (useful for dimming a cover or overlay image):
+- **Sleep Screen Overlay**: Tint overlay applied on top of the sleep image (useful for dimming a cover or a custom image):
   - "Off" (default), "White", "Gray", "Black"
 - **Sleep Image Pick Mode**: How to cycle through images in the Custom sleep screen:
   - "Random" (default) - Pick a random image each time
   - "Sequential" - Cycle through images in order
-- **Quick Resume Timeout**: Whether the Quick Resume sleep screen auto-clears on next wake.
+- **Quick Resume Timeout**: Whether a sleep caused by the inactivity timeout keeps the current page on screen, so the device wakes straight back into it.
 - **Hide Battery %**: Where to suppress the battery percentage in the status bar:
   - "Never" (default), "In Reader", "Always"
 - **Refresh Frequency** (submenu): Settings for screen refresh behaviour while reading:
@@ -315,10 +311,6 @@ The **Sleep Screen** setting controls what is displayed when the device goes to 
 | **Light** | The Witchling Reader logo on a white background. |
 | **Custom** | A custom image from the SD card (see below). Falls back to **Dark** if no custom image is found. |
 | **Cover** | The cover of the currently open book. Falls back to **Dark** if no book is open. |
-| **Cover + Custom** | The cover of the currently open book. Falls back to **Custom** behavior if no book is open. |
-| **Page Overlay** | A transparent PNG composited over the current reader page — book content shows through the alpha channel. |
-| **Quick Resume** | A minimal screen; waking the device returns to reading immediately. |
-| **None** | A blank screen. |
 
 The **Sleep Image Pick Mode** setting controls whether custom images are chosen **randomly** or **sequentially**.
 
@@ -326,21 +318,21 @@ An optional **tint overlay** (Off / White / Gray / Black) can be applied on top 
 
 #### Cover settings
 
-When using **Cover** or **Cover + Custom**, two additional settings apply:
+When using **Cover**, two additional settings apply:
 
 - **Sleep Screen Cover Mode**: **Fit** (scale to fit, white borders) or **Crop** (scale and crop to fill the screen).
 - **Sleep Screen Cover Filter**: **None** (grayscale), **Contrast** (black & white), or **Inverted** (inverted black & white).
 
 #### Custom images
 
-To use custom sleep images, set the sleep screen mode to **Custom** or **Cover + Custom**, then place images on the SD card:
+To use custom sleep images, set the sleep screen mode to **Custom**, then place images on the SD card:
 
 - **Multiple Images (recommended):** Create a `.sleep` directory in the root of the SD card and place any number of `.bmp` or `.png` images inside. (A directory named `sleep` is also accepted as a fallback.)
 - **Single Image:** Place a file named `sleep.bmp` in the root directory. Used as fallback if no valid images are found in the `.sleep`/`sleep` directory.
 
 > [!TIP]
 > For best results:
-> - Use PNG (with alpha channel for Page Overlay mode) or uncompressed BMP files with 24-bit color depth.
+> - Use PNG or uncompressed BMP files with 24-bit color depth.
 > - Use a resolution of 480×800 pixels to match the device's screen resolution.
 
 ---

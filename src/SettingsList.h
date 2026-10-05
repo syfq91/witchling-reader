@@ -123,10 +123,11 @@ inline void buildSettings(const RowSink& emit) {
            .persisting(&CrossPointSettings::sleepTimeoutMinutes, "sleepTimeoutMinutes", 60)
            .withDisplayGetter(getSleepTimeoutDisplay)
            .withCategory(StrId::STR_CAT_DISPLAY));
-  emit(SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen,
-                         {StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_CUSTOM, StrId::STR_COVER, StrId::STR_NONE_OPT,
-                          StrId::STR_COVER_CUSTOM, StrId::STR_PAGE_OVERLAY, StrId::STR_QUICK_RESUME},
-                         "sleepScreen", StrId::STR_CAT_DISPLAY)
+  const std::vector<StrId> sleepScreenOptions{StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_CUSTOM, StrId::STR_COVER};
+  assert(sleepScreenOptions.size() == static_cast<size_t>(CrossPointSettings::SLEEP_SCREEN_MODE_COUNT) &&
+         "sleepScreenOptions must name every SLEEP_SCREEN_MODE, in enum order");
+  emit(SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen, sleepScreenOptions, "sleepScreen",
+                         StrId::STR_CAT_DISPLAY)
            .withSubcategory(StrId::STR_MENU_DISP_SLEEP)
            .withSelectorActivity());
   // Extra clearance from the panel edge, on top of what the board profile declares. Display
