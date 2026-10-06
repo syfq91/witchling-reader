@@ -24,6 +24,22 @@ bool SettingsActivity::isRowSelectable(const int index) const {
   return index >= 0 && index < settingsCount && !(*currentSettings)[index].isSeparator;
 }
 
+bool SettingsActivity::releaseBuriedState() {
+  // The four tabs' rows, the submenus and the visible window's labels: ~80 SettingInfo rows with
+  // their label vectors, in many small blocks across the heap. onEnter() builds them all again.
+  std::vector<SettingInfo>().swap(displaySettings);
+  std::vector<SettingInfo>().swap(readerSettings);
+  std::vector<SettingInfo>().swap(controlsSettings);
+  std::vector<SettingInfo>().swap(systemSettings);
+  std::vector<SettingInfo::SubmenuData>().swap(submenuData);
+  for (std::string& label : windowLabels) std::string().swap(label);
+  for (std::string& value : windowValues) std::string().swap(value);
+  currentSettings = nullptr;
+  settingsCount = 0;
+  windowCount = 0;
+  return true;
+}
+
 void SettingsActivity::onEnter() {
   needsHalfRefresh = true;
 
@@ -286,12 +302,8 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   buildTabBar(screen);
   screen.spacer(static_cast<int16_t>(UITheme::getInstance().getMetrics().verticalSpacing));
 
-  fui::ListProps props;
+  auto props = listProps(screen);
   props.count = static_cast<uint16_t>(settingsCount);
-  props.action = ACTION_ROW;
-  props.inputMask = fui::InputTouch;
-  props.labelText = screen.theme().bodyText;
-  props.labelText.maxLines = 2;
   syncListViewport(screen, props);
   materializeListWindow();
   props.items = windowItems.data();
@@ -337,7 +349,6 @@ void SettingsActivity::render(RenderLock&&) {
   }
   publishListWindow();
   drawFooter();
-
 
   needsHalfRefresh = false;
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);

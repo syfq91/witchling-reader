@@ -251,7 +251,7 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 - **Boot Diagnostics**: How this boot started, where the last sleep stopped, and the history pairing each sleep with the boot that followed it. One screenful, meant to be photographed into a bug report when the device fails to sleep or fails to wake.
 
 **Firmware Update**:
-- **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi.
+- **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi. The download is always checked against the certificate of GitHub's servers (**Skip HTTPS validation** does not apply), and the firmware against the SHA-256 checksum the release lists, before the reader switches to it. The reader restarts when you leave this screen.
 - **SD Firmware Update**: Flash a firmware `.bin` file from the SD card. The **Options** button hint in the picker opens the browser's sort and visibility options, **Search**, and **Remove** to delete a `.bin` you no longer need.
 
 #### 3.7.5 OPDS Servers (Multiple Libraries)

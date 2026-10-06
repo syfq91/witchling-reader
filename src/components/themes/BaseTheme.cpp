@@ -306,7 +306,6 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
                    Rect{batteryX, rect.y + 5, BaseMetrics::values.batteryWidth, BaseMetrics::values.batteryHeight},
                    showBatteryPercentage);
 
-
   if (title) {
     int padding = rect.width - batteryX + BaseMetrics::values.batteryWidth;
     auto truncatedTitle = renderer.truncatedText(UI_12_FONT_ID, title,
@@ -350,7 +349,6 @@ void BaseTheme::drawSubHeader(const GfxRenderer& renderer, Rect rect, const char
                       true, EpdFontFamily::REGULAR);
   }
 }
-
 
 // Draw the "Recent Book" cover card on the home screen
 // TODO: Refactor method to make it cleaner, split into smaller methods
@@ -684,6 +682,7 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
 }
 
 void BaseTheme::shipPopup(const GfxRenderer& renderer, const PopupShip ship) {
+  if (ship == PopupShip::Caller) return;  // drawn only; the caller's displayBuffer() ships it
   if (ship == PopupShip::Async) {
     renderer.triggerDisplayAsync();
   } else {
@@ -729,9 +728,8 @@ void BaseTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
 
 void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
                               const int pageCount, const std::string& bookTitle, const std::string& chapterTitle,
-                              const int paddingBottom, const bool isStarred,
-                              const std::string& printedPageLabel, const bool fillMargin,
-                              const bool pageCountApproximate,
+                              const int paddingBottom, const bool isStarred, const std::string& printedPageLabel,
+                              const bool fillMargin, const bool pageCountApproximate,
                               const std::vector<float>& chapterMarkers) const {
   // While a section is still being laid out the total page count is a byte-based estimate, shown
   // with a leading "~" so the reader knows it will firm up as the chapter finishes building.
@@ -748,13 +746,12 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   const int barMarginRight = fillMargin ? 0 : orientedMarginRight;
   const int progressBarMaxWidth = screenWidth - barMarginLeft - barMarginRight;
 
-  const bool statusAtTop =
-      (SETTINGS.statusBarPosition == CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_TOP);
+  const bool statusAtTop = (SETTINGS.statusBarPosition == CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_TOP);
 
   // Draw single progress bar matching status bar location (always thin thickness)
   if (SETTINGS.statusBarProgressBar != CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS) {
-    const int barHeight = progressBarPixelHeight(SETTINGS.statusBarProgressBar,
-                                                 CrossPointSettings::PROGRESS_BAR_THIN, metrics);
+    const int barHeight =
+        progressBarPixelHeight(SETTINGS.statusBarProgressBar, CrossPointSettings::PROGRESS_BAR_THIN, metrics);
     if (barHeight > 0) {
       const int progress = statusBarProgressPercent(bookProgress);
       const int barWidth = progressBarMaxWidth * progress / 100;
@@ -865,7 +862,8 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
 
   if (SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY) {
     const int battWidth = statusBarBatteryWidth(renderer, metrics, showBatteryPercentage);
-    GUI.drawBatteryRight(renderer, Rect{rightEdge - metrics.batteryWidth, textY, metrics.batteryWidth, metrics.batteryHeight},
+    GUI.drawBatteryRight(renderer,
+                         Rect{rightEdge - metrics.batteryWidth, textY, metrics.batteryWidth, metrics.batteryHeight},
                          showBatteryPercentage);
     if (isStarred) {
       renderer.drawText(SMALL_FONT_ID, rightEdge - battWidth - starReserve, textY, "*");
@@ -915,9 +913,8 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
         textWidth = renderer.getTextWidth(SMALL_FONT_ID, text.c_str());
       }
       if (availableSpace > 0) {
-        renderer.drawText(SMALL_FONT_ID,
-                          leftEdge + titleMarginLeftAdjusted + (availableSpace - textWidth) / 2,
-                          textY, text.c_str());
+        renderer.drawText(SMALL_FONT_ID, leftEdge + titleMarginLeftAdjusted + (availableSpace - textWidth) / 2, textY,
+                          text.c_str());
       }
     }
   }

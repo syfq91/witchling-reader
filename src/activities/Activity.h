@@ -10,8 +10,8 @@
 #include "ActivityResult.h"
 #include "ButtonEventManager.h"
 #include "GfxRenderer.h"
-#include "MappedInputManager.h"
 #include "ListRowTap.h"
+#include "MappedInputManager.h"
 #include "RenderLock.h"
 
 class Activity {
@@ -26,6 +26,11 @@ class Activity {
   ActivityResultHandler resultHandler;
   ActivityResult result;
   ListRowTap::ActivationState listTapActivation;
+
+ private:
+  // Set by ActivityManager when releaseBuriedState() dropped something: this activity can not be
+  // drawn again, so the manager reboots to Settings rather than resume it.
+  bool buriedStateReleased = false;
 
  public:
   enum class ListPageDirection : uint8_t { Back, Forward };
@@ -84,6 +89,12 @@ class Activity {
   // Left/Right buttons mean something other than list paging override this boundary.
   virtual bool pageList(ListPageDirection /*direction*/) { return false; }
 
+  // Called while this activity is buried on the stack, before a download that needs the heap in
+  // one piece (releaseMemoryForDownload()). Drop what the activity built only to draw itself, such
+  // as row lists and labels; the object must stay valid to destroy. Return true if anything was
+  // dropped: the activity can then not be shown again, so ActivityManager reboots to Settings
+  // rather than resume it. Every caller of the release reboots on exit anyway; that is the net.
+  virtual bool releaseBuriedState() { return false; }
 
   // Return true to suppress the minute-tick requestUpdate() from ActivityManager when nothing
   // status-bar-relevant has changed since the last render. Skipping avoids a no-op page render

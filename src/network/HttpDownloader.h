@@ -118,7 +118,23 @@ class HttpDownloader {
                                const std::string& username = "", const std::string& password = "");
 
   /**
+   * fetchUrlVerified() for a long download whose consumer can start over: restart() drops everything
+   * onData has received so far and returns false if it cannot (a server that ignores Range partway
+   * through sends the whole body again from byte 0). That makes the transfer eligible for Range
+   * chunks on a tight heap, as downloadToFile() is, instead of 16 KB TLS records it may not have the
+   * memory for. Strict: the skip-validation setting does not apply. ABORTED when onData stopped it.
+   */
+  static DownloadError fetchVerifiedRestartable(const std::string& url, const DataCallback& onData,
+                                                const std::function<bool()>& restart);
+
+  /**
    * Download a file to the SD card with optional credentials.
+   *
+   * Over https on a tight heap (largest free block under 40 KB: the C3 boards with Wi-Fi up), the
+   * file is fetched in Range chunks of 1-6 KB on one kept-alive connection, so no TLS record can be
+   * larger than a chunk plus its response headers; a server that ignores Range sends the whole file
+   * instead, as before. The progress callback sees whole-file progress either way. See
+   * lib/SecureNet/include/HttpRange.h.
    */
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr, const std::string& username = "",

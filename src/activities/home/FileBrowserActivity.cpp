@@ -34,8 +34,8 @@
 #include "CrossPointState.h"
 #include "FileContextMenuActivity.h"
 #include "MappedInputManager.h"
-#include "TouchUi.h"
 #include "RecentBooksStore.h"
+#include "TouchUi.h"
 #include "components/BookProgressPresentation.h"
 #include "components/UITheme.h"
 #include "components/icons/folder.h"
@@ -892,14 +892,7 @@ void FileBrowserActivity::materializeListWindow() {
 }
 
 void FileBrowserActivity::buildScreen(UiScreen& screen) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, true);
-  screen.setContentMarginFromScreen(
-      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
-                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
-                  static_cast<int16_t>(contentRect.x)});
-  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+  layoutListArea(screen);
 
   if (listCount() == 0) {
     fui::TextAreaProps empty;
@@ -915,11 +908,8 @@ void FileBrowserActivity::buildScreen(UiScreen& screen) {
   // The grid is drawn straight to the frame after the (otherwise empty) screen, in afterUiRender().
   if (coversView()) return;
 
-  fui::ListProps props;
+  auto props = listProps(screen);
   props.count = static_cast<uint16_t>(listCount());
-  props.action = ACTION_ROW;
-  props.inputMask = fui::InputTouch;
-  props.labelText = screen.theme().bodyText;
   // A filename may wrap; a Details row is a title over a subtitle at a fixed two-line height.
   const bool details = detailsView();
   props.labelText.maxLines = details ? 1 : 3;
@@ -965,8 +955,8 @@ void FileBrowserActivity::drawFooter() {
     const std::string selectedEntry = model.entryName(static_cast<size_t>(nav.selected));
     selectingFirmwareFile = !selectedEntry.empty() && selectedEntry.back() != '/';
   }
-  const char* confirmLabel = confirmOpensOptions() ? tr(STR_OPTIONS)
-                             : !hasEntries         ? ""
+  const char* confirmLabel = confirmOpensOptions()   ? tr(STR_OPTIONS)
+                             : !hasEntries           ? ""
                              : selectingFirmwareFile ? tr(STR_SELECT)
                                                      : tr(STR_OPEN);
   // The Options menu is available for every entry in Books mode and in the firmware picker, where
@@ -985,7 +975,7 @@ void FileBrowserActivity::drawFooter() {
   // Where it pages, the same key still opens Options on a hold, so the label says both rather
   // than hiding the menu.
   const bool optionsOnRight = showOptionsHint && !confirmOpensOptions();
-  const char* nextLabel = (model.getMode() == Mode::PickFolder)   ? tr(STR_MOVE_HERE)
+  const char* nextLabel = (model.getMode() == Mode::PickFolder)     ? tr(STR_MOVE_HERE)
                           : (model.getMode() == Mode::PickFirmware) ? (optionsOnRight ? tr(STR_OPTIONS) : "")
                           : pages ? (optionsOnRight ? tr(STR_LIST_PAGE_NEXT_OR_OPTIONS) : tr(STR_LIST_PAGE_NEXT))
                           : optionsOnRight ? tr(STR_OPTIONS)

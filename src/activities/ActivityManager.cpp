@@ -12,6 +12,7 @@
 #include "CrossPointState.h"
 #include "OpdsServerStore.h"
 #include "SdCardFontGlobals.h"
+#include "SilentRestart.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
@@ -19,8 +20,8 @@
 #include "home/FileBrowserActivity.h"
 #include "home/GlobalBookmarksActivity.h"
 #include "home/HomeActivity.h"
-#include "home/HomeMoreActivity.h"
 #include "home/HomeMenu.h"
+#include "home/HomeMoreActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
@@ -231,6 +232,13 @@ void ActivityManager::loop() {
         continue;  // Will launch the target activity immediately
 
       } else {
+        if (stackActivities.back()->buriedStateReleased) {
+          // The activity below dropped its rows for a download; it cannot be drawn again. Every
+          // download that releases reboots in its own onExit(), so this is only the net.
+          LOG_ERR("ACT", "Resuming an activity whose state was released; rebooting to Settings");
+          SETTINGS.saveToFile();
+          silentRestartToSettings();
+        }
         currentActivity = std::move(stackActivities.back());
         stackActivities.pop_back();
         refreshWifiActivityFlag();
@@ -520,6 +528,17 @@ void ActivityManager::pushActivity(std::unique_ptr<Activity>&& activity) {
   pendingAction = PendingAction::Push;
 }
 
+int ActivityManager::releaseBuriedActivityState() {
+  int released = 0;
+  for (const auto& activity : stackActivities) {
+    if (activity->releaseBuriedState()) {
+      activity->buriedStateReleased = true;
+      ++released;
+    }
+  }
+  return released;
+}
+
 void ActivityManager::popActivity() {
   if (pendingActivity) {
     // Should never happen in practice
@@ -546,7 +565,6 @@ bool ActivityManager::isReaderActivity() const {
 bool ActivityManager::currentIsReaderActivity() const { return currentActivity && currentActivity->isReaderActivity(); }
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
-
 
 void ActivityManager::dispatchButtonAction(const CrossPointSettings::BUTTON_ACTION action) {
   if (currentIsReaderActivity()) {

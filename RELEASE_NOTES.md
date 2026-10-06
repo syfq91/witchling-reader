@@ -24,6 +24,13 @@ Changes pulled in from `jpirnay/witchhunt-reader` since 2.37 that this fork carr
 
 - **Settings, the reader menu, the pickers and the menus page the same way.** Up/Down and Left/Right move one row; hold Left/Right to page a screenful; hold Up/Down to jump to the first / last row; tap Up or Down twice quickly to jump a page. A page jump keeps the selection on the same line of the screen. The side hints show the page glyphs ("«" / "»") where a short Left/Right is not bound to an action.
 
+#### Fixes
+
+- **Fix: downloads from GitHub pass the certificate check again.** GitHub's download servers moved to a new Let's Encrypt certificate chain whose root key is 4096-bit RSA, which the reader's TLS library could not verify. Firmware updates (which never skip the check) failed with a certificate error.
+- **Downloads fetch each file in small pieces when memory is tight**, so the reader no longer runs out of memory partway through a download. A file is requested in pieces sized to the memory that is free, over the same connection; a dropped connection picks up where it stopped. Book downloads from OPDS catalogs and firmware updates both use the method; a server that does not support it sends the whole file as before.
+- **Firmware updates are checked before they install.** Before the reader switches to the new firmware, it compares the download with the SHA-256 checksum GitHub lists for the release, and refuses an incomplete or corrupted download ("Download corrupted (checksum mismatch)") instead of installing it.
+- **The firmware update frees more memory before it downloads**: the settings lists behind it, a loaded SD-card font, the bookmark list and cached scaled glyphs. It restarts the reader when you leave, as before, which loads everything again.
+
 ### Synced from upstream 2.37
 
 Changes pulled in from `jpirnay/witchhunt-reader` 2.37 that this fork carries. Subsystems this fork does not include (Reading Statistics, Weather, non-English UI translations, touch gestures, and multi-device hardware abstraction) are omitted.

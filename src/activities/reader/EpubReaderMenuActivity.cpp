@@ -59,11 +59,11 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(
     const int totalPages, const int bookProgressPercent, const uint8_t currentOrientation, const bool hasFootnotes,
     const int8_t initialEmbeddedStyleOverride, const int8_t initialImageRenderingOverride,
     const int8_t initialFontFamilyOverride, const std::string& initialSdFontFamilyOverride,
-    const int8_t initialFontSizeOverride, const uint8_t initialTextDarkness, 
-    const int8_t initialParagraphAlignmentOverride,
-    const int8_t initialTextAntiAliasingOverride, const int8_t initialHyphenationOverride,
-    const int8_t initialFontSizeNormalizationOverride, const int8_t initialInlineFootnotePreviewsOverride,
-    const bool hasStarredPages, const bool isCurrentPageStarred, const bool hasPrintedPages)
+    const int8_t initialFontSizeOverride, const uint8_t initialTextDarkness,
+    const int8_t initialParagraphAlignmentOverride, const int8_t initialTextAntiAliasingOverride,
+    const int8_t initialHyphenationOverride, const int8_t initialFontSizeNormalizationOverride,
+    const int8_t initialInlineFootnotePreviewsOverride, const bool hasStarredPages, const bool isCurrentPageStarred,
+    const bool hasPrintedPages)
     : TabbedUiListActivity("EpubReaderMenu", renderer, mappedInput),
       currentPageStarred(isCurrentPageStarred),
       pendingOrientation(currentOrientation),
@@ -528,18 +528,14 @@ void EpubReaderMenuActivity::buildScreen(UiScreen& screen) {
   buildTabBar(screen);
   screen.spacer(6);
 
-  fui::ListProps listProps;
-  listProps.count = static_cast<uint16_t>(listCount());
-  listProps.action = ACTION_ROW;
-  listProps.inputMask = fui::InputTouch;
-  listProps.labelText = screen.theme().bodyText;
-  listProps.labelText.maxLines = 2;
-  syncListViewport(screen, listProps);
+  auto props = listProps(screen);
+  props.count = static_cast<uint16_t>(listCount());
+  syncListViewport(screen, props);
   materializeListWindow();
-  listProps.items = windowItems.data();
-  listProps.itemsWindowFirst = windowFirst;
-  listProps.itemsWindowCount = windowCount;
-  screen.list(listProps);
+  props.items = windowItems.data();
+  props.itemsWindowFirst = windowFirst;
+  props.itemsWindowCount = windowCount;
+  screen.list(props);
 }
 
 void EpubReaderMenuActivity::drawChrome() {

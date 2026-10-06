@@ -51,13 +51,9 @@ void FontSelectionActivity::onExit() {
   UiListActivity::onExit();
 }
 
-const char* FontSelectionActivity::headerTitle() const {
-  return tr(STR_FONT_FAMILY);
-}
+const char* FontSelectionActivity::headerTitle() const { return tr(STR_FONT_FAMILY); }
 
-uint8_t FontSelectionActivity::selectedFontSize() const {
-  return SETTINGS.fontSize;
-}
+uint8_t FontSelectionActivity::selectedFontSize() const { return SETTINGS.fontSize; }
 
 int FontSelectionActivity::previewOptionIndex(const int index) const {
   if (!overrideSetting) return index;
@@ -357,14 +353,7 @@ void FontSelectionActivity::activateIndex(const int index) {
 }
 
 void FontSelectionActivity::buildScreen(UiScreen& screen) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = listContentRect();
-  screen.setContentMarginFromScreen(
-      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
-                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
-                  static_cast<int16_t>(contentRect.x)});
-  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+  layoutListArea(screen);
 
   // The preview rectangle is only knowable here, and afterUiRender() needs it
   // to blit or capture the strip.
@@ -393,15 +382,10 @@ void FontSelectionActivity::buildScreen(UiScreen& screen) {
     preview.showCaret = false;
     screen.textArea(preview, previewHeight);
   }
-  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+  screen.spacer(static_cast<int16_t>(UITheme::getInstance().getMetrics().verticalSpacing));
 
-  fui::ListProps props;
+  auto props = listProps(screen);
   props.items = rowItems.data();
   props.count = static_cast<uint16_t>(rowItems.size());
-  props.action = ACTION_ROW;
-  props.inputMask = fui::InputTouch;
-  props.labelText = screen.theme().bodyText;
-  props.labelText.maxLines = 2;
-  syncListViewport(screen, props);
-  screen.list(props);
+  addList(screen, props);
 }
