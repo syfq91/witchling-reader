@@ -633,7 +633,10 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
       break;
     }
     case BrowserState::DOWNLOADING: {
-      screen.centeredText(statusMessage.c_str());
+      // Title, bar and percentage are laid out together in afterUiRender().
+      // Drawing the title here would put it in the FreeInk content rect while
+      // the bar is placed from UITheme::getContentRect(), and the two differ by
+      // headerHeight + buttonHintsHeight, so the lines landed on each other.
       screen.takeBottom(screen.theme().footerHeight);
       break;
     }
@@ -759,13 +762,27 @@ void OpdsBookBrowserActivity::afterUiRender() {
       renderer.drawCenteredText(UI_10_FONT_ID, fmtY, fmtsStr.c_str());
     }
   } else if (state == BrowserState::DOWNLOADING) {
+    // One coordinate system for title, bar and percentage: every line is
+    // stacked from blockTop with an explicit gap, so nothing can land on
+    // whatever drawProgressBar() puts under the bar.
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto contentRect = UITheme::getContentRect(renderer, true, false);
+    const int contentTop = contentRect.y + metrics.headerHeight;
+    const int contentBottom = contentRect.y + contentRect.height;
+    const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+    constexpr int barHeight = 20;
+    constexpr int percentGap = 15;  // drawProgressBar() places the percentage this far below the bar
+    constexpr int gap = 6;
+    const int blockH = lineH + gap + barHeight + percentGap + lineH;
+    const int blockTop = contentTop + std::max(0, (contentBottom - contentTop - blockH) / 2);
+
+    auto title = renderer.truncatedText(UI_10_FONT_ID, statusMessage.c_str(), contentRect.width - 40);
+    renderer.drawCenteredText(UI_10_FONT_ID, blockTop, title.c_str());
+
     if (downloadTotal > 0) {
-      const auto contentRect = UITheme::getContentRect(renderer, true, false);
-      const int midY = contentRect.y + contentRect.height / 2;
       const int barWidth = contentRect.width - 100;
-      constexpr int barHeight = 20;
       const int barX = contentRect.x + 50;
-      const int barY = midY + 20;
+      const int barY = blockTop + lineH + gap;
       GUI.drawProgressBar(renderer, Rect{barX, barY, barWidth, barHeight}, downloadProgress, downloadTotal);
     }
   }
