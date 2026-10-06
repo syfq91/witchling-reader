@@ -8,6 +8,11 @@ User-facing changes only. Full commit history is in git log.
 
 - **Simplified Customise Status Bar page.** Replaced the 10 separate status bar options with 5 streamlined settings: status bar location (Top / Bottom), configurable content slots for Left, Middle, and Right (Hide, Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title), and a single progress bar (Book / Chapter / Hide) that automatically follows the status bar location and always uses thin thickness. Existing user configurations are seamlessly migrated.
 
+### Reading progress sync
+
+- **The reader asks which position to keep when the device and the OPDS server have both changed.** Opening a book, closing it and the reader menu's **Sync Progress** used to settle a disagreement on their own: the server's newer position won and the book jumped to it, silently overriding where you were. A disagreement now stops and shows both — **Use device** writes your position to the server, **Use server** jumps to the server's, and Back changes neither and asks again the next time the book opens. Progress only this device has moved still pushes on its own, as before.
+- **Opening a book no longer offers or pushes 0%.** The open-time exchange ran before the first page was laid out, so it had no position to report and reported zero — which would have appeared as `Device: 0%` in the prompt above, and written 0% to the server behind it. It now uses the percent recorded in the book's progress file.
+
 ### Synced from upstream (post-2.37)
 
 Changes pulled in from `jpirnay/witchhunt-reader` since 2.37 that this fork carries. Subsystems this fork does not include (touch gestures, reading statistics, weather, non-English UI translations, and the OPDS touch list scheme) are omitted.

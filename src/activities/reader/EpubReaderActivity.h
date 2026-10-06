@@ -177,6 +177,10 @@ class EpubReaderActivity final : public Activity {
   // names the page currently on screen, not the page the section was entered at — see
   // anchorNavTargetToCurrentPage().
   NavigationTarget navTarget;
+  // progress.bin's percent as it was when this session opened the book, before any page exists to
+  // measure. 0-100, same byte the home badge reads. Needed because the OPDS exchange runs before
+  // the first render, where `section` is still null and the live position cannot be worked out.
+  uint8_t savedProgressPercent_ = 0;
   int pagesUntilFullRefresh =
       1;  // initialized to freq in onEnter(); 1 triggers HALF on first render if somehow not reset
   // When the reader last put a page on screen, for ANY reason — a turn, the first page of a
@@ -864,7 +868,16 @@ class EpubReaderActivity final : public Activity {
                                        const std::optional<EpubProgressRecord::Shown>& shown = std::nullopt);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
-  void syncProgression(bool interactive = true);
+  // How far the OPDS progression exchange is allowed to go without asking anyone.
+  enum class ProgressionSyncMode {
+    Silent,   // book close: exchange only; a divergence is left for the next open
+    Prompt,   // book open: exchange silently, then ask when both sides have moved
+    Explicit  // the reader's Sync Progress action: always the dialog
+  };
+  void syncProgression(ProgressionSyncMode mode);
+  // Where this device is in the book as the progression exchange reports it: the live section when
+  // one is laid out, otherwise progress.bin's percent (book open, before the first render).
+  void currentSyncPosition(float& progression, std::string& title, std::string& reference);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
 
   // Open word selection over the current page, or the dictionary picker when no

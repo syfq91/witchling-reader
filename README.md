@@ -9,7 +9,7 @@ For full original documentation, refer to the [upstream README](https://github.c
 ## Changes in this Fork
 
 ### Added
-- **OPDS Progression 1.0**: Automatically syncs reading progress with compatible OPDS servers (e.g., Kavita, Audiobookshelf).
+- **OPDS Progression 1.0**: Syncs reading progress with compatible OPDS servers (e.g., Kavita, Audiobookshelf). When the device and the server have both moved since they last agreed, the reader puts both positions to you instead of picking a winner.
 - **OPDS Pagination & Viewport Navigation**: Browse large catalogs smoothly with paginated listings and responsive navigation.
 - **Quick Resume**: Press the Back button on the home screen to instantly jump back into your current book.
 - **Simplified Status Bar**: Streamlined status bar customization options in Settings with a toggleable progress bar and inverted chapter markers.

@@ -689,11 +689,13 @@ void EpubReaderActivity::onEnter() {
   // silently degraded to the rough page estimate.
   FsFile f;
   bool hadSavedProgress = false;
+  savedProgressPercent_ = 0;
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
     uint8_t data[EpubProgressRecord::kMaxSize];
     const int dataSize = f.read(data, sizeof(data));
     if (const auto record = EpubProgressRecord::decode(data, dataSize > 0 ? static_cast<size_t>(dataSize) : 0)) {
       currentSpineIndex = record->spineIndex;
+      savedProgressPercent_ = record->percent;
       // A Page target even when the paragraph is known: a Page target is shown the moment its
       // page is built (Background-C), and the paragraph only matters after a relayout.
       navTarget = NavigationTarget::makePage(record->page);
@@ -792,9 +794,7 @@ void EpubReaderActivity::onEnter() {
 
   // Trigger first update
   logReaderMemSnapshot("onEnter_before_request_update");
-  if (WiFi.status() == WL_CONNECTED && OpdsProgressionSync::hasSyncConfig(epub->getCachePath())) {
-    syncProgression(false);
-  }
+  syncProgression(ProgressionSyncMode::Prompt);
   requestUpdate();
   logReaderMemSnapshot("onEnter_ready");
   checkHeapIntegrity("reader_onEnter_ready");
@@ -852,9 +852,7 @@ void EpubReaderActivity::onExit() {
   bookmarkStore.save();
   if (epub) {
     GLOBAL_BOOKMARKS.syncFromStore(bookmarkStore, epub->getPath(), epub->getCachePath(), epub->getTitle(), false);
-    if (WiFi.status() == WL_CONNECTED && OpdsProgressionSync::hasSyncConfig(epub->getCachePath())) {
-      syncProgression(false);
-    }
+    syncProgression(ProgressionSyncMode::Silent);
   }
 
   // Reset orientation back to portrait for the rest of the UI
@@ -2211,25 +2209,40 @@ void EpubReaderActivity::jumpToPercent(int percent) {
   }
 }
 
-void EpubReaderActivity::syncProgression(const bool interactive) {
+void EpubReaderActivity::currentSyncPosition(float& progression, std::string& title, std::string& reference) {
+  progression = 0.0f;
+  title.clear();
+  reference.clear();
+  if (!epub) return;
+
+  if (section && section->pageCount > 0) {
+    const float chapterProg = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
+    progression = epub->calculateProgress(currentSpineIndex, chapterProg);
+    const auto item = epub->getSpineItem(currentSpineIndex);
+    reference = item.href;
+    const int tocIdx = epub->getTocIndexForSpineIndex(currentSpineIndex);
+    if (tocIdx >= 0 && tocIdx < epub->getTocItemsCount()) {
+      const auto toc = epub->getTocItem(tocIdx);
+      title = toc.title;
+    }
+    return;
+  }
+  // Book open, before the first render: nothing is laid out, so there is no section to measure.
+  // progress.bin's percent is what this device shows (the home badge reads the same byte).
+  // Reporting 0 here instead would offer the user a position they were never at -- and, in the
+  // exchange, push one.
+  progression = static_cast<float>(savedProgressPercent_) / 100.0f;
+}
+
+void EpubReaderActivity::syncProgression(const ProgressionSyncMode mode) {
   if (!epub) return;
   const std::string cachePath = epub->getCachePath();
 
-  if (interactive) {
+  if (mode == ProgressionSyncMode::Explicit) {
     float bookProgress = 0.0f;
-    std::string currentTitle = "";
-    std::string currentRef = "";
-    if (section && section->pageCount > 0) {
-      const float chapterProg = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
-      bookProgress = epub->calculateProgress(currentSpineIndex, chapterProg);
-      const auto item = epub->getSpineItem(currentSpineIndex);
-      currentRef = item.href;
-      const int tocIdx = epub->getTocIndexForSpineIndex(currentSpineIndex);
-      if (tocIdx >= 0 && tocIdx < epub->getTocItemsCount()) {
-        const auto toc = epub->getTocItem(tocIdx);
-        currentTitle = toc.title;
-      }
-    }
+    std::string currentTitle;
+    std::string currentRef;
+    currentSyncPosition(bookProgress, currentTitle, currentRef);
     suspendBackgroundWork();
     startActivityForResult(std::make_unique<OpdsProgressionSyncActivity>(renderer, mappedInput, cachePath, bookProgress,
                                                                          currentTitle, currentRef),
@@ -2245,32 +2258,23 @@ void EpubReaderActivity::syncProgression(const bool interactive) {
                              }
                              requestUpdate();
                            });
-  } else {
-    // Non-interactive / opportunistic sync when WiFi is already connected
-    if (WiFi.status() == WL_CONNECTED && OpdsProgressionSync::hasSyncConfig(cachePath)) {
-      float bookProgress = 0.0f;
-      std::string currentTitle = "";
-      std::string currentRef = "";
-      if (section && section->pageCount > 0) {
-        const float chapterProg = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
-        bookProgress = epub->calculateProgress(currentSpineIndex, chapterProg);
-        const auto item = epub->getSpineItem(currentSpineIndex);
-        currentRef = item.href;
-        const int tocIdx = epub->getTocIndexForSpineIndex(currentSpineIndex);
-        if (tocIdx >= 0 && tocIdx < epub->getTocItemsCount()) {
-          const auto toc = epub->getTocItem(tocIdx);
-          currentTitle = toc.title;
-        }
-      }
-      const auto res = OpdsProgressionSync::performSync(cachePath, bookProgress, currentTitle, currentRef);
-      if (res.status == OpdsProgressionSync::SyncStatus::SUCCESS_REMOTE_NEWER) {
-        if (!res.remote.reference.empty()) {
-          navigateToHref(res.remote.reference, false);
-        } else if (res.remote.progression >= 0.0f) {
-          jumpToPercent(clampPercent(static_cast<int>(res.remote.progression * 100.0f + 0.5f)));
-        }
-      }
-    }
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED || !OpdsProgressionSync::hasSyncConfig(cachePath)) return;
+
+  float bookProgress = 0.0f;
+  std::string currentTitle;
+  std::string currentRef;
+  currentSyncPosition(bookProgress, currentTitle, currentRef);
+
+  const auto res = OpdsProgressionSync::performSync(cachePath, bookProgress, currentTitle, currentRef);
+  // With resolution left at ASK this exchange never moves the reader: it records progress, reports
+  // no change, or comes back CONFLICT. Only the dialog hands a position back, which is why a
+  // divergence is the one outcome worth acting on here.
+  if (res.status == OpdsProgressionSync::SyncStatus::CONFLICT && mode == ProgressionSyncMode::Prompt) {
+    LOG_INF("ERS", "OPDS progression diverged on open; putting it to the user");
+    syncProgression(ProgressionSyncMode::Explicit);
   }
 }
 
@@ -2493,7 +2497,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       break;
     }
     case EpubReaderMenuActivity::MenuAction::SYNC_PROGRESS: {
-      syncProgression(true);
+      syncProgression(ProgressionSyncMode::Explicit);
       break;
     }
     case EpubReaderMenuActivity::MenuAction::MARK_AS_READ: {
@@ -6418,7 +6422,7 @@ void EpubReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION 
       break;
     case BA::BTN_SYNC_PROGRESS:
       if (epub) {
-        syncProgression(true);
+        syncProgression(ProgressionSyncMode::Explicit);
       }
       break;
     default:

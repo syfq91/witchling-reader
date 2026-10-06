@@ -22,6 +22,11 @@ constexpr const char* TAG = "OPDS_SYNC_ACT";
 
 constexpr fui::ActionId ACTION_CANCEL = 1;
 constexpr fui::ActionId ACTION_CONFIRM = 2;
+// The CONFLICT prompt's two answers. They are their own ids rather than a reuse of
+// CANCEL/CONFIRM because there the same ids also mean "close the dialog" and "retry", and a
+// stale action must never be read as an answer to a question the dialog is not asking.
+constexpr fui::ActionId ACTION_USE_DEVICE = 3;
+constexpr fui::ActionId ACTION_USE_SERVER = 4;
 }  // namespace
 
 OpdsProgressionSyncActivity::OpdsProgressionSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -39,6 +44,8 @@ void OpdsProgressionSyncActivity::onEnter() {
   resetUi();
   app.on(ACTION_CANCEL, &OpdsProgressionSyncActivity::onCancelEvent, this);
   app.on(ACTION_CONFIRM, &OpdsProgressionSyncActivity::onConfirmEvent, this);
+  app.on(ACTION_USE_DEVICE, &OpdsProgressionSyncActivity::onUseDeviceEvent, this);
+  app.on(ACTION_USE_SERVER, &OpdsProgressionSyncActivity::onUseServerEvent, this);
   app.setScreen(&OpdsProgressionSyncActivity::screenTrampoline, this);
 
   if (!OpdsProgressionSync::hasSyncConfig(cachePath)) {
@@ -82,6 +89,24 @@ void OpdsProgressionSyncActivity::onConfirmEvent(const fui::ActionEvent&, void* 
   }
 }
 
+void OpdsProgressionSyncActivity::onUseDeviceEvent(const fui::ActionEvent&, void* user) {
+  static_cast<OpdsProgressionSyncActivity*>(user)->resolveConflict(OpdsProgressionSync::ConflictResolution::TAKE_LOCAL);
+}
+
+void OpdsProgressionSyncActivity::onUseServerEvent(const fui::ActionEvent&, void* user) {
+  static_cast<OpdsProgressionSyncActivity*>(user)->resolveConflict(
+      OpdsProgressionSync::ConflictResolution::TAKE_REMOTE);
+}
+
+void OpdsProgressionSyncActivity::resolveConflict(const OpdsProgressionSync::ConflictResolution resolution) {
+  // A double tap or a press that arrived after the answer already landed must not run a second
+  // exchange under a resolution the screen is no longer showing.
+  if (state != CONFLICT) return;
+  state = SYNCING;
+  requestUpdateAndWait();
+  performSync(resolution);
+}
+
 void OpdsProgressionSyncActivity::startWifi() {
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) {
@@ -95,11 +120,19 @@ void OpdsProgressionSyncActivity::startWifi() {
                          });
 }
 
-void OpdsProgressionSyncActivity::performSync() {
+void OpdsProgressionSyncActivity::performSync(const OpdsProgressionSync::ConflictResolution resolution) {
   LOG_INF(TAG, "Starting sync for cache %s", cachePath.c_str());
-  const auto result = OpdsProgressionSync::performSync(cachePath, localProgression, localTitle, localReference);
+  const auto result =
+      OpdsProgressionSync::performSync(cachePath, localProgression, localTitle, localReference, resolution);
 
   switch (result.status) {
+    case OpdsProgressionSync::SyncStatus::CONFLICT:
+      // Hold here rather than set any result: which position the caller ends up jumping to is
+      // decided by the answer, not by the exchange.
+      state = CONFLICT;
+      remoteData = result.remote;
+      break;
+
     case OpdsProgressionSync::SyncStatus::SUCCESS_REMOTE_NEWER:
       state = SUCCESS_REMOTE;
       remoteData = result.remote;
@@ -145,6 +178,21 @@ void OpdsProgressionSyncActivity::buildScreen(UiScreen& screen) {
     case SYNCING:
       spec.headline = tr(STR_SYNCING_PROGRESS);
       break;
+    case CONFLICT: {
+      spec.headline = tr(STR_SYNC_PROGRESS_CONFLICT);
+      int written = snprintf(detailBuf, sizeof(detailBuf), "%s %d%%\n%s %d%%", tr(STR_SYNC_POSITION_DEVICE),
+                             static_cast<int>(localProgression * 100.0f + 0.5f), tr(STR_SYNC_POSITION_SERVER),
+                             static_cast<int>(remoteData.progression * 100.0f + 0.5f));
+      if (!remoteData.title.empty() && written > 0 && static_cast<size_t>(written) < sizeof(detailBuf)) {
+        snprintf(detailBuf + written, sizeof(detailBuf) - written, "\n%s", remoteData.title.c_str());
+      }
+      spec.message = detailBuf;
+      spec.cancelLabel = tr(STR_SYNC_USE_DEVICE);
+      spec.acceptLabel = tr(STR_SYNC_USE_SERVER);
+      spec.cancelAction = ACTION_USE_DEVICE;
+      spec.acceptAction = ACTION_USE_SERVER;
+      break;
+    }
     case SUCCESS_REMOTE:
       spec.headline = tr(STR_SYNC_PROGRESS_REMOTE_UPDATED);
       if (!remoteData.title.empty()) {
@@ -204,6 +252,21 @@ void OpdsProgressionSyncActivity::loop() {
         performSync();
         return;
       }
+    } else if (state == CONFLICT) {
+      // Back first: on a board whose Back and "previous" share a physical key, leaving is the
+      // answer that must win, so the user can always decline to choose.
+      if (ev.button == MappedInputManager::Button::Back) {
+        finish();
+        return;
+      }
+      if (ev.button == MappedInputManager::frontStripPrevious()) {
+        resolveConflict(OpdsProgressionSync::ConflictResolution::TAKE_LOCAL);
+        return;
+      }
+      if (ev.button == MappedInputManager::frontStripNext()) {
+        resolveConflict(OpdsProgressionSync::ConflictResolution::TAKE_REMOTE);
+        return;
+      }
     } else if (state == SUCCESS_REMOTE || state == SUCCESS_PUSHED || state == SUCCESS_SAME || state == NO_CONFIG) {
       if (ev.button == MappedInputManager::Button::Back || ev.button == MappedInputManager::Button::Confirm) {
         finish();
@@ -219,6 +282,11 @@ void OpdsProgressionSyncActivity::render(RenderLock&&) {
 
   if (state == FAILED) {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == CONFLICT) {
+    // Back leaves without choosing; the other two sit on the two front buttons under the
+    // dialog's own two answers, which is where mapLabels() puts previous/next.
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", tr(STR_SYNC_USE_DEVICE), tr(STR_SYNC_USE_SERVER));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state != SYNCING && state != CONNECTING_WIFI) {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONFIRM), "", "");

@@ -25,11 +25,21 @@ enum class SyncStatus {
   SUCCESS_REMOTE_NEWER,  // Remote progress is newer; caller should jump
   SUCCESS_LOCAL_PUSHED,  // Local progress was pushed to server
   SUCCESS_IN_SYNC,       // Local and remote already match
+  CONFLICT,              // Both sides moved; caller must ask the user which one to keep
   NO_CONFIG,             // No sync configuration for this book
   NO_WIFI,               // WiFi is not connected
   NETWORK_ERROR,         // HTTP / connection error
   AUTH_ERROR,            // HTTP 401 / 403 unauthorized
   PARSE_ERROR            // Failed to parse response JSON
+};
+
+// What performSync does when the device and the server have BOTH moved since they last
+// agreed (the CONFLICT condition). ASK is the default so no caller can silently pick a
+// winner: the exchange reports the divergence and the caller puts it to the user.
+enum class ConflictResolution {
+  ASK,         // return SyncStatus::CONFLICT with the remote state, config untouched
+  TAKE_LOCAL,  // the user chose this device: push the local position
+  TAKE_REMOTE  // the user chose the server: adopt the remote position
 };
 
 struct SyncResult {
@@ -54,7 +64,9 @@ std::string computeCachePath(const std::string& filePath, const std::string& cac
 // localProgression: 0.0f - 1.0f
 // localTitle: chapter or book title
 // localReference: spine item href or anchor
+// resolution: how to settle a divergence; ASK reports SyncStatus::CONFLICT and leaves the
+//             stored lastSynced* untouched so the caller can put it to the user.
 SyncResult performSync(const std::string& cachePath, float localProgression, const std::string& localTitle = "",
-                       const std::string& localReference = "");
+                       const std::string& localReference = "", ConflictResolution resolution = ConflictResolution::ASK);
 
 }  // namespace OpdsProgressionSync

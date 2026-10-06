@@ -28,6 +28,7 @@ Welcome to **Witchling Reader** firmware. This guide outlines the hardware contr
     - [Page Turning](#page-turning)
     - [Chapter Navigation](#chapter-navigation)
     - [System Navigation](#system-navigation)
+    - [Reading Progress Sync](#reading-progress-sync)
     - [Supported Languages](#supported-languages)
   - [5. Chapter Selection Screen](#5-chapter-selection-screen)
   - [6. Current Limitations \& Roadmap](#6-current-limitations--roadmap)
@@ -270,6 +271,7 @@ Behavior notes:
 
 - You can store up to 8 OPDS servers.
 - OPDS authentication supports HTTP Basic auth. If you use Calibre Content Server with authentication enabled, set it to Basic (not Digest).
+- Books downloaded from a server keep their reading position in step with it; see [Reading Progress Sync](#reading-progress-sync).
 
 You can also manage OPDS servers from the web interface while in File Transfer mode:
 
@@ -363,6 +365,22 @@ This feature can be disabled in the **[Controls Settings](#373-controls)** to he
 * **Return to Browse Files:** Press and hold the **Back** button to close the book and return to the **[Browse Files](#33-browse-files-screen)** screen.
 * **Reader Menu:** Press **Confirm** to open the reader menu. The menu is organized into categorized tabs (**Navigation** and **Settings**), allowing quick access to the **[Table of Contents](#5-chapter-selection-screen)**, bookmarks, progression sync, quick per-book overrides (font, images, hyphenation, bionic reading…), and reader settings. While the tab bar is selected, **Confirm** moves to the next tab, and its button hint names that tab.
 * **Your place is kept by paragraph as well as by page.** If a book is laid out differently the next time you open it, for example after you changed the font size from outside the book or after a firmware update re-indexed it, it opens at the paragraph you were reading rather than at a page number scaled to the new length.
+
+### Reading Progress Sync
+
+A book you downloaded through the OPDS browser keeps its position in step with that server over WiFi. Nothing is exchanged for a book that did not come from an OPDS catalog.
+
+The exchange runs on its own when you open a book and again when you close it, and on demand from the reader menu's **Sync Progress** entry or a **Sync Progress** button action.
+
+If only you have read since the two last agreed, your position is pushed to the server and nothing is shown. If the server holds a position your device does not — you read on another device, or a sync was interrupted — the reader stops and asks instead of moving you or overwriting the server on its own:
+
+| Answer | Effect |
+| ------ | ------ |
+| **Use device** | Keeps where you are and writes it to the server. |
+| **Use server** | Jumps the book to the server's position. |
+| **Back** | Changes neither. The same question comes up the next time the book opens. |
+
+The prompt names both sides (`Device: 42%`, `Server: 57%`) and the chapter the server's position belongs to. Closing a book on a divergence is deliberately quiet: it neither pushes nor jumps, and leaves the question for the next open. If the server refuses your position because another device wrote a newer one in the meantime, the prompt comes back with the server's current figure rather than quietly overriding your choice.
 
 ### Supported Languages
 

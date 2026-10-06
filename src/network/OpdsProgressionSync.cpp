@@ -167,7 +167,7 @@ bool loadSyncConfig(const std::string& cachePath, SyncConfig& config) {
 }
 
 SyncResult performSync(const std::string& cachePath, float localProgression, const std::string& localTitle,
-                       const std::string& localReference) {
+                       const std::string& localReference, const ConflictResolution resolution) {
   SyncConfig config;
   if (!loadSyncConfig(cachePath, config)) {
     return {SyncStatus::NO_CONFIG, {}, "No sync configuration found"};
@@ -218,16 +218,34 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
   const time_t remoteTime = remoteValid ? parseIso8601(remote.modified) : 0;
   const time_t lastLocalSyncedTime = parseIso8601(config.lastSyncedModified);
 
-  // Check if remote is newer and has a different progression
-  if (remoteValid && remoteTime > lastLocalSyncedTime &&
-      std::fabs(remote.progression - config.lastSyncedProgression) > 0.001f &&
+  // Both sides have moved since they last agreed: the server holds a progression this device never
+  // recorded, and this device holds one the server does not.
+  const bool diverged = remoteValid && remoteTime > lastLocalSyncedTime &&
+                        std::fabs(remote.progression - config.lastSyncedProgression) > 0.001f &&
+                        std::fabs(remote.progression - localProgression) > 0.001f;
+
+  // Which side wins, now that the exchange has the server's current state in hand.
+  //
+  // TAKE_REMOTE does not re-test `diverged`: the user answered against this same state, so
+  // re-deriving whether it counts as a divergence could flip the answer on a clock or a rounding
+  // edge. It only needs the two to disagree, which is what it is being asked to settle.
+  if (resolution == ConflictResolution::TAKE_REMOTE && remoteValid &&
       std::fabs(remote.progression - localProgression) > 0.001f) {
     config.lastSyncedModified = remote.modified;
     config.lastSyncedProgression = remote.progression;
     saveSyncConfig(cachePath, config.progressionUrl, config.serverUrl);
-    LOG_INF(TAG, "Remote progress is newer (%.1f%%)", remote.progression * 100.0f);
+    LOG_INF(TAG, "Remote progress adopted (%.1f%%)", remote.progression * 100.0f);
     return {SyncStatus::SUCCESS_REMOTE_NEWER, remote, ""};
   }
+  // ASK has no say in a divergence: it reports one and stops, leaving lastSynced* untouched so the
+  // next exchange sees the same question rather than a half-resolved one.
+  if (resolution == ConflictResolution::ASK && diverged) {
+    LOG_INF(TAG, "Diverged: device %.1f%% vs server %.1f%%; deferring to the user", localProgression * 100.0f,
+            remote.progression * 100.0f);
+    return {SyncStatus::CONFLICT, remote, ""};
+  }
+  // ConflictResolution::TAKE_LOCAL -- and a TAKE_REMOTE whose state already matches the device --
+  // fall through: in-sync below when they agree, the push otherwise.
 
   // If local and remote match closely, no update needed
   if (remoteValid && std::fabs(remote.progression - localProgression) <= 0.001f) {
@@ -284,8 +302,9 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
   }
 
   if (putStatus == 409) {
-    // Stale precondition: another device stored a newer progression. Re-fetch it
-    // and adopt the remote position rather than overwriting newer state.
+    // Stale precondition: another device stored a newer progression while this one was pushing.
+    // Re-fetch it. Adopting it outright would silently override the position the user just chose,
+    // so it goes back to them as a CONFLICT unless the two turn out to agree already.
     const int regetStatus = client.GET(config.progressionUrl);
     if (regetStatus == 401 || regetStatus == 403) {
       LOG_ERR(TAG, "Authentication failed re-fetching progression (HTTP %d)", regetStatus);
@@ -293,11 +312,15 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
     }
     RemoteProgression remoteNow;
     if (regetStatus == 200 && !parseProgressionBody(client.getBody(), remoteNow)) {
+      if (std::fabs(remoteNow.progression - localProgression) > 0.001f) {
+        LOG_INF(TAG, "Push rejected as stale; server holds %.1f%%, asking again", remoteNow.progression * 100.0f);
+        return {SyncStatus::CONFLICT, remoteNow, ""};
+      }
       config.lastSyncedModified = remoteNow.modified;
       config.lastSyncedProgression = remoteNow.progression;
       saveSyncConfig(cachePath, config.progressionUrl, config.serverUrl);
-      LOG_INF(TAG, "Push rejected as stale; adopting remote %.1f%%", remoteNow.progression * 100.0f);
-      return {SyncStatus::SUCCESS_REMOTE_NEWER, remoteNow, ""};
+      LOG_INF(TAG, "Push rejected as stale, but the server already holds the same position");
+      return {SyncStatus::SUCCESS_IN_SYNC, remoteNow, ""};
     }
     LOG_ERR(TAG, "Re-fetch after progression conflict failed: HTTP %d", regetStatus);
     return {SyncStatus::NETWORK_ERROR, {}, "Failed to update progression (HTTP 409)"};
