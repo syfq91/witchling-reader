@@ -249,16 +249,6 @@ void OpdsBookBrowserActivity::onEnter() {
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
 
-  // Reset pagination state
-  nextPageUrl.clear();
-  prevPageUrl.clear();
-  firstPageUrl.clear();
-  lastPageUrl.clear();
-  hasNextPage = false;
-  hasPrevPage = false;
-  hasFirstPage = false;
-  hasLastPage = false;
-
   resetUi();
   app.setScreen(screenTrampoline, this);
   app.on(ACTION_BACK, actionTrampoline, this);
@@ -269,10 +259,6 @@ void OpdsBookBrowserActivity::onEnter() {
   app.on(ACTION_SELECT_ENTRY, actionTrampoline, this);
   app.on(ACTION_SELECT_FORMAT, actionTrampoline, this);
   app.on(ACTION_DOWNLOAD, actionTrampoline, this);
-  app.on(ACTION_PREV_PAGE, actionTrampoline, this);
-  app.on(ACTION_NEXT_PAGE, actionTrampoline, this);
-  app.on(ACTION_FIRST_PAGE, actionTrampoline, this);
-  app.on(ACTION_LAST_PAGE, actionTrampoline, this);
 
   requestUpdate();
 
@@ -422,11 +408,7 @@ void OpdsBookBrowserActivity::loop() {
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       navigateBack();
     } else if (mappedInput.wasLogicalReleased(MappedInputManager::Direction::Left)) {
-      if (!searchTemplate.empty()) {
-        launchSearch();
-      } else if (hasPrevPage) {
-        navigateToPrevPage();
-      }
+      if (!searchTemplate.empty()) launchSearch();
     } else if (mappedInput.wasLogicalReleased(MappedInputManager::Direction::Right)) {
       if (!entryOffsets.empty()) {
         const auto entry = getEntry(selectorIndex);
@@ -438,16 +420,6 @@ void OpdsBookBrowserActivity::loop() {
           state = BrowserState::BOOK_DETAIL;
           requestUpdate();
         }
-      } else if (hasNextPage) {
-        navigateToNextPage();
-      }
-    } else if (mappedInput.wasLongPressed(MappedInputManager::Button::Left)) {
-      if (hasFirstPage) {
-        navigateToFirstPage();
-      }
-    } else if (mappedInput.wasLongPressed(MappedInputManager::Button::Right)) {
-      if (hasLastPage) {
-        navigateToLastPage();
       }
     }
 
@@ -593,18 +565,6 @@ void OpdsBookBrowserActivity::handleAction(const freeink::ui::ActionEvent& event
         chooseBookFormat(entry);
       }
       break;
-    case ACTION_PREV_PAGE:
-      if (hasPrevPage) navigateToPrevPage();
-      break;
-    case ACTION_NEXT_PAGE:
-      if (hasNextPage) navigateToNextPage();
-      break;
-    case ACTION_FIRST_PAGE:
-      if (hasFirstPage) navigateToFirstPage();
-      break;
-    case ACTION_LAST_PAGE:
-      if (hasLastPage) navigateToLastPage();
-      break;
     default:
       break;
   }
@@ -618,11 +578,7 @@ void OpdsBookBrowserActivity::materializeListWindow() {
     return;
   }
   windowFirst = static_cast<uint16_t>(std::max(0, std::min(listNav.top, count)));
-  // Use the actual page size (measured or estimated visible rows) instead of fixed capacity.
-  // This ensures the window covers exactly what fits on screen.
-  const int pageSize = listNav.pageRowsFor(count);
-  windowCount = static_cast<uint16_t>(std::min(static_cast<size_t>(count - windowFirst),
-                                               static_cast<size_t>(pageSize)));
+  windowCount = static_cast<uint16_t>(std::min(static_cast<size_t>(count - windowFirst), LIST_WINDOW_CAPACITY));
 
   for (uint16_t offset = 0; offset < windowCount; ++offset) {
     const size_t index = windowFirst + offset;
@@ -727,33 +683,6 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
         screen.list(props);
       }
       screen.takeBottom(screen.theme().footerHeight);
-
-      // Show pagination controls in footer if available
-      if (hasPrevPage || hasNextPage || hasFirstPage || hasLastPage) {
-        freeink::ui::ActionId paginationActions[4];
-        int actionCount = 0;
-        if (hasFirstPage) paginationActions[actionCount++] = ACTION_FIRST_PAGE;
-        if (hasPrevPage) paginationActions[actionCount++] = ACTION_PREV_PAGE;
-        if (hasNextPage) paginationActions[actionCount++] = ACTION_NEXT_PAGE;
-        if (hasLastPage) paginationActions[actionCount++] = ACTION_LAST_PAGE;
-
-        // Draw pagination hints at bottom
-        const auto& metrics = UITheme::getInstance().getMetrics();
-        const auto contentRect = UITheme::getContentRect(renderer, true, false);
-        int y = contentRect.y + contentRect.height - metrics.footerHeight + 2;
-        for (int i = 0; i < actionCount; ++i) {
-          const char* label = "";
-          switch (paginationActions[i]) {
-            case ACTION_FIRST_PAGE: label = tr(STR_FIRST_PAGE); break;
-            case ACTION_PREV_PAGE: label = tr(STR_PREV_PAGE); break;
-            case ACTION_NEXT_PAGE: label = tr(STR_NEXT_PAGE); break;
-            case ACTION_LAST_PAGE: label = tr(STR_LAST_PAGE); break;
-          }
-          if (label[0]) {
-            renderer.drawText(SMALL_FONT_ID, contentRect.x + 4 + i * 60, y, label);
-          }
-        }
-      }
       break;
     }
     default:
@@ -866,29 +795,6 @@ void OpdsBookBrowserActivity::afterUiRender() {
     const char* infoLabel = selectedIsBook ? tr(STR_INFO) : "";
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, searchLabel, infoLabel);
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-    // Draw pagination hints below button hints if available
-    if (hasPrevPage || hasNextPage || hasFirstPage || hasLastPage) {
-      const auto& metrics = UITheme::getInstance().getMetrics();
-      const auto contentRect = UITheme::getContentRect(renderer, true, false);
-      int y = contentRect.y + contentRect.height - metrics.footerHeight + 2;
-      int x = contentRect.x + 4;
-      if (hasFirstPage) {
-        renderer.drawText(SMALL_FONT_ID, x, y, tr(STR_FIRST_PAGE));
-        x += 55;
-      }
-      if (hasPrevPage) {
-        renderer.drawText(SMALL_FONT_ID, x, y, tr(STR_PREV_PAGE));
-        x += 55;
-      }
-      if (hasNextPage) {
-        renderer.drawText(SMALL_FONT_ID, x, y, tr(STR_NEXT_PAGE));
-        x += 55;
-      }
-      if (hasLastPage) {
-        renderer.drawText(SMALL_FONT_ID, x, y, tr(STR_LAST_PAGE));
-      }
-    }
   } else if (state == BrowserState::FORMAT_SELECTION || state == BrowserState::BOOK_DETAIL) {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DOWNLOAD), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -998,18 +904,19 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
 
   const auto& nextUrl = parser.getNextPageUrl();
   const auto& prevUrl = parser.getPrevPageUrl();
-  const auto& firstUrl = parser.getFirstPageUrl();
-  const auto& lastUrl = parser.getLastPageUrl();
 
-  // Store pagination URLs separately from entry list
-  nextPageUrl = nextUrl;
-  prevPageUrl = prevUrl;
-  firstPageUrl = firstUrl;
-  lastPageUrl = lastUrl;
-  hasNextPage = !nextUrl.empty();
-  hasPrevPage = !prevUrl.empty();
-  hasFirstPage = !firstUrl.empty();
-  hasLastPage = !lastUrl.empty();
+  if (!prevUrl.empty()) {
+    std::string resolvedPrevUrl = UrlUtils::buildUrl(url, prevUrl);
+    OpdsEntry prevEntry{OpdsEntryType::NAVIGATION, tr(STR_PREV_PAGE), "", resolvedPrevUrl, ""};
+    entryOffsets.insert(entryOffsets.begin(), cacheFile.position());
+    writeEntryToCache(cacheFile, prevEntry);
+  }
+  if (!nextUrl.empty()) {
+    std::string resolvedNextUrl = UrlUtils::buildUrl(url, nextUrl);
+    OpdsEntry nextEntry{OpdsEntryType::NAVIGATION, tr(STR_NEXT_PAGE), "", resolvedNextUrl, ""};
+    entryOffsets.push_back(cacheFile.position());
+    writeEntryToCache(cacheFile, nextEntry);
+  }
 
   selectorIndex = 0;
   listNav.reset();
@@ -1038,58 +945,6 @@ void OpdsBookBrowserActivity::navigateBack() {
     listNav.reset();
     checkAndConnectWifi();
   }
-}
-
-void OpdsBookBrowserActivity::navigateToPage(const std::string& pageUrl) {
-  // For pagination navigation, replace the last history entry instead of pushing
-  // so going back returns to the feed root, not intermediate pages.
-  if (!navigationHistory.empty() && isPaginationUrl(navigationHistory.back())) {
-    navigationHistory.back() = currentPath;
-  } else {
-    navigationHistory.push_back(currentPath);
-  }
-  currentPath = pageUrl;
-  entryOffsets.clear();
-  selectorIndex = 0;
-  listNav.reset();
-  checkAndConnectWifi();
-}
-
-void OpdsBookBrowserActivity::navigateToPrevPage() {
-  if (hasPrevPage) {
-    std::string resolvedUrl = UrlUtils::buildUrl(currentPath.empty() ? server.url : currentPath, prevPageUrl);
-    navigateToPage(resolvedUrl);
-  }
-}
-
-void OpdsBookBrowserActivity::navigateToNextPage() {
-  if (hasNextPage) {
-    std::string resolvedUrl = UrlUtils::buildUrl(currentPath.empty() ? server.url : currentPath, nextPageUrl);
-    navigateToPage(resolvedUrl);
-  }
-}
-
-void OpdsBookBrowserActivity::navigateToFirstPage() {
-  if (hasFirstPage) {
-    std::string resolvedUrl = UrlUtils::buildUrl(currentPath.empty() ? server.url : currentPath, firstPageUrl);
-    navigateToPage(resolvedUrl);
-  }
-}
-
-void OpdsBookBrowserActivity::navigateToLastPage() {
-  if (hasLastPage) {
-    std::string resolvedUrl = UrlUtils::buildUrl(currentPath.empty() ? server.url : currentPath, lastPageUrl);
-    navigateToPage(resolvedUrl);
-  }
-}
-
-// Check if a URL is a pagination URL (contains page= or similar patterns)
-bool OpdsBookBrowserActivity::isPaginationUrl(const std::string& url) const {
-  // Simple heuristic: check for common pagination patterns
-  return url.find("page=") != std::string::npos ||
-         url.find("p=") != std::string::npos ||
-         url.find("offset=") != std::string::npos ||
-         url.find("start=") != std::string::npos;
 }
 
 // Opens a screen to allow the user to choose which format they want to download

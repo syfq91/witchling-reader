@@ -51,10 +51,6 @@ class OpdsBookBrowserActivity final : public Activity, private UiAppHost {
   static constexpr freeink::ui::ActionId ACTION_SELECT_ENTRY = 6;
   static constexpr freeink::ui::ActionId ACTION_SELECT_FORMAT = 7;
   static constexpr freeink::ui::ActionId ACTION_DOWNLOAD = 8;
-  static constexpr freeink::ui::ActionId ACTION_PREV_PAGE = 9;
-  static constexpr freeink::ui::ActionId ACTION_NEXT_PAGE = 10;
-  static constexpr freeink::ui::ActionId ACTION_FIRST_PAGE = 11;
-  static constexpr freeink::ui::ActionId ACTION_LAST_PAGE = 12;
 
   static void screenTrampoline(UiScreen& screen, void* user);
   static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
@@ -64,19 +60,7 @@ class OpdsBookBrowserActivity final : public Activity, private UiAppHost {
   void afterUiRender();
   void materializeListWindow();
 
-  // Pagination state (separate from entry list)
-  std::string nextPageUrl;
-  std::string prevPageUrl;
-  std::string firstPageUrl;
-  std::string lastPageUrl;
-  bool hasNextPage = false;
-  bool hasPrevPage = false;
-  bool hasFirstPage = false;
-  bool hasLastPage = false;
-
-  // Maximum visible rows on 800x480 with smallest font (~20px row height = 24 rows).
-  // Use 30 to provide a comfortable margin for all orientations and font sizes.
-  static constexpr size_t LIST_WINDOW_CAPACITY = 30;
+  static constexpr size_t LIST_WINDOW_CAPACITY = 16;
   uint16_t windowFirst = 0;
   uint16_t windowCount = 0;
   freeink::ui::ListItem windowItems[LIST_WINDOW_CAPACITY];
@@ -117,12 +101,6 @@ class OpdsBookBrowserActivity final : public Activity, private UiAppHost {
   void fetchFeed(const std::string& path);
   void navigateToEntry(const OpdsEntry& entry);
   void navigateBack();
-  void navigateToPage(const std::string& pageUrl);
-  void navigateToPrevPage();
-  void navigateToNextPage();
-  void navigateToFirstPage();
-  void navigateToLastPage();
-  bool isPaginationUrl(const std::string& url) const;
   void downloadBook(const OpdsEntry& book, const OpdsAcquisitionLink& acquisition);
   void chooseBookFormat(const OpdsEntry& book);
   void fetchOsdTemplate(const std::string& osdUrl);
