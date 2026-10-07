@@ -4,12 +4,14 @@ A lightweight, streamlined fork of [jpirnay/witchhunt-reader](https://github.com
 
 For full original documentation, refer to the [upstream README](https://github.com/jpirnay/witchhunt-reader#readme).
 
+Optional companion server with OPDS Progression 1.0 & on-demand epub optimization: [BookFlow](https://github.com/syfq91/bookflow) 
+
 ---
 
 ## Changes in this Fork
 
 ### Added
-- **OPDS Progression 1.0**: Syncs reading progress with compatible OPDS servers (e.g., Kavita, Audiobookshelf). When the device and the server have both moved since they last agreed, the reader puts both positions to you instead of picking a winner.
+- **OPDS Progression 1.0**: Syncs reading progress with compatible OPDS servers. When the device and the server have both moved since they last agreed, the reader puts both positions to you instead of picking a winner.
 - **OPDS Pagination & Viewport Navigation**: Browse large catalogs smoothly with paginated listings and responsive navigation.
 - **Quick Resume**: Press the Back button on the home screen to instantly jump back into your current book.
 - **Simplified Status Bar**: Streamlined status bar customization options in Settings with a toggleable progress bar and inverted chapter markers.
