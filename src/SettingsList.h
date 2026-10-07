@@ -209,16 +209,15 @@ inline void buildSettings(const RowSink& emit) {
            .withSubcategory(StrId::STR_MENU_READER_FONT)
            .withSubmenu(StrId::STR_MENU_READER_FONT)
            .withSelectorActivity());
-  {
-    // Labels, not enumValues: these read "12pt", "14pt" ... straight off
-    // CrossPointSettings::FONT_SIZE_RUNGS, so a rung added or changed there needs no edit here.
-    auto row =
-        SettingInfo::Enum(StrId::STR_FONT_SIZE, &CrossPointSettings::fontSize, {}, "fontSize", StrId::STR_CAT_READER)
-            .withSubmenu(StrId::STR_MENU_READER_FONT)
-            .withSelectorActivity();
-    row.enumLabels = CrossPointSettings::fontSizeLabels();
-    emit(std::move(row));
-  }
+  // Stored as a point size; shown as an index into the sizes the selected family offers, read
+  // live so the list follows a family chosen earlier in the same submenu. The getter and setter
+  // translate, and persisting() saves the point size itself under the key.
+  emit(SettingInfo::DynamicEnum(StrId::STR_FONT_SIZE, {}, fontSizeDynamicGetter, fontSizeDynamicSetter, "fontSize",
+                                StrId::STR_CAT_READER)
+           .persisting(&CrossPointSettings::fontPointSize, "fontSize", CrossPointSettings::MAX_FONT_POINT_SIZE)
+           .withDynamicOptions(fontSizeOptionCount, fontSizeOptionLabel)
+           .withSubmenu(StrId::STR_MENU_READER_FONT)
+           .withSelectorActivity());
   emit(SettingInfo::Toggle(StrId::STR_TEXT_AA, &CrossPointSettings::textAntiAliasing, "textAntiAliasing",
                            StrId::STR_CAT_READER)
            .withSubmenu(StrId::STR_MENU_READER_FONT));

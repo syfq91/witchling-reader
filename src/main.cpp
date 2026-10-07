@@ -625,13 +625,12 @@ void ensureSdFontLoadedForPath(const char* path) {
   // moment; advertise it. Callers (goToReader/replaceWithReader) already hold a
   // RenderLock, so the lambda must not take one. Fires only on a genuine first load.
   const auto onColdFontLoad = [] { GUI.drawPopup(renderer, tr(STR_LOADING_FONT)); };
-
   // For EPUB: honour per-book SD font and/or size overrides. The book record
   // is available here — the reader activity hasn't started yet, but
   // RecentBooksStore already has the persisted overrides for this path.
   const RecentBook book = RECENT_BOOKS.getBookByPath(path);
   const uint8_t effectiveSize =
-      (book.fontSizeOverride >= 0) ? static_cast<uint8_t>(book.fontSizeOverride) : SETTINGS.fontSize;
+      (book.fontSizeOverride >= 0) ? static_cast<uint8_t>(book.fontSizeOverride) : SETTINGS.fontPointSize;
 
   if (!book.sdFontFamilyOverride.empty()) {
     // Per-book SD font override: load that family at the effective size.
