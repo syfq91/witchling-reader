@@ -21,6 +21,11 @@ Changes pulled in from `jpirnay/witchhunt-reader` since 2.37 that this fork carr
 
 - **The home screen's book cards give way instead of overflowing** (#375). A long title, a co-author list and the "Continue Reading" sentence on one card ran into the label below it. The parts now shorten in a fixed order -- title first, then the history sentence, to its short form -- rather than overlapping. This fork's home cards still show no series line.
 
+#### Reading
+
+- **Fix: a chapter number and title that the book sets on separate lines no longer run together** (#388). Some publishers, St. Martin's Press among them, put the chapter number and title in one heading and use the book's style sheet to give each its own line. The reader ignored that and showed "10 The Tempest" on one line. It now shows the number centred above the title, with the spacing the book asks for. Every line of a heading the book splits this way also stays centred and at heading size, not just the first.
+- **Fix: no more empty "( )" after a link with inline footnotes on.** When a link's target held nothing but spacing, the reader showed that spacing as the footnote, in brackets. In *The Sea Captain's Wife* it followed the number and title of chapters 1–9, whose contents entries pad the number with typographic spaces.
+
 #### Buttons
 
 - **Lists that wait for a double press no longer lag behind Left and Right.** Outside a book, the file browser, the pickers and the chapter lists waited 0.3 s after every Left/Right press to see whether a double press would follow, because the double press is bound to a reading action by default. Two quick presses then moved nothing at all in the file browser. The wait now happens only where the double press means something.
