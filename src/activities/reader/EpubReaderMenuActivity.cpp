@@ -59,11 +59,11 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(
     const int totalPages, const int bookProgressPercent, const uint8_t currentOrientation, const bool hasFootnotes,
     const int8_t initialEmbeddedStyleOverride, const int8_t initialImageRenderingOverride,
     const int8_t initialFontFamilyOverride, const std::string& initialSdFontFamilyOverride,
-    const int8_t initialFontSizeOverride, const uint8_t initialTextDarkness,
-    const int8_t initialParagraphAlignmentOverride, const int8_t initialTextAntiAliasingOverride,
-    const int8_t initialHyphenationOverride, const int8_t initialFontSizeNormalizationOverride,
-    const int8_t initialInlineFootnotePreviewsOverride, const bool hasStarredPages, const bool isCurrentPageStarred,
-    const bool hasPrintedPages)
+    const int8_t initialFontSizeOverride, const uint8_t initialTextDarkness, 
+    const int8_t initialParagraphAlignmentOverride,
+    const int8_t initialTextAntiAliasingOverride, const int8_t initialHyphenationOverride,
+    const int8_t initialFontSizeNormalizationOverride, const int8_t initialInlineFootnotePreviewsOverride,
+    const bool hasStarredPages, const bool isCurrentPageStarred, const bool hasPrintedPages)
     : TabbedUiListActivity("EpubReaderMenu", renderer, mappedInput),
       currentPageStarred(isCurrentPageStarred),
       pendingOrientation(currentOrientation),
@@ -92,7 +92,7 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
   auto& toolsItems = tabMenuItems[static_cast<size_t>(MenuTab::Tools)];
   navigationItems.reserve(8);
   settingsItems.reserve(13);
-  syncItems.reserve(2);
+  syncItems.reserve(3);
   toolsItems.reserve(8);
 
   visibleTabs[visibleTabCount++] = MenuTab::Navigation;
@@ -342,6 +342,8 @@ EpubReaderMenuActivity::MenuAction EpubReaderMenuActivity::actionForNameId(StrId
       return MenuAction::TEXT_DARKNESS;
     case StrId::STR_ORIENTATION:
       return MenuAction::ROTATE_SCREEN;
+    case StrId::STR_SYNC_PROGRESS:
+      return MenuAction::SYNC_PROGRESS;
     case StrId::STR_MARK_AS_READ:
       return MenuAction::MARK_AS_READ;
     case StrId::STR_DELETE_CACHE:
@@ -352,8 +354,6 @@ EpubReaderMenuActivity::MenuAction EpubReaderMenuActivity::actionForNameId(StrId
       return MenuAction::GO_HOME;
     case StrId::STR_BOOK_INFO:
       return MenuAction::BOOK_INFO;
-    case StrId::STR_SYNC_PROGRESS:
-      return MenuAction::SYNC_PROGRESS;
     default:
       return MenuAction::NONE;
   }
@@ -562,5 +562,5 @@ void EpubReaderMenuActivity::drawChrome() {
 const char* EpubReaderMenuActivity::footerConfirmLabel() const {
   // Confirm means "next tab" while the bar holds focus and "select" on a row, so the hint names
   // the tab it would move to, as the settings screen does.
-  return selectedPosition() == 0 && tabCount() > 0 ? tabLabel((selectedTab() + 1) % tabCount()) : tr(STR_SELECT);
+  return selectedPosition() == 0 ? tabLabel((selectedTab() + 1) % tabCount()) : tr(STR_SELECT);
 }

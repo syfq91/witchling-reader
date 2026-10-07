@@ -1,6 +1,6 @@
 # Testing and Debugging
 
-CrossPoint runs on real hardware, so debugging usually combines local build checks and on-device logs.
+CrossPoint runs on real hardware, so debugging usually combines local build checks, host-side tests and on-device logs.
 
 ## Local checks
 
@@ -13,12 +13,70 @@ pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
 pio run
 ```
 
+## Host tests
+
+Parsing, layout, cache and most non-UI code is covered by GoogleTest suites in `test/`, built with CMake and run on the development machine. CI runs them on every push and pull request (`.github/workflows/ci.yml`, the host test job):
+
+```sh
+cmake -S test -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/test
+ctest --test-dir build/test --output-on-failure -j
+```
+
+Any build directory works; `test/build` is a common local choice, and every `build*/` directory is git-ignored. To iterate from inside one:
+
+```sh
+cd test/build
+cmake --build . -j 8
+ctest -j 8 --output-on-failure
+ctest -R EpubPipeline          # one suite by name
+```
+
+GoogleTest is fetched on the first configure. `test/README` has the per-suite commands.
+
+**Golden files.** `EpubPipelineTest` compares a layout dump of every book in `test/epubs` against `test/epub_pipeline/goldens`. When a change is meant to move layout, regenerate them and say why in the commit:
+
+```sh
+UPDATE_GOLDENS=1 ctest -R EpubPipeline
+```
+
+When a change should move layout but not content, compare word streams rather than whole goldens: take the `t=` field of every `W x=… s=… z=… t=…` record in the dump, in order, before and after the change. Redirect stderr to a separate file first; an interleaved `BENCHMARK` line can split a record. The dump covers table cells too, in row order, so the word stream stays the same when a table switches between grid and paragraph layout. It does not cover anchors; `AnchorMapTest` and `AnchorPageAccuracyTest` do.
+
+`HeapPeakRegression` guards the heap peak of a section build; see the next section.
+
+## Measuring memory
+
+[Memory Allocation Strategy §7](../memory-allocation-strategy.md#7-measuring-memory) explains what each tool and log line measures. To reproduce a measurement:
+
+**On the host**, from the repository root, with `B` set to your host build directory:
+
+```sh
+B=build/test
+WH_HOST_STDIO_UNBUFFERED=1 $B/epub_pipeline/epub_pipeline_dump book.epub /tmp/cache-a --bench > dump.txt 2> bench.txt
+WH_HOST_STDIO_UNBUFFERED=1 $B/epub_pipeline/epub_pipeline_dump book.epub /tmp/cache-b --bench --arena=48000 > dump.txt 2> bench.txt
+```
+
+The first run models a build with nothing lent, the second a build in the borrowed framebuffer (48000 for the X4). Use an empty cache directory for a cold build. `bench.txt` has the per-spine times, `heap_peak`, the allocation size histogram and the largest allocation sites. `test/epub_pipeline/run_baseline.sh $B/epub_pipeline/epub_pipeline_dump` tabulates time and peak heap over the whole corpus. `epub_pipeline_dump_noheap` is the same tool without the heap tracker, for when only the layout dump is needed.
+
+`ctest -R HeapPeakRegression` checks six fixtures in both modes against `test/epub_pipeline/heap_peak_baseline.txt`. When a change lowers or raises a peak on purpose, re-baseline and explain it in the commit:
+
+```sh
+UPDATE_HEAP_BASELINE=1 ctest --test-dir $B -R HeapPeakRegression
+```
+
+For a site-by-site inventory of one build (Linux only):
+
+```sh
+$B/epub_pipeline/epub_build_inventory book.epub /tmp/cache-c /tmp/inventory --arena=48000 --spines=3
+python3 test/epub_pipeline/inventory_report.py $B/epub_pipeline/epub_build_inventory /tmp/inventory/spine_3.txt > report.md
+```
+
 ## Install firmware
 
 Locked X4 hardware does not support flashing over USB (`pio run --target upload` is not supported).
 
 To update firmware:
-- Copy the compiled binary (`.pio/build/x4/firmware.bin`) to the SD card root as `update.bin`
+- Copy the compiled binary (`.pio/build/default/firmware.bin`) to the SD card root as `update.bin`
 - Or use **Settings -> System -> SD Firmware Update** (or flash from the file browser context menu)
 - Or update wirelessly via Wi-Fi OTA / local web interface
 
@@ -125,5 +183,5 @@ After a local `act` pass, a real GitHub Actions run is still required to verify:
 
 ## Common troubleshooting references
 
-- [User Guide troubleshooting section](../../USER_GUIDE.md#7-troubleshooting-issues--escaping-bootloop)
+- [User Guide troubleshooting section](../../USER_GUIDE.md#8-troubleshooting-issues--escaping-bootloop)
 - [Webserver troubleshooting](../troubleshooting.md)

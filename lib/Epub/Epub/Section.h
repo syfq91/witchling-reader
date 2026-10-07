@@ -198,7 +198,7 @@ class Section {
   // Progress of an incremental (sliceable) section build. Setup/Parse/Finalize are the
   // three temporal phases of createSectionFile; More means the current phase yielded
   // mid-way after spending its time budget and should be resumed on the next call.
-  // Done/Failed are terminal. See docs/epubreader-control-flow-refactor.md §2.6–2.7.
+  // Done/Failed are terminal. The callers are described in docs/background-rendering.md.
   enum class BuildStep : uint8_t { Setup, Parse, Finalize, More, Done, Failed };
 
   // Ctor/dtor defined in Section.cpp: both need the complete BuildState type (the
@@ -377,6 +377,22 @@ class Section {
   // Callers must treat that as "this page cannot be anchored on a paragraph" and fall back to
   // the page number; it is NOT an anchor on paragraph 0.
   std::optional<uint16_t> getParagraphIndexForPage(uint16_t page) const;
+  // The number of visible bytes of the chapter's source text before the page's first element
+  // (VisibleText.h's rule, counted by the layout parser). What a KOReader sync pushes for the
+  // page. nullopt if the LUT is unavailable or the page is beyond it (a truncated build).
+  std::optional<uint32_t> getVisibleTextOffsetForPage(uint16_t page) const;
+  // The end of the page's window of visible text: the first start of a LATER page that is strictly
+  // greater than this page's start. Page starts can tie (an empty or image-only page is back-filled
+  // with the next element's offset), so "the next page's start" would give an empty window.
+  // nullopt if the page has no start or no later page starts beyond it (the last window, which
+  // callers read as UINT32_MAX).
+  std::optional<uint32_t> getVisibleTextOffsetAfterPage(uint16_t page) const;
+  // The page a visible-text offset falls on: the last page whose start is <= offset, so a run of
+  // pages sharing one start (an image or rule page before the text at that offset) answers its
+  // last page, the text page; an offset below page 0's start (a chapter that opens with hidden
+  // text) answers page 0. How a pulled KOReader position becomes a page. nullopt if the LUT is
+  // unavailable or empty.
+  std::optional<uint16_t> getPageForVisibleTextOffset(uint32_t offset) const;
 
  private:
   // Allocates buildState_ and runs Setup. Applies the low-heap embedded-CSS downgrade.

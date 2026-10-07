@@ -4,42 +4,31 @@ User-facing changes only. Full commit history is in git log.
 
 ## Unreleased
 
+### OPDS
+
+- **OPDS catalogs can be paged, and their buttons do what the hints say** (#374). Hold **Left** / **Right** to page through a catalog; **Up** / **Down** move one row, and two quick taps jump a page. A short **Left** is **Search** and a short **Right** is **Info** for a book. Where those do not apply, the hint shows only « or », instead of "Up" / "Down" labels on buttons that did nothing. Holding **Back** returns to the Home screen, and holding **Up** / **Down** jumps to the first / last entry. A long catalog in landscape no longer runs off the bottom of the screen.
+
+### Buttons & Navigation
+
+- **Lists that wait for a double press no longer lag behind Left and Right.** Outside a book, the file browser, the pickers and the chapter lists waited 0.3 s after every Left/Right press to see whether a double press would follow, because the double press is bound to a reading action by default. Two quick presses then moved nothing at all in the file browser. The wait now happens only in the reader, where the double press means something.
+- **Settings, the reader menu, the pickers and menus are harmonized.** Up/Down and Left/Right move one row; hold Left/Right to page a screenful; hold Up/Down to jump to the first / last row, or in Settings and the reader menu to switch tabs; tap Up or Down twice quickly to jump a page. A page jump keeps the selection on the same line of the screen.
+- **Holding Up / Down to switch tabs in Settings and the reader menu opens each tab where you left it**, rather than at the top.
+- **Holding Back on these lists returns to the Home screen** (it used to act like a short press), without losing changes: Settings saves first, and the reader menu closes the book as its **Go Home** item does.
+- **More screens move the same way:** File Transfer's mode choice, the OPDS servers and their settings, Customise Status Bar, and the finished-book screen.
+- **On/off settings on Customise Status Bar and the finished-book screen are switches** instead of "Show"/"Hide" and "On"/"Off" words.
+
+### Reading & Layout
+
+- **Fix: a chapter number and title that the book sets on separate lines no longer run together** (#388). Some publishers, St. Martin's Press among them, put the chapter number and title in one heading and use the book's style sheet to give each its own line. The reader now shows the number centred above the title, with the spacing the book asks for. Every line of a heading the book splits this way also stays centred and at heading size, not just the first.
+- **Fix: no more empty "( )" after a link with inline footnotes on.** When a link's target held nothing but spacing, the reader showed that spacing as the footnote, in brackets.
+- **Fix: GitHub downloads pass the certificate check again.** GitHub's download servers moved to a new Let's Encrypt certificate chain whose root key is 4096-bit RSA, which the reader's TLS library could not verify. Firmware updates failed with a certificate error; updates now work with GitHub verification.
+- **Firmware updates download in small chunks with SHA-256 integrity verification.** On the X4, the update fetches the firmware in small pieces sized to free memory, over the same connection. Before installing, it verifies the SHA-256 checksum against GitHub releases, rejecting incomplete or corrupted downloads.
+
+## 2.37 — 2026-09-29
+
 ### Reading status bar
 
 - **Simplified Customise Status Bar page.** Replaced the 10 separate status bar options with 5 streamlined settings: status bar location (Top / Bottom), configurable content slots for Left, Middle, and Right (Hide, Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title), and a single progress bar (Book / Chapter / Hide) that automatically follows the status bar location and always uses thin thickness. Existing user configurations are seamlessly migrated.
-
-### Reading progress sync
-
-- **The reader asks which position to keep when the device and the OPDS server have both changed.** Opening a book, closing it and the reader menu's **Sync Progress** used to settle a disagreement on their own: the server's newer position won and the book jumped to it, silently overriding where you were. A disagreement now stops and shows both — **Use device** writes your position to the server, **Use server** jumps to the server's, and Back changes neither and asks again the next time the book opens. Progress only this device has moved still pushes on its own, as before.
-- **Opening a book no longer offers or pushes 0%.** The open-time exchange ran before the first page was laid out, so it had no position to report and reported zero — which would have appeared as `Device: 0%` in the prompt above, and written 0% to the server behind it. It now uses the percent recorded in the book's progress file.
-
-### Synced from upstream (post-2.37)
-
-Changes pulled in from `jpirnay/witchhunt-reader` since 2.37 that this fork carries. Subsystems this fork does not include (touch gestures, reading statistics, weather, non-English UI translations, and the OPDS touch list scheme) are omitted.
-
-#### Home
-
-- **The home screen's book cards give way instead of overflowing** (#375). A long title, a co-author list and the "Continue Reading" sentence on one card ran into the label below it. The parts now shorten in a fixed order -- title first, then the history sentence, to its short form -- rather than overlapping. This fork's home cards still show no series line.
-
-#### Reading
-
-- **Fix: a chapter number and title that the book sets on separate lines no longer run together** (#388). Some publishers, St. Martin's Press among them, put the chapter number and title in one heading and use the book's style sheet to give each its own line. The reader ignored that and showed "10 The Tempest" on one line. It now shows the number centred above the title, with the spacing the book asks for. Every line of a heading the book splits this way also stays centred and at heading size, not just the first.
-- **Fix: no more empty "( )" after a link with inline footnotes on.** When a link's target held nothing but spacing, the reader showed that spacing as the footnote, in brackets. In *The Sea Captain's Wife* it followed the number and title of chapters 1–9, whose contents entries pad the number with typographic spaces.
-
-#### Buttons
-
-- **Lists that wait for a double press no longer lag behind Left and Right.** Outside a book, the file browser, the pickers and the chapter lists waited 0.3 s after every Left/Right press to see whether a double press would follow, because the double press is bound to a reading action by default. Two quick presses then moved nothing at all in the file browser. The wait now happens only where the double press means something.
-
-#### Lists
-
-- **Settings, the reader menu, the pickers and the menus page the same way.** Up/Down and Left/Right move one row; hold Left/Right to page a screenful; hold Up/Down to jump to the first / last row; tap Up or Down twice quickly to jump a page. A page jump keeps the selection on the same line of the screen. The side hints show the page glyphs ("«" / "»") where a short Left/Right is not bound to an action.
-
-#### Fixes
-
-- **Fix: downloads from GitHub pass the certificate check again.** GitHub's download servers moved to a new Let's Encrypt certificate chain whose root key is 4096-bit RSA, which the reader's TLS library could not verify. Firmware updates (which never skip the check) failed with a certificate error.
-- **Downloads fetch each file in small pieces when memory is tight**, so the reader no longer runs out of memory partway through a download. A file is requested in pieces sized to the memory that is free, over the same connection; a dropped connection picks up where it stopped. Book downloads from OPDS catalogs and firmware updates both use the method; a server that does not support it sends the whole file as before.
-- **Firmware updates are checked before they install.** Before the reader switches to the new firmware, it compares the download with the SHA-256 checksum GitHub lists for the release, and refuses an incomplete or corrupted download ("Download corrupted (checksum mismatch)") instead of installing it.
-- **The firmware update frees more memory before it downloads**: the settings lists behind it, a loaded SD-card font, the bookmark list and cached scaled glyphs. It restarts the reader when you leave, as before, which loads everything again.
 
 ### Synced from upstream 2.37
 

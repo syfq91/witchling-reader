@@ -79,7 +79,10 @@ class MappedInputManager {
   // Raw HalGPIO button index a logical button currently maps to.
   uint8_t rawIndex(Button button) const;
 
-  void injectRawPress(uint8_t rawButtonIndex, bool longPress = false) const;
+  // Synthesize a press of a RAW hardware button.
+  void injectRawPress(uint8_t rawButtonIndex, bool longPress = false, uint32_t atMs = 0) const;
+  // When the touch event this cycle happened, on the sampler's clock; 0 if there was none.
+  uint32_t lastTouchEventAtMs() const { return 0; }
   // Drain one queued raw button edge from the background sampler (FIFO). Returns
   // false when empty. Used by ButtonEventManager to drive its press-type FSM.
   bool popRawEdge(HalGPIO::ButtonEdge& out) const { return gpio.popButtonEdge(out); }

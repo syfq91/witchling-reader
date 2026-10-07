@@ -99,6 +99,7 @@ add_executable(EpubPipelineTest
   FootnotePreviewStoreTest.cpp
   FootnoteResolveSliceTest.cpp
   ParagraphAnchorTest.cpp
+  ParsedTextOffsetTest.cpp
   LowHeapLoadTest.cpp
   TableRowFallbackArenaTest.cpp
   AnchorMapTest.cpp
@@ -116,6 +117,7 @@ add_executable(EpubPipelineTest
   PixelCacheWriteTest.cpp
   BufferedPrintTest.cpp
   CoverPipelineTest.cpp
+  VisibleTextTest.cpp
   # No-op HeapTrack: PipelineRunner brackets the dump read-back with pause/resume, and the gtest
   # binary must NOT get the real one (it overrides malloc/free process-wide). The two dump
   # targets pick their own implementation, so this cannot be moved into PIPELINE_SOURCES.

@@ -28,7 +28,6 @@ Welcome to **Witchling Reader** firmware. This guide outlines the hardware contr
     - [Page Turning](#page-turning)
     - [Chapter Navigation](#chapter-navigation)
     - [System Navigation](#system-navigation)
-    - [Reading Progress Sync](#reading-progress-sync)
     - [Supported Languages](#supported-languages)
   - [5. Chapter Selection Screen](#5-chapter-selection-screen)
   - [6. Current Limitations \& Roadmap](#6-current-limitations--roadmap)
@@ -47,6 +46,29 @@ The device utilises the standard buttons on the Xteink X4 (in the same layout as
 
 Button layout can be customized in the **[Controls Settings](#373-controls)**.
 
+### Moving through lists
+
+The firmware's lists share one consistent set of button controls: the **OPDS catalog** and the **OPDS servers** with their settings, **Settings** and the **reader menu**, the option lists and pickers they open (fonts, dictionaries, language, keyboard layouts), the menus (file options, quick overrides), **File Transfer**'s choice of mode, **Customise Status Bar**, and the screen shown when you finish a book.
+
+| Button | Press | Hold |
+| --- | --- | --- |
+| **Up / Down** | Move one row; tap twice quickly to jump a page | Jump to the first / last row (in Settings and the reader menu: switch to the previous / next tab) |
+| **Left / Right** | Move one row, or the action the screen shows | Page back / forward; keep holding to keep paging |
+| **Confirm** | Open the selected row | The same as a press |
+| **Back** | Go back | Return to the Home screen (see below) |
+
+A page jump moves the list by a screenful and keeps the selection on the same line of the screen. On the last screen it goes to the last row, and on the first screen to the first row.
+
+The hints show which is which. **«** on the Left box and **»** on the Right box mean *hold to page*. The word after the arrow is what a short press does: **« Up** / **» Down** where Left and Right move the selection, or the screen's own action, such as **« Search** / **» Info**. A box showing only **«** or **»** has no action for the selected row right now. A short press does nothing there, and holding it still pages.
+
+Holding **Back** never throws away a change. Settings saves before going Home, and the reader menu closes the book as its **Go Home** item does, keeping the menu's changes. Inside a book, the lists opened over it (quick overrides, the pickers in the reader menu) and a file's options menu treat a held Back as a press.
+
+A button action you set yourself under **Settings → Controls** comes first: give a long Left or Right press an action of its own and holding it no longer pages, and a short-press action on the page-turn keys (Up/Down) runs as well as the move.
+
+### Taking a Screenshot
+When the Power Button and Volume Down button are pressed at the same time, it will take a screenshot and save it in the folder `screenshots/`.
+
+Alternatively, while reading a book, press the **Confirm** button to open the reader menu and select **Take screenshot**.
 ---
 
 ## 2. Power & Startup
@@ -171,6 +193,10 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
   - "Light" - The same logo on a white background
   - "Custom" - Custom images from the SD card; see [Sleep Screen](#38-sleep-screen) for more information
   - "Cover" - The cover of the currently open book
+  - "None" - A blank screen
+  - "Cover + Custom" - Book cover with fallback to Custom behavior
+  - "Page Overlay" - A transparent PNG composited over the current reader page (book content shows through)
+  - "Quick Resume" - A minimal screen that resumes reading immediately on wake
 - **Sleep Screen Cover Mode**: How to display the cover image:
   - "Fit" (default) - Scale to fit, white borders
   - "Crop" - Scale and crop to fill the screen
@@ -178,12 +204,12 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
   - "None" (default) - Grayscale
   - "Contrast" - Black & white without grayscale conversion
   - "Inverted" - Inverted black & white
-- **Sleep Screen Overlay**: Tint overlay applied on top of the sleep image (useful for dimming a cover or a custom image):
+- **Sleep Screen Overlay**: Tint overlay applied on top of the sleep image (useful for dimming a cover or overlay image):
   - "Off" (default), "White", "Gray", "Black"
 - **Sleep Image Pick Mode**: How to cycle through images in the Custom sleep screen:
   - "Random" (default) - Pick a random image each time
   - "Sequential" - Cycle through images in order
-- **Quick Resume Timeout**: Whether a sleep caused by the inactivity timeout keeps the current page on screen, so the device wakes straight back into it.
+- **Quick Resume Timeout**: Whether the Quick Resume sleep screen auto-clears on next wake.
 - **Hide Battery %**: Where to suppress the battery percentage in the status bar:
   - "Never" (default), "In Reader", "Always"
 - **Refresh Frequency** (submenu): Settings for screen refresh behaviour while reading:
@@ -218,7 +244,7 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 - **Hyphenation**: Automatic hyphenation while reading. "ON" / "OFF"
 - **Synthetic TOC Fallback**: Generate a table of contents from headings when the EPUB has an invalid or missing TOC. "ON" / "OFF"
 - **Customise Status Bar**: Opens a submenu to configure the reading status bar: location (Top / Bottom), content slots for Left, Middle, and Right (Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title, or Hide), and a single progress bar (Book / Chapter / Hide) that sits at the selected status bar edge.
-  The chapter page count and the chapter progress bar cover the whole chapter as the table of contents lists it, even when the book splits that chapter into several files. A `~` before the total means part of it is still an estimate; it firms up as the rest of the chapter is laid out.
+  The chapter page count and the chapter progress bar cover the whole chapter as the table of contents lists it, even when the book splits that chapter into several files. A `~` before the total means part of it is still an estimate; it firms up as the rest of the chapter is laid out. On/off items are switches; the others step to their next value with **Confirm**. The preview under the list shows the result.
 
 #### 3.7.3 Controls
 
@@ -242,6 +268,7 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
   - Whenever the reader needs WiFi it first tries the network it last connected to, then any other saved network in range, strongest first. While it does, **Back** cancels and **Confirm** stops it and shows the network list.
 - **OPDS Servers**: Manage OPDS libraries. See [OPDS Servers (Multiple Libraries)](#375-opds-servers-multiple-libraries).
 
+
 - **All Files**: Browse every file on the SD card, not just books: images, cover and `.opf` files, firmware images and anything else. It works like [Browse Files](#33-browse-files-screen): **Confirm** opens a book or image, and on any other file it opens the menu, where you can **Move to folder** or **Remove** it. Images offer **Set as sleep screen**. Moving or removing a book here moves or removes that file only, not the cover and `.opf` beside it. **Back** at the top folder returns to Settings.
 
 
@@ -252,8 +279,8 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 - **Boot Diagnostics**: How this boot started, where the last sleep stopped, and the history pairing each sleep with the boot that followed it. One screenful, meant to be photographed into a bug report when the device fails to sleep or fails to wake.
 
 **Firmware Update**:
-- **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi. The download is always checked against the certificate of GitHub's servers (**Skip HTTPS validation** does not apply), and the firmware against the SHA-256 checksum the release lists, before the reader switches to it. The reader restarts when you leave this screen.
-- **SD Firmware Update**: Flash a firmware `.bin` file from the SD card. The **Options** button hint in the picker opens the browser's sort and visibility options, **Search**, and **Remove** to delete a `.bin` you no longer need.
+- **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi. The download is always checked against the certificate of GitHub's servers, and the firmware against the SHA-256 checksum the release lists, before the reader switches to it. The reader restarts when you leave this screen.
+- **SD Firmware Update**: Flash a firmware `.bin` file from the SD card. Press **Confirm** on a file to flash it. The **Options** button hint in the file picker opens the sort and visibility options, **Search**, and **Remove** to delete a `.bin` you no longer need.
 
 #### 3.7.5 OPDS Servers (Multiple Libraries)
 
@@ -271,7 +298,6 @@ Behavior notes:
 
 - You can store up to 8 OPDS servers.
 - OPDS authentication supports HTTP Basic auth. If you use Calibre Content Server with authentication enabled, set it to Basic (not Digest).
-- Books downloaded from a server keep their reading position in step with it; see [Reading Progress Sync](#reading-progress-sync).
 
 You can also manage OPDS servers from the web interface while in File Transfer mode:
 
@@ -313,6 +339,10 @@ The **Sleep Screen** setting controls what is displayed when the device goes to 
 | **Light** | The Witchling Reader logo on a white background. |
 | **Custom** | A custom image from the SD card (see below). Falls back to **Dark** if no custom image is found. |
 | **Cover** | The cover of the currently open book. Falls back to **Dark** if no book is open. |
+| **Cover + Custom** | The cover of the currently open book. Falls back to **Custom** behavior if no book is open. |
+| **Page Overlay** | A transparent PNG composited over the current reader page — book content shows through the alpha channel. |
+| **Quick Resume** | A minimal screen; waking the device returns to reading immediately. |
+| **None** | A blank screen. |
 
 The **Sleep Image Pick Mode** setting controls whether custom images are chosen **randomly** or **sequentially**.
 
@@ -320,21 +350,21 @@ An optional **tint overlay** (Off / White / Gray / Black) can be applied on top 
 
 #### Cover settings
 
-When using **Cover**, two additional settings apply:
+When using **Cover** or **Cover + Custom**, two additional settings apply:
 
 - **Sleep Screen Cover Mode**: **Fit** (scale to fit, white borders) or **Crop** (scale and crop to fill the screen).
 - **Sleep Screen Cover Filter**: **None** (grayscale), **Contrast** (black & white), or **Inverted** (inverted black & white).
 
 #### Custom images
 
-To use custom sleep images, set the sleep screen mode to **Custom**, then place images on the SD card:
+To use custom sleep images, set the sleep screen mode to **Custom** or **Cover + Custom**, then place images on the SD card:
 
 - **Multiple Images (recommended):** Create a `.sleep` directory in the root of the SD card and place any number of `.bmp` or `.png` images inside. (A directory named `sleep` is also accepted as a fallback.)
 - **Single Image:** Place a file named `sleep.bmp` in the root directory. Used as fallback if no valid images are found in the `.sleep`/`sleep` directory.
 
 > [!TIP]
 > For best results:
-> - Use PNG or uncompressed BMP files with 24-bit color depth.
+> - Use PNG (with alpha channel for Page Overlay mode) or uncompressed BMP files with 24-bit color depth.
 > - Use a resolution of 480×800 pixels to match the device's screen resolution.
 
 ---
@@ -363,24 +393,8 @@ This feature can be disabled in the **[Controls Settings](#373-controls)** to he
 ### System Navigation
 * **Return to Home:** Press the **Back** button to close the book and return to the **[Home](#31-home-screen)** screen.
 * **Return to Browse Files:** Press and hold the **Back** button to close the book and return to the **[Browse Files](#33-browse-files-screen)** screen.
-* **Reader Menu:** Press **Confirm** to open the reader menu. The menu is organized into categorized tabs (**Navigation** and **Settings**), allowing quick access to the **[Table of Contents](#5-chapter-selection-screen)**, bookmarks, progression sync, quick per-book overrides (font, images, hyphenation, bionic reading…), and reader settings. While the tab bar is selected, **Confirm** moves to the next tab, and its button hint names that tab.
+* **Reader Menu:** Press **Confirm** to open the reader menu, which includes: **[Table of Contents](#5-chapter-selection-screen)**, bookmarks, progression sync, quick per-book overrides (font, images, hyphenation, bionic reading…), take screenshot, and reader settings. Its entries are grouped into tabs. While the tab bar is selected, **Confirm** moves to the next tab, and its button hint names that tab. **Hold Up / Down** to switch tabs: each opens where you left it. **Hold Back** to close the book and return Home, as **Go Home** does; changes made in the menu are kept.
 * **Your place is kept by paragraph as well as by page.** If a book is laid out differently the next time you open it, for example after you changed the font size from outside the book or after a firmware update re-indexed it, it opens at the paragraph you were reading rather than at a page number scaled to the new length.
-
-### Reading Progress Sync
-
-A book you downloaded through the OPDS browser keeps its position in step with that server over WiFi. Nothing is exchanged for a book that did not come from an OPDS catalog.
-
-The exchange runs on its own when you open a book and again when you close it, and on demand from the reader menu's **Sync Progress** entry or a **Sync Progress** button action.
-
-If only you have read since the two last agreed, your position is pushed to the server and nothing is shown. If the server holds a position your device does not — you read on another device, or a sync was interrupted — the reader stops and asks instead of moving you or overwriting the server on its own:
-
-| Answer | Effect |
-| ------ | ------ |
-| **Use device** | Keeps where you are and writes it to the server. |
-| **Use server** | Jumps the book to the server's position. |
-| **Back** | Changes neither. The same question comes up the next time the book opens. |
-
-The prompt names both sides (`Device: 42%`, `Server: 57%`) and the chapter the server's position belongs to. Closing a book on a divergence is deliberately quiet: it neither pushes nor jumps, and leaves the question for the next open. If the server refuses your position because another device wrote a newer one in the meantime, the prompt comes back with the server's current figure rather than quietly overriding your choice.
 
 ### Supported Languages
 

@@ -17,6 +17,7 @@ struct PendingBookmarkJumpState {
   }
 };
 
+
 class CrossPointState {
   // Static instance
   static CrossPointState instance;

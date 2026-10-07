@@ -76,7 +76,6 @@ class HalGPIO {
   ButtonEdge edgeBuf_[EDGE_BUF] = {};
   int edgeHead_ = 0;
   int edgeTail_ = 0;
-
   // Loop-side snapshot refreshed by update(); only the loop task reads/writes these.
   uint8_t snapState_ = 0;
   uint8_t snapPressed_ = 0;

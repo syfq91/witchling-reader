@@ -12,6 +12,7 @@
 #include "CrossPointState.h"
 #include "OpdsServerStore.h"
 #include "SdCardFontGlobals.h"
+#include "SettingsList.h"
 #include "SilentRestart.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
@@ -20,8 +21,8 @@
 #include "home/FileBrowserActivity.h"
 #include "home/GlobalBookmarksActivity.h"
 #include "home/HomeActivity.h"
-#include "home/HomeMenu.h"
 #include "home/HomeMoreActivity.h"
+#include "home/HomeMenu.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
@@ -423,6 +424,7 @@ void ActivityManager::goToReader(std::string path) {
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
 }
 
+
 void ActivityManager::replaceWithReader(std::string path, ReturnHint hint) {
   returnHint = std::move(hint);
   hasReturnHint = true;
@@ -566,6 +568,7 @@ bool ActivityManager::currentIsReaderActivity() const { return currentActivity &
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
 
+
 void ActivityManager::dispatchButtonAction(const CrossPointSettings::BUTTON_ACTION action) {
   if (currentIsReaderActivity()) {
     currentActivity->onButtonAction(action);
@@ -575,6 +578,7 @@ void ActivityManager::dispatchButtonAction(const CrossPointSettings::BUTTON_ACTI
 bool ActivityManager::handleForcedRefresh(const HalDisplay::RefreshMode mode) {
   return currentActivity && currentActivity->handleForcedRefresh(mode);
 }
+
 void ActivityManager::requestUpdate(bool immediate) {
   if (immediate) {
     if (renderTaskHandle) {

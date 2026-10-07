@@ -467,6 +467,8 @@ class CrossPointSettings {
   uint8_t syntheticTocFallback = 1;
   // Expand semantic EPUB footnote references with a short inline preview.
   uint8_t inlineFootnotePreviews = 0;
+  // Move finished book to /COMPLETED when the end-of-book screen action is selected.
+  uint8_t moveFinishedBooksToCompleted = 0;
   // Remove finished book from Recent Books when the end-of-book screen action is selected.
   uint8_t removeFinishedBooksFromRecents = 0;
   // Keyboard layouts the language key cycles through: bit i enables keyboard_layouts::ALL[i]

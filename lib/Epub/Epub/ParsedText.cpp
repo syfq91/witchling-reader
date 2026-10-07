@@ -13,6 +13,7 @@
 #include <set>
 #include <vector>
 
+#include "Epub/VisibleText.h"
 #include "hyphenation/HyphenationCommon.h"
 #include "hyphenation/Hyphenator.h"
 
@@ -128,7 +129,7 @@ std::string buildLinePreview(const std::vector<std::string>& words, const std::v
 }  // namespace
 
 void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
-                         const bool attachToPrevious, const uint8_t sizePct) {
+                         const bool attachToPrevious, const uint8_t sizePct, const uint32_t visibleOffset) {
   if (word.empty()) return;
   if (wordGrowthRefused_) return;  // the parse is being aborted; see wordGrowthRefused()
 
@@ -136,19 +137,21 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
 
   const size_t requiredSize = words.size() + 1;
   if (words.capacity() < requiredSize || wordStyles.capacity() < requiredSize ||
-      wordContinues.capacity() < requiredSize || wordSizes.capacity() < requiredSize) {
+      wordContinues.capacity() < requiredSize || wordSizes.capacity() < requiredSize ||
+      wordVisibleOffsets.capacity() < requiredSize) {
     size_t newCapacity = std::max<size_t>(16, words.capacity());
     while (newCapacity < requiredSize) {
       newCapacity *= 2;
     }
-    // The four reserves below are unchecked heap growth (abort() on failure under
-    // -fno-exceptions). Require the largest free block to hold all four, plus a header
+    // The five reserves below are unchecked heap growth (abort() on failure under
+    // -fno-exceptions). Require the largest free block to hold all five, plus a header
     // each -- conservative, since they need not share a block, but this only bites when the
     // heap is nearly gone, and then a partial-cache abort beats a crash.
     {
       constexpr size_t ALLOC_HEADER_SLACK = 16;
-      const size_t needed = newCapacity * (sizeof(std::string) + sizeof(EpdFontFamily::Style) + sizeof(uint8_t)) +
-                            newCapacity / 8 + 4 * ALLOC_HEADER_SLACK;
+      const size_t needed =
+          newCapacity * (sizeof(std::string) + sizeof(EpdFontFamily::Style) + sizeof(uint8_t) + sizeof(uint32_t)) +
+          newCapacity / 8 + 5 * ALLOC_HEADER_SLACK;
       if (ESP.getMaxAllocHeap() < needed) {
         wordGrowthRefused_ = true;
         return;
@@ -158,6 +161,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     wordStyles.reserve(newCapacity);
     wordContinues.reserve(newCapacity);
     wordSizes.reserve(newCapacity);
+    wordVisibleOffsets.reserve(newCapacity);
   }
 
   words.push_back(std::move(word));
@@ -168,6 +172,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
   wordStyles.push_back(combinedStyle);
   wordContinues.push_back(attachToPrevious);
   wordSizes.push_back(std::min(std::max(sizePct, MIN_WORD_SIZE_PCT), MAX_WORD_SIZE_PCT));
+  wordVisibleOffsets.push_back(visibleOffset);
 }
 
 bool ParsedText::foldUniformWordSizes() {
@@ -218,12 +223,14 @@ void ParsedText::layoutAndExtractLines(
   std::vector<std::string> savedWords;
   std::vector<EpdFontFamily::Style> savedStyles;
   std::vector<uint8_t> savedSizes;
+  std::vector<uint32_t> savedOffsets;
   std::vector<bool> savedContinues;
   bool savedIsContinuation = false;
   if (preserveSource) {
     savedWords = words;
     savedStyles = wordStyles;
     savedSizes = wordSizes;
+    savedOffsets = wordVisibleOffsets;
     savedContinues = wordContinues;
     savedIsContinuation = isContinuation_;
   }
@@ -367,6 +374,7 @@ void ParsedText::layoutAndExtractLines(
         wordStyles.erase(wordStyles.begin() + splitIndex + 1);
         wordContinues.erase(wordContinues.begin() + splitIndex + 1);
         wordSizes.erase(wordSizes.begin() + splitIndex + 1);
+        wordVisibleOffsets.erase(wordVisibleOffsets.begin() + splitIndex + 1);
       }
 
       // Recompute widths after restoring unsplit words.
@@ -440,6 +448,7 @@ void ParsedText::layoutAndExtractLines(
     wordStyles.erase(wordStyles.begin(), wordStyles.begin() + consumed);
     wordContinues.erase(wordContinues.begin(), wordContinues.begin() + consumed);
     wordSizes.erase(wordSizes.begin(), wordSizes.begin() + consumed);
+    wordVisibleOffsets.erase(wordVisibleOffsets.begin(), wordVisibleOffsets.begin() + consumed);
   }
   isContinuation_ = !includeLastLine;
 
@@ -447,6 +456,7 @@ void ParsedText::layoutAndExtractLines(
     words = std::move(savedWords);
     wordStyles = std::move(savedStyles);
     wordSizes = std::move(savedSizes);
+    wordVisibleOffsets = std::move(savedOffsets);
     wordContinues = std::move(savedContinues);
     isContinuation_ = savedIsContinuation;
   }
@@ -481,6 +491,7 @@ void ParsedText::releaseLayoutScratch() {
     std::vector<EpdFontFamily::Style>().swap(wordStyles);
     std::vector<bool>().swap(wordContinues);
     std::vector<uint8_t>().swap(wordSizes);
+    std::vector<uint32_t>().swap(wordVisibleOffsets);
   }
 }
 
@@ -490,6 +501,7 @@ void ParsedText::reset(const BlockStyle& newBlockStyle) {
   wordStyles.clear();
   wordContinues.clear();
   wordSizes.clear();
+  wordVisibleOffsets.clear();
   blockStyle = newBlockStyle;
   isContinuation_ = false;
 }
@@ -737,6 +749,7 @@ void ParsedText::applyParagraphIndent(const GfxRenderer& renderer, const int fon
     blockStyle.textIndentDefined = true;
   }
 }
+
 
 // Builds break indices while opportunistically splitting the word that would overflow the current line.
 void ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& renderer, const int fontId, const int pageWidth,
@@ -994,6 +1007,13 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   words.insert(words.begin() + wordIndex + 1, remainder);
   wordStyles.insert(wordStyles.begin() + wordIndex + 1, style);
   wordSizes.insert(wordSizes.begin() + wordIndex + 1, wordSizes[wordIndex]);
+  // The remainder starts where the prefix's visible bytes end (the hyphen is not source text).
+  wordVisibleOffsets.insert(
+      wordVisibleOffsets.begin() + wordIndex + 1,
+      wordVisibleOffsets[wordIndex] +
+          static_cast<uint32_t>(
+              VisibleText::visibleBytes(words[wordIndex].data(), static_cast<int>(words[wordIndex].size())) -
+              (chosenNeedsHyphen ? 1 : 0)));
 
   // Continuation flag handling after splitting a word into prefix + remainder.
   //
@@ -1035,6 +1055,7 @@ ParsedText::LineProcessResult ParsedText::extractLine(
     const bool suppressHyphenationRetry, const int firstLineIndent, const int16_t blockStartY, const int lineHeight) {
   const size_t lineBreak = lineBreakIndices[breakIndex];
   const size_t lastBreakAt = breakIndex > 0 ? lineBreakIndices[breakIndex - 1] : 0;
+  lastLineVisibleOffset_ = lastBreakAt < wordVisibleOffsets.size() ? wordVisibleOffsets[lastBreakAt] : 0;
   const size_t lineWordCount = lineBreak - lastBreakAt;
 
   // Apply indent only to line 0 of the layout pass; firstLineIndent is already

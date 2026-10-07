@@ -69,6 +69,7 @@ void HalGPIO::pushEdgeLocked(uint8_t button, bool pressed, uint32_t timeMs) {
   edgeTail_ = next;
 }
 
+
 // One sampling pass: read + debounce the buttons, then latch any edges. Runs on
 // the sampler task once started; also called synchronously from update() before
 // the sampler is up. inputMgr.update() does the ADC read and must run OUTSIDE the
@@ -189,6 +190,7 @@ void HalGPIO::update() {
   snapReleased_ = accumReleased_;
   accumPressed_ = 0;
   accumReleased_ = 0;
+
   portEXIT_CRITICAL(&inputMux_);
   updateUsbState(millis());
 }
@@ -234,6 +236,7 @@ bool HalGPIO::isDebouncePending() const { return inputMgr.isDebouncePending(); }
 unsigned long HalGPIO::getHeldTime() const {
   return samplerRunning_.load(std::memory_order_acquire) ? heldTimeSnapshot_ : inputMgr.getHeldTime();
 }
+
 
 unsigned long HalGPIO::waitForStablePowerRelease(unsigned long timeoutMs) {
   // Wait until the raw power-button pin reads HIGH (released) for RELEASE_STABLE_MS
