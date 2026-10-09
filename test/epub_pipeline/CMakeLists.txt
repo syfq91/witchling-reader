@@ -114,6 +114,7 @@ add_executable(EpubPipelineTest
   CompanionCacheTest.cpp
   ImageParkTest.cpp
   StoredEntryDecodeTest.cpp
+  PlaceholderOnlyScopeTest.cpp
   PixelCacheWriteTest.cpp
   BufferedPrintTest.cpp
   CoverPipelineTest.cpp

@@ -345,10 +345,16 @@ bool ImageBlock::dropCoarseCache(const bool monochromeOutput) const {
 
 bool ImageBlock::wouldShowPlaceholder(bool forceLoad, bool monochromeOutput) const {
   if (forceLoad) return false;
-  if (!isLargeImage()) return false;
+  // The cache before the size: a cached image is never a placeholder, and a stat settles that.
+  // isLargeImage() opens the extracted image, and when there is none (an image decoded straight
+  // out of the archive) logs the failed open and scans the EPUB's central directory -- ~30 ms on
+  // an X4. Its memo lives on the block and pages are deserialized afresh for every render, so
+  // asking it first paid that on every render of a cached image, for an answer that could not
+  // change the result.
   // Check only the cache variant that render() will actually use for this mode.
   const std::string& cachePath = monochromeOutput ? getBwCachePath(imagePath) : getGrayscaleCachePath(imagePath);
-  return !Storage.exists(cachePath.c_str());
+  if (Storage.exists(cachePath.c_str())) return false;
+  return isLargeImage();
 }
 
 void ImageBlock::renderGrayscaleFromCache(GfxRenderer& renderer, const int x, const int y) const {
@@ -364,6 +370,7 @@ std::unique_ptr<ImageBlock> ImageBlock::makeCrop(const int16_t srcYOffset, const
 }
 
 bool ImageBlock::placeholderOnly_ = false;
+uint16_t ImageBlock::placeholdersDrawn_ = 0;
 
 void ImageBlock::renderPlaceholder(GfxRenderer& renderer, const int x, const int y, const bool loading) const {
   constexpr int BORDER = 1;
@@ -429,6 +436,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, const b
   // A mid-build draw (PlaceholderOnlyScope): the cache above was the only cheap source; no
   // decode on the build's heap.
   if (placeholderOnly_) {
+    if (placeholdersDrawn_ < UINT16_MAX) placeholdersDrawn_++;
     renderPlaceholder(renderer, x, y, /*loading=*/true);
     return;
   }
