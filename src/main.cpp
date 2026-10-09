@@ -1146,6 +1146,7 @@ void loop() {
   halTiltSensor.update(static_cast<CrossPointTiltPageTurn::Value>(SETTINGS.tiltPageTurn),
                        static_cast<CrossPointOrientation::Value>(SETTINGS.orientation),
                        activityManager.isReaderActivity());
+  powerManager.serviceGaugeCapacityLoad();
 
   renderer.setFadingFix(SETTINGS.fadingFix);
   renderer.setTextDarkness(SETTINGS.textDarkness);

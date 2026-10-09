@@ -64,6 +64,9 @@ class MappedInputManager {
   bool isPressed(Button button) const;
   bool wasAnyPressed() const;
   bool hasPendingInput() const { return gpio.hasPendingInput(); }
+  // Same, for one logical button. Only sees presses since the last update(); one drained before
+  // it is in wasPressed() instead, so a caller that cannot call update() itself checks both.
+  bool hasPendingPress(Button button) const;
   bool wasAnyReleased() const;
   unsigned long getHeldTime() const;
   const GfxRenderer& getRenderer() const { return renderer; }

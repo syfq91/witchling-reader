@@ -405,6 +405,10 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
   return _batteryCachedPercent / 10;
 }
 
+void HalPowerManager::serviceGaugeCapacityLoad() {
+  // No-op on Xteink X4: uses ADC battery monitoring, no BQ27220 fuel gauge.
+}
+
 HalPowerManager::Lock::Lock() {
   xSemaphoreTake(powerManager.modeMutex, portMAX_DELAY);
   // Counted, not exclusive: every Lock holds. See lockCount_ for what the old single-slot version

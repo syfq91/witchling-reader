@@ -19,6 +19,7 @@
 #include "BookmarkStore.h"
 #include "ChapterPageSpan.h"
 #include "CrossPointState.h"
+#include "EpubLinkBackStack.h"
 #include "EpubProgressRecord.h"
 #include "EpubReaderMenuActivity.h"
 #include "ReaderUtils.h"
@@ -479,6 +480,12 @@ class EpubReaderActivity final : public Activity {
   // Set between suspendBackgroundWork() and resumeBackgroundWork(): no look-ahead
   // build is probed, armed or stepped, and no page is pre-rendered.
   bool backgroundWorkSuspended_ = false;
+  // The build state behind skipLoopDelay() / preventAutoSleep(), as last read under the render
+  // lock. Loop task only: main.cpp polls both hooks from there, and refreshLoopHints() is their
+  // only writer.
+  bool loopHintCurrentBuild_ = false;     // section && section->hasActiveBuild()
+  bool loopHintBackgroundBuild_ = false;  // backgroundBuildState_ == Building
+  void refreshLoopHints();
   // --- Background C (incremental build of the CURRENT section while the reader watches) ---
   // When the spine the user just entered has no cache, buildSection() starts an in-place
   // incremental build owned by `section` and hands the slicing to stepCurrentSectionBuild()
@@ -596,6 +603,7 @@ class EpubReaderActivity final : public Activity {
   int finishedBookSyncPageCount_ = 0;
   ReaderUtils::InputDrainGuard inputDrainGuard;
 
+
   // -1 means use global SETTINGS value.
   int8_t bookEmbeddedStyleOverride = -1;
   int8_t bookImageRenderingOverride = -1;
@@ -622,16 +630,21 @@ class EpubReaderActivity final : public Activity {
   // and for the far more common case of a book whose <p>s are not direct children of <body>
   // (`<body><div><p>`, what Calibre emits), where no page has an anchorable paragraph at all and
   // getParagraphIndexForPage answers nullopt for every one of them.
-  struct SavedPosition {
-    int spineIndex = 0;
-    int pageNumber = 0;
-    int pageCount = 0;
-    uint16_t paragraphIndex = 0;
-    bool hasParagraph = false;
-  };
-  static constexpr int MAX_FOOTNOTE_DEPTH = 3;
+  using SavedPosition = EpubLinkBackStack::Entry;
+  static constexpr int MAX_FOOTNOTE_DEPTH = EpubLinkBackStack::kMaxDepth;
   SavedPosition savedPositions[MAX_FOOTNOTE_DEPTH] = {};
   int footnoteDepth = 0;
+  // How many of those entries were pushed in this reader session (EpubLinkBackStack::push). A stack
+  // loaded from linkstack.bin leaves it at 0: Back uses footnoteDepth, but the KOSync push on sleep
+  // is skipped only for a link followed this session, as it was before the stack was persisted.
+  int sessionLinkDepth_ = 0;
+  // True while linkstack.bin exists and holds exactly the stack above. The first push or pop after
+  // that deletes the file, and the reader's exit writes the stack only while this is false -- so the
+  // file is written when the stack changed, never per page turn, and never disagrees with memory.
+  // An unclean shutdown (crash, flat battery) can therefore lose a stack but never bring back one
+  // the reader had already returned from, which would be worse than none: Back would jump from
+  // wherever they had read on to an origin they had already left behind.
+  bool linkStackOnDisk_ = false;
 
   // --- render() pass dispatch (see RenderPass) ---
   // Opportunistically restore the secondary display buffer if a prior OOM degraded it.
@@ -964,6 +977,12 @@ class EpubReaderActivity final : public Activity {
   // way back.
   void navigateToHref(const std::string& href, bool savePosition = false);
   void restoreSavedPosition();
+  // Persistence of savedPositions, in linkstack.bin beside progress.bin (EpubLinkBackStack).
+  // Loaded on open; written on exit (and before a heap-recovery reboot, which skips onExit) when
+  // it changed; deleted at the first change after it was loaded. See linkStackOnDisk_.
+  void loadLinkBackStack();
+  void saveLinkBackStack();
+  void noteLinkBackStackChanged();
 
  public:
   explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub)
@@ -995,8 +1014,8 @@ class EpubReaderActivity final : public Activity {
   // DISP log now says so out loud.
   void startActivityForResult(std::unique_ptr<Activity>&& activity, ActivityResultHandler resultHandler) override;
   bool isReaderActivity() const override { return true; }
-  bool preventAutoSleep() override { return section && section->hasActiveBuild(); }
-
+  // Polled by main.cpp's loop without the render lock; see refreshLoopHints().
+  bool preventAutoSleep() override;
   // Hold full speed while a section build is in flight. A build only ever runs during reader
   // idle, so main.cpp's inactivity governor has passed IDLE_DOWNCLOCK_MS and drops the CPU
   // to 10 MHz between slices — the per-slice HalPowerManager::Lock then raises it right back,
@@ -1005,10 +1024,9 @@ class EpubReaderActivity final : public Activity {
   // 40 ms slice was followed by a 50 ms idle delay at 10 MHz. Declaring the work makes the loop
   // stop calling this state idle at all: slices run back to back, the build finishes sooner, and
   // Background-B hands the borrowed framebuffer back that much earlier. Same failure and same
-  // remedy as HomeActivity's cover decoding (see its skipLoopDelay).
-  bool skipLoopDelay() override {
-    return (section && section->hasActiveBuild()) || backgroundBuildState_ == BackgroundBuildState::Building;
-  }
+  // remedy as HomeActivity's cover decoding (see its skipLoopDelay). Polled by main.cpp's loop
+  // without the render lock; see refreshLoopHints().
+  bool skipLoopDelay() override;
   // A pending pre-render leaves the *next* page in the frame buffer; redraw the current page
   // so any raw frame-buffer capture matches what the user sees.
   bool shouldSkipPeriodicUpdate() const override;

@@ -25,6 +25,7 @@
 #include "SettingsList.h"
 #include "SystemStatus.h"
 #include "WebDAVHandler.h"
+#include "WebPathGuard.h"
 #include "WifiCredentialStore.h"
 #include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
@@ -66,10 +67,12 @@ static bool rejectIfLowMemory(WebServer* server, uint32_t minAlloc = MIN_HEAP_FO
 }
 
 namespace {
-// Folders/files to hide from the web interface file browser
-// Note: Items starting with "." are automatically hidden
-const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
-constexpr size_t HIDDEN_ITEMS_COUNT = sizeof(HIDDEN_ITEMS) / sizeof(HIDDEN_ITEMS[0]);
+using ProtectedPaths::Target;
+
+// Whether a request may reach into dot-folders: only once the user has chosen to see
+// hidden files, the same switch that decides whether the listing shows them.
+bool hiddenAllowed() { return SETTINGS.showHiddenFiles != 0; }
+
 constexpr uint16_t UDP_PORTS[] = {54982, 48123, 39001, 44044, 59678};
 constexpr uint16_t LOCAL_UDP_PORT = 8134;
 
@@ -153,16 +156,12 @@ String normalizeWebPath(const String& inputPath) {
   return result;
 }
 
+// For a client-supplied NAME (a rename target), judged as SdFat will store it. A name
+// that trims to nothing ("..", "...") is refused too: there is nothing to store.
+// Paths go through isProtectedWebPath() instead, which checks every segment.
 bool isProtectedItemName(const String& name) {
-  if (name.startsWith(".")) {
-    return true;
-  }
-  for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-    if (name.equals(HIDDEN_ITEMS[i])) {
-      return true;
-    }
-  }
-  return false;
+  const std::string_view stored = ProtectedPaths::effectiveName(std::string_view(name.c_str(), name.length()));
+  return stored.empty() || ProtectedPaths::isProtectedName(stored);
 }
 
 // True when `s` is usable as a single path component: no separator, and not a
@@ -253,16 +252,12 @@ bool relayHostAllowed(const String& plugin, const std::string& url) {
 // needed - and a textual one would be wrong, because by this point ".." can
 // only survive inside a filename ("my..book.epub"), which is legitimate.
 //
-// The name check is stricter than /upload, which applies none: a plugin may not
-// create a hidden or protected item even though the web UI's own upload can.
+// The protection rule is the one /upload applies to its target: every segment,
+// not just the file name, which on its own let a plugin write into /.crosspoint.
 String pluginWriteTarget(const String& rawPath) {
   String path = normalizeWebPath(rawPath);
   if (path.isEmpty() || path == "/" || path.endsWith("/")) return "";
-
-  const int lastSlash = path.lastIndexOf('/');
-  if (lastSlash < 0) return "";
-  const String name = path.substring(lastSlash + 1);
-  if (name.isEmpty() || isProtectedItemName(name)) return "";
+  if (isProtectedWebPath(path, Target::Item, hiddenAllowed())) return "";
   return path;
 }
 
@@ -417,6 +412,18 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "Access at http://%s/", ipAddr.c_str());
   LOG_DBG("WEB", "WebSocket at ws://%s:%d/", ipAddr.c_str(), wsPort);
   LOG_DBG("WEB", "[MEM] Free heap after server.begin(): %d bytes", ESP.getFreeHeap());
+}
+
+// Ported from crosspoint-reader PR #3732 ("fix: let Back leave File Transfer during a slow HTTP
+// upload", Tuan Q. Nguyen / @martinqnguyen). The hook, the per-chunk drop and the END guard below
+// are theirs; what the activity checks inside the hook differs (see startWebServer()).
+bool CrossPointWebServer::dropUploadIfCancelled() const {
+  if (!uploadCancelCheck || !uploadCancelCheck()) return false;
+  // Closing the socket makes WebServer's next body read fail. It then raises UPLOAD_FILE_ABORTED,
+  // whose handler deletes the partial file, and handleClient() returns with the client released.
+  LOG_DBG("WEB", "[UPLOAD] Cancelled on the device, dropping the client");
+  server->client().stop();
+  return true;
 }
 
 void CrossPointWebServer::abortWsUpload(const char* tag) {
@@ -734,18 +741,12 @@ void CrossPointWebServer::scanFiles(const char* path, const FileVisitor visitor,
     file.getName(name, sizeof(name));
     auto fileName = String(name);
 
-    // Skip hidden items (starting with ".")
-    bool shouldHide = !SETTINGS.showHiddenFiles && fileName.startsWith(".");
-
-    // Check against explicitly hidden items list
-    if (!shouldHide) {
-      for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-        if (fileName.equals(HIDDEN_ITEMS[i])) {
-          shouldHide = true;
-          break;
-        }
-      }
-    }
+    // Dot items only when the user has asked for hidden files; the system folders never.
+    // The same rules isProtectedWebPath() enforces, so nothing listed here is refused
+    // when clicked, bar the credential stores.
+    const std::string_view entryName(fileName.c_str(), fileName.length());
+    const bool shouldHide =
+        (!hiddenAllowed() && ProtectedPaths::isDotName(entryName)) || ProtectedPaths::isSystemName(entryName);
 
     if (!shouldHide) {
       FileInfo info;
@@ -782,14 +783,17 @@ void CrossPointWebServer::handleFileListData() const {
   // Get current path from query string (default to root)
   String currentPath = "/";
   if (server->hasArg("path")) {
-    // normalizeWebPath, not a bare startsWith("/"): the naive form leaves ".."
-    // in the string, and the protected-item guards below test the LAST component
-    // of whatever is passed. "/books/../.private/x" reads as component "x" to
-    // those guards while the filesystem resolves it into the dot-folder they
-    // exist to protect. Ported from crosspoint-reader PR #3353 (Sylve / @s0lness).
+    // normalizeWebPath, not a bare startsWith("/"): the naive form leaves ".." in
+    // the string, and "/books/../.private" would pass a check on its components
+    // while the filesystem resolves it into the dot-folder the check exists to
+    // protect. Ported from crosspoint-reader PR #3353 (Sylve / @s0lness).
     currentPath = normalizeWebPath(server->arg("path"));
   }
   LOG_DBG("WEB", "File list request for path: %s", currentPath.c_str());
+  if (isProtectedWebPath(currentPath, Target::Directory, hiddenAllowed())) {
+    server->send(403, "text/plain", "Cannot access protected items");
+    return;
+  }
 
   LOG_WEB_MEM("files_enter");
   HalSystem::feedWatchdog();
@@ -839,24 +843,16 @@ void CrossPointWebServer::handleDownload() const {
     return;
   }
 
-  // Resolved before the protected-item checks below, which inspect only the last
-  // component -- see handleFileListData. crosspoint-reader PR #3353.
+  // Resolved before the protection check below -- see handleFileListData.
+  // crosspoint-reader PR #3353.
   String itemPath = normalizeWebPath(server->arg("path"));
   if (itemPath.isEmpty() || itemPath == "/") {
     server->send(400, "text/plain", "Invalid path");
     return;
   }
-
-  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (itemName.startsWith(".")) {
-    server->send(403, "text/plain", "Cannot access system files");
+  if (isProtectedWebPath(itemPath, Target::Item, hiddenAllowed())) {
+    server->send(403, "text/plain", "Cannot access protected items");
     return;
-  }
-  for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-    if (itemName.equals(HIDDEN_ITEMS[i])) {
-      server->send(403, "text/plain", "Cannot access protected items");
-      return;
-    }
   }
 
   if (!Storage.exists(itemPath.c_str())) {
@@ -978,6 +974,16 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     if (!filePath.endsWith("/")) filePath += "/";
     filePath += state.fileName;
 
+    // Before the overwrite below removes anything. The folder is judged as a folder
+    // and the target as an item, so a dot-named file is refused even where hidden
+    // folders are allowed.
+    if (isProtectedWebPath(state.path, Target::Directory, hiddenAllowed()) ||
+        isProtectedWebPath(filePath, Target::Item, hiddenAllowed())) {
+      state.error = "Cannot write to a protected location";
+      LOG_DBG("WEB", "[UPLOAD] Rejected protected target: %s", filePath.c_str());
+      return;
+    }
+
     // Check if file already exists - SD operations can be slow
     HalSystem::feedWatchdog();
     if (Storage.exists(filePath.c_str())) {
@@ -997,6 +1003,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
 
     LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", filePath.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (dropUploadIfCancelled()) return;
     if (state.file && state.error.isEmpty()) {
       // Buffer incoming data and flush when buffer is full
       // This reduces SD card write operations and improves throughput
@@ -1034,6 +1041,10 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       }
     }
   } else if (upload.status == UPLOAD_FILE_END) {
+    // A cancel on the last chunk still reaches END: WebServer raises it on the closing boundary,
+    // then raises ABORTED straight after because the client is gone. ABORTED deletes only a file
+    // that is still open, so finishing it here would keep the file of an aborted upload.
+    if (!server->client().connected()) return;
     if (state.file) {
       // Flush any remaining buffered data
       if (!flushUploadBuffer(state)) {
@@ -1098,10 +1109,15 @@ void CrossPointWebServer::handleCreateFolder() const {
     server->send(400, "text/plain", "Folder name cannot be empty");
     return;
   }
+  // One component, never "." or "..": SdFat walks a ".." through the directory's own
+  // parent entry, so an unchecked "../.crosspoint/x" would land outside the parent.
+  if (!isSafePathComponent(folderName)) {
+    server->send(400, "text/plain", "Invalid folder name");
+    return;
+  }
 
-  // The name is checked as a single component below; the parent it is joined to
-  // has to be resolved too, or ".." in the parent puts the new folder outside it.
-  // crosspoint-reader PR #3353.
+  // The parent it is joined to has to be resolved too, or ".." in the parent puts
+  // the new folder outside it. crosspoint-reader PR #3353.
   String parentPath = "/";
   if (server->hasArg("path")) {
     parentPath = normalizeWebPath(server->arg("path"));
@@ -1111,6 +1127,12 @@ void CrossPointWebServer::handleCreateFolder() const {
   String folderPath = parentPath;
   if (!folderPath.endsWith("/")) folderPath += "/";
   folderPath += folderName;
+
+  if (isProtectedWebPath(parentPath, Target::Directory, hiddenAllowed()) ||
+      isProtectedWebPath(folderPath, Target::Item, hiddenAllowed())) {
+    server->send(403, "text/plain", "Cannot create a protected folder");
+    return;
+  }
 
   LOG_DBG("WEB", "Creating folder: %s", folderPath.c_str());
 
@@ -1157,11 +1179,11 @@ void CrossPointWebServer::handleRename() const {
     return;
   }
 
-  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (isProtectedItemName(itemName)) {
+  if (isProtectedWebPath(itemPath, Target::Item, hiddenAllowed())) {
     server->send(403, "text/plain", "Cannot rename protected item");
     return;
   }
+  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
   if (newName == itemName) {
     server->send(200, "text/plain", "Name unchanged");
     return;
@@ -1189,6 +1211,13 @@ void CrossPointWebServer::handleRename() const {
   }
   newPath += newName;
 
+  // The new name is ordinary (checked above), but where hidden folders are allowed
+  // it can still land on a credential store's path.
+  if (isProtectedWebPath(newPath, Target::Item, hiddenAllowed())) {
+    file.close();
+    server->send(403, "text/plain", "Cannot rename to protected name");
+    return;
+  }
   if (Storage.exists(newPath.c_str())) {
     file.close();
     server->send(409, "text/plain", "Target already exists");
@@ -1231,7 +1260,16 @@ void CrossPointWebServer::handleMove() const {
   }
 
   const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (isProtectedItemName(itemName)) {
+  String newPath = destPath;
+  if (!newPath.endsWith("/")) {
+    newPath += "/";
+  }
+  newPath += itemName;
+  // Source, destination folder and where the item lands: a move is a write into
+  // the destination as much as a removal from the source.
+  if (isProtectedWebPath(itemPath, Target::Item, hiddenAllowed()) ||
+      isProtectedWebPath(destPath, Target::Directory, hiddenAllowed()) ||
+      isProtectedWebPath(newPath, Target::Item, hiddenAllowed())) {
     server->send(403, "text/plain", "Cannot move protected item");
     return;
   }
@@ -1275,12 +1313,6 @@ void CrossPointWebServer::handleMove() const {
     return;
   }
   destDir.close();
-
-  String newPath = destPath;
-  if (!newPath.endsWith("/")) {
-    newPath += "/";
-  }
-  newPath += itemName;
 
   if (newPath == itemPath) {
     file.close();
@@ -1354,8 +1386,8 @@ void CrossPointWebServer::handleDelete() const {
   String lastDeletedItem;
 
   for (const auto& p : paths) {
-    // Resolved before the protected-item checks below, which inspect only the last
-    // component -- see handleFileListData. crosspoint-reader PR #3353.
+    // Resolved before the protection check below -- see handleFileListData.
+    // crosspoint-reader PR #3353.
     auto itemPath = normalizeWebPath(p.as<String>());
 
     // Validate path
@@ -1365,26 +1397,8 @@ void CrossPointWebServer::handleDelete() const {
       continue;
     }
 
-    // Security check: prevent deletion of protected items
-    const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-
-    // Hidden/system files are protected
-    if (itemName.startsWith(".")) {
-      failedItems += itemPath + " (hidden/system file); ";
-      allSuccess = false;
-      continue;
-    }
-
-    // Check against explicitly protected items
-    bool isProtected = false;
-    for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-      if (itemName.equals(HIDDEN_ITEMS[i])) {
-        isProtected = true;
-        break;
-      }
-    }
-    if (isProtected) {
-      failedItems += itemPath + " (protected file); ";
+    if (isProtectedWebPath(itemPath, Target::Item, hiddenAllowed())) {
+      failedItems += itemPath + " (protected item); ";
       allSuccess = false;
       continue;
     }
@@ -1423,7 +1437,7 @@ void CrossPointWebServer::handleDelete() const {
       allSuccess = false;
     } else {
       deletedCount++;
-      lastDeletedItem = itemName;
+      lastDeletedItem = itemPath.substring(itemPath.lastIndexOf('/') + 1);
     }
   }
 
@@ -1775,6 +1789,10 @@ void CrossPointWebServer::handleFontUploadData() {
       fontUpload.bytesWritten = 0;
       fontUpload.bufferPos = 0;
       fontUpload.buffer.resize(FontUploadState::BUFFER_SIZE);
+      // The END and ABORTED cases delete filePath whenever the upload is not valid. Left
+      // over from the previous upload, it named that upload's INSTALLED font, so a START
+      // refused below (bad family or file name, no family dir) deleted it.
+      fontUpload.filePath.clear();
 
       if (!FontInstaller::isValidFamilyName(family.c_str())) {
         LOG_ERR("WEB", "Invalid font family name: %s", family.c_str());
@@ -1814,7 +1832,9 @@ void CrossPointWebServer::handleFontUploadData() {
     }
 
     case UPLOAD_FILE_WRITE: {
-      if (!fontUpload.valid) break;
+      // No END guard needed here, unlike /upload: this ABORTED branch deletes the file whether or
+      // not END already closed it.
+      if (dropUploadIfCancelled() || !fontUpload.valid) break;
       HalSystem::feedWatchdog();
 
       if (!fontUpload.magicChecked) {
@@ -2570,6 +2590,14 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
           String filePath = wsUploadPath;
           if (!filePath.endsWith("/")) filePath += "/";
           filePath += wsUploadFileName;
+
+          // Before the overwrite below removes anything; same rule as the HTTP upload.
+          if (isProtectedWebPath(wsUploadPath, Target::Directory, hiddenAllowed()) ||
+              isProtectedWebPath(filePath, Target::Item, hiddenAllowed())) {
+            LOG_DBG("WS", "START rejected: protected target '%s'", filePath.c_str());
+            wsServer->sendTXT(num, "ERROR:Cannot write to a protected location");
+            return;
+          }
 
           LOG_DBG("WS", "Starting upload: %s (%d bytes) to %s", wsUploadFileName.c_str(), wsUploadSize,
                   filePath.c_str());
