@@ -138,12 +138,16 @@ void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, c
 // about 800 B of FreeInkUI code per screen.
 void UiListActivity::layoutListArea(UiScreen& screen, const int16_t extraTop, const int16_t extraBottom) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = listContentRect();
+  const Rect fullRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
+  const Rect listRect = listContentRect();
+  constexpr int16_t kSideHintInset = 21;
+  const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
+  const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
   screen.setContentMarginFromScreen(
-      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight + extraTop),
-                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height) + extraBottom),
-                  static_cast<int16_t>(contentRect.x)});
+      fui::Insets{static_cast<int16_t>(fullRect.y + metrics.topPadding + metrics.headerHeight + extraTop),
+                  sideInsetRight,
+                  static_cast<int16_t>(renderer.getScreenHeight() - (fullRect.y + fullRect.height) + extraBottom),
+                  sideInsetLeft});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 }
 
@@ -179,8 +183,8 @@ Rect UiListActivity::listContentRect() const { return UITheme::getContentRect(re
 
 Rect UiListActivity::listHeaderRect() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect content = listContentRect();
-  return Rect{content.x, content.y + metrics.topPadding, content.width, metrics.headerHeight};
+  const Rect full = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
+  return Rect{full.x, full.y + metrics.topPadding, full.width, metrics.headerHeight};
 }
 
 int UiListActivity::selectedPosition() const {

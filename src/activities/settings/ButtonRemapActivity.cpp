@@ -95,16 +95,10 @@ bool ButtonRemapActivity::handleCustomInput() {
 
 void ButtonRemapActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-
   const int lineH = renderer.getLineHeight(SMALL_FONT_ID);
-  const int hintsAreaHeight = lineH * 2 + metrics.verticalSpacing * 2;
+  const int16_t hintsAreaHeight = static_cast<int16_t>(lineH * 2 + metrics.verticalSpacing * 2);
 
-  screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
-      static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
-      static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height) + hintsAreaHeight),
-      static_cast<int16_t>(contentRect.x)});
+  layoutListArea(screen, 0, hintsAreaHeight);
 
   // Subheader prompt: "Press the button for:"
   fui::TextAreaProps prompt;

@@ -18,14 +18,7 @@ constexpr StrId kMenuDescs[3] = {StrId::STR_JOIN_DESC, StrId::STR_HOTSPOT_DESC, 
 const char* NetworkModeSelectionActivity::headerTitle() const { return tr(STR_FILE_TRANSFER); }
 
 void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-
-  screen.setContentMarginFromScreen(
-      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
-                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
-                  static_cast<int16_t>(contentRect.x)});
+  layoutListArea(screen);
 
   for (size_t i = 0; i < 3; ++i) {
     items[i] = {};

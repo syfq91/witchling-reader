@@ -127,15 +127,7 @@ void StarredPagesActivity::materializeListWindow() {
 }
 
 void StarredPagesActivity::buildScreen(UiScreen& screen) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-
-  screen.setContentMarginFromScreen(
-      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
-                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
-                  static_cast<int16_t>(contentRect.x)});
-  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+  layoutListArea(screen);
 
   if (listCount() == 0) {
     fui::TextAreaProps empty;

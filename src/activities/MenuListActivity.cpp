@@ -123,10 +123,15 @@ void MenuListActivity::materializeListWindow() {
 }
 
 void MenuListActivity::buildScreen(UiScreen& screen) {
+  const Rect fullRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
+  const Rect listRectR = listContentRect();
+  constexpr int16_t kSideHintInset = 21;
+  const int16_t sideInsetRight = (fullRect.width > listRectR.width) ? kSideHintInset : 0;
+  const int16_t sideInsetLeft = (listRectR.x > fullRect.x) ? kSideHintInset : 0;
   screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(listRect.y), static_cast<int16_t>(renderer.getScreenWidth() - (listRect.x + listRect.width)),
+      static_cast<int16_t>(listRect.y), sideInsetRight,
       static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height)),
-      static_cast<int16_t>(listRect.x)});
+      sideInsetLeft});
 
   auto props = listProps(screen);
   props.count = static_cast<uint16_t>(listCount());

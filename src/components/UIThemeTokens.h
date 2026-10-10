@@ -11,7 +11,7 @@ inline freeink::ui::ThemeTokens uiThemeTokens(const freeink::ui::GfxRendererTarg
   fui::ThemeTokens tokens = fui::themeTokensForLineHeight(target.lineHeight(fui::GfxRendererTarget::FONT_BODY));
   tokens.headerHeight = static_cast<int16_t>(metrics.headerHeight);
   tokens.footerHeight = static_cast<int16_t>(metrics.buttonHintsHeight);
-  tokens.listSidePadding = static_cast<int16_t>(metrics.contentSidePadding);
+  tokens.listSidePadding = static_cast<int16_t>(metrics.listSidePadding);
   tokens.listScrollWidth = static_cast<int16_t>(metrics.scrollBarWidth);
   tokens.listScrollInset = static_cast<int16_t>(metrics.scrollBarRightOffset);
   return tokens;

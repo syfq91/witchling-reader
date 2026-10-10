@@ -168,14 +168,7 @@ void OpdsSettingsActivity::handleSelection(const int index) {
 }
 
 void OpdsSettingsActivity::buildScreen(UiScreen& screen) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-
-  screen.setContentMarginFromScreen(
-      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
-                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
-                  static_cast<int16_t>(contentRect.x)});
+  layoutListArea(screen);
 
   // SubHeader hint: "For Calibre-Web, append /opds to the URL"
   fui::TextAreaProps hint;

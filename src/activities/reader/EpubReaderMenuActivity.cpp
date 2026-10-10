@@ -539,15 +539,27 @@ int16_t EpubReaderMenuActivity::tabBarHeight() const {
 }
 
 void EpubReaderMenuActivity::buildScreen(UiScreen& screen) {
-  const Rect contentRect = listContentRect();
-  const int16_t top = static_cast<int16_t>(contentRect.y + 75);
+  const Rect fullRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
+  const Rect listRect = listContentRect();
+  const int16_t top = static_cast<int16_t>(fullRect.y + 75);
+
+  // Full-width margin from screen (no side gutter) so the tab bar spans the screen
   screen.setContentMarginFromScreen(
-      fui::Insets{top, static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
-                  static_cast<int16_t>(contentRect.x)});
+      fui::Insets{top, static_cast<int16_t>(renderer.getScreenWidth() - (fullRect.x + fullRect.width)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (fullRect.y + fullRect.height)),
+                  static_cast<int16_t>(fullRect.x)});
 
   buildTabBar(screen);
   screen.spacer(6);
+
+  // Inset the remaining content area so the list makes room for the side button hints,
+  // taking into account that FreeInkUI already reserves 11px (stripCut) for the scrollbar track.
+  constexpr int16_t kSideHintInset = 21;
+  const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
+  const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
+  if (sideInsetRight > 0 || sideInsetLeft > 0) {
+    screen.insetContent(fui::Insets{0, sideInsetRight, 0, sideInsetLeft});
+  }
 
   auto props = listProps(screen);
   props.count = static_cast<uint16_t>(listCount());
@@ -560,7 +572,7 @@ void EpubReaderMenuActivity::buildScreen(UiScreen& screen) {
 }
 
 void EpubReaderMenuActivity::drawChrome() {
-  const Rect contentRect = listContentRect();
+  const Rect contentRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
   const std::string truncTitle =
       renderer.truncatedText(UI_12_FONT_ID, title.c_str(), contentRect.width - 40, EpdFontFamily::BOLD);
   const int titleX =
@@ -574,7 +586,7 @@ void EpubReaderMenuActivity::drawChrome() {
                    std::to_string(totalPages) + std::string(tr(STR_PAGES_SEPARATOR));
   }
   progressLine += std::string(tr(STR_BOOK_PREFIX)) + std::to_string(bookProgressPercent) + "%";
-  // Centred in the content rect, as the title is, rather than on the screen.
+  // Centred across the full screen width, as the tab bar is.
   const int progressX =
       contentRect.x + (contentRect.width - renderer.getTextWidth(UI_10_FONT_ID, progressLine.c_str())) / 2;
   renderer.drawText(UI_10_FONT_ID, progressX, 45 + contentRect.y, progressLine.c_str());

@@ -221,16 +221,11 @@ void StatusBarSettingsActivity::onEnter() {
 
 void StatusBarSettingsActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-
   const int previewLabelHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  const int previewAreaHeight = previewLabelHeight + previewHeight + metrics.verticalSpacing * 2;
+  const int16_t previewAreaHeight =
+      static_cast<int16_t>(previewLabelHeight + previewHeight + metrics.verticalSpacing * 2);
 
-  screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
-      static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
-      static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height) + previewAreaHeight),
-      static_cast<int16_t>(contentRect.x)});
+  layoutListArea(screen, 0, previewAreaHeight);
 
   const int count = visibleItemCount();
   for (int i = 0; i < count; ++i) {
