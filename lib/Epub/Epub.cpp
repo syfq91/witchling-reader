@@ -26,7 +26,6 @@
 #include "Epub/CoverThumbSession.h"
 #include "Epub/HashUtils.h"
 #include "Epub/ImageFormatDetector.h"
-#include "Epub/MetadataSidecar.h"
 #include "Epub/SpinePageIndex.h"
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
@@ -154,8 +153,6 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, OpfCac
   bookMetadata.series = opfParser.series;
   bookMetadata.seriesIndex = opfParser.seriesIndex;
   bookMetadata.description = opfParser.description;
-  bookMetadata.primaryAuthor = opfParser.primaryAuthor;
-  bookMetadata.authorSort = opfParser.authorSort;
 
   // Populate auxiliary paths first so TOC lookup has them available
   bookMetadata.textReferenceHref = opfParser.textReferenceHref;
@@ -1047,6 +1044,8 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, BuildArena
   return true;
 }
 
+std::string Epub::metadataSidecarPath(const std::string& bookPath) { return SidecarFiles::metadataPath(bookPath); }
+
 static_assert(SidecarFiles::kMetadataStampBytes >= Epub::MAX_METADATA_SIDECAR_BYTES,
               "the recent-books staleness stamp must hash every sidecar byte applyMetadataSidecar() reads");
 
@@ -1061,18 +1060,38 @@ static_assert(SidecarFiles::kMetadataStampBytes >= Epub::MAX_METADATA_SIDECAR_BY
 // partial sidecar cannot blank out good embedded metadata.
 void Epub::applyMetadataSidecar() const {
   if (!bookMetadataCache) return;
-  MetadataSidecarFields sidecar;
-  if (MetadataSidecar::read(filepath, sidecar) != MetadataSidecar::Result::Read) return;
+  const std::string path = metadataSidecarPath(filepath);
+  if (path.empty()) return;
+
+  size_t size = 0;
+  {
+    HalFile probe;
+    if (!Storage.openFileForRead("EBP", path, probe)) return;
+    size = probe.fileSize();
+  }
+  if (size == 0 || size > MAX_METADATA_SIDECAR_BYTES) {
+    LOG_DBG("EBP", "Ignoring metadata sidecar, %u bytes: %s", static_cast<unsigned>(size), path.c_str());
+    return;
+  }
+
+  // Null cache: a sidecar carries no real manifest or spine, so no item index
+  // must be built from it. cachePath/contentBasePath are passed because the
+  // parser holds them by reference - they must outlive it, so no temporaries.
+  ContentOpfParser parser(cachePath, contentBasePath, size, nullptr);
+  if (!parser.setup()) return;
+  if (!Storage.readFileToStream(path.c_str(), parser, 1024)) {
+    LOG_DBG("EBP", "Could not read metadata sidecar: %s", path.c_str());
+    return;
+  }
 
   auto& md = bookMetadataCache->coreMetadata;
-  if (!sidecar.title.empty()) md.title = sidecar.title;
-  if (!sidecar.author.empty()) md.author = sidecar.author;
-  MetadataSidecar::overlayPrimaryAuthor(sidecar, md.primaryAuthor, md.authorSort);
-  if (!sidecar.language.empty()) md.language = sidecar.language;
-  if (!sidecar.series.empty()) md.series = sidecar.series;
-  if (!sidecar.seriesIndex.empty()) md.seriesIndex = sidecar.seriesIndex;
-  if (!sidecar.description.empty()) md.description = sidecar.description;
-  LOG_DBG("EBP", "Applied metadata sidecar for %s", filepath.c_str());
+  if (!parser.title.empty()) md.title = parser.title;
+  if (!parser.author.empty()) md.author = parser.author;
+  if (!parser.language.empty()) md.language = parser.language;
+  if (!parser.series.empty()) md.series = parser.series;
+  if (!parser.seriesIndex.empty()) md.seriesIndex = parser.seriesIndex;
+  if (!parser.description.empty()) md.description = parser.description;
+  LOG_DBG("EBP", "Applied metadata sidecar: %s", path.c_str());
 }
 
 // One-entry memo for loadForCover().
@@ -1179,7 +1198,7 @@ bool Epub::loadForCover(BuildArena* scratch) {
   return true;
 }
 
-bool Epub::loadForMetadata(BuildArena* scratch, const bool useBookBin) {
+bool Epub::loadForMetadata(BuildArena* scratch) {
   // Metadata-only load: see the header for why this exists (issue #104 — the series-sequel scan used
   // to full-load every EPUB in the folder). Structured exactly like loadForCover(); the only
   // difference is which field the caller goes on to read, so neither marks the other's data valid.
@@ -1191,9 +1210,8 @@ bool Epub::loadForMetadata(BuildArena* scratch, const bool useBookBin) {
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
   cssParser.reset(new CssParser(cachePath));  // constructed for API symmetry; not parsed here
 
-  // Fast path: an existing book.bin already carries title/author/series, no OPF parse needed --
-  // unless the caller wants what book.bin does not keep (the primary author and its file-as).
-  if (useBookBin && bookMetadataCache->load()) {
+  // Fast path: an existing book.bin already carries title/author/series, no OPF parse needed.
+  if (bookMetadataCache->load()) {
     applyMetadataSidecar();
     return true;
   }
@@ -1317,22 +1335,6 @@ const std::string& Epub::getAuthor() const {
   }
 
   return bookMetadataCache->coreMetadata.author;
-}
-
-const std::string& Epub::getPrimaryAuthor() const {
-  static std::string blank;
-  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
-    return blank;
-  }
-  return bookMetadataCache->coreMetadata.primaryAuthor;
-}
-
-const std::string& Epub::getAuthorSort() const {
-  static std::string blank;
-  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
-    return blank;
-  }
-  return bookMetadataCache->coreMetadata.authorSort;
 }
 
 const std::string& Epub::getLanguage() const {

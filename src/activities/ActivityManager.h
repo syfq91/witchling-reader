@@ -7,7 +7,6 @@
 #include <atomic>
 #include <cassert>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,7 +14,6 @@
 #include "CrossPointSettings.h"
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
-#include "activities/home/LibraryTab.h"
 
 class Activity;                       // forward declaration
 class RenderLock;                     // forward declaration
@@ -23,10 +21,9 @@ enum class HomeMenuAction : uint8_t;  // activities/home/HomeMenu.h
 
 // Where a "child" activity (launched via one of the replaceWith* helpers) should route
 // control when it exits successfully. See ActivityManager::returnFromChild().
-// Library carries the tab in ReturnHint::selectIndex, and an open author's hash in selectionContext.
 // AllFiles is the file browser opened from Settings on every file of the card: it comes back as
 // itself, so the images and other files it lists do not vanish on the way back from the viewer.
-enum class ReturnTo : uint8_t { Home, Library, AllFiles, GlobalBookmarks };
+enum class ReturnTo : uint8_t { Home, FileBrowser, AllFiles, RecentBooks, GlobalBookmarks };
 
 // Minimal state the returning parent needs to restore its previous view (directory,
 // focused item, list index, or bookmark selection). Kept as a plain struct stored by
@@ -137,10 +134,8 @@ class ActivityManager {
   // goTo... functions are convenient wrapper for replaceActivity()
   void goToFileTransfer();
   void goToSettings();
-  // The Library on `tab`: Books in `path` (the root when empty); `focusName` selected; on Authors,
-  // `author` (a hash) open.
-  void goToLibrary(LibraryTab tab, std::string path = {}, std::string focusName = {},
-                   std::optional<uint32_t> author = std::nullopt);
+  void goToFileBrowser(std::string path = {}, std::string focusName = {});
+  void goToRecentBooks(std::string focusName = {});
   void goToGlobalBookmarks();
   void goToGlobalBookmarks(ReturnHint hint);
   void goToBrowser();

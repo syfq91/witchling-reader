@@ -16,7 +16,12 @@ struct HomeMenuRow {
 
 // Display order, top to bottom.
 constexpr HomeMenuRow kRows[] = {
-    {{HomeMenuAction::Library, StrId::STR_LIBRARY, Folder}, Requires::Nothing, &CrossPointSettings::showLibraryOnHome},
+    {{HomeMenuAction::FileBrowser, StrId::STR_BROWSE_FILES, Folder},
+     Requires::Nothing,
+     &CrossPointSettings::showBrowseFilesOnHome},
+    {{HomeMenuAction::Recents, StrId::STR_MENU_RECENT_BOOKS, Recent},
+     Requires::Nothing,
+     &CrossPointSettings::showRecentBooksOnHome},
     {{HomeMenuAction::GlobalBookmarks, StrId::STR_GLOBAL_BOOKMARKS, Book},
      Requires::Bookmarks,
      &CrossPointSettings::showBookmarksOnHome},
@@ -63,8 +68,4 @@ void collectHomeMenuEntries(const HomeMenuPlacement placement, const HomeMenuAva
     }
     if (placementOf(row) == placement) out.push_back(row.entry);
   }
-}
-
-uint8_t libraryOnHomeFromLegacy(const uint8_t browseFiles, const uint8_t recentBooks) {
-  return browseFiles != 0 || recentBooks != 0 ? 1 : 0;
 }

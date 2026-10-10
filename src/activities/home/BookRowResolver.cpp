@@ -21,20 +21,13 @@ std::string progressLabel(const int percent) {
   return {};  // unread, or never opened
 }
 
-// A row's text from the book's details: its title, "Author · Series #3" (leaving out whichever part
-// the book does not have), and those two parts on their own.
-void setText(BookRowResolver::Row& row, BookDetails& d) {
-  row.title = std::move(d.title);
-  row.series = d.series;
-  if (!row.series.empty() && !d.seriesIndex.empty()) row.series += " #" + d.seriesIndex;
-  row.author = d.author;
-  if (row.author.empty()) {
-    row.subtitle = row.series;
-  } else if (row.series.empty()) {
-    row.subtitle = row.author;
-  } else {
-    row.subtitle = row.author + " · " + row.series;
-  }
+// "Author · Series #3", leaving out whichever part the book does not have.
+std::string subtitleOf(const BookDetails& d) {
+  std::string series = d.series;
+  if (!series.empty() && !d.seriesIndex.empty()) series += " #" + d.seriesIndex;
+  if (d.author.empty()) return series;
+  if (series.empty()) return d.author;
+  return d.author + " · " + series;
 }
 
 }  // namespace
@@ -48,7 +41,8 @@ const BookRowResolver::Row& BookRowResolver::row(const std::string& path, const 
   fresh.size = size;
   BookDetails details;
   if (BookDetailsLookup::cached(path, size, details)) {
-    setText(fresh, details);
+    fresh.title = std::move(details.title);
+    fresh.subtitle = subtitleOf(details);
   } else {
     fresh.needsParse = true;
     pending = true;
@@ -141,7 +135,8 @@ bool BookRowResolver::resolveOne(const GfxRenderer& renderer, BuildArena* scratc
     RenderLock lock;
     for (auto& r : rows) {
       if (r.path != path || !r.needsParse) continue;
-      setText(r, details);
+      r.title = std::move(details.title);
+      r.subtitle = subtitleOf(details);
       r.needsParse = false;
     }
   }

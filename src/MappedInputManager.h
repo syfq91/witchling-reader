@@ -89,8 +89,8 @@ class MappedInputManager {
   // Drain one queued raw button edge from the background sampler (FIFO). Returns
   // false when empty. Used by ButtonEventManager to drive its press-type FSM.
   bool popRawEdge(HalGPIO::ButtonEdge& out) const { return gpio.popButtonEdge(out); }
+  // Drop all queued/pending raw edges (activity transitions).
   void flushRawEdges() const { gpio.flushButtonEdges(); }
-  void flushTouchEvents() const {}
 
  private:
   HalGPIO& gpio;

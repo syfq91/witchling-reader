@@ -464,7 +464,9 @@ class CrossPointSettings {
   uint16_t keyboardLayouts = 0;
   // Which entries sit on the home screen (1) rather than behind its "More" entry (0). An entry
   // with nothing behind it (no bookmarks) shows in neither place.
-  uint8_t showLibraryOnHome = 1;
+  // Settings has no switch: it is where these are turned back on. See HomeMenu.cpp.
+  uint8_t showBrowseFilesOnHome = 1;
+  uint8_t showRecentBooksOnHome = 1;
   uint8_t showBookmarksOnHome = 1;
   uint8_t showFileTransferOnHome = 1;
   // Accept any TLS certificate on https requests (1 = skip validation).
