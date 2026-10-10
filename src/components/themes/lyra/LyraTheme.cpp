@@ -298,6 +298,7 @@ void LyraTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
   constexpr int buttonHeight = 78;                                       // Height on screen (width when rotated)
+  constexpr int sideMargin = 16;                                         // Gap from panel edge, matching bottom hints
 
   const auto textCW = [&](const int x, const int y, const char* text) {
     const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, text);
@@ -306,7 +307,7 @@ void LyraTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
                                  inverted ? screenHeight - 1 - y + textWidth : y, text);
   };
 
-  // X4 layout: Both buttons stacked on right side, 5px from panel edge
+  // X4 layout: Both buttons stacked on right side, sideMargin px from panel edge
   const char* labels[] = {upBtn, downBtn};
 
   for (int i = 0; i < 2; i++) {
@@ -314,7 +315,7 @@ void LyraTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
       const int y = topHintButtonY + (i * buttonHeight) + 5;
       const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
       const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
-      const int x = screenWidth - textHeight - 5;
+      const int x = screenWidth - textHeight - sideMargin;
       textCW(x, y + (buttonHeight + textWidth) / 2, labels[i]);
     }
   }

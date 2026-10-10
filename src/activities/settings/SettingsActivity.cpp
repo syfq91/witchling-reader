@@ -307,7 +307,7 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
 
   // Inset the remaining content area so the list makes room for the side button hints,
   // taking into account that FreeInkUI already reserves 11px (stripCut) for the scrollbar track.
-  constexpr int16_t kSideHintInset = 11;
+  constexpr int16_t kSideHintInset = 21;
   const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
   const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
   if (sideInsetRight > 0 || sideInsetLeft > 0) {
