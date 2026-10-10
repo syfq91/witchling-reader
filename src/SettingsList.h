@@ -162,12 +162,10 @@ inline void buildSettings(const RowSink& emit) {
                          StrId::STR_CAT_DISPLAY)
            .withSubcategory(StrId::STR_MENU_DISP_BATTERY));
   // Home screen entries: on = on the home screen, off = behind its "More" entry.
-  emit(SettingInfo::Toggle(StrId::STR_BROWSE_FILES, &CrossPointSettings::showBrowseFilesOnHome, "showBrowseFilesOnHome",
+  emit(SettingInfo::Toggle(StrId::STR_LIBRARY, &CrossPointSettings::showLibraryOnHome, "showLibraryOnHome",
                            StrId::STR_CAT_DISPLAY)
            .withSubmenu(StrId::STR_MENU_DISP_HOME));
-  emit(SettingInfo::Toggle(StrId::STR_MENU_RECENT_BOOKS, &CrossPointSettings::showRecentBooksOnHome,
-                           "showRecentBooksOnHome", StrId::STR_CAT_DISPLAY)
-           .withSubmenu(StrId::STR_MENU_DISP_HOME));
+
   emit(SettingInfo::Toggle(StrId::STR_GLOBAL_BOOKMARKS, &CrossPointSettings::showBookmarksOnHome, "showBookmarksOnHome",
                            StrId::STR_CAT_DISPLAY)
            .withSubmenu(StrId::STR_MENU_DISP_HOME));
