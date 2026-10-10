@@ -305,9 +305,11 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   buildTabBar(screen);
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  // Inset the remaining content area so the list makes room for the side button hints
-  const int16_t sideInsetRight = static_cast<int16_t>(fullRect.width - listRect.width);
-  const int16_t sideInsetLeft = static_cast<int16_t>(listRect.x - fullRect.x);
+  // Inset the remaining content area so the list makes room for the side button hints,
+  // taking into account that FreeInkUI already reserves 11px (stripCut) for the scrollbar track.
+  constexpr int16_t kSideHintInset = 11;
+  const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
+  const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
   if (sideInsetRight > 0 || sideInsetLeft > 0) {
     screen.insetContent(fui::Insets{0, sideInsetRight, 0, sideInsetLeft});
   }

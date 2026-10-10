@@ -297,24 +297,24 @@ void LyraTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
 
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
-  constexpr int buttonWidth = LyraMetrics::values.sideButtonHintsWidth;  // Width on screen (height when rotated)
   constexpr int buttonHeight = 78;                                       // Height on screen (width when rotated)
 
   const auto textCW = [&](const int x, const int y, const char* text) {
     const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, text);
     const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
-    renderer.drawTextRotated90CW(SMALL_FONT_ID, inverted ? screenWidth - x - textHeight - 5 : x,
+    renderer.drawTextRotated90CW(SMALL_FONT_ID, inverted ? screenWidth - x - textHeight : x,
                                  inverted ? screenHeight - 1 - y + textWidth : y, text);
   };
 
-  // X4 layout: Both buttons stacked on right side
+  // X4 layout: Both buttons stacked on right side, 5px from panel edge
   const char* labels[] = {upBtn, downBtn};
-  const int x = screenWidth - buttonWidth;
 
   for (int i = 0; i < 2; i++) {
     if (labels[i] != nullptr && labels[i][0] != '\0') {
       const int y = topHintButtonY + (i * buttonHeight) + 5;
       const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
+      const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
+      const int x = screenWidth - textHeight - 5;
       textCW(x, y + (buttonHeight + textWidth) / 2, labels[i]);
     }
   }
