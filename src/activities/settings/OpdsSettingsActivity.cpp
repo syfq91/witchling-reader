@@ -168,6 +168,7 @@ void OpdsSettingsActivity::handleSelection(const int index) {
 }
 
 void OpdsSettingsActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
   layoutListArea(screen);
 
   // SubHeader hint: "For Calibre-Web, append /opds to the URL"

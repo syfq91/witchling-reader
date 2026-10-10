@@ -82,7 +82,7 @@ class UiListActivity : public Activity, protected UiAppHost {
   virtual void switchTab(int /*direction*/) {}
 
   // The content area a list lays out in: room for the bottom hints AND the side Up/Down boxes.
-  [[nodiscard]] Rect listContentRect() const;
+  [[nodiscard]] virtual Rect listContentRect() const;
   // The theme's header, placed inside listContentRect() so the side hint strip never sits over it.
   [[nodiscard]] Rect listHeaderRect() const;
   // Both hint strips for this list, with footerBackLabel() / footerConfirmLabel() on Back / Confirm.

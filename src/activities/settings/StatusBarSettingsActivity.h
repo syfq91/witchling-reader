@@ -20,7 +20,7 @@ class StatusBarSettingsActivity final : public UiListActivity {
   void activateIndex(int index) override;
   void afterUiRender() override;
   void drawFooter() override;
-  Rect listContentRect() const override { return UITheme::getContentRect(renderer, true, false); }
+  Rect listContentRect() const override;
 
  private:
   void handleSelection(int index);

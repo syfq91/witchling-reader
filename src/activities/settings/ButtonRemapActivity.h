@@ -21,7 +21,7 @@ class ButtonRemapActivity final : public UiListActivity {
   bool handleCustomInput() override;
   void afterUiRender() override;
   void drawFooter() override;
-  Rect listContentRect() const override { return UITheme::getContentRect(renderer, true, false); }
+  Rect listContentRect() const override;
 
  private:
   uint8_t currentStep = 0;

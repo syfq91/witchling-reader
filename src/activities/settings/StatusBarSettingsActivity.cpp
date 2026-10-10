@@ -206,6 +206,8 @@ void drawPreviewStatusItems(const GfxRenderer& renderer, const Rect& rect, const
 int StatusBarSettingsActivity::listCount() const { return visibleItemCount(); }
 
 const char* StatusBarSettingsActivity::headerTitle() const { return tr(STR_CUSTOMISE_STATUS_BAR); }
+ 
+Rect StatusBarSettingsActivity::listContentRect() const { return UITheme::getContentRect(renderer, true, false); }
 
 void StatusBarSettingsActivity::onEnter() {
   // Clamp status bar settings in case of corrupt/migrated data: every field must hold a valid value

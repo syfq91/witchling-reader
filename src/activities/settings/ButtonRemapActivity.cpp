@@ -20,6 +20,8 @@ constexpr unsigned long kErrorDisplayMs = 1500;
 }  // namespace
 
 const char* ButtonRemapActivity::headerTitle() const { return tr(STR_REMAP_FRONT_BUTTONS); }
+ 
+Rect ButtonRemapActivity::listContentRect() const { return UITheme::getContentRect(renderer, true, false); }
 
 void ButtonRemapActivity::onEnter() {
   currentStep = 0;
