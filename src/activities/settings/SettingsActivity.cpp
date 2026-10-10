@@ -292,15 +292,25 @@ void SettingsActivity::materializeListWindow() {
 
 void SettingsActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = listContentRect();
+  const Rect fullRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
+  const Rect listRect = listContentRect();
+
+  // Full-width margin from screen (no side gutter) so the tab bar spans the screen
   screen.setContentMarginFromScreen(
-      fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
-                  static_cast<int16_t>(renderer.getScreenWidth() - (contentRect.x + contentRect.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
-                  static_cast<int16_t>(contentRect.x)});
+      fui::Insets{static_cast<int16_t>(fullRect.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (fullRect.x + fullRect.width)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (fullRect.y + fullRect.height)),
+                  static_cast<int16_t>(fullRect.x)});
 
   buildTabBar(screen);
-  screen.spacer(static_cast<int16_t>(UITheme::getInstance().getMetrics().verticalSpacing));
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+  // Inset the remaining content area so the list makes room for the side button hints
+  const int16_t sideInsetRight = static_cast<int16_t>(fullRect.width - listRect.width);
+  const int16_t sideInsetLeft = static_cast<int16_t>(listRect.x - fullRect.x);
+  if (sideInsetRight > 0 || sideInsetLeft > 0) {
+    screen.insetContent(fui::Insets{0, sideInsetRight, 0, sideInsetLeft});
+  }
 
   auto props = listProps(screen);
   props.count = static_cast<uint16_t>(settingsCount);
@@ -323,7 +333,7 @@ void SettingsActivity::onBackFromTabs() {
 
 void SettingsActivity::drawChrome() {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = listContentRect();
+  const Rect contentRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
   GUI.drawHeader(renderer,
                  Rect{contentRect.x, contentRect.y + metrics.topPadding, contentRect.width, metrics.headerHeight},
                  tr(STR_SETTINGS_TITLE), CROSSPOINT_VERSION);

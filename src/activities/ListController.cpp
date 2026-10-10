@@ -34,7 +34,7 @@ ListGrammar::Press pressFor(const ButtonEventManager::PressType type) {
   return ListGrammar::Press::Short;
 }
 
-// "« Search", "» Down", or the glyph alone for a declared side that does not apply. The glyph goes
+// "« Search", "Down", or the glyph alone for a declared side that does not apply. The glyph goes
 // first because hint boxes cut long labels off at the end.
 void composeFront(char* out, const size_t size, const char* glyph, const ListGrammar::FrontLabel label,
                   const StrId action, const StrId stepLabel) {
@@ -46,7 +46,7 @@ void composeFront(char* out, const size_t size, const char* glyph, const ListGra
       snprintf(out, size, "%s %s", glyph, I18n::getInstance().get(action));
       return;
     case ListGrammar::FrontLabel::Step:
-      snprintf(out, size, "%s %s", glyph, I18n::getInstance().get(stepLabel));
+      snprintf(out, size, "%s", I18n::getInstance().get(stepLabel));
       return;
   }
 }
