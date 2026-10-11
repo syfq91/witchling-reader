@@ -605,44 +605,62 @@ void FinishedBookActivity::buildScreen(UiScreen& screen) {
                   static_cast<int16_t>(renderer.getScreenHeight() - (contentRect.y + contentRect.height)),
                   static_cast<int16_t>(contentRect.x)});
 
-  const int yGap = renderer.getLineHeight(UI_10_FONT_ID);
-  int topSectionHeight = metrics.verticalSpacing + 2 * (yGap + 4);
-
-  const int contentBottom = contentRect.y + contentRect.height - metrics.buttonHintsHeight;
+  const int lineH10 = renderer.getLineHeight(UI_10_FONT_ID);
+  const int lineH12 = renderer.getLineHeight(UI_12_FONT_ID);
+  const int contentTop = contentRect.y + metrics.topPadding + metrics.headerHeight;
+  const int contentBottom = contentRect.y + contentRect.height;
   const int contentWidth = contentRect.width - 2 * metrics.contentSidePadding;
-
-  int previewY = contentRect.y + metrics.headerHeight + topSectionHeight;
 
   const RowModel model = buildRowModel();
 
+  int topSectionHeight = metrics.verticalSpacing + 2 * (lineH10 + 4);
+
   if (nextBookAvailable_) {
-    topSectionHeight += yGap + metrics.verticalSpacing;
-    const int reservedListH = static_cast<int>(model.count()) * (renderer.getLineHeight(UI_12_FONT_ID) + 8);
-    previewHeight_ = std::max(0, std::min(kFinishedBookCoverHeight,
-                                          contentBottom - previewY - reservedListH - metrics.verticalSpacing));
-    previewWidth_ = std::min(contentWidth / 2, kFinishedBookCoverMaxWidth);
+    // Space before section header, header text height, and gap between header and preview
+    topSectionHeight += metrics.verticalSpacing + lineH12 + metrics.verticalSpacing;
+
+    const int previewY = contentTop + topSectionHeight;
+    const int reservedListH = static_cast<int>(model.count()) * metrics.listRowHeight;
+    const int maxPreviewH = std::max(0, contentBottom - previewY - reservedListH - metrics.verticalSpacing);
+
+    if (!nextBookCoverPath_.empty()) {
+      previewHeight_ = std::min(kFinishedBookCoverHeight, maxPreviewH);
+      previewWidth_ = std::min(contentWidth / 2, kFinishedBookCoverMaxWidth);
+    } else {
+      previewHeight_ = 0;
+      previewWidth_ = 0;
+    }
     previewX_ = contentRect.x + metrics.contentSidePadding;
     previewY_ = previewY;
 
-    const int lineH12 = renderer.getLineHeight(UI_12_FONT_ID);
-    const int lineH10 = renderer.getLineHeight(UI_10_FONT_ID);
+    int previewTextWidth = contentWidth;
+    if (previewWidth_ > 0) {
+      previewTextWidth = std::max(0, contentWidth - previewWidth_ - metrics.contentSidePadding);
+    }
+
+    const auto titleLines = renderer.wrappedText(UI_12_FONT_ID, nextBookTitle_.c_str(), previewTextWidth, 3);
+    const auto authorLines = renderer.wrappedText(UI_10_FONT_ID, nextBookAuthor_.c_str(), previewTextWidth, 2);
+    const auto seriesLines = renderer.wrappedText(UI_10_FONT_ID, nextBookSeries_.c_str(), previewTextWidth, 2);
+
     int metaTextHeight = 0;
     if (!nextBookTitle_.empty()) {
-      metaTextHeight += 3 * lineH12 + 4;
+      metaTextHeight += static_cast<int>(titleLines.size()) * lineH12 + 4;
     }
     if (!nextBookAuthor_.empty()) {
-      metaTextHeight += 3 * lineH10 + 4;
+      metaTextHeight += static_cast<int>(authorLines.size()) * lineH10 + 4;
     }
     if (!nextBookSeries_.empty()) {
-      metaTextHeight += 2 * lineH10;
+      metaTextHeight += static_cast<int>(seriesLines.size()) * lineH10;
     }
-    const int reservedPreviewH = std::max(previewHeight_, metaTextHeight);
+
+    const int reservedPreviewH = std::min(maxPreviewH, std::max(previewHeight_, metaTextHeight));
     topSectionHeight += reservedPreviewH + metrics.verticalSpacing;
   } else {
     previewHeight_ = 0;
     previewWidth_ = 0;
     previewX_ = 0;
     previewY_ = 0;
+    topSectionHeight += metrics.verticalSpacing;
   }
 
   screen.spacer(static_cast<int16_t>(topSectionHeight));
@@ -676,20 +694,22 @@ void FinishedBookActivity::afterUiRender() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect contentRect = UITheme::getContentRect(renderer, true, false);
 
-  int y = contentRect.y + metrics.headerHeight + metrics.verticalSpacing;
-  const int yGap = renderer.getLineHeight(UI_10_FONT_ID);
+  const int lineH10 = renderer.getLineHeight(UI_10_FONT_ID);
+  const int lineH12 = renderer.getLineHeight(UI_12_FONT_ID);
+  int y = contentRect.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
 
   renderer.drawText(UI_10_FONT_ID, contentRect.x + metrics.contentSidePadding, y, tr(STR_FINISHED_BOOK_HEADER_LINE1),
                     true, EpdFontFamily::REGULAR);
-  y += yGap + 4;
+  y += lineH10 + 4;
   renderer.drawText(UI_10_FONT_ID, contentRect.x + metrics.contentSidePadding, y, tr(STR_FINISHED_BOOK_HEADER_LINE2),
                     true, EpdFontFamily::REGULAR);
-  y += yGap + 4;
+  y += lineH10 + 4;
 
   if (nextBookAvailable_) {
+    y += metrics.verticalSpacing;
     renderer.drawText(UI_12_FONT_ID, contentRect.x + metrics.contentSidePadding, y, tr(STR_NEXT_BOOK_HEADER), true,
                       EpdFontFamily::BOLD);
-    y += yGap + metrics.verticalSpacing;
+    y += lineH12 + metrics.verticalSpacing;
 
     int actualCoverWidth = 0;
     int previewTextX = previewX_;
@@ -720,27 +740,27 @@ void FinishedBookActivity::afterUiRender() {
     const int previewTextWidth = contentRect.x + contentRect.width - metrics.contentSidePadding - previewTextX;
     int infoY = previewY_;
     const auto titleLines = renderer.wrappedText(UI_12_FONT_ID, nextBookTitle_.c_str(), previewTextWidth, 3);
-    const auto authorLines = renderer.wrappedText(UI_10_FONT_ID, nextBookAuthor_.c_str(), previewTextWidth, 3);
+    const auto authorLines = renderer.wrappedText(UI_10_FONT_ID, nextBookAuthor_.c_str(), previewTextWidth, 2);
     const auto seriesLines = renderer.wrappedText(UI_10_FONT_ID, nextBookSeries_.c_str(), previewTextWidth, 2);
 
     if (!nextBookTitle_.empty()) {
       for (const auto& line : titleLines) {
         renderer.drawText(UI_12_FONT_ID, previewTextX, infoY, line.c_str(), true, EpdFontFamily::BOLD);
-        infoY += renderer.getLineHeight(UI_12_FONT_ID);
+        infoY += lineH12;
       }
       infoY += 4;
     }
     if (!nextBookAuthor_.empty()) {
       for (const auto& line : authorLines) {
         renderer.drawText(UI_10_FONT_ID, previewTextX, infoY, line.c_str(), true);
-        infoY += renderer.getLineHeight(UI_10_FONT_ID);
+        infoY += lineH10;
       }
       infoY += 4;
     }
     if (!nextBookSeries_.empty()) {
       for (const auto& line : seriesLines) {
         renderer.drawText(UI_10_FONT_ID, previewTextX, infoY, line.c_str(), true);
-        infoY += renderer.getLineHeight(UI_10_FONT_ID);
+        infoY += lineH10;
       }
     }
   }
