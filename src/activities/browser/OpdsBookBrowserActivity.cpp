@@ -594,9 +594,9 @@ void OpdsBookBrowserActivity::materializeListWindow() {
     } else {
       windowLabels[offset] = entry.title;
       // Books whose only formats this reader cannot open say so in place of the
-      // author; the detail screen still shows both.
+      // author; the detail screen still shows both title and author.
       windowSubtitles[offset] =
-          entry.acquisitionLinks.empty() ? std::string(tr(STR_FORMAT_NOT_SUPPORTED)) : entry.author;
+          entry.acquisitionLinks.empty() ? std::string(tr(STR_FORMAT_NOT_SUPPORTED)) : "";
     }
     row.label = windowLabels[offset].c_str();
     row.subtitle = windowSubtitles[offset].empty() ? nullptr : windowSubtitles[offset].c_str();
@@ -686,15 +686,13 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
 
         const auto& metrics = UITheme::getInstance().getMetrics();
         const int count = static_cast<int>(entryOffsets.size());
-        const bool hasSubtitle = count > 0 &&
-            getEntry(std::max(0, std::min(selectorIndex, count - 1))).type == OpdsEntryType::BOOK;
 
         freeink::ui::ListProps props;
         props.count = static_cast<uint16_t>(entryOffsets.size());
         props.action = ACTION_SELECT_ENTRY;
-        props.rowHeight = static_cast<int16_t>(hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight);
+        props.rowHeight = static_cast<int16_t>(metrics.listRowHeight);
         props.labelText = screen.theme().bodyText;
-        props.labelText.maxLines = 1;
+        props.labelText.maxLines = 2;
         props.subtitleText = screen.theme().smallText;
         props.subtitleText.maxLines = 1;
         props.partialTrailingRow = true;
