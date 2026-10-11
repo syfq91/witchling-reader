@@ -652,6 +652,14 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
           fItems[i].actionValue = static_cast<int16_t>(i);
           fItems[i].enabled = true;
         }
+        const Rect fullRect = UITheme::getContentRect(renderer, true, false);
+        const Rect listRect = UITheme::getContentRect(renderer, true, true);
+        constexpr int16_t kSideHintInset = 21;
+        const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
+        const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
+        if (sideInsetRight > 0 || sideInsetLeft > 0) {
+          screen.insetContent(freeink::ui::Insets{0, sideInsetRight, 0, sideInsetLeft});
+        }
         screen.list(fItems, displayCount, formatSelectorIndex, ACTION_SELECT_FORMAT);
       }
       screen.takeBottom(screen.theme().footerHeight);
@@ -665,6 +673,14 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
       if (entryOffsets.empty()) {
         screen.centeredText(tr(STR_NO_ENTRIES));
       } else {
+        const Rect fullRect = UITheme::getContentRect(renderer, true, false);
+        const Rect listRect = UITheme::getContentRect(renderer, true, true);
+        constexpr int16_t kSideHintInset = 21;
+        const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
+        const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
+        if (sideInsetRight > 0 || sideInsetLeft > 0) {
+          screen.insetContent(freeink::ui::Insets{0, sideInsetRight, 0, sideInsetLeft});
+        }
         freeink::ui::ListProps props;
         props.count = static_cast<uint16_t>(entryOffsets.size());
         props.action = ACTION_SELECT_ENTRY;
@@ -787,25 +803,33 @@ void OpdsBookBrowserActivity::afterUiRender() {
     }
   }
 
+  const char* backLabel = tr(STR_BACK);
+  const char* confirmLabel = "";
+  const char* leftLabel = "";
+  const char* rightLabel = "";
+  const char* upLabel = "";
+  const char* downLabel = "";
+
   if (state == BrowserState::BROWSING) {
     const bool selectedIsBook = !entryOffsets.empty() && getEntry(selectorIndex).type == OpdsEntryType::BOOK;
-    const char* confirmLabel =
-        !entryOffsets.empty() ? (selectedIsBook ? tr(STR_DOWNLOAD) : tr(STR_OPEN)) : tr(STR_SELECT);
-    const char* searchLabel = !searchTemplate.empty() ? tr(STR_SEARCH) : "";
-    const char* infoLabel = selectedIsBook ? tr(STR_INFO) : "";
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, searchLabel, infoLabel);
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  } else if (state == BrowserState::FORMAT_SELECTION || state == BrowserState::BOOK_DETAIL) {
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DOWNLOAD), "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    confirmLabel = !entryOffsets.empty() ? (selectedIsBook ? tr(STR_DOWNLOAD) : tr(STR_OPEN)) : tr(STR_SELECT);
+    leftLabel = !searchTemplate.empty() ? tr(STR_SEARCH) : "";
+    rightLabel = selectedIsBook ? tr(STR_INFO) : "";
+    upLabel = tr(STR_DIR_UP);
+    downLabel = tr(STR_DIR_DOWN);
+  } else if (state == BrowserState::FORMAT_SELECTION) {
+    confirmLabel = tr(STR_DOWNLOAD);
+    upLabel = tr(STR_DIR_UP);
+    downLabel = tr(STR_DIR_DOWN);
+  } else if (state == BrowserState::BOOK_DETAIL) {
+    confirmLabel = tr(STR_DOWNLOAD);
   } else if (state == BrowserState::ERROR) {
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  } else if (state == BrowserState::CHECK_WIFI || state == BrowserState::LOADING ||
-             state == BrowserState::DOWNLOADING) {
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    confirmLabel = tr(STR_RETRY);
   }
+
+  const auto hints = mappedInput.mapHints(backLabel, confirmLabel, leftLabel, rightLabel, upLabel, downLabel);
+  GUI.drawButtonHints(renderer, hints.front.btn1, hints.front.btn2, hints.front.btn3, hints.front.btn4);
+  GUI.drawSideButtonHints(renderer, hints.side.up, hints.side.down);
 }
 
 void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
