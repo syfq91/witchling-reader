@@ -60,7 +60,7 @@ class OpdsBookBrowserActivity final : public Activity, private UiAppHost {
   void afterUiRender();
   void materializeListWindow();
 
-  static constexpr size_t LIST_WINDOW_CAPACITY = 16;
+  static constexpr size_t LIST_WINDOW_CAPACITY = 24;
   uint16_t windowFirst = 0;
   uint16_t windowCount = 0;
   freeink::ui::ListItem windowItems[LIST_WINDOW_CAPACITY];

@@ -660,9 +660,9 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
         if (sideInsetRight > 0 || sideInsetLeft > 0) {
           screen.insetContent(freeink::ui::Insets{0, sideInsetRight, 0, sideInsetLeft});
         }
+        screen.takeBottom(screen.theme().footerHeight);
         screen.list(fItems, displayCount, formatSelectorIndex, ACTION_SELECT_FORMAT);
       }
-      screen.takeBottom(screen.theme().footerHeight);
       break;
     }
     case BrowserState::BOOK_DETAIL: {
@@ -672,6 +672,7 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
     case BrowserState::BROWSING: {
       if (entryOffsets.empty()) {
         screen.centeredText(tr(STR_NO_ENTRIES));
+        screen.takeBottom(screen.theme().footerHeight);
       } else {
         const Rect fullRect = UITheme::getContentRect(renderer, true, false);
         const Rect listRect = UITheme::getContentRect(renderer, true, true);
@@ -681,16 +682,34 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
         if (sideInsetRight > 0 || sideInsetLeft > 0) {
           screen.insetContent(freeink::ui::Insets{0, sideInsetRight, 0, sideInsetLeft});
         }
+        screen.takeBottom(screen.theme().footerHeight);
+
+        const auto& metrics = UITheme::getInstance().getMetrics();
+        const int count = static_cast<int>(entryOffsets.size());
+        const bool hasSubtitle = count > 0 &&
+            getEntry(std::max(0, std::min(selectorIndex, count - 1))).type == OpdsEntryType::BOOK;
+
         freeink::ui::ListProps props;
         props.count = static_cast<uint16_t>(entryOffsets.size());
         props.action = ACTION_SELECT_ENTRY;
+        props.rowHeight = static_cast<int16_t>(hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight);
         props.labelText = screen.theme().bodyText;
         props.labelText.maxLines = 1;
         props.subtitleText = screen.theme().smallText;
         props.subtitleText.maxLines = 1;
         props.partialTrailingRow = true;
+
+        const int prevTop = listNav.top;
+        const int drawn = listNav.trusts(count) ? listNav.drawnRows : 0;
         listNav.selected = selectorIndex;
-        screen.syncListViewport(listNav, props, static_cast<int>(entryOffsets.size()));
+        screen.syncListViewport(listNav, props, count);
+
+        if (listNav.followPending && drawn > 0) {
+          if (selectorIndex >= prevTop && selectorIndex < prevTop + drawn) {
+            listNav.top = prevTop;
+            props.topIndex = static_cast<uint16_t>(prevTop);
+          }
+        }
 
         materializeListWindow();
         props.items = windowItems;
@@ -698,7 +717,6 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
         props.itemsWindowCount = windowCount;
         screen.list(props);
       }
-      screen.takeBottom(screen.theme().footerHeight);
       break;
     }
     default:
