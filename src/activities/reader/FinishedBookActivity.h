@@ -30,14 +30,15 @@ enum class FinishedBookAction {
 // project callback convention.
 void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputManager& mappedInput,
                             const std::string& bookPath, const std::string& series, const std::string& seriesIndex,
-                            const std::string& author = {}, void (*onMenuClosed)(void*) = nullptr,
-                            void* onMenuClosedCtx = nullptr);
+                            const std::string& author = {}, const std::string& title = {},
+                            void (*onMenuClosed)(void*) = nullptr, void* onMenuClosedCtx = nullptr);
 }  // namespace BookFinished
 
 class FinishedBookActivity final : public UiListActivity {
  public:
   FinishedBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string currentBookPath,
-                       std::string nextBookPath, std::string currentBookAuthor = {});
+                       std::string nextBookPath, std::string currentBookAuthor = {},
+                       std::string currentBookTitle = {});
 
   void onEnter() override;
 
@@ -51,7 +52,7 @@ class FinishedBookActivity final : public UiListActivity {
 
  private:
   struct RowModel {
-    enum class Action { GoHome, OpenNext, SearchOpds, ToggleForget };
+    enum class Action { GoHome, OpenNext, SearchOpds, MarkFinishedAndSync, ToggleForget };
     std::vector<Action> actions;
     std::vector<std::string> titles;
     std::vector<std::string> values;
@@ -64,6 +65,7 @@ class FinishedBookActivity final : public UiListActivity {
   std::string currentBookPath_;
   std::string nextBookPath_;
   std::string currentBookAuthor_;
+  std::string currentBookTitle_;
   std::string nextBookName_;
   std::string nextBookTitle_;
   std::string nextBookAuthor_;
@@ -73,7 +75,7 @@ class FinishedBookActivity final : public UiListActivity {
   bool nextBookMetadataLoaded_ = false;
   bool removeFinishedBooksFromRecents_ = false;
 
-  static constexpr size_t MAX_ROWS = 6;
+  static constexpr size_t MAX_ROWS = 8;
   std::array<std::string, MAX_ROWS> rowTitles_;
   std::array<std::string, MAX_ROWS> rowValues_;
   std::array<freeink::ui::ListItem, MAX_ROWS> items_;

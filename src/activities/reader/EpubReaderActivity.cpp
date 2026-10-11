@@ -2545,7 +2545,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         }
       }
       BookFinished::launchFinishedBookFlow(*this, renderer, mappedInput, epub->getPath(), epub->getSeries(),
-                                           epub->getSeriesIndex(), epub->getAuthor());
+                                           epub->getSeriesIndex(), epub->getAuthor(), epub->getTitle());
       return;
     }
     case EpubReaderMenuActivity::MenuAction::DELETE_CACHE: {
@@ -3567,6 +3567,7 @@ void EpubReaderActivity::serviceFinishedBookLaunch() {
   finishedBookLaunchPending_.store(false, std::memory_order_relaxed);
   BookFinished::launchFinishedBookFlow(
       *this, renderer, mappedInput, epub->getPath(), epub->getSeries(), epub->getSeriesIndex(), epub->getAuthor(),
+      epub->getTitle(),
       [](void* ctx) { static_cast<EpubReaderActivity*>(ctx)->finishedBookActivityStarted_ = false; }, this);
 }
 

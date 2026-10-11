@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "EpubProgressRecord.h"
+#include "OpdsProgressionSyncActivity.h"
 #include "OpdsServerStore.h"
 #include "ReaderActivity.h"
 #include "RecentBooksStore.h"
@@ -28,6 +30,7 @@
 #include "components/CoverGridLayout.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/OpdsProgressionSync.h"
 
 namespace fui = freeink::ui;
 
@@ -352,6 +355,48 @@ std::string findNextAlphabeticalBook(const std::string& directory, const std::st
   if (best.empty()) return {};
   return pathWithFilename(directory, best);
 }
+
+void markBookAsFinishedLocally(const std::string& bookPath) {
+  const std::string cachePath = ReaderActivity::bookCacheDir(bookPath);
+  if (cachePath.empty()) return;
+
+  FsFile f;
+  if (FsHelpers::hasEpubExtension(bookPath)) {
+    if (Storage.openFileForRead("FIN", cachePath + "/progress.bin", f)) {
+      uint8_t data[EpubProgressRecord::kMaxSize];
+      const size_t sz = f.read(data, sizeof(data));
+      f.close();
+      if (auto rec = EpubProgressRecord::decode(data, sz)) {
+        rec->percent = 100;
+        uint8_t out[EpubProgressRecord::kMaxSize];
+        const size_t outSz = rec->encode(out);
+        if (Storage.openFileForWrite("FIN", cachePath + "/progress.bin", f)) {
+          f.write(out, outSz);
+          f.close();
+        }
+        return;
+      }
+    }
+    // Fallback if not readable: write minimal 7-byte record with 100%
+    uint8_t data[7] = {0};
+    data[6] = 100;
+    if (Storage.openFileForWrite("FIN", cachePath + "/progress.bin", f)) {
+      f.write(data, sizeof(data));
+      f.close();
+    }
+  } else if (FsHelpers::hasXtcExtension(bookPath)) {
+    uint8_t data[5] = {0};
+    if (Storage.openFileForRead("FIN", cachePath + "/progress.bin", f)) {
+      f.read(data, sizeof(data));
+      f.close();
+    }
+    data[4] = 100;
+    if (Storage.openFileForWrite("FIN", cachePath + "/progress.bin", f)) {
+      f.write(data, sizeof(data));
+      f.close();
+    }
+  }
+}
 }  // namespace
 
 namespace BookFinished {
@@ -373,11 +418,12 @@ std::string findNextBookInDirectory(const std::string& currentBookPath, const st
 
 void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputManager& mappedInput,
                             const std::string& bookPath, const std::string& series, const std::string& seriesIndex,
-                            const std::string& author, void (*onMenuClosed)(void*), void* onMenuClosedCtx) {
+                            const std::string& author, const std::string& title, void (*onMenuClosed)(void*),
+                            void* onMenuClosedCtx) {
   const std::string nextBookPath = findNextBookInDirectory(bookPath, series, seriesIndex);
   Activity* hostPtr = &host;
   host.startActivityForResult(
-      std::make_unique<FinishedBookActivity>(renderer, mappedInput, bookPath, nextBookPath, author),
+      std::make_unique<FinishedBookActivity>(renderer, mappedInput, bookPath, nextBookPath, author, title),
       [hostPtr, bookPath, nextBookPath, author, onMenuClosed, onMenuClosedCtx](const ActivityResult& result) {
         if (onMenuClosed) {
           onMenuClosed(onMenuClosedCtx);
@@ -413,11 +459,12 @@ void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputMa
 
 FinishedBookActivity::FinishedBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                            std::string currentBookPath, std::string nextBookPath,
-                                           std::string currentBookAuthor)
+                                           std::string currentBookAuthor, std::string currentBookTitle)
     : UiListActivity("FinishedBook", renderer, mappedInput),
       currentBookPath_(std::move(currentBookPath)),
       nextBookPath_(std::move(nextBookPath)),
       currentBookAuthor_(std::move(currentBookAuthor)),
+      currentBookTitle_(std::move(currentBookTitle)),
       nextBookAvailable_(!nextBookPath_.empty()) {
   nextBookName_ = nextBookAvailable_ ? getFilename(nextBookPath_) : tr(STR_NOT_SET);
 }
@@ -438,6 +485,13 @@ FinishedBookActivity::RowModel FinishedBookActivity::buildRowModel() const {
     model.values.push_back(tr(STR_OPEN));
   }
 
+  const std::string cachePath = ReaderActivity::bookCacheDir(currentBookPath_);
+  if (OpdsProgressionSync::hasSyncConfig(cachePath)) {
+    model.actions.push_back(RowModel::Action::MarkFinishedAndSync);
+    model.titles.push_back(tr(STR_MARK_FINISHED_AND_SYNC));
+    model.values.push_back(tr(STR_SYNC));
+  }
+
   if (!currentBookAuthor_.empty() && OPDS_STORE.hasServers()) {
     model.actions.push_back(RowModel::Action::SearchOpds);
     model.titles.push_back(std::string(tr(STR_SEARCH_OPDS_FOR_AUTHOR)) + ": " + currentBookAuthor_);
@@ -453,6 +507,24 @@ FinishedBookActivity::RowModel FinishedBookActivity::buildRowModel() const {
 
 void FinishedBookActivity::onEnter() {
   removeFinishedBooksFromRecents_ = SETTINGS.removeFinishedBooksFromRecents;
+
+  if (currentBookTitle_.empty()) {
+    if (FsHelpers::hasEpubExtension(currentBookPath_)) {
+      Epub epub(currentBookPath_, "/.crosspoint");
+      epub.setSyntheticTocFallbackEnabled(SETTINGS.syntheticTocFallback != 0);
+      if (epub.loadForMetadata()) {
+        currentBookTitle_ = epub.getTitle();
+      }
+    } else if (FsHelpers::hasXtcExtension(currentBookPath_)) {
+      Xtc xtc(currentBookPath_, "/.crosspoint");
+      if (xtc.load()) {
+        currentBookTitle_ = xtc.getTitle();
+      }
+    }
+    if (currentBookTitle_.empty()) {
+      currentBookTitle_ = getFilename(currentBookPath_);
+    }
+  }
 
   if (nextBookAvailable_ && !nextBookMetadataLoaded_) {
     const auto metadata = loadNextBookMetadata(nextBookPath_);
@@ -503,6 +575,14 @@ void FinishedBookActivity::activateIndex(const int index) {
     case RowModel::Action::OpenNext:
       finishWith(BookFinished::FinishedBookAction::OpenNextBook);
       return;
+    case RowModel::Action::MarkFinishedAndSync: {
+      markBookAsFinishedLocally(currentBookPath_);
+      const std::string cachePath = ReaderActivity::bookCacheDir(currentBookPath_);
+      startActivityForResult(
+          std::make_unique<OpdsProgressionSyncActivity>(renderer, mappedInput, cachePath, 1.0f, currentBookTitle_),
+          [this](const ActivityResult&) { requestUpdate(); });
+      return;
+    }
     case RowModel::Action::SearchOpds:
       finishWith(BookFinished::FinishedBookAction::SearchOpdsForAuthor);
       return;
@@ -533,11 +613,13 @@ void FinishedBookActivity::buildScreen(UiScreen& screen) {
 
   int previewY = contentRect.y + metrics.headerHeight + topSectionHeight;
 
+  const RowModel model = buildRowModel();
+
   if (nextBookAvailable_) {
     topSectionHeight += yGap + metrics.verticalSpacing;
+    const int reservedListH = static_cast<int>(model.count()) * (renderer.getLineHeight(UI_12_FONT_ID) + 8);
     previewHeight_ = std::max(0, std::min(kFinishedBookCoverHeight,
-                                          contentBottom - previewY - 3 * (renderer.getLineHeight(UI_12_FONT_ID) + 8) -
-                                              metrics.verticalSpacing));
+                                          contentBottom - previewY - reservedListH - metrics.verticalSpacing));
     previewWidth_ = std::min(contentWidth / 2, kFinishedBookCoverMaxWidth);
     previewX_ = contentRect.x + metrics.contentSidePadding;
     previewY_ = previewY;
@@ -565,7 +647,6 @@ void FinishedBookActivity::buildScreen(UiScreen& screen) {
 
   screen.spacer(static_cast<int16_t>(topSectionHeight));
 
-  const RowModel model = buildRowModel();
   const int count = std::min(static_cast<size_t>(model.count()), MAX_ROWS);
 
   for (int i = 0; i < count; ++i) {
