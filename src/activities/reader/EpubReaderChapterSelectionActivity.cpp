@@ -102,25 +102,3 @@ void EpubReaderChapterSelectionActivity::onBackButton() {
   setResult(std::move(result));
   finish();
 }
-
-void EpubReaderChapterSelectionActivity::navigateButtons() {
-  bool changed = false;
-  const int count = listCount();
-  const int pageRows = activeNav().inputPageRows();
-  int selected = activeNav().selected;
-
-  buttonNavigator.onNextList(selected, count, [&changed] { changed = true; }, pageRows);
-  buttonNavigator.onPreviousList(selected, count, [&changed] { changed = true; }, pageRows);
-
-  if (changed) {
-    moveSelectionTo(selected);
-  }
-}
-
-void EpubReaderChapterSelectionActivity::drawFooter() {
-  const bool pages = listCount() > activeNav().inputPageRows();
-  const auto hints = mappedInput.mapHints(tr(STR_BACK), tr(STR_SELECT), pages ? tr(STR_LIST_PAGE_PREV) : "",
-                                          pages ? tr(STR_LIST_PAGE_NEXT) : "", tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, hints.front.btn1, hints.front.btn2, hints.front.btn3, hints.front.btn4);
-  GUI.drawSideButtonHints(renderer, hints.side.up, hints.side.down);
-}

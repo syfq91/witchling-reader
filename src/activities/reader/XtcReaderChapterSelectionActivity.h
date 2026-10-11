@@ -22,8 +22,6 @@ class XtcReaderChapterSelectionActivity final : public UiListActivity {
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
   void onBackButton() override;
-  void navigateButtons() override;
-  void drawFooter() override;
 
  private:
   std::shared_ptr<Xtc> xtc;
