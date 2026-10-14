@@ -150,7 +150,7 @@ Folders with many entries are handled via an SD-card-backed index so memory use 
 
 The Recent Books screen lists the books you opened last, newest first, from wherever they are on the card. Selecting a book opens it at the last read position, and a long **Confirm** on an EPUB fetches your KOReader progress first, as in Browse Files.
 
-It is Browse Files over that list, with the same three views — **Covers** (the default), **Details** and **Filenames** — chosen in the options menu under **Book view**. Recent Books remembers its own choice, so changing it here leaves Browse Files as it was. The keys are Browse Files' too: in Covers, **Up**/**Down** move a row and **Left**/**Right** one book, wrapping round at the ends; hold **Right** for the options menu. **Back** returns to the Home screen.
+It is Browse Files over that list, with the same three views — **Details** (the default), **Covers** and **Filenames** — chosen in the options menu under **Book view**. Recent Books remembers its own choice, so changing it here leaves Browse Files as it was. The keys are Browse Files' too: in Covers, **Up**/**Down** move a row and **Left**/**Right** one book, wrapping round at the ends; hold **Right** for the options menu. **Back** returns to the Home screen.
 
 The options menu has what you can do with the selected book: open it, mark it as read, show its details, delete its cache, **Remove from recents** (it stays on the card) and **Go to folder**, which opens Browse Files in the folder the book is in.
 
