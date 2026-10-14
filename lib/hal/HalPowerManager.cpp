@@ -343,19 +343,58 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, bool keepClockAlive) const {
   // When keepClockAlive is false (default): GPIO13 goes LOW, the MCU is
   // completely powered off during sleep (including the LP timer / RTC memory).
   // When keepClockAlive is true: GPIO13 stays HIGH, the MCU remains powered
-  // When keepClockAlive is true, we drive it HIGH to keep
-  // the 3.3V rail powered at ~3-4 mA so the LP timer keeps running and RTC memory is preserved.
-  constexpr gpio_num_t GPIO_SPIWP = GPIO_NUM_13;
-  // Release any GPIO hold from a previous sleep cycle (keepClockAlive=true leaves GPIO13 held after wake).
-  // Without this, gpio_set_level() below silently fails and GPIO13 is stuck in its prior state,
-  // causing the device to enter a sleep/wake loop that requires a hardware reset to escape.
-  gpio_hold_dis(GPIO_SPIWP);
-  gpio_deep_sleep_hold_dis();
-  gpio_set_direction(GPIO_SPIWP, GPIO_MODE_OUTPUT);
-  gpio_set_level(GPIO_SPIWP, keepClockAlive ? 1 : 0);
-  esp_sleep_config_gpio_isolate();
-  gpio_deep_sleep_hold_en();
-  gpio_hold_en(GPIO_SPIWP);
+  // at ~3-4 mA so the LP timer keeps running and RTC memory is preserved.
+  // This allows HalClock to accurately compute elapsed sleep time on wake.
+  //
+  // X3 does NOT share this meaning: there GPIO13 is the SD rail's power enable
+  // (active-high), declared as sd.powerEnable in the XTEINK_X3 board profiles.
+  // X3 keeps time on a battery-backed DS3231 (I2C 0x68), so it never needs the
+  // LP timer held alive across sleep — main.cpp forces keepLpAlive=false on X3
+  // for exactly that reason. So on X3 we hand the pin to the SDK's rail teardown
+  // (which cuts the card's power and latches it off) instead of treating it as a
+  // latch; SDCardManager::begin() releases that hold and re-powers on the next
+  // boot. Doing both would make us a second, independent writer of the pin.
+  //
+  // Non-Xteink boards share neither meaning and take the rail-teardown path too:
+  // GPIO13 is an ordinary signal there — SPI MOSI on the LilyGo T5S3
+  // (BoardT5S3Pins.h), display chip select on the X4 Pro — so driving it as an
+  // output and pad-holding it would clobber a live bus.
+  // Those boards also ignore keepClockAlive: nothing cuts MCU power there, so
+  // the LP timer and RTC memory survive deep sleep either way.
+  // Ported from crosspoint-reader PR #2998 ("fix: Guard GPIO13 power control for
+  // Xteink C3 boards only", Justin Mitchell / @itsthisjustin). His fix guards
+  // lightSleep()/onEinkBusyWaitSlice(), which this fork does not have; here the
+  // same predicate guards the one place we touch GPIO13.
+  //
+  // Which boards take the latch branch is the profile's call (PowerConfig::latch0GatesBattery,
+  // set on the X4 alone), not a board-name test: the X4 Pro's latch0 keeps a rail up instead and
+  // is held by the loop further down.
+  const bool gpio13IsBatteryLatch = HalCapabilities::hasButtonGatedBatteryLatch();
+  if (gpio13IsBatteryLatch) {
+    const auto GPIO_SPIWP = static_cast<gpio_num_t>(BoardConfig::ACTIVE.power.latch0);  // GPIO13 on the X4
+    // Release any GPIO hold from a previous sleep cycle (keepClockAlive=true leaves GPIO13 held after wake).
+    // Without this, gpio_set_level() below silently fails and GPIO13 is stuck in its prior state,
+    // causing the device to enter a sleep/wake loop that requires a hardware reset to escape.
+    gpio_hold_dis(GPIO_SPIWP);
+    gpio_deep_sleep_hold_dis();
+    gpio_set_direction(GPIO_SPIWP, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_SPIWP, keepClockAlive ? 1 : 0);
+    esp_sleep_config_gpio_isolate();
+    gpio_deep_sleep_hold_en();
+    gpio_hold_en(GPIO_SPIWP);
+  } else {
+    // Same release, for the boards that reach GPIO13 through the SDK's rail teardown
+    // instead of the latch branch above. It matters on X3: lightSleep() re-holds GPIO13
+    // HIGH on every idle slice for ALL Xteink C3 boards (isXteinkDevice()), but only the
+    // X4 branch above released it — so powerDownRailsForSleep() could not drive the X3's
+    // SD rail enable LOW and the card stayed powered through deep sleep, draining the
+    // battery. Guarded to Xteink C3 for the same reason the branch above is: elsewhere
+    // GPIO13 is an ordinary bus signal (SPI MOSI on the T5S3, display CS on the X4 Pro)
+    // that nothing has held and that we must not touch.
+    if (gpio.isXteinkDevice()) {
+      gpio_hold_dis(GPIO_NUM_13);
+    }
+    gpio_deep_sleep_hold_dis();
 
   pinMode(InputManager::POWER_BUTTON_PIN, INPUT_PULLUP);
   if (sleepStepHook_) sleepStepHook_(SleepStep::RailsConfigured, 0, false, true);

@@ -61,7 +61,7 @@ Activities are screen-level controllers deriving from `src/activities/Activity.h
 
 Top-level activity groups:
 
-- `src/activities/home/`: home, file browser, book info and bookmarks
+- `src/activities/home/`: home, the Library screen (`FileBrowserActivity` with its Books, Recent, New and Authors tabs, and the background build of its book index), book info and bookmarks
 - `src/activities/reader/`: EPUB/XTC/TXT/Markdown reading flows, reader menus, KOReader sync screens
 - `src/activities/settings/`: settings menus and configuration
 - `src/activities/network/`: WiFi selection, AP/STA mode, file transfer server, USB drive and serial transfer
@@ -156,6 +156,7 @@ Typical persisted areas on SD:
     progress.bin
     cover.bmp
     spines/<spine / 32>/*.bin   (per-spine caches, 32 spine items per bucket)
+  library/library.bin           (the Library's book index, for the New and Authors tabs)
   settings.json
   state.json
 ```
@@ -184,7 +185,7 @@ Endpoint reference: `docs/webserver-endpoints.md`.
 
 Some sources are generated and should not be edited manually.
 
-- `scripts/build_html.py` generates `src/network/html/*.generated.h` from HTML files
+- `scripts/build_html.py` builds the web pages: the setup page into `src/network/html/WebSetupPageHtml.generated.h`, the rest into the SD-card bundle `web-<hash>.bin` in the env's build folder, described to the firmware by `src/network/html/WebBundle.generated.h` (see [the design record](../design/web-assets-on-sd.md))
 - `scripts/generate_hyphenation_trie.py` generates hyphenation headers under `lib/Epub/Epub/hyphenation/generated/`
 
 When editing related source assets, regenerate via normal build steps/scripts.
@@ -195,7 +196,7 @@ When editing related source assets, regenerate via normal build steps/scripts.
 - `src/network/`: web server and OTA/update networking
 - `src/components/`: theming and shared UI components
 - `lib/Epub/`: EPUB parser, layout, CSS handling, and hyphenation
-- `lib/`: supporting libraries (fonts, text, Markdown, OPDS, KOReader sync, filesystem helpers, etc.)
+- `lib/`: supporting libraries (fonts, text, Markdown, OPDS, KOReader sync, the Library's book index in `lib/LibraryIndex/`, filesystem helpers, etc.)
 - `freeink-sdk/`: hardware SDK submodule (display, input, storage, battery, board profiles, UI toolkit)
 - `docs/`: user and technical documentation; `docs/design/` and `docs/future_work/` are described in the [contributing index](./README.md)
 

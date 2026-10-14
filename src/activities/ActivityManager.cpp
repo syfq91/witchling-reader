@@ -352,7 +352,11 @@ void ActivityManager::exitActivity(const RenderLock& lock) {
 }
 
 void ActivityManager::refreshWifiActivityFlag() {
-  activityUsesWifi.store(currentActivity && currentActivity->usesWifi(), std::memory_order_relaxed);
+  // The whole stack, not just the top: a network activity with a prompt or a picker above it still
+  // owns the radio -- it brought it up and takes it down in its own onExit().
+  bool uses = currentActivity && currentActivity->usesWifi();
+  for (const auto& buried : stackActivities) uses = uses || buried->usesWifi();
+  activityUsesWifi.store(uses, std::memory_order_relaxed);
 }
 
 void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
@@ -374,7 +378,8 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
   }
 }
 
-void ActivityManager::goToFileTransfer() {
+void ActivityManager::goToFileTransfer(NetworkMode /*selected*/) {
+  // The activity does not preselect a row yet; the parameter keeps the call sites upstream-shaped.
   replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput));
 }
 

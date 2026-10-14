@@ -43,6 +43,26 @@
 
 namespace fui = freeink::ui;
 
+namespace {
+// Whether a folder holds anything at all, hidden entries included: removing it takes all of that,
+// so the question has to say so.
+bool folderHasEntries(const std::string& path) {
+  auto dir = Storage.open(path.c_str());
+  if (!dir || !dir.isDirectory()) return false;
+  dir.rewindDirectory();
+  char name[8];  // only "." and ".." matter; a longer name may come back cut short and still counts
+  bool any = false;
+  while (!any) {
+    auto entry = dir.openNextFile();
+    if (!entry) break;
+    entry.getName(name, sizeof(name));
+    entry.close();
+    any = strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
+  }
+  dir.close();
+  return any;
+}
+}  // namespace
 FileBrowserActivity::FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                          std::string initialPath, std::string focusName, const Mode mode)
     : UiListActivity("FileBrowser", renderer, mappedInput),
@@ -404,7 +424,7 @@ bool FileBrowserActivity::lendForBackgroundWork() {
   if (!renderer.hasSecondaryBuffer()) return false;
   RenderLock lock(*this);
   renderer.syncWriteBufferFromDisplayed();
-  if (!renderer.isX3()) renderer.syncRedRamFromFrameBuffer();
+  renderer.syncRedRamFromFrameBuffer();
   size_t size = 0;
   uint8_t* region = renderer.borrowSecondaryBuffer(&size);
   if (region == nullptr) return false;
@@ -1114,7 +1134,6 @@ void FileBrowserActivity::moveToFolder(const std::string& fullPath, const std::s
           renderer.setNextDisplayRefreshMode(HalDisplay::HALF_REFRESH);
           GUI.drawPopup(renderer, message);
         } else {
-          clearFileMetadata(fullPath);
           bookRows.clear();
           model.load();
           resetNavigation(nav.selected);
@@ -1156,18 +1175,18 @@ void FileBrowserActivity::removeFromRecents(const std::string& bookPath) {
     const size_t slash = bookPath.rfind('/');
     title = getFileName(slash == std::string::npos ? bookPath : bookPath.substr(slash + 1));
   }
-  const std::string heading = std::string(tr(STR_REMOVE_FROM_RECENTS)) + "?";
-  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, title),
-                         [this, bookPath](const ActivityResult& res) {
-                           if (!res.isCancelled) {
-                             RECENT_BOOKS.removeBook(bookPath);
-                             RenderLock lock(*this);
-                             bookRows.clear();
-                             model.load();
-                             resetNavigation(nav.selected);
-                           }
-                           requestUpdate();
-                         });
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_REMOVE_FROM_RECENTS_QUESTION), title),
+      [this, bookPath](const ActivityResult& res) {
+        if (!res.isCancelled) {
+          RECENT_BOOKS.removeBook(bookPath);
+          RenderLock lock(*this);
+          bookRows.clear();
+          model.load();
+          resetNavigation(nav.selected);
+        }
+        requestUpdate();
+      });
 }
 
 // The views are for books: Browse Files and Recent Books list them; the others list files.
@@ -1505,24 +1524,26 @@ void FileBrowserActivity::doSetAsSleepCover(const std::string& fullPath) {
 }
 
 void FileBrowserActivity::doDeleteCache(const std::string& fullPath, const std::string& entry) {
-  startActivityForResult(std::make_unique<ConfirmationActivity>(
-                             renderer, mappedInput, tr(STR_DELETE_CACHE) + std::string("?"), utf8NfcNorm(entry)),
-                         [this, fullPath](const ActivityResult& res) {
-                           if (!res.isCancelled) {
-                             clearFileMetadata(fullPath);
-                             bookRows.clear();  // its progress went with the cache
-                             LOG_INF("FBR", "Cache deleted for: %s", fullPath.c_str());
-                           }
-                           requestUpdate();
-                         });
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_CACHE_QUESTION), utf8NfcNorm(entry)),
+      [this, fullPath](const ActivityResult& res) {
+        if (!res.isCancelled) {
+          clearFileMetadata(fullPath);
+          bookRows.clear();  // its progress went with the cache
+          LOG_INF("FBR", "Cache deleted for: %s", fullPath.c_str());
+        }
+        requestUpdate();
+      });
 }
 
 // As with a move: deleting a book from the book browser deletes the sidecars that browser never
 // showed, and deleting a file from All files deletes that file alone.
 void FileBrowserActivity::doRemove(const std::string& fullPath, const std::string& entry, bool isDirectory) {
   const bool withSidecars = !isDirectory && model.getMode() == Mode::Books;
-  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput,
-                                                                tr(STR_DELETE) + std::string("? "), utf8NfcNorm(entry)),
+  // An empty folder's own removal takes the folder with everything in it; say so.
+  const char* question =
+      isDirectory && folderHasEntries(fullPath) ? tr(STR_DELETE_FOLDER_QUESTION) : tr(STR_DELETE_QUESTION);
+  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, question, utf8NfcNorm(entry)),
                          [this, fullPath, isDirectory, withSidecars](const ActivityResult& res) {
                            if (!res.isCancelled) {
                              LOG_DBG("FBR", "Attempting to delete: %s", fullPath.c_str());

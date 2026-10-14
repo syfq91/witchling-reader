@@ -3,9 +3,8 @@
 #include <array>
 #include <functional>
 
+#include "NetworkMode.h"
 #include "activities/UiListActivity.h"
-
-enum class NetworkMode { JOIN_NETWORK, CREATE_HOTSPOT, OPDS_BROWSER };
 
 /**
  * NetworkModeSelectionActivity presents the user with a choice:

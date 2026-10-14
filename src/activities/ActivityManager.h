@@ -14,6 +14,7 @@
 #include "CrossPointSettings.h"
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
+#include "activities/network/NetworkMode.h"
 
 class Activity;                       // forward declaration
 class RenderLock;                     // forward declaration
@@ -132,13 +133,17 @@ class ActivityManager {
   void replaceActivity(std::unique_ptr<Activity>&& newActivity);
 
   // goTo... functions are convenient wrapper for replaceActivity()
-  void goToFileTransfer();
+  // File Transfer, its menu opening on `selected`'s row.
+  void goToFileTransfer(NetworkMode selected = NetworkMode::JOIN_NETWORK);
   void goToSettings();
   void goToFileBrowser(std::string path = {}, std::string focusName = {});
   void goToRecentBooks(std::string focusName = {});
   void goToGlobalBookmarks();
   void goToGlobalBookmarks(ReturnHint hint);
+  // The OPDS catalog, or the server picker first when more than one server is configured. Opened
+  // from File Transfer, so Back returns there.
   void goToBrowser();
+  // The same, searching `query` on arrival: a finished book's "more by this author". Back goes Home.
   void goToBrowserWithSearch(std::string query);
   void goToReader(std::string path);
   // fromTimeout=true marks this as an auto-sleep (used to gate Quick Resume on Timeout).
@@ -187,7 +192,8 @@ class ActivityManager {
   // the caller's own children included, pop as usual. Returns how many dropped something.
   int releaseBuriedActivityState();
 
-  bool currentActivityUsesWifi() const { return activityUsesWifi.load(std::memory_order_relaxed); }
+  // An activity on the stack, current or buried under a child, holds the radio.
+  bool wifiActivityOnStack() const { return activityUsesWifi.load(std::memory_order_relaxed); }
 
   bool inSleepTransition() const { return sleepTransition; }
 

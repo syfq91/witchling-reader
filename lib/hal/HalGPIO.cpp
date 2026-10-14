@@ -204,9 +204,21 @@ void HalGPIO::update() {
 }
 
 void HalGPIO::updateUsbState(const unsigned long now) {
-  usbLastPollMs = now;
-  usbElectricalConnected = isUsbElectricalConnected();
-  const bool connected = usbElectricalConnected;
+  // Host-link check (see the member comment). A single volatile read of a flag
+  // the IDF tick hook maintains, so it runs on every call on both devices and is
+  // never behind the I2C throttle below — a fresh enumeration must cancel light
+  // sleep within a poll or two, or the next slice kills the CDC link again.
+  usbHostLinkActive = isUsbHostLinkActive();
+
+  // Throttle USB detection that goes over I2C to the fuel gauge (the X3); see
+  // USB_POLL_X3_MS. First call (usbLastPollMs == 0) always polls so boot state is
+  // correct. The combined verdict below is still recomputed every call so a
+  // host-link-detected attach is not held back by the throttle window.
+  if (usbLastPollMs == 0 || !HalCapabilities::usbPresenceFromFuelGauge() || now - usbLastPollMs >= USB_POLL_X3_MS) {
+    usbLastPollMs = now;
+    usbElectricalConnected = isUsbElectricalConnected();
+  }
+  const bool connected = usbHostLinkActive || usbElectricalConnected;
   usbStateChanged = (connected != lastUsbConnected);
   lastUsbConnected = connected;
 }
@@ -439,6 +451,48 @@ HalGPIO::WakeCheck HalGPIO::verifyPowerButtonWakeup(WakeGestures gestures, uint1
 bool HalGPIO::isUsbConnected() const { return isUsbElectricalConnected(); }
 
 bool HalGPIO::isUsbElectricalConnected() const {
+  if (HalCapabilities::usbPresenceFromFuelGauge()) {
+    // X3: GPIO20 is repurposed as I2C SDA, so the X4 pin-level USB detect is
+    // unusable here — the I2C pull-ups would always report HIGH. Probe the
+    // BQ27220 fuel gauge instead. Charge inference misses a data-only cable and
+    // any cable once the battery is full; the host-link check in
+    // updateUsbState() covers those.
+    //
+    // Current() is the ONLY signal trusted here: it is signed, and current
+    // flowing INTO the battery (positive, above a noise floor) only happens on a
+    // charger.
+    //
+    // Neither resting flag can be used. DSG=0 means "charging OR merely at
+    // rest", so treating it as charger-present latched the charging bolt after
+    // unplugging and never recovered (issue #86). FC was then kept as a
+    // secondary signal on the theory that it only latches while topped off on a
+    // charger — it does not. A detached, fully-charged, idle device reads FC=1
+    // with DSG=0 (idle draw sits under the gauge's discharge-detection
+    // threshold) and so reported USB permanently connected. That was merely a
+    // wrong battery icon until HalPowerManager::lightSleep() started gating on
+    // this verdict, at which point it disabled idle light sleep outright —
+    // device-observed on an X3 at 100% with no cable attached.
+    //
+    // The case FC was meant to catch — a cable to a computer with the battery
+    // already full — is now covered properly by the host-link check in
+    // updateUsbState(), which sees the enumerated link itself rather than
+    // inferring it from charge state. The one remaining gap is a dumb wall charger with a
+    // full battery: no charge current and no SOF, so no charging indication.
+    // That is the honest reading ("charged", not "charging"), and light sleep is
+    // safe there because there is no CDC link to lose.
+    for (uint8_t attempt = 0; attempt < 2; ++attempt) {
+      int16_t currentMa = 0;
+      if (X3GPIO::readBQ27220CurrentMA(&currentMa)) {
+        return currentMa > USB_CHARGE_CURRENT_MIN_MA;
+      }
+      delay(2);
+    }
+    return false;
+  }
+  // Boards without a gauge read a plain GPIO instead: it goes HIGH when USB is
+  // connected (X4: U0RXD/GPIO20). Pin from the profile. Unassigned means the
+  // board has no electrical detect, so report not-connected and let the SOF path
+  // in updateUsbState() be the sole source of truth (X4 Pro today).
   const int8_t usbDetect = BoardConfig::ACTIVE.usbDetect;
   if (usbDetect == BoardConfig::PIN_UNASSIGNED) return false;
   return digitalRead(usbDetect) == HIGH;
@@ -447,13 +501,34 @@ bool HalGPIO::isUsbElectricalConnected() const {
 bool HalGPIO::canDetectUsbElectrically() const {
   // X3 has no usable detect pin — GPIO20 is its gauge SDA — and infers the cable
   // from fuel-gauge charge current instead, so it CAN answer the question.
-  if (deviceIsX3()) return true;
+  if (HalCapabilities::usbPresenceFromFuelGauge()) return true;
   return BoardConfig::ACTIVE.usbDetect != BoardConfig::PIN_UNASSIGNED;
 }
 
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   const auto wakeupCause = esp_sleep_get_wakeup_cause();
   const auto resetReason = esp_reset_reason();
+
+  // X3: a POWERON reset can come from either a power-button press (battery-latch
+  // MOSFET closes) OR from USB VBUS supplying power to the MCU through a path
+  // that bypasses the latch — notably after a Quick Resume sleep, where GPIO13
+  // is driven LOW so the MCU is otherwise unpowered. Disambiguate by reading
+  // the pulled-up power-button pin directly: GPIO3 reads LOW only while the
+  // button is held. If it's not held, treat a USB-connected POWERON as
+  // AfterUSBPower so the early handler in setup() puts the device straight
+  // back to sleep, matching X4. inputMgr.begin() in gpio.begin() has already
+  // configured INPUT_PULLUP on POWER_BUTTON_PIN by the time we're called.
+  //
+  // Asked as "an Xteink C3 board whose power button gates no battery latch" rather than by
+  // name: the latch is what lets the general rule below read POWERON as a press, and
+  // POWER_BUTTON_PIN is a C3 pin assumption (see isXteinkDevice()).
+  if (isXteinkDevice() && !HalCapabilities::hasButtonGatedBatteryLatch() && wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED &&
+      resetReason == ESP_RST_POWERON) {
+    if (digitalRead(InputManager::POWER_BUTTON_PIN) == LOW) {
+      return WakeupReason::PowerButton;
+    }
+    return isUsbConnected() ? WakeupReason::AfterUSBPower : WakeupReason::PowerButton;
+  }
 
   const bool usbConnected = isUsbConnected();
   LOG_DBG("GPIO", "getWakeupReason: wakeupCause=%d, resetReason=%d, usbConnected=%d", static_cast<int>(wakeupCause),

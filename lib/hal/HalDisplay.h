@@ -203,8 +203,19 @@ class HalDisplay {
   // refresh more thoroughly (and more slowly) than `refreshMode` asked for.
   void displayGray8Canvas(RefreshMode refreshMode, bool turnOffScreen = false);
 
-  // Device identity (false on X4)
-  bool deviceIsX3() const { return false; }
+  // What the panel does, from the SDK (FreeInkDisplay): ask these rather than which board this
+  // is. They are what the old deviceIsX3() callers meant, and an X4 Pro can come up on any of
+  // three controllers.
+  //
+  // A FAST refresh diffs against the previous frame the host keeps (the secondary buffer, or
+  // RED seeded from it), so lending or releasing the secondary costs FAST refreshes unless RED
+  // is seeded first. False on the X3, whose controller keeps its own baseline (DTM1).
+  bool fastRefreshNeedsHostFrame() const;
+  // An async refresh keeps the live frame buffer in use, and the refresh pending, until it
+  // completes -- for the whole waveform (the X3).
+  bool asyncRefreshHoldsFrameBuffer() const;
+  // Repeated FAST refreshes leave residue only a HALF clears (the X3's UC8253 / UC8279d).
+  bool ghostsUnderFastRefresh() const;
 
   // Grayscale LUT stub (no-op on X4)
   void setFastGrayscaleLut(bool) {}

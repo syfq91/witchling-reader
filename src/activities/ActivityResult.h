@@ -100,6 +100,13 @@ struct StarredPageResult {
   int pageNumber = 0;
 };
 
+// Which answer ConfirmationActivity was given, when it was not Cancel. Only a question with an
+// alternate answer needs to look: for a yes/no question isCancelled already says it all.
+struct ConfirmResult {
+  bool alternate = false;
+};
+
+// Progression returned by the OPDS browser when the server speaks OPDS Progression 1.0.
 struct OpdsProgressionResult {
   float progression = 0.0f;
   std::string reference;
@@ -107,7 +114,8 @@ struct OpdsProgressionResult {
 
 using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult,
                                    PageResult, SyncResult, NetworkModeResult, FootnoteResult, FilePathResult,
-                                   StarredPageResult, PrintedPageResult, DictionarySwitchResult, OpdsProgressionResult>;
+                                   StarredPageResult, PrintedPageResult, DictionarySwitchResult, OpdsProgressionResult,
+                                   ConfirmResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

@@ -100,8 +100,8 @@ size_t largestFreeBlock() { return heap_caps_get_largest_free_block(MALLOC_CAP_D
 // decides whether the curated roots are loaded at all and what happens when the
 // peer fails to verify.
 HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
-                                           const std::string& password, Sink& sink, HttpDownloader::TlsPolicy tls) {
-  (void)url;
+                                           const std::string& password, Sink& sink, HttpDownloader::TlsPolicy tls,
+                                           const HttpDownloader::RedirectFilter& redirectAllowed) {
   const WifiPowerSaveGuard psGuard;
   logPreCallContext();
   const unsigned long startMs = millis();
@@ -120,6 +120,7 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   if (!username.empty() && !password.empty()) {
     http.setBasicAuth(username, password);
   }
+  if (redirectAllowed) http.setRedirectFilter(redirectAllowed);
 
   bool openLogged = false;
   const auto write = sink.write;
@@ -166,8 +167,9 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
 // to the historic browsing posture; callers that carry credentials, install
 // files, or fetch public data pass their own.
 HttpDownloader::DownloadError runGetDispatch(const std::string& url, const std::string& username,
-                                             const std::string& password, Sink& sink, HttpDownloader::TlsPolicy tls) {
-  return runGetSecure(url, username, password, sink, tls);
+                                             const std::string& password, Sink& sink, HttpDownloader::TlsPolicy tls,
+                                             const HttpDownloader::RedirectFilter& redirectAllowed = {}) {
+  return runGetSecure(url, username, password, sink, tls, redirectAllowed);
 }
 }  // namespace
 
@@ -252,14 +254,15 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, bool treatAbortAsSuccess,
-                              const std::string& username, const std::string& password) {
+                              const std::string& username, const std::string& password,
+                              const RedirectFilter& redirectAllowed) {
   LOG_DBG("HTTP", "Fetching (stream): %s", url.c_str());
   if (!onData) {
     return false;
   }
   Sink sink;
   sink.write = [&onData](const uint8_t* data, size_t len) { return onData(data, len); };
-  const DownloadError result = runGetDispatch(url, username, password, sink, TlsPolicy::Verified);
+  const DownloadError result = runGetDispatch(url, username, password, sink, TlsPolicy::Verified, redirectAllowed);
   if (result == OK) {
     return true;
   }
@@ -308,21 +311,40 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, c
 }
 
 namespace {
+// A download is written beside its destination and takes its place only once complete, so a
+// failed or cancelled download leaves the file that was there (a book downloaded again from a
+// catalog, say) instead of deleting it first.
+// From CrossInk commit 1d954ae34 ("preserve existing books during OPDS downloads", Julia Nguyen),
+// which stages OPDS downloads as .part files; doing it here for every download is ours.
+std::string partPathFor(const std::string& destPath) { return destPath + ".part"; }
+
 // Common file-sink plumbing used by both downloadToFile overloads.
 HttpDownloader::DownloadError finishFileDownload(HttpDownloader::DownloadError result, const std::string& destPath,
                                                  FsFile& file, size_t downloaded) {
+  const std::string partPath = partPathFor(destPath);
   // Flush before any remove() on the same path; DESTRUCTOR_CLOSES_FILE would
   // otherwise close only after the remove.
   file.flush();
-  file.close();
+  const bool closed = file.close();
   if (result != HttpDownloader::OK) {
-    Storage.remove(destPath.c_str());
+    Storage.remove(partPath.c_str());
     return result;
   }
   if (downloaded == 0) {
     LOG_ERR("HTTP", "no data received");
-    Storage.remove(destPath.c_str());
+    Storage.remove(partPath.c_str());
     return HttpDownloader::HTTP_ERROR;
+  }
+  if (!closed) {
+    LOG_ERR("HTTP", "Failed to finish writing %s", partPath.c_str());
+    Storage.remove(partPath.c_str());
+    return HttpDownloader::FILE_ERROR;
+  }
+  if (Storage.exists(destPath.c_str())) Storage.remove(destPath.c_str());
+  if (!Storage.rename(partPath.c_str(), destPath.c_str())) {
+    LOG_ERR("HTTP", "Failed to move %s into place", partPath.c_str());
+    Storage.remove(partPath.c_str());
+    return HttpDownloader::FILE_ERROR;
   }
   LOG_DBG("HTTP", "Downloaded %zu bytes", downloaded);
   return HttpDownloader::OK;
@@ -331,16 +353,15 @@ HttpDownloader::DownloadError finishFileDownload(HttpDownloader::DownloadError r
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress, const std::string& username,
-                                                             const std::string& password, TlsPolicy tls) {
+                                                             const std::string& password, TlsPolicy tls,
+                                                             const RedirectFilter& redirectAllowed) {
   LOG_DBG("HTTP", "Downloading: %s", url.c_str());
   LOG_DBG("HTTP", "Destination: %s", destPath.c_str());
 
-  if (Storage.exists(destPath.c_str())) {
-    Storage.remove(destPath.c_str());
-  }
+  const std::string partPath = partPathFor(destPath);
   FsFile file;
-  if (!Storage.openFileForWrite("HTTP", destPath.c_str(), file)) {
-    LOG_ERR("HTTP", "Failed to open file for writing: %s", destPath.c_str());
+  if (!Storage.openFileForWrite("HTTP", partPath.c_str(), file)) {
+    LOG_ERR("HTTP", "Failed to open file for writing: %s", partPath.c_str());
     return FILE_ERROR;
   }
 
@@ -348,12 +369,12 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   sink.progress = std::move(progress);
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
   // Reopening for write truncates: the file starts again from byte 0.
-  sink.rewind = [&file, &destPath]() {
+  sink.rewind = [&file, &partPath]() {
     file.close();
-    return Storage.openFileForWrite("HTTP", destPath.c_str(), file);
+    return Storage.openFileForWrite("HTTP", partPath.c_str(), file);
   };
 
-  const DownloadError result = runGetDispatch(url, username, password, sink, tls);
+  const DownloadError result = runGetDispatch(url, username, password, sink, tls, redirectAllowed);
   return finishFileDownload(result, destPath, file, sink.downloaded);
 }
 
@@ -364,12 +385,10 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(Session& session, c
   LOG_DBG("HTTP", "Downloading (session): %s", url.c_str());
   LOG_DBG("HTTP", "Destination: %s", destPath.c_str());
 
-  if (Storage.exists(destPath.c_str())) {
-    Storage.remove(destPath.c_str());
-  }
+  const std::string partPath = partPathFor(destPath);
   FsFile file;
-  if (!Storage.openFileForWrite("HTTP", destPath.c_str(), file)) {
-    LOG_ERR("HTTP", "Failed to open file for writing: %s", destPath.c_str());
+  if (!Storage.openFileForWrite("HTTP", partPath.c_str(), file)) {
+    LOG_ERR("HTTP", "Failed to open file for writing: %s", partPath.c_str());
     return FILE_ERROR;
   }
 
@@ -377,9 +396,9 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(Session& session, c
   sink.progress = std::move(progress);
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
   // Reopening for write truncates: the file starts again from byte 0.
-  sink.rewind = [&file, &destPath]() {
+  sink.rewind = [&file, &partPath]() {
     file.close();
-    return Storage.openFileForWrite("HTTP", destPath.c_str(), file);
+    return Storage.openFileForWrite("HTTP", partPath.c_str(), file);
   };
 
   const DownloadError result = runGetOnSession(session, url, username, password, sink, tls);

@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "html/WebBundle.generated.h"
+
 // Structure to hold file information
 struct FileInfo {
   String name;
@@ -50,6 +52,26 @@ class CrossPointWebServer {
     static constexpr size_t UPLOAD_BUFFER_SIZE = 4096;  // 4KB buffer
     std::vector<uint8_t> buffer;
     size_t bufferPos = 0;
+
+    // For the log and the failure report: the request body's length (the file plus its form
+    // framing), when data last arrived, and whether Back on the device ended it.
+    size_t expected = 0;
+    unsigned long lastDataAt = 0;
+    bool cancelled = false;
+
+    // The last upload that broke off, until the next one starts. WebServer drops such a request
+    // without answering it, so the browser sees only a broken connection; /api/web/status hands it
+    // this instead, for the setup page to explain.
+    struct Failure {
+      bool set = false;
+      String name;
+      size_t received = 0;
+      size_t expected = 0;
+      unsigned long ms = 0;      // from the start to the end
+      unsigned long idleMs = 0;  // since data last arrived
+      const char* reason = "";   // "stalled", "closed" or "cancelled"
+      int rssi = 0;              // 0 in hotspot mode
+    } failure;
 
     UploadState() = default;
   } upload;
@@ -106,14 +128,19 @@ class CrossPointWebServer {
   bool isEpubFile(const String& filename) const;
 
   // Request handlers
+  void serveBundlePage(web_bundle::Index page) const;
   void handleRoot() const;
   void handleWelcomePage() const;
+  void handleWebSetupPage() const;
+  void handleWebStatus() const;
+  void handleWebInstall() const;
   void handleSystemInfoPage() const;
-  void handleJszip() const;
+  void handleDiagnosticsPage() const;
+  void handleBootDiagnostics() const;
+  void handleBundledScript() const;  // GET /js/<name>: a script from the SD-card bundle
   void handleNotFound() const;
   void handleStatus() const;
   void handleStatusFast() const;
-  void handleFileList() const;
   void handleFileListData() const;
   void handleDownload() const;
   void handleUpload(UploadState& state) const;
@@ -134,6 +161,8 @@ class CrossPointWebServer {
   void handleFontUpload();
   void handleFontUploadData();
   void handleFontDelete();
+
+  void handleDictionaryPage() const;
 
   struct FontUploadState {
     FsFile file;
@@ -186,4 +215,47 @@ class CrossPointWebServer {
   // POST /api/plugin-fs?plugin&path -> write one small file. /upload already
   // covers this; kept for compatibility with upstream-written plugins.
   void handlePluginFs();
+  void handlePluginFsData();
+
+  // The Plugins page (/plugins): install, remove, enable and disable. Plugins installed here go to
+  // /.crosspoint/plugins, which the web file endpoints leave alone unless Show Hidden Files is on;
+  // one copied by hand into /plugins or /.plugins is listed and managed the same way.
+  void handlePluginsPage() const;
+  // The File Manager's Details dialog reads an EPUB's own OPF from here.
+  void handleBookOpf() const;
+  // POST /api/book/replace?path&keep (raw body): swaps in an optimized copy of a book, keeping the
+  // original as <book>.bak.
+  void handleBookReplace();
+  void handleBookReplaceData();
+  void handlePluginInstallBegin() const;  // POST /api/plugins/begin?name -> fresh staging folder
+  void handlePluginInstallFile();         // POST /api/plugins/file?name&file (raw body) -> one file
+  void handlePluginInstallFileData();
+  void handlePluginInstallCommit() const;  // POST /api/plugins/commit?name -> staging replaces the plugin
+  void handlePluginRemove() const;         // POST /api/plugins/remove?name
+  void handlePluginEnable() const;         // POST /api/plugins/enable?name&on=0|1
+
+  // A raw request body streamed to a file. Raw, so binary-safe: the framework's buffered "plain"
+  // argument is built with String(char*) and ends at the first NUL byte. Written to <path>.part,
+  // capped as it arrives, and renamed over <path> only once complete, so a body that turns out too
+  // large, or a client that goes away, never replaces a file that was there. One instance serves
+  // every such route: the server handles one request at a time.
+  struct RawFileUpload {
+    FsFile file;
+    String path;  // the validated target
+    String temp;  // written here, renamed over `path` once complete
+    size_t cap = 0;
+    size_t written = 0;
+    bool started = false;    // a raw body arrived
+    int status = 0;          // 0 while all is well, else the HTTP status to answer with
+    const char* error = "";  // its message
+
+    // RAW_START: `target` is the validated path, or empty when the request named none it may write.
+    void start(const String& target, size_t maxBytes);
+    // RAW_WRITE, RAW_END and RAW_ABORTED.
+    void feed(const HTTPRaw& raw);
+    void fail(int httpStatus, const char* message);
+    // The response once the body is in: false (and an error sent) when it failed or never streamed.
+    bool answerFailure(WebServer& server);
+  } rawUpload;
+  String bookReplacePath;  // the book /api/book/replace is replacing, set at the start of its body
 };

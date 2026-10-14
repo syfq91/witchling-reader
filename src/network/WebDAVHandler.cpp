@@ -9,6 +9,7 @@
 
 #include "ChunkedResponse.h"
 #include "HttpFileStreamer.h"
+#include "UploadStallTolerance.h"
 #include "WebPathGuard.h"
 
 namespace {
@@ -49,6 +50,7 @@ bool WebDAVHandler::canRaw(WebServer& server, const String& uri) {
 void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
   (void)uri;
   if (raw.status == RAW_START) {
+    tolerateUploadStalls(server);
     _putPath = getRequestPath(server);
     if (isProtectedPath(_putPath)) {
       _putOk = false;
@@ -535,6 +537,8 @@ void WebDAVHandler::handleMove(WebServer& s) {
 
   if (dstExists) {
     Storage.remove(dstPath.c_str());
+    // The book being replaced takes its reading state with it.
+    clearEpubCacheIfNeeded(dstPath);
   }
 
   FsFile file = Storage.open(srcPath.c_str());
@@ -543,7 +547,6 @@ void WebDAVHandler::handleMove(WebServer& s) {
     return;
   }
 
-  clearEpubCacheIfNeeded(srcPath);
   bool success = file.rename(dstPath.c_str());
   file.close();
 
