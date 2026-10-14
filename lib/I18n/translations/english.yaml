@@ -879,7 +879,6 @@ STR_MOVE_NAME_TAKEN: "A file of that name is already there"
 STR_MOVE_SAME_FOLDER: "It is already in that folder"
 STR_SHOW_BUSY_INDICATOR: "Show Busy Indicator"
 
-# ---- Strings only this fork has (OPDS progression sync, status bar layout, mark-finished) ----
 STR_BROWSE_FILES: "Browse Files"
 STR_MARK_FINISHED_AND_SYNC: "Mark as finished & sync"
 STR_FORMAT_NOT_SUPPORTED: "Format not supported"
