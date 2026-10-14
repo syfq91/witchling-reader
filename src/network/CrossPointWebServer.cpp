@@ -24,6 +24,7 @@
 #include "SdCardFontRegistry.h"
 #include "SettingsList.h"
 #include "SystemStatus.h"
+#include "UploadStallTolerance.h"
 #include "WebDAVHandler.h"
 #include "WebPathGuard.h"
 #include "WifiCredentialStore.h"
@@ -347,7 +348,6 @@ void CrossPointWebServer::begin() {
   server->on("/api/settings", HTTP_GET, [this] { handleGetSettings(); });
   server->on("/api/settings", HTTP_POST, [this] { handlePostSettings(); });
 
-
   server->on("/fonts", HTTP_GET, [this] { handleFontsPage(); });
   server->on("/api/fonts", HTTP_GET, [this] { handleFontList(); });
   server->on("/api/fonts/upload", HTTP_POST, [this] { handleFontUpload(); }, [this] { handleFontUploadData(); });
@@ -614,7 +614,6 @@ void CrossPointWebServer::handleSystemInfoPage() const {
   int32_t t1 = millis();
   LOG_DBG("WEB", "Served system info page in %d ms", t1 - t0);
 }
-
 
 void CrossPointWebServer::handleJszip() const {
   if (rejectIfLowMemory(server.get(), MIN_HEAP_FOR_HTML)) return;
@@ -934,6 +933,9 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
   const HTTPUpload& upload = server->upload();
 
   if (upload.status == UPLOAD_FILE_START) {
+    // A weak link stalls between chunks while its retransmissions back off; 5 s was
+    // too short and dropped uploads that would have finished (WebDAV's PUT does the same).
+    tolerateUploadStalls(*server);
     // Reset watchdog - this is the critical 1% crash point
     HalSystem::feedWatchdog();
 
@@ -1630,9 +1632,7 @@ void CrossPointWebServer::handlePostSettings() {
   // One row at a time, as in handleGetSettings().
   int applied = 0;
 
-  const auto isFontFamilyKey = [](const char* key) {
-    return key && std::strcmp(key, "fontFamily") == 0;
-  };
+  const auto isFontFamilyKey = [](const char* key) { return key && std::strcmp(key, "fontFamily") == 0; };
   const auto applyRow = [&](const SettingInfo& s) {
     if (!s.key) return;
     if (!doc[s.key].is<JsonVariant>()) return;
@@ -1781,6 +1781,7 @@ void CrossPointWebServer::handleFontUploadData() {
 
   switch (up.status) {
     case UPLOAD_FILE_START: {
+      tolerateUploadStalls(*server);
       HalSystem::feedWatchdog();
       String family = server->arg("family");
       fontUpload.valid = false;
