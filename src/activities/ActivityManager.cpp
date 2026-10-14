@@ -386,7 +386,8 @@ void ActivityManager::goToFileTransfer(NetworkMode /*selected*/) {
 void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToFileBrowser(std::string path, std::string focusName) {
-  replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path), std::move(focusName)));
+  replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path), std::move(focusName),
+                                                        FileBrowserActivity::Mode::Books));
 }
 
 // Recent Books is Browse Files over the recent-books list: the same views, keys and Options.
@@ -494,7 +495,7 @@ void ActivityManager::goToHomeMore() { replaceActivity(std::make_unique<HomeMore
 void ActivityManager::goToHomeMenuAction(const HomeMenuAction action) {
   switch (action) {
     case HomeMenuAction::FileBrowser:
-      goToFileBrowser();
+      goToRecentBooks();
       break;
     case HomeMenuAction::Recents:
       goToRecentBooks();

@@ -112,9 +112,32 @@ class FileBrowserActivity final : public UiListActivity {
   void goToResultFolder();
   void materializeListWindow();
 
+  enum class BrowserTab : uint8_t {
+    Recents = 0,
+    Books = 1,
+    All = 2,
+    Count = 3
+  };
+
+  struct TabState {
+    std::string path = "/";
+    std::string focusName;
+    freeink::ui::ListNav nav;
+  };
+
+  bool tabsEnabled = false;
+  BrowserTab currentTab = BrowserTab::Recents;
+  bool tabFocus = false;
+  std::array<TabState, static_cast<size_t>(BrowserTab::Count)> tabStates;
+
+  [[nodiscard]] bool hasTabs() const { return tabsEnabled; }
+  void buildTabBar(UiScreen& screen);
+  void selectTab(BrowserTab tab, bool focusBar = false);
+  static void tabActionTrampoline(const freeink::ui::ActionEvent& event, void* user);
+
  public:
   explicit FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = "/",
-                               std::string focusName = {}, Mode mode = Mode::Books);
+                               std::string focusName = {}, Mode mode = Mode::Recents);
   ~FileBrowserActivity() override;
   void onEnter() override;
   void onExit() override;

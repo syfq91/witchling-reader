@@ -69,15 +69,152 @@ FileBrowserActivity::FileBrowserActivity(GfxRenderer& renderer, MappedInputManag
       model(mode),
       focusName(std::move(focusName)),
       coverLoader(std::make_unique<CoverThumbLoader>()) {
-  model.setPath(std::move(initialPath));
+  tabsEnabled = (mode == Mode::Books || mode == Mode::Recents || mode == Mode::AllFiles);
+  if (mode == Mode::Recents) {
+    currentTab = BrowserTab::Recents;
+  } else if (mode == Mode::AllFiles) {
+    currentTab = BrowserTab::All;
+  } else {
+    currentTab = BrowserTab::Books;
+  }
+  tabStates[static_cast<size_t>(BrowserTab::Recents)].path = "/";
+  tabStates[static_cast<size_t>(BrowserTab::Books)].path = (mode == Mode::Books && !initialPath.empty()) ? initialPath : "/";
+  tabStates[static_cast<size_t>(BrowserTab::All)].path = (mode == Mode::AllFiles && !initialPath.empty()) ? initialPath : "/";
+  tabStates[static_cast<size_t>(currentTab)].focusName = this->focusName;
+  model.setPath(mode == Mode::Recents ? "/" : std::move(initialPath));
 }
 
 FileBrowserActivity::~FileBrowserActivity() = default;
+
+void FileBrowserActivity::tabActionTrampoline(const freeink::ui::ActionEvent& event, void* user) {
+  auto* self = static_cast<FileBrowserActivity*>(user);
+  self->app.clearTapFlash();
+  self->selectTab(static_cast<BrowserTab>(event.value));
+}
+
+void FileBrowserActivity::buildTabBar(UiScreen& screen) {
+  constexpr int TAB_COUNT = static_cast<int>(BrowserTab::Count);
+  freeink::ui::TabItem tabs[TAB_COUNT]{};
+  static constexpr StrId tabLabels[TAB_COUNT] = {
+      StrId::STR_TAB_RECENTS,
+      StrId::STR_TAB_BOOKS,
+      StrId::STR_TAB_ALL,
+  };
+
+  for (int slot = 0; slot < TAB_COUNT; ++slot) {
+    tabs[slot].label = I18N.get(tabLabels[slot]);
+    tabs[slot].value = static_cast<int16_t>(slot);
+    tabs[slot].selected = (slot == static_cast<int>(currentTab));
+  }
+
+  freeink::ui::TabBarProps props;
+  props.tabs = tabs;
+  props.count = static_cast<uint8_t>(TAB_COUNT);
+  props.action = ACTION_USER;
+  props.inputMask = freeink::ui::InputTouch;
+  props.text = screen.theme().bodyText;
+  props.tabInset = freeink::ui::Insets{};
+  props.contentInset = freeink::ui::Insets{};
+
+  const bool onTabs = tabFocus;
+  freeink::ui::StyleSet tabStyles;
+  tabStyles.explicitlySet = true;
+  tabStyles.normal.background = freeink::ui::Paint::solid(freeink::ui::Color::White);
+  tabStyles.normal.foreground = freeink::ui::Paint::solid(freeink::ui::Color::Black);
+  tabStyles.normal.border = freeink::ui::Paint::solid(freeink::ui::Color::Black);
+  tabStyles.normal.borderWidth = 1;
+  tabStyles.selected.background =
+      onTabs ? freeink::ui::Paint::solid(freeink::ui::Color::Black) : freeink::ui::Paint::dither(freeink::ui::Color::LightGray);
+  tabStyles.selected.foreground = freeink::ui::Paint::solid(onTabs ? freeink::ui::Color::White : freeink::ui::Color::Black);
+  tabStyles.selected.border = freeink::ui::Paint::solid(freeink::ui::Color::Black);
+  tabStyles.selected.borderWidth = 1;
+  tabStyles.focused = tabStyles.selected;
+  tabStyles.active = tabStyles.selected;
+  props.tabStyles = tabStyles;
+
+  const int16_t barHeight = static_cast<int16_t>(UITheme::getInstance().getMetrics().tabBarHeight);
+  freeink::ui::tabBar(screen.frame(), screen.takeTop(barHeight), props);
+}
+
+void FileBrowserActivity::selectTab(const BrowserTab tab, const bool focusBar) {
+  if (static_cast<int>(tab) < 0 || static_cast<int>(tab) >= static_cast<int>(BrowserTab::Count)) return;
+  if (tab == currentTab) {
+    if (focusBar != tabFocus) {
+      tabFocus = focusBar;
+      requestUpdate();
+    }
+    return;
+  }
+
+  // 1. Save current tab's state
+  auto& curState = tabStates[static_cast<size_t>(currentTab)];
+  curState.path = model.path();
+  curState.nav = nav;
+
+  // 2. Switch tab
+  currentTab = tab;
+  Mode newMode = Mode::Books;
+  std::string targetPath = "/";
+  if (tab == BrowserTab::Recents) {
+    newMode = Mode::Recents;
+    targetPath = "/";
+  } else if (tab == BrowserTab::Books) {
+    newMode = Mode::Books;
+    targetPath = tabStates[static_cast<size_t>(tab)].path;
+  } else if (tab == BrowserTab::All) {
+    newMode = Mode::AllFiles;
+    targetPath = tabStates[static_cast<size_t>(tab)].path;
+  }
+  if (targetPath.empty()) targetPath = "/";
+
+  // 3. Clear and reload model
+  {
+    RenderLock lock(*this);
+    model.clear();
+    model.setMode(newMode);
+    model.setPath(std::move(targetPath));
+
+    std::optional<RecentBooksStore::Hold> recents;
+    if (model.getMode() == Mode::Recents) {
+      recents.emplace();
+      RECENT_BOOKS.refreshSidecarMetadata(static_cast<size_t>(RECENT_BOOKS.getCount()));
+    }
+    model.load();
+  }
+
+  // 4. Restore nav
+  auto& newState = tabStates[static_cast<size_t>(currentTab)];
+  nav = newState.nav;
+  if (listCount() == 0) {
+    tabFocus = true;
+    nav.selected = 0;
+    nav.top = 0;
+  } else {
+    tabFocus = focusBar;
+    if (nav.selected >= listCount()) {
+      nav.selected = std::max(0, listCount() - 1);
+    }
+    if (nav.selected < 0 && !tabFocus) {
+      nav.selected = 0;
+    }
+  }
+
+  // 5. Reset resolvers & thumbnails
+  bookRows.release();
+  coverLoader->reset();
+  coverWork = true;
+  resetPublishedWindow();
+  requestUpdate();
+}
 
 // A row's display name (defined with materializeListWindow below).
 std::string getFileName(std::string filename);
 
 void FileBrowserActivity::onEnter() {
+  if (hasTabs()) {
+    app.on(ACTION_USER, &FileBrowserActivity::tabActionTrampoline, this);
+  }
+
   // Recent Books keeps the home screen's snapshot of each book's details current, as the screen
   // it replaced did on the way in: a metadata sidecar may have changed since the book was read.
   // One load of the recent-books list for both the refresh and the rows (loadRecents copies the
@@ -108,6 +245,9 @@ void FileBrowserActivity::onEnter() {
   RenderLock lock(*this);
   UiListActivity::onEnter();
   resetNavigation(selectedIndex);
+  if (hasTabs() && listCount() == 0) {
+    tabFocus = true;
+  }
 }
 
 void FileBrowserActivity::onExit() {
@@ -183,7 +323,8 @@ FileBrowserActivity::CoverGrid FileBrowserActivity::coverGrid() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   CoverGrid g;
   g.content = UITheme::getContentRect(renderer, true, true);
-  g.top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int extraTop = hasTabs() ? (metrics.tabBarHeight + metrics.verticalSpacing) : 0;
+  g.top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + extraTop;
   // The 12 px floor at the bottom is where the scroll arrows go.
   g.cells = CoverGridLayout::compute({.contentWidth = g.content.width,
                                       .contentHeight = g.content.height - g.top - metrics.verticalSpacing,
@@ -209,7 +350,7 @@ void FileBrowserActivity::drawCoverGrid() {
     const int x =
         g.content.x + CoverGridLayout::kMargin + (slot % g.cells.cols) * (g.cells.cellWidth + CoverGridLayout::kMargin);
     const int y = g.top + (slot / g.cells.cols) * g.cells.rowStride;
-    drawCoverCell(i, x, y, g.cells, i == nav.selected);
+    drawCoverCell(i, x, y, g.cells, i == nav.selected && (!hasTabs() || !tabFocus));
   }
 }
 
@@ -495,9 +636,11 @@ bool FileBrowserActivity::handleCoverTouch() {
     case ListRowTap::Result::Rejected:
       return true;
     case ListRowTap::Result::Selected:
+      tabFocus = false;
       requestUpdate();
       return true;
     case ListRowTap::Result::Activate:
+      tabFocus = false;
       activateIndex(index);
       return true;
   }
@@ -590,18 +733,65 @@ bool FileBrowserActivity::handleCustomInput() {
   if (coversView() && handleCoverTouch()) return true;
   ButtonEventManager::ButtonEvent ev;
   while (buttonEvents.consumeEvent(ev)) {
-    if (ev.button == MappedInputManager::Button::Back) {
-      // Recent Books is one list with nowhere to go up to: Back, short or long, is Home.
-      if (model.getMode() == Mode::Recents) {
+    if (hasTabs() && tabFocus) {
+      if (ev.button == MappedInputManager::Button::Back) {
         onGoHome();
         return true;
       }
+      if (ev.button == MappedInputManager::Button::Confirm &&
+          (ev.type == ButtonEventManager::PressType::Short || ev.type == ButtonEventManager::PressType::Long)) {
+        selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + 1) % static_cast<int>(BrowserTab::Count)), true);
+        return true;
+      }
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Down) &&
+          ev.type == ButtonEventManager::PressType::Short) {
+        if (listCount() > 0) {
+          tabFocus = false;
+          resetNavigation(0);
+          requestUpdate();
+        }
+        return true;
+      }
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left) &&
+          ev.type == ButtonEventManager::PressType::Short) {
+        selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + static_cast<int>(BrowserTab::Count) - 1) %
+                                          static_cast<int>(BrowserTab::Count)),
+                  true);
+        return true;
+      }
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) &&
+          ev.type == ButtonEventManager::PressType::Short) {
+        selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + 1) % static_cast<int>(BrowserTab::Count)), true);
+        return true;
+      }
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) &&
+          ev.type == ButtonEventManager::PressType::Short) {
+        return true;
+      }
+    }
+
+    if (hasTabs() && ev.type == ButtonEventManager::PressType::Long) {
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up)) {
+        selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + static_cast<int>(BrowserTab::Count) - 1) %
+                                          static_cast<int>(BrowserTab::Count)),
+                  tabFocus);
+        return true;
+      }
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Down)) {
+        selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + 1) % static_cast<int>(BrowserTab::Count)),
+                  tabFocus);
+        return true;
+      }
+    }
+
+    if (ev.button == MappedInputManager::Button::Back) {
       if (ev.type == ButtonEventManager::PressType::Long) {
-        if (model.getMode() == Mode::Books) {
+        if (!hasTabs() && model.getMode() == Mode::PickFirmware) {
+          // PickFirmware: long Back = same as short Back (cancel / up dir)
+        } else {
           onGoHome();
           return true;
         }
-        // PickFirmware: long Back = same as short Back (cancel / up dir)
       }
       // A search is the first thing Back undoes. Without this, a search that matched nothing in
       // the root folder leaves the screen empty with Home as the only way out, which throws away
@@ -634,7 +824,10 @@ bool FileBrowserActivity::handleCustomInput() {
           const size_t idx = model.findEntry(dirName);
           resetNavigation((idx < model.entryCount()) ? static_cast<int>(idx) : 0);
           requestUpdate();
-        } else if (model.getMode() != Mode::Books) {
+        } else if (hasTabs()) {
+          tabFocus = true;
+          requestUpdate();
+        } else if (model.getMode() != Mode::Books && model.getMode() != Mode::Recents) {
           // At root in a picker: cancel back to caller.
           ActivityResult res;
           res.isCancelled = true;
@@ -645,6 +838,14 @@ bool FileBrowserActivity::handleCustomInput() {
         }
         return true;
       }
+    }
+
+    if (hasTabs() && !tabFocus && !coversView() && nav.selected == 0 &&
+        MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) &&
+        ev.type == ButtonEventManager::PressType::Short) {
+      tabFocus = true;
+      requestUpdate();
+      return true;
     }
 
     if (ev.button == MappedInputManager::Button::Confirm &&
@@ -721,6 +922,7 @@ bool FileBrowserActivity::handleCustomInput() {
 
 void FileBrowserActivity::navigateButtons() {
   if (coversView()) return;  // the grid moves by rows and covers, from handleCustomInput()
+  if (hasTabs() && tabFocus) return;
   bool changed = false;
   {
     RenderLock lock(*this);
@@ -791,6 +993,7 @@ void FileBrowserActivity::activateSelected(const bool longPress) {
 
 void FileBrowserActivity::activateIndex(const int index) {
   app.clearTapFlash();
+  tabFocus = false;
   nav.selected = index;
   activateSelected(false);
 }
@@ -848,7 +1051,13 @@ bool FileBrowserActivity::moveInCoverGrid(const MappedInputManager::Button butto
   {
     RenderLock lock(*this);
     const int cols = coverGrid().cells.cols;
-    if (up) nav.selected = CoverGridLayout::rowAbove(nav.selected, total, cols);
+    if (up) {
+      if (hasTabs() && nav.selected < cols) {
+        tabFocus = true;
+      } else {
+        nav.selected = CoverGridLayout::rowAbove(nav.selected, total, cols);
+      }
+    }
     if (down) nav.selected = CoverGridLayout::rowBelow(nav.selected, total, cols);
     if (left) nav.selected = ButtonNavigator::previousIndex(nav.selected, total);
     if (right) nav.selected = ButtonNavigator::nextIndex(nav.selected, total);
@@ -912,7 +1121,30 @@ void FileBrowserActivity::materializeListWindow() {
 }
 
 void FileBrowserActivity::buildScreen(UiScreen& screen) {
-  layoutListArea(screen);
+  if (hasTabs()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const Rect fullRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
+    const Rect listRect = listContentRect();
+
+    // Full-width margin from screen (no side gutter) so the tab bar spans the screen
+    screen.setContentMarginFromScreen(
+        fui::Insets{static_cast<int16_t>(fullRect.y + metrics.topPadding + metrics.headerHeight),
+                    static_cast<int16_t>(renderer.getScreenWidth() - (fullRect.x + fullRect.width)),
+                    static_cast<int16_t>(renderer.getScreenHeight() - (fullRect.y + fullRect.height)),
+                    static_cast<int16_t>(fullRect.x)});
+
+    buildTabBar(screen);
+    screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+    constexpr int16_t kSideHintInset = 21;
+    const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
+    const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
+    if (sideInsetRight > 0 || sideInsetLeft > 0) {
+      screen.insetContent(fui::Insets{0, sideInsetRight, 0, sideInsetLeft});
+    }
+  } else {
+    layoutListArea(screen);
+  }
 
   if (listCount() == 0) {
     fui::TextAreaProps empty;
@@ -934,6 +1166,9 @@ void FileBrowserActivity::buildScreen(UiScreen& screen) {
   const bool details = detailsView();
   props.labelText.maxLines = details ? 1 : 3;
   syncListViewport(screen, props, /*hasSubtitle=*/details);
+  if (hasTabs() && tabFocus) {
+    props.selectedIndex = -1;
+  }
   materializeListWindow();
   props.items = windowItems.data();
   props.itemsWindowFirst = windowFirst;
@@ -955,7 +1190,7 @@ void FileBrowserActivity::drawChrome() {
           : (model.path() != "/") ? model.path().substr(model.path().rfind('/') + 1)
             // At the root, All files says which browser this is: the rows alone look like the book one.
             : (model.getMode() == Mode::AllFiles) ? std::string(tr(STR_ALL_FILES))
-                                                  : std::string(tr(STR_SD_CARD));
+                                                  : std::string(tr(STR_BROWSE_FILES));
   // A narrowed folder is indistinguishable from a small one unless the header says otherwise.
   if (model.isFiltered()) {
     folderName += ": \"" + model.filter() + "\"";
@@ -966,45 +1201,56 @@ void FileBrowserActivity::drawChrome() {
 void FileBrowserActivity::drawFooter() {
   // Only the book browser leaves to Home; the others were opened from somewhere and go back there.
   const char* backLabel =
-      (model.path() == "/")
-          ? (model.getMode() == Mode::Books || model.getMode() == Mode::Recents ? tr(STR_HOME) : tr(STR_BACK))
-          : tr(STR_BACK);
+      (hasTabs() && tabFocus)
+          ? tr(STR_HOME)
+          : (model.path() == "/")
+                ? (hasTabs() ? tr(STR_BACK)
+                             : (model.getMode() == Mode::Books || model.getMode() == Mode::Recents ? tr(STR_HOME) : tr(STR_BACK)))
+                : tr(STR_BACK);
   const bool hasEntries = listCount() > 0;
   bool selectingFirmwareFile = false;
   if (model.getMode() == Mode::PickFirmware && hasEntries) {
     const std::string selectedEntry = model.entryName(static_cast<size_t>(nav.selected));
     selectingFirmwareFile = !selectedEntry.empty() && selectedEntry.back() != '/';
   }
-  const char* confirmLabel = confirmOpensOptions()   ? tr(STR_OPTIONS)
-                             : !hasEntries           ? ""
-                             : selectingFirmwareFile ? tr(STR_SELECT)
-                                                     : tr(STR_OPEN);
+  const char* confirmLabel =
+      (hasTabs() && tabFocus) ? tr(STR_NEXT)
+      : confirmOpensOptions() ? tr(STR_OPTIONS)
+      : !hasEntries           ? ""
+      : selectingFirmwareFile ? tr(STR_SELECT)
+                              : tr(STR_OPEN);
   // The Options menu is available for every entry in Books mode and in the firmware picker, where
   // it is the only place a .bin can be removed (Books mode never lists one). The menu always
   // offers the browser display options (sort + visibility); supported files get
   // extra file-specific actions appended. So the hint shows for files and dirs alike.
   // Same gate as the Right press in handleCustomInput(), so the label and the key never disagree.
-  const bool showOptionsHint = model.getMode() != Mode::PickFolder && hasEntries;
+  const bool showOptionsHint = model.getMode() != Mode::PickFolder && hasEntries && !(hasTabs() && tabFocus);
   // In a folder worth paging through, Left/Right are the page buttons and the hints say so —
   // Options is then the long press on Right. In a folder that fits on one screen there is nothing
   // to page, so the strip looks exactly as it always did.
   const bool pages = listPages();
-  const char* prevLabel = (model.getMode() == Mode::PickFolder) ? tr(STR_NEW) : pages ? tr(STR_LIST_PAGE_PREV) : "";
+  const char* prevLabel =
+      (hasTabs() && tabFocus)                 ? "Tab <"
+      : (model.getMode() == Mode::PickFolder) ? tr(STR_NEW)
+      : pages                                 ? tr(STR_LIST_PAGE_PREV)
+                                              : "";
   // In a folder small enough not to page, this slot carries Options. Where Confirm already
   // carries it that would draw the same word twice on one strip, and the second copy would sit on
   // Where it pages, the same key still opens Options on a hold, so the label says both rather
   // than hiding the menu.
   const bool optionsOnRight = showOptionsHint && !confirmOpensOptions();
-  const char* nextLabel = (model.getMode() == Mode::PickFolder)     ? tr(STR_MOVE_HERE)
-                          : (model.getMode() == Mode::PickFirmware) ? (optionsOnRight ? tr(STR_OPTIONS) : "")
-                          : pages ? (optionsOnRight ? tr(STR_LIST_PAGE_NEXT_OR_OPTIONS) : tr(STR_LIST_PAGE_NEXT))
-                          : optionsOnRight ? tr(STR_OPTIONS)
-                                           : "";
+  const char* nextLabel =
+      (hasTabs() && tabFocus)                 ? "Tab >"
+      : (model.getMode() == Mode::PickFolder) ? tr(STR_MOVE_HERE)
+      : (model.getMode() == Mode::PickFirmware) ? (optionsOnRight ? tr(STR_OPTIONS) : "")
+      : pages                                 ? (optionsOnRight ? tr(STR_LIST_PAGE_NEXT_OR_OPTIONS) : tr(STR_LIST_PAGE_NEXT))
+      : optionsOnRight                        ? tr(STR_OPTIONS)
+                                              : "";
   // The cover grid steps a cover on Left and Right (moveInCoverGrid), short press first and the
   // long one after the slash, as the Recent Books grid names them. Always labelled: on the T5S3 the
   // boxes are the only Left and Right there are, and an unlabelled box is not tappable.
   std::string gridRight;
-  if (coversView() && hasEntries) {
+  if (coversView() && hasEntries && !(hasTabs() && tabFocus)) {
     prevLabel = tr(STR_DIR_LEFT);
     gridRight = optionsOnRight ? std::string(tr(STR_DIR_RIGHT)) + " / " + tr(STR_OPTIONS) : tr(STR_DIR_RIGHT);
     nextLabel = gridRight.c_str();

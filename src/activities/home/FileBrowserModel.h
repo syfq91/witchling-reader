@@ -57,6 +57,7 @@ class FileBrowserModel {
   explicit FileBrowserModel(const Mode mode = Mode::Books) : mode(mode) {}
 
   [[nodiscard]] Mode getMode() const { return mode; }
+  void setMode(const Mode newMode) { mode = newMode; }
 
   // The directory currently enumerated. setPath() only records it; call load() to re-read.
   [[nodiscard]] const std::string& path() const { return basepath; }
