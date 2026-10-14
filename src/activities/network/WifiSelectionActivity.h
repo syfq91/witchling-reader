@@ -122,6 +122,9 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
   static constexpr uint8_t SCAN_HOME_CHAN_DWELL_MS = 30;
 
   unsigned long connectionStartTime = 0;
+  // Whether the just-connected attempt already ran WifiApChoice::improve(); a reconnect under way
+  // re-enters this function and must not run it a second time.
+  bool apChoiceTried = false;
 
   // WiFi event handler IDs so we can deregister on exit.
   uint16_t evtIdConnected = 0;
