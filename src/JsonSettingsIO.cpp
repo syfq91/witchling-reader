@@ -78,7 +78,10 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   const uint8_t fallbackView = (doc["recentBooksGridView"] | false) ? CrossPointSettings::BROWSER_VIEW_COVERS
                                                                    : CrossPointSettings::BROWSER_VIEW_DETAILS;
   s.recentBooksView = doc["recentBooksView"] | fallbackView;
-  if (s.recentBooksView >= CrossPointSettings::FILE_BROWSER_VIEW_COUNT) s.recentBooksView = fallbackView;
+  if (s.recentBooksView >= CrossPointSettings::FILE_BROWSER_VIEW_COUNT ||
+      s.recentBooksView == CrossPointSettings::BROWSER_VIEW_COVERS) {
+    s.recentBooksView = CrossPointSettings::BROWSER_VIEW_DETAILS;
+  }
   s.showBootScreen = doc["showBootScreen"] | true;
 
   JsonObject jump = doc["pendingBookmarkJump"].as<JsonObject>();

@@ -291,6 +291,10 @@ uint8_t FileBrowserActivity::chosenView() const {
     case Mode::Books:
       return SETTINGS.fileBrowserView;
     case Mode::Recents:
+      if (APP_STATE.recentBooksView == CrossPointSettings::BROWSER_VIEW_COVERS) {
+        APP_STATE.recentBooksView = CrossPointSettings::BROWSER_VIEW_DETAILS;
+        APP_STATE.saveToFile();
+      }
       return APP_STATE.recentBooksView;
     default:
       return CrossPointSettings::BROWSER_VIEW_FILES;
