@@ -112,10 +112,10 @@ struct OpdsProgressionResult {
   std::string reference;
 };
 
-using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult,
-                                   PageResult, SyncResult, NetworkModeResult, FootnoteResult, FilePathResult,
-                                   StarredPageResult, PrintedPageResult, DictionarySwitchResult, OpdsProgressionResult,
-                                   ConfirmResult>;
+using ResultVariant =
+    std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult, PageResult,
+                 SyncResult, NetworkModeResult, FootnoteResult, FilePathResult, StarredPageResult, PrintedPageResult,
+                 DictionarySwitchResult, OpdsProgressionResult, ConfirmResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

@@ -21,8 +21,8 @@
 #include "home/FileBrowserActivity.h"
 #include "home/GlobalBookmarksActivity.h"
 #include "home/HomeActivity.h"
-#include "home/HomeMoreActivity.h"
 #include "home/HomeMenu.h"
+#include "home/HomeMoreActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
@@ -429,7 +429,6 @@ void ActivityManager::goToReader(std::string path) {
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
 }
 
-
 void ActivityManager::replaceWithReader(std::string path, ReturnHint hint) {
   returnHint = std::move(hint);
   hasReturnHint = true;
@@ -572,7 +571,6 @@ bool ActivityManager::isReaderActivity() const {
 bool ActivityManager::currentIsReaderActivity() const { return currentActivity && currentActivity->isReaderActivity(); }
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
-
 
 void ActivityManager::dispatchButtonAction(const CrossPointSettings::BUTTON_ACTION action) {
   if (currentIsReaderActivity()) {

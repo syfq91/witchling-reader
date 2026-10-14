@@ -242,9 +242,9 @@ bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t 
     return false;
   }
   return setReaderOverrides(path, embeddedStyleOverride, imageRenderingOverride, fontFamilyOverride,
-                            sdFontFamilyOverride, fontSizeOverride, paragraphAlignmentOverride, 
-                            it->textAntiAliasingOverride, it->hyphenationOverride,
-                            it->fontSizeNormalizationOverride, it->inlineFootnotePreviewsOverride);
+                            sdFontFamilyOverride, fontSizeOverride, paragraphAlignmentOverride,
+                            it->textAntiAliasingOverride, it->hyphenationOverride, it->fontSizeNormalizationOverride,
+                            it->inlineFootnotePreviewsOverride);
 }
 
 bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t embeddedStyleOverride,
@@ -252,7 +252,7 @@ bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t 
                                           const std::string& sdFontFamilyOverride, const int8_t fontSizeOverride,
                                           const int8_t paragraphAlignmentOverride,
                                           const int8_t textAntiAliasingOverride, const int8_t hyphenationOverride,
-                                          const int8_t fontSizeNormalizationOverride, 
+                                          const int8_t fontSizeNormalizationOverride,
                                           const int8_t inlineFootnotePreviewsOverride) {
   const Hold hold;
   auto it =

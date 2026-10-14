@@ -752,10 +752,8 @@ void HomeActivity::buildScreen(UiScreen& screen) {
   // Register hit area for the recent book hero slot
   if (!recentBooks.empty()) {
     screen.frame().hit(
-        freeink::ui::Rect{static_cast<int16_t>(contentRect.x),
-                          static_cast<int16_t>(metrics.homeTopPadding),
-                          static_cast<int16_t>(contentRect.width),
-                          static_cast<int16_t>(layout.recentTileHeight)},
+        freeink::ui::Rect{static_cast<int16_t>(contentRect.x), static_cast<int16_t>(metrics.homeTopPadding),
+                          static_cast<int16_t>(contentRect.width), static_cast<int16_t>(layout.recentTileHeight)},
         ACTION_RECENT_BOOK, 0);
   }
 
@@ -781,11 +779,9 @@ void HomeActivity::buildScreen(UiScreen& screen) {
   for (size_t i = 0; i < menuEntries.size(); ++i) {
     const int tileY = menuY + static_cast<int>(i) * (rowHeight + rowSpacing);
     screen.frame().hit(
-        freeink::ui::Rect{static_cast<int16_t>(contentRect.x + metrics.contentSidePadding),
-                          static_cast<int16_t>(tileY),
+        freeink::ui::Rect{static_cast<int16_t>(contentRect.x + metrics.contentSidePadding), static_cast<int16_t>(tileY),
                           static_cast<int16_t>(contentRect.width - metrics.contentSidePadding * 2),
                           static_cast<int16_t>(rowHeight)},
         ACTION_MENU_ITEM, static_cast<int16_t>(i));
   }
 }
-

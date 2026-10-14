@@ -3568,8 +3568,8 @@ void EpubReaderActivity::serviceFinishedBookLaunch() {
   finishedBookLaunchPending_.store(false, std::memory_order_relaxed);
   BookFinished::launchFinishedBookFlow(
       *this, renderer, mappedInput, epub->getPath(), epub->getSeries(), epub->getSeriesIndex(), epub->getAuthor(),
-      epub->getTitle(),
-      [](void* ctx) { static_cast<EpubReaderActivity*>(ctx)->finishedBookActivityStarted_ = false; }, this);
+      epub->getTitle(), [](void* ctx) { static_cast<EpubReaderActivity*>(ctx)->finishedBookActivityStarted_ = false; },
+      this);
 }
 
 bool EpubReaderActivity::renderBufferDisplayPass(const RenderLayout& layout) {
