@@ -45,6 +45,7 @@ Changes pulled in from `jpirnay/witchhunt-reader` 2.40 that this fork carries. S
 - **Fix: after a failed connect, the reader kept trying in the background.** It went on retrying the network with the error already on screen. An attempt you leave or that has failed now stops for good.
 - **Saved Wi-Fi passwords work after the card moves to another reader.** Passwords are stored scrambled with the reader's own key, so on another reader, or from a copied `wifi.json`, they came out wrong and the network turned them down. They are now read with the key of the reader that saved them, and stored again under the new reader's key. A card that an older firmware has already opened on the other reader cannot be recovered this way: type those passwords once more.
 - **On a mesh network the reader moves to a nearer access point.** When it joins a network with several access points, it sometimes joined a distant one and stayed there, with slow and failing uploads. After a connection with a weak signal it now listens for the network's other access points and moves to one at least 10 dB stronger, and only once it has heard that one twice. If the move fails, it reconnects as before.
+- **Fix: a lost Wi-Fi link no longer freezes File Transfer.** The screen stopped responding until the reader was switched off. The link now gets 30 seconds to come back, with **Back** working throughout; if it doesn't, the reader leaves File Transfer.
 
 #### Reader & display
 
