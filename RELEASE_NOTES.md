@@ -24,6 +24,29 @@ User-facing changes only. Full commit history is in git log.
 - **Fix: GitHub downloads pass the certificate check again.** GitHub's download servers moved to a new Let's Encrypt certificate chain whose root key is 4096-bit RSA, which the reader's TLS library could not verify. Firmware updates failed with a certificate error; updates now work with GitHub verification.
 - **Firmware updates download in small chunks with SHA-256 integrity verification.** On the X4, the update fetches the firmware in small pieces sized to free memory, over the same connection. Before installing, it verifies the SHA-256 checksum against GitHub releases, rejecting incomplete or corrupted downloads.
 
+### Synced from upstream 2.40
+
+Changes pulled in from `jpirnay/witchhunt-reader` 2.40 that this fork carries. Subsystems this fork does not include (the Library screen, KOReader sync, Reading Statistics, Weather, non-English UI translations, touch gestures, and the web interface on the SD card) are omitted; those remain on hold.
+
+#### Questions & confirmations
+
+- **Every question is answered the same way.** Wi-Fi network options, Clear Cache, Screen Repair, "Update?" and "Delete?" prompts all use one three-answer question screen (Cancel / an optional third answer / accept), and Back always cancels. On-screen answer buttons are always drawn.
+- **Removing a folder says what it takes with it.** Deleting a folder that is not empty asks "Delete this folder and everything in it?" instead of a bare "Delete?".
+- **Check for Updates shows the release's title and opening lines** before you install it.
+
+#### Network & transfers
+
+- **A prompt above a network screen no longer drops the connection.** The whole activity stack now counts as using the radio, so a question asked over File Transfer or the Wi-Fi screen keeps the connection it was opened for.
+- **Uploads survive a weak signal.** Uploads wait 10 s for stalled data instead of 5 s, over both the browser and WebDAV paths, before giving up.
+- **A failed upload no longer leaves a cut-short file behind.** When the card fills or a write fails mid-upload, the partial file is deleted instead of being listed as a book.
+- **A failed download keeps the file it would replace.** OPDS downloads go to a temporary file that only swaps in once complete.
+- **A book with several authors shows its first author** in the OPDS list and in the download's file name.
+
+#### Reader & display
+
+- **Panel behaviour comes from the SDK's capability queries** (SDK bump to `f44c877`): the reader asks the display layer how fast refreshes and async refreshes behave rather than assuming by board name. Behaviour on the X4 Pro is unchanged; this keeps the fork aligned with upstream's board-capability work.
+- **Settings screens refresh more cheaply.** A half refresh that would only ghost is skipped in favour of the next full one, gating on the panel's measured ghosting budget.
+
 ## 2.37 — 2026-09-29
 
 ### Reading status bar
