@@ -131,6 +131,7 @@ class FileBrowserActivity final : public UiListActivity {
   std::array<TabState, static_cast<size_t>(BrowserTab::Count)> tabStates;
 
   [[nodiscard]] bool hasTabs() const { return tabsEnabled; }
+  [[nodiscard]] const char* nextTabLabel() const;
   void buildTabBar(UiScreen& screen);
   void selectTab(BrowserTab tab, bool focusBar = false);
   static void tabActionTrampoline(const freeink::ui::ActionEvent& event, void* user);
@@ -152,5 +153,6 @@ class FileBrowserActivity final : public UiListActivity {
   int indexForActionValue(int16_t value) const override { return static_cast<uint16_t>(value); }
   void drawChrome() override;
   void drawFooter() override;
+  [[nodiscard]] const char* footerConfirmLabel() const override;
   void navigateButtons() override;
 };

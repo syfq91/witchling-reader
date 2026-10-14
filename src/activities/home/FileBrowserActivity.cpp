@@ -136,6 +136,32 @@ void FileBrowserActivity::buildTabBar(UiScreen& screen) {
   freeink::ui::tabBar(screen.frame(), screen.takeTop(barHeight), props);
 }
 
+const char* FileBrowserActivity::nextTabLabel() const {
+  switch (currentTab) {
+    case BrowserTab::Recents:
+      return tr(STR_TAB_BOOKS);
+    case BrowserTab::Books:
+      return tr(STR_TAB_ALL);
+    case BrowserTab::All:
+      return tr(STR_TAB_RECENTS);
+    default:
+      return tr(STR_NEXT);
+  }
+}
+
+const char* FileBrowserActivity::footerConfirmLabel() const {
+  if (hasTabs() && tabFocus) {
+    return nextTabLabel();
+  }
+  if (confirmOpensOptions()) {
+    return tr(STR_OPTIONS);
+  }
+  if (listCount() == 0) {
+    return "";
+  }
+  return tr(STR_SELECT);
+}
+
 void FileBrowserActivity::selectTab(const BrowserTab tab, const bool focusBar) {
   if (static_cast<int>(tab) < 0 || static_cast<int>(tab) >= static_cast<int>(BrowserTab::Count)) return;
   if (tab == currentTab) {
@@ -747,7 +773,8 @@ bool FileBrowserActivity::handleCustomInput() {
         selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + 1) % static_cast<int>(BrowserTab::Count)), true);
         return true;
       }
-      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Down) &&
+      if ((MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Down) ||
+           MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right)) &&
           ev.type == ButtonEventManager::PressType::Short) {
         if (listCount() > 0) {
           tabFocus = false;
@@ -756,32 +783,23 @@ bool FileBrowserActivity::handleCustomInput() {
         }
         return true;
       }
-      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left) &&
-          ev.type == ButtonEventManager::PressType::Short) {
-        selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + static_cast<int>(BrowserTab::Count) - 1) %
-                                          static_cast<int>(BrowserTab::Count)),
-                  true);
-        return true;
-      }
-      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) &&
-          ev.type == ButtonEventManager::PressType::Short) {
-        selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + 1) % static_cast<int>(BrowserTab::Count)), true);
-        return true;
-      }
-      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) &&
+      if ((MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) ||
+           MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left)) &&
           ev.type == ButtonEventManager::PressType::Short) {
         return true;
       }
     }
 
     if (hasTabs() && ev.type == ButtonEventManager::PressType::Long) {
-      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up)) {
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) ||
+          (tabFocus && MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left))) {
         selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + static_cast<int>(BrowserTab::Count) - 1) %
                                           static_cast<int>(BrowserTab::Count)),
                   tabFocus);
         return true;
       }
-      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Down)) {
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Down) ||
+          (tabFocus && MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right))) {
         selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + 1) % static_cast<int>(BrowserTab::Count)),
                   tabFocus);
         return true;
@@ -845,7 +863,8 @@ bool FileBrowserActivity::handleCustomInput() {
     }
 
     if (hasTabs() && !tabFocus && !coversView() && nav.selected == 0 &&
-        MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) &&
+        (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Up) ||
+         MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left)) &&
         ev.type == ButtonEventManager::PressType::Short) {
       tabFocus = true;
       requestUpdate();
@@ -854,11 +873,11 @@ bool FileBrowserActivity::handleCustomInput() {
 
     if (ev.button == MappedInputManager::Button::Confirm &&
         (ev.type == ButtonEventManager::PressType::Short || ev.type == ButtonEventManager::PressType::Long)) {
-      if (confirmOpensOptions()) {
+      if (confirmOpensOptions() || ev.type == ButtonEventManager::PressType::Long) {
         openContextMenu();
         return true;
       }
-      activateSelected(ev.type == ButtonEventManager::PressType::Long);
+      activateSelected(false);
       return true;
     }
 
@@ -888,37 +907,70 @@ bool FileBrowserActivity::handleCustomInput() {
       return true;
     }
 
-    // Logical Left/Right page through the list, one screenful per press — the same thing they do in
-    // the chapter selector, and the reason the context menu moved to a long press on Right. Paging
-    // is driven from the event stream rather than ButtonNavigator: the navigator acts on the press
-    // edge, which would page on the way into every long press.
-    // PickFirmware reserves the Right button for Options rather than paging forward.
-    if (model.getMode() != Mode::PickFirmware &&
-        MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) &&
-        ev.type == ButtonEventManager::PressType::Short && listPages()) {
-      pageSelection(1);
-      return true;
-    }
+    if (hasTabs() && !tabFocus && !coversView()) {
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left)) {
+        if (ev.type == ButtonEventManager::PressType::Short) {
+          if (nav.selected <= 0) {
+            tabFocus = true;
+          } else {
+            nav.selected--;
+            nav.follow(listCount());
+          }
+          requestUpdate();
+          return true;
+        }
+        if (ev.type == ButtonEventManager::PressType::Long) {
+          pageSelection(-1);
+          return true;
+        }
+      }
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right)) {
+        if (ev.type == ButtonEventManager::PressType::Short) {
+          if (nav.selected < listCount() - 1) {
+            nav.selected++;
+            nav.follow(listCount());
+            requestUpdate();
+          }
+          return true;
+        }
+        if (ev.type == ButtonEventManager::PressType::Long) {
+          pageSelection(1);
+          return true;
+        }
+      }
+    } else if (!hasTabs()) {
+      // Logical Left/Right page through the list, one screenful per press — the same thing they do in
+      // the chapter selector, and the reason the context menu moved to a long press on Right. Paging
+      // is driven from the event stream rather than ButtonNavigator: the navigator acts on the press
+      // edge, which would page on the way into every long press.
+      // PickFirmware reserves the Right button for Options rather than paging forward.
+      if (model.getMode() != Mode::PickFirmware &&
+          MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) &&
+          ev.type == ButtonEventManager::PressType::Short && listPages()) {
+        pageSelection(1);
+        return true;
+      }
 
-    if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left) &&
-        ev.type == ButtonEventManager::PressType::Short && listPages()) {
-      pageSelection(-1);
-      return true;
-    }
+      if (MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Left) &&
+          ev.type == ButtonEventManager::PressType::Short && listPages()) {
+        pageSelection(-1);
+        return true;
+      }
 
-    // Options: in PickFirmware mode, always triggered on Right (short or long press).
-    // In other modes, a long press on Right, and a short press when the folder fits on
-    // one screen and there is nothing to page. Either way the button hint says which one it is.
-    const bool optionsPress = (ev.type == ButtonEventManager::PressType::Long) ||
-                              (ev.type == ButtonEventManager::PressType::Short &&
-                               (!listPages() || model.getMode() == Mode::PickFirmware) && !coversView());
-    if (model.getMode() != Mode::PickFolder &&
-        MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) && optionsPress) {
-      // Open the context menu for any selection. openContextMenu() shows
-      // file-specific actions for supported files and the browser display
-      // options (sort + visibility) for directories / unsupported types.
-      openContextMenu();
-      return true;
+      // Options: in PickFirmware mode, always triggered on Right (short or long press).
+      // In other modes, a long press on Right, and a short press when the folder fits on
+      // one screen and there is nothing to page. Either way the button hint says which one it is.
+      const bool optionsPress = (ev.type == ButtonEventManager::PressType::Long) ||
+                                (ev.type == ButtonEventManager::PressType::Short &&
+                                 (!listPages() || model.getMode() == Mode::PickFirmware) && !coversView());
+      if (model.getMode() != Mode::PickFolder &&
+          MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Right) && optionsPress) {
+        // Open the context menu for any selection. openContextMenu() shows
+        // file-specific actions for supported files and the browser display
+        // options (sort + visibility) for directories / unsupported types.
+        openContextMenu();
+        return true;
+      }
     }
   }
   return false;
@@ -1205,11 +1257,10 @@ void FileBrowserActivity::drawChrome() {
 void FileBrowserActivity::drawFooter() {
   // Only the book browser leaves to Home; the others were opened from somewhere and go back there.
   const char* backLabel =
-      (hasTabs() && tabFocus)
-          ? tr(STR_HOME)
+      hasTabs()
+          ? tr(STR_BACK)
           : (model.path() == "/")
-                ? (hasTabs() ? tr(STR_BACK)
-                             : (model.getMode() == Mode::Books || model.getMode() == Mode::Recents ? tr(STR_HOME) : tr(STR_BACK)))
+                ? (model.getMode() == Mode::Books || model.getMode() == Mode::Recents ? tr(STR_HOME) : tr(STR_BACK))
                 : tr(STR_BACK);
   const bool hasEntries = listCount() > 0;
   bool selectingFirmwareFile = false;
@@ -1217,48 +1268,35 @@ void FileBrowserActivity::drawFooter() {
     const std::string selectedEntry = model.entryName(static_cast<size_t>(nav.selected));
     selectingFirmwareFile = !selectedEntry.empty() && selectedEntry.back() != '/';
   }
-  const char* confirmLabel =
-      (hasTabs() && tabFocus) ? tr(STR_NEXT)
-      : confirmOpensOptions() ? tr(STR_OPTIONS)
-      : !hasEntries           ? ""
-      : selectingFirmwareFile ? tr(STR_SELECT)
-                              : tr(STR_OPEN);
-  // The Options menu is available for every entry in Books mode and in the firmware picker, where
-  // it is the only place a .bin can be removed (Books mode never lists one). The menu always
-  // offers the browser display options (sort + visibility); supported files get
-  // extra file-specific actions appended. So the hint shows for files and dirs alike.
-  // Same gate as the Right press in handleCustomInput(), so the label and the key never disagree.
+  const char* confirmLabel = footerConfirmLabel();
+
   const bool showOptionsHint = model.getMode() != Mode::PickFolder && hasEntries && !(hasTabs() && tabFocus);
-  // In a folder worth paging through, Left/Right are the page buttons and the hints say so —
-  // Options is then the long press on Right. In a folder that fits on one screen there is nothing
-  // to page, so the strip looks exactly as it always did.
   const bool pages = listPages();
-  const char* prevLabel =
-      (hasTabs() && tabFocus)                 ? "Tab <"
-      : (model.getMode() == Mode::PickFolder) ? tr(STR_NEW)
-      : pages                                 ? tr(STR_LIST_PAGE_PREV)
-                                              : "";
-  // In a folder small enough not to page, this slot carries Options. Where Confirm already
-  // carries it that would draw the same word twice on one strip, and the second copy would sit on
-  // Where it pages, the same key still opens Options on a hold, so the label says both rather
-  // than hiding the menu.
-  const bool optionsOnRight = showOptionsHint && !confirmOpensOptions();
-  const char* nextLabel =
-      (hasTabs() && tabFocus)                 ? "Tab >"
-      : (model.getMode() == Mode::PickFolder) ? tr(STR_MOVE_HERE)
-      : (model.getMode() == Mode::PickFirmware) ? (optionsOnRight ? tr(STR_OPTIONS) : "")
-      : pages                                 ? (optionsOnRight ? tr(STR_LIST_PAGE_NEXT_OR_OPTIONS) : tr(STR_LIST_PAGE_NEXT))
-      : optionsOnRight                        ? tr(STR_OPTIONS)
-                                              : "";
-  // The cover grid steps a cover on Left and Right (moveInCoverGrid), short press first and the
-  // long one after the slash, as the Recent Books grid names them. Always labelled: on the T5S3 the
-  // boxes are the only Left and Right there are, and an unlabelled box is not tappable.
+
+  const char* prevLabel = "";
+  const char* nextLabel = "";
   std::string gridRight;
-  if (coversView() && hasEntries && !(hasTabs() && tabFocus)) {
-    prevLabel = tr(STR_DIR_LEFT);
-    gridRight = optionsOnRight ? std::string(tr(STR_DIR_RIGHT)) + " / " + tr(STR_OPTIONS) : tr(STR_DIR_RIGHT);
-    nextLabel = gridRight.c_str();
+
+  if (hasTabs()) {
+    if (coversView() && hasEntries && !tabFocus) {
+      prevLabel = tr(STR_DIR_LEFT);
+      const bool optionsOnRight = showOptionsHint && !confirmOpensOptions();
+      gridRight = optionsOnRight ? std::string(tr(STR_DIR_RIGHT)) + " / " + tr(STR_OPTIONS) : tr(STR_DIR_RIGHT);
+      nextLabel = gridRight.c_str();
+    } else {
+      prevLabel = tr(STR_DIR_UP);
+      nextLabel = tr(STR_DIR_DOWN);
+    }
+  } else {
+    prevLabel = (model.getMode() == Mode::PickFolder) ? tr(STR_NEW) : pages ? tr(STR_LIST_PAGE_PREV) : "";
+    const bool optionsOnRight = showOptionsHint && !confirmOpensOptions();
+    nextLabel = (model.getMode() == Mode::PickFolder)   ? tr(STR_MOVE_HERE)
+                : (model.getMode() == Mode::PickFirmware) ? (optionsOnRight ? tr(STR_OPTIONS) : "")
+                : pages                                 ? (optionsOnRight ? tr(STR_LIST_PAGE_NEXT_OR_OPTIONS) : tr(STR_LIST_PAGE_NEXT))
+                : optionsOnRight                        ? tr(STR_OPTIONS)
+                                                        : "";
   }
+
   // Paging is bound to logical Left/Right and stepping to logical Up/Down, so which physical pair
   // carries which — and therefore which hint strip each label belongs on — is the orientation's
   // business, not this screen's.
