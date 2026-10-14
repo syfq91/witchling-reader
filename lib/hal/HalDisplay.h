@@ -217,9 +217,9 @@ class HalDisplay {
   // Repeated FAST refreshes leave residue only a HALF clears (the X3's UC8253 / UC8279d).
   bool ghostsUnderFastRefresh() const;
 
-  // Grayscale LUT stub (no-op on X4)
-  void setFastGrayscaleLut(bool) {}
-  bool getFastGrayscaleLut() const { return false; }
+  // Fast-grayscale LUT preference, held by the SDK facade (see FreeInkDisplay::setFastGrayscaleLut).
+  void setFastGrayscaleLut(bool fast);
+  bool getFastGrayscaleLut() const;
 
   // Runtime geometry passthrough
   uint16_t getDisplayWidth() const;
