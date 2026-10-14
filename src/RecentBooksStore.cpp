@@ -49,12 +49,10 @@ void RecentBooksStore::addBook(const std::string& path, const std::string& title
                                const std::string& series, const std::string& coverBmpPath) {
   const Hold hold;
   RecentBook newBook{path, title, author, series, coverBmpPath};
-  // The EPUB and text readers pass metadata they have just loaded, sidecar applied; stamp the sidecar
+  // The EPUB reader passes metadata it has just loaded, sidecar applied; stamp the sidecar
   // it came from so refreshSidecarMetadata() does not redo it. The XTC reader passes the book's own
   // header, so an XTC is left unstamped and its sidecar, if any, applied by the refresh.
-  if (FsHelpers::hasEpubExtension(path) || FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
-    newBook.metadataStamp = SidecarFiles::metadataStamp(path);
-  }
+  if (FsHelpers::hasEpubExtension(path)) newBook.metadataStamp = SidecarFiles::metadataStamp(path);
 
   pruneMissing();
 
