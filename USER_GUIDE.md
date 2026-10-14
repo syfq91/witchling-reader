@@ -12,7 +12,7 @@ Welcome to **Witchling Reader** firmware. This guide outlines the hardware contr
   - [3. Screens](#3-screens)
     - [3.1 Home Screen](#31-home-screen)
     - [3.2 Reading Mode](#32-reading-mode)
-    - [3.3 Browse Files Screen](#33-browse-files-screen)
+    - [3.3 File Browser Screen](#33-file-browser-screen)
     - [3.4 Recent Books Screen](#34-recent-books-screen)
     - [3.5 Book Info Screen](#35-book-info-screen)
     - [3.6 File Transfer Screen](#36-file-transfer-screen)
@@ -93,7 +93,7 @@ Upon turning the device on for the first time, you will be placed on the **[Home
 
 ### 3.1 Home Screen
 
-The Home screen is the main entry point to the firmware. It shows the most recently read book as a cover thumbnail and provides navigation to **[Reading Mode](#4-reading-mode)**, the **[Browse Files](#33-browse-files-screen)** screen, the **[Recent Books](#34-recent-books-screen)** screen, the **[File Transfer](#36-file-transfer-screen)** screen, and **[Settings](#37-settings)**.
+The Home screen is the main entry point to the firmware. It shows the most recently read book as a cover thumbnail and provides navigation to **[Reading Mode](#4-reading-mode)**, the **[File Browser](#33-file-browser-screen)** screen, the **[File Transfer](#36-file-transfer-screen)** screen, and **[Settings](#37-settings)**.
 
 **Correcting a book's title or author:** a metadata file next to an EPUB with the same name (`Some Book.opf` beside `Some Book.epub`) takes precedence over the details inside the book. The metadata editor plugin in the web interface writes one for you. The Home screen and Recent Books notice when that file is added, changed or removed, over USB or from the plugin, and show the new details without the book having to be opened first.
 
@@ -101,9 +101,9 @@ The Home screen is the main entry point to the firmware. It shows the most recen
 
 See [Reading Mode](#4-reading-mode) below for more information.
 
-### 3.3 Browse Files Screen
+### 3.3 File Browser Screen
 
-The Browse Files screen is a full-featured browser for your books and the folders they are in. It lists the books the reader can open (EPUB, XTC/XTCH, TXT and Markdown) and nothing else: a cover image or `.opf` file saved beside a book (see [sidecar files](docs/sidecar-files.md)) is not listed on its own, so a book downloaded from an OPDS catalogue shows up once. Images and every other file are in **Settings → System → Tools → All Files**.
+The File Browser screen is a full-featured browser for your books and the folders they are in. It features three tabs: **Recents** (recently opened and added books), **Books** (books and folders on device), and **All** (all files on the SD card). In the Books tab, it lists the books the reader can open (EPUB, XTC/XTCH, TXT and Markdown) and nothing else: a cover image or `.opf` file saved beside a book (see [sidecar files](docs/sidecar-files.md)) is not listed on its own, so a book downloaded from an OPDS catalogue shows up once. All other files and directories are accessible in the **All** tab.
 
 * **Navigate List:** Use **Left** (or **Volume Up**), or **Right** (or **Volume Down**) to move the selection cursor up and down through folders and books. Long-pressing these buttons scrolls a full page at a time.
 * **Open Selection:** Press **Confirm** to open a folder or read a selected book.
@@ -148,15 +148,15 @@ Folders with many entries are handled via an SD-card-backed index so memory use 
 
 ### 3.4 Recent Books Screen
 
-The Recent Books screen lists the books you opened last, newest first, from wherever they are on the card. Selecting a book opens it at the last read position, and a long **Confirm** on an EPUB fetches your KOReader progress first, as in Browse Files.
+The Recent Books screen lists the books you opened last, newest first, from wherever they are on the card. Selecting a book opens it at the last read position, and a long **Confirm** on an EPUB fetches your KOReader progress first, as in File Browser.
 
-It is Browse Files over that list, with the same three views — **Details** (the default), **Covers** and **Filenames** — chosen in the options menu under **Book view**. Recent Books remembers its own choice, so changing it here leaves Browse Files as it was. The keys are Browse Files' too: in Covers, **Up**/**Down** move a row and **Left**/**Right** one book, wrapping round at the ends; hold **Right** for the options menu. **Back** returns to the Home screen.
+It is File Browser over that list, with the same three views — **Details** (the default), **Covers** and **Filenames** — chosen in the options menu under **Book view**. Recent Books remembers its own choice, so changing it here leaves File Browser as it was. The keys are File Browser's too: in Covers, **Up**/**Down** move a row and **Left**/**Right** one book, wrapping round at the ends; hold **Right** for the options menu. **Back** returns to the Home screen.
 
-The options menu has what you can do with the selected book: open it, mark it as read, show its details, delete its cache, **Remove from recents** (it stays on the card) and **Go to folder**, which opens Browse Files in the folder the book is in.
+The options menu has what you can do with the selected book: open it, mark it as read, show its details, delete its cache, **Remove from recents** (it stays on the card) and **Go to folder**, which opens File Browser in the folder the book is in.
 
 ### 3.5 Book Info Screen
 
-The Book Info screen shows full metadata for a book: cover image, title, author, and description (paged if long). It is accessible from the context menu in Browse Files or from the reader menu while reading.
+The Book Info screen shows full metadata for a book: cover image, title, author, and description (paged if long). It is accessible from the context menu in File Browser or from the reader menu while reading.
 
 ### 3.6 File Transfer Screen
 
@@ -259,7 +259,7 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
   - On the keyboard, hold **Confirm** on a key for its alternate letter, such as an accented one or Ukrainian ґ and the extra Kazakh letters, or for the other case. Holding **Confirm** on Delete clears the whole text. Shift applies to the next letter only, and `-`, `=`, `.` and `,` are on the symbols page (**?123**).
 - **Show Hidden Files**: Show files and folders whose names start with `.`. "ON" / "OFF"
 - **Show File Extensions**: Show file extensions in the file browser. "ON" / "OFF"
-- **Book view**: How [Browse Files](#33-browse-files-screen) shows books. "Filenames" / "Details" / "Covers"
+- **Book view**: How [File Browser](#33-file-browser-screen) shows books. "Filenames" / "Details" / "Covers"
 
 **Network**:
 - **WiFi Networks**: Add, remove, and connect to WiFi networks.
@@ -268,7 +268,7 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 - **OPDS Servers**: Manage OPDS libraries. See [OPDS Servers (Multiple Libraries)](#375-opds-servers-multiple-libraries).
 
 
-- **All Files**: Browse every file on the SD card, not just books: images, cover and `.opf` files, firmware images and anything else. It works like [Browse Files](#33-browse-files-screen): **Confirm** opens a book or image, and on any other file it opens the menu, where you can **Move to folder** or **Remove** it. Images offer **Set as sleep screen**. Moving or removing a book here moves or removes that file only, not the cover and `.opf` beside it. **Back** at the top folder returns to Settings.
+- **All Files**: Browse every file on the SD card, not just books: images, cover and `.opf` files, firmware images and anything else. It works like [File Browser](#33-file-browser-screen): **Confirm** opens a book or image, and on any other file it opens the menu, where you can **Move to folder** or **Remove** it. Images offer **Set as sleep screen**. Moving or removing a book here moves or removes that file only, not the cover and `.opf` beside it. **Back** at the top folder returns to Settings.
 
 
 **System**:
@@ -391,7 +391,7 @@ This feature can be disabled in the **[Controls Settings](#373-controls)** to he
 
 ### System Navigation
 * **Return to Home:** Press the **Back** button to close the book and return to the **[Home](#31-home-screen)** screen.
-* **Return to Browse Files:** Press and hold the **Back** button to close the book and return to the **[Browse Files](#33-browse-files-screen)** screen.
+* **Return to File Browser:** Press and hold the **Back** button to close the book and return to the **[File Browser](#33-file-browser-screen)** screen.
 * **Reader Menu:** Press **Confirm** to open the reader menu, which includes: **[Table of Contents](#5-chapter-selection-screen)**, bookmarks, progression sync, quick per-book overrides (font, images, hyphenation, bionic reading…), take screenshot, and reader settings. Its entries are grouped into tabs. While the tab bar is selected, **Confirm** moves to the next tab, and its button hint names that tab. **Hold Up / Down** to switch tabs: each opens where you left it. **Hold Back** to close the book and return Home, as **Go Home** does; changes made in the menu are kept.
 * **Your place is kept by paragraph as well as by page.** If a book is laid out differently the next time you open it, for example after you changed the font size from outside the book or after a firmware update re-indexed it, it opens at the paragraph you were reading rather than at a page number scaled to the new length.
 

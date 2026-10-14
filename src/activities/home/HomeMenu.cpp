@@ -16,7 +16,7 @@ struct HomeMenuRow {
 
 // Display order, top to bottom.
 constexpr HomeMenuRow kRows[] = {
-    {{HomeMenuAction::FileBrowser, StrId::STR_BROWSE_FILES, Folder},
+    {{HomeMenuAction::FileBrowser, StrId::STR_FILE_BROWSER, Folder},
      Requires::Nothing,
      &CrossPointSettings::showBrowseFilesOnHome},
     {{HomeMenuAction::GlobalBookmarks, StrId::STR_GLOBAL_BOOKMARKS, Book},

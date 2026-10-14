@@ -109,7 +109,7 @@ void SettingsActivity::onEnter() {
   addToMoved(systemSettings, SettingInfo::Action(StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts));
   addToMoved(systemSettings, std::move(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network)
                                            .withSubcategory(StrId::STR_MENU_SYS_NETWORK)));
-  addToMoved(systemSettings, std::move(SettingInfo::Action(StrId::STR_OPDS_BROWSER, SettingAction::OPDSBrowser)
+  addToMoved(systemSettings, std::move(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser)
                                            .withSubcategory(StrId::STR_MENU_SYS_NETWORK)));
   // Every file on the card, images and sidecars included. Housekeeping rather than reading, so it
   // lives here and not on Home, whose browser lists only books.
