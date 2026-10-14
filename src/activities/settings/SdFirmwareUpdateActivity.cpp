@@ -121,7 +121,7 @@ void SdFirmwareUpdateActivity::promptConfirmation() {
   const auto pos = body.find_last_of('/');
   if (pos != std::string::npos) body = body.substr(pos + 1);
 
-  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, body, false),
+  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, body),
                          [this](const ActivityResult& result) { onConfirmationResult(result); });
 }
 

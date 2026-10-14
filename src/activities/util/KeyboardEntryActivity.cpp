@@ -8,7 +8,6 @@
 #include "KeyboardLayoutSet.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
-#include "components/themes/ButtonGeometry.h"
 #include "fontIds.h"
 
 namespace fui = freeink::ui;
@@ -32,7 +31,7 @@ int keyboardKeysHeight(const ThemeMetrics& metrics, const int rows, const bool h
 // (the top edge upside down, a side in landscape), so every edge below is taken
 // from here rather than from the screen.
 Rect keyboardContentRect(const GfxRenderer& renderer) {
-  return UITheme::getContentRect(renderer, true, ButtonGeometry::sideKeysOnOppositeEdges());
+  return UITheme::getContentRect(renderer, true, gpio.deviceIsX3());
 }
 
 // ---------------------------------------------------------------------------
