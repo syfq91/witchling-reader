@@ -86,6 +86,10 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
   // Whether network was connected using a saved password (skip save prompt)
   bool usedSavedPassword = false;
 
+  // A saved password the network turned down (see passwordLikelyWrong()): rejections of it go to
+  // the keyboard instead of another attempt.
+  std::string passwordSuspectSsid;
+
   // Whether to attempt auto-connect on entry
   const bool allowAutoConnect;
 
@@ -142,9 +146,13 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
   void showNetworkListFromAutoConnect();
   void selectNetwork(int index);
   void promptHiddenSsid();
-  void promptPasswordEntry();
+  void promptPasswordEntry(const char* title = nullptr);
   void attemptConnection();
   void checkConnectionStatus();
+  void abandonConnectAttempt();
+  bool passwordLikelyWrong() const;
+  bool askForPasswordIfLikelyWrong();
+  bool promptForSuspectNetwork();
   void issueWifiBegin();
   void applyScanBudget();
   void prepareForConnect();
@@ -157,9 +165,7 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
 
  public:
   explicit WifiSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool autoConnect = true)
-      : Activity("WifiSelection", renderer, mappedInput),
-        UiAppHost(renderer),
-        allowAutoConnect(autoConnect) {}
+      : Activity("WifiSelection", renderer, mappedInput), UiAppHost(renderer), allowAutoConnect(autoConnect) {}
   void onEnter() override;
   bool usesWifi() const override { return true; }
   void onExit() override;

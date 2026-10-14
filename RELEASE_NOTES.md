@@ -41,6 +41,9 @@ Changes pulled in from `jpirnay/witchhunt-reader` 2.40 that this fork carries. S
 - **A failed upload no longer leaves a cut-short file behind.** When the card fills or a write fails mid-upload, the partial file is deleted instead of being listed as a book.
 - **A failed download keeps the file it would replace.** OPDS downloads go to a temporary file that only swaps in once complete.
 - **A book with several authors shows its first author** in the OPDS list and in the download's file name.
+- **A saved Wi-Fi password that stopped working is asked for again.** When the network turns the saved password down (it was changed on the router, say), the reader used to report only a timeout. Now the keyboard opens headed **Saved password may be wrong**, and a password that connects can be saved over the old one; **Back** keeps the saved one. On the automatic connect the reader first tries your other saved networks in range, and asks for the rejected password once nothing else is left. Picking that network again in the same session goes straight to the keyboard.
+- **Fix: after a failed connect, the reader kept trying in the background.** It went on retrying the network with the error already on screen. An attempt you leave or that has failed now stops for good.
+- **Saved Wi-Fi passwords work after the card moves to another reader.** Passwords are stored scrambled with the reader's own key, so on another reader, or from a copied `wifi.json`, they came out wrong and the network turned them down. They are now read with the key of the reader that saved them, and stored again under the new reader's key. A card that an older firmware has already opened on the other reader cannot be recovered this way: type those passwords once more.
 
 #### Reader & display
 
