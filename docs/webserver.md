@@ -118,21 +118,9 @@ Once connected, the screen will display:
 
 ## Step 5: Using the Web Interface
 
-### Welcome Page
-
-The page you land on at `http://<device-ip>/` has one link per page:
-
-- **Open File Manager**: browse and manage the SD card (below)
-- **Settings**: device settings and saved networks (below)
-- **Font Manager**: install and remove SD-card fonts (below)
-- **Reading Stats**: your reading history (below)
-- **System Info**: device status and version, WiFi state, IP address, free memory and SD card usage
-
-<img src="./images/wifi/webserver_homepage.png" width="600">
-
 ### File Manager
 
-Click **File Manager** to access file management features.
+Navigating to `http://<device-ip>/` (or `http://<device-ip>/files`) opens the File Manager directly. From here you can also navigate to **Settings**, **Font Manager**, and **System Info** using the top navigation bar.
 
 #### Browsing Files
 
@@ -208,12 +196,6 @@ numbers as the Reading Stats screens on the device. From it you can **export** t
 The Fonts page lists the font families installed on the SD card and the families available online.
 You can install or update one or all of them (the device downloads them itself, so it needs internet
 access), upload a `.cpfont` file from your computer, or delete a family.
-
-### Plugins
-
-Small add-ons kept on the SD card can add cards to the File Manager and Settings pages, for example
-to edit a book's cover and metadata. They appear on their own once installed. See
-[SD-card web plugins](./sd-plugins.md).
 
 ### Other ways in
 

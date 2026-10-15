@@ -107,7 +107,6 @@ class CrossPointWebServer {
 
   // Request handlers
   void handleRoot() const;
-  void handleWelcomePage() const;
   void handleSystemInfoPage() const;
   void handleJszip() const;
   void handleNotFound() const;
@@ -160,30 +159,4 @@ class CrossPointWebServer {
   void handleGetWifiNetworks() const;
   void handlePostWifiNetwork();
   void handleDeleteWifiNetwork();
-
-
-  // Web-UI plugins: JS on the SD card that the Settings and File Manager pages
-  // discover and load, so the web interface can be extended without a firmware
-  // build. The firmware only lists the folders and serves their files - plugin
-  // code runs in the browser, never on the device, and reaches the card through
-  // the same endpoints the pages themselves use.
-  //
-  // Both endpoints are ported from crosspoint-reader PR #2734 ("feat: Add
-  // browser-side plugin system with SD card support", Justin Mitchell /
-  // @itsthisjustin). His /api/plugins and /plugin contract is preserved so
-  // plugins written for either firmware work on both; the implementations
-  // differ (streamed listing, low-memory guard, tighter manifest cap). None of
-  // that branch's device-capability endpoints are ported.
-  void handlePluginList() const;  // GET /api/plugins -> discovered plugins
-  void handlePluginFile() const;  // GET /plugin?name&file -> one file from its folder
-  // GET /api/relay?plugin&url -> fetch a URL the browser cannot reach itself.
-  // GET only, allowlisted per plugin manifest, no redirects, streamed not
-  // buffered. See the definition for why each of those is load-bearing.
-  void handleRelay();
-  // POST /api/fetch?plugin&url&dest -> download straight to the card, avoiding
-  // the double transfer of relaying through the browser and uploading back.
-  void handleFetchToSd();
-  // POST /api/plugin-fs?plugin&path -> write one small file. /upload already
-  // covers this; kept for compatibility with upstream-written plugins.
-  void handlePluginFs();
 };
