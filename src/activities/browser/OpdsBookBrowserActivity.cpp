@@ -30,6 +30,7 @@
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
 #include "network/OpdsProgressionSync.h"
+#include "util/ListGrammar.h"
 #include "util/OpdsFilename.h"
 #include "util/StringUtils.h"
 #include "util/UrlUtils.h"
@@ -426,8 +427,7 @@ void OpdsBookBrowserActivity::loop() {
     if (!entryOffsets.empty()) {
       const auto moveSelection = [this](const int index) {
         selectorIndex = index;
-        listNav.selected = index;
-        listNav.follow(static_cast<int>(entryOffsets.size()));
+        listNav.requestSelection(index);
         requestUpdate();
       };
 
@@ -542,8 +542,7 @@ void OpdsBookBrowserActivity::handleAction(const freeink::ui::ActionEvent& event
     case ACTION_SELECT_ENTRY:
       selectorIndex = event.value;
       if (!entryOffsets.empty() && selectorIndex >= 0 && selectorIndex < static_cast<int>(entryOffsets.size())) {
-        listNav.selected = selectorIndex;
-        listNav.follow(static_cast<int>(entryOffsets.size()));
+        listNav.requestSelection(selectorIndex);
         const auto entry = getEntry(selectorIndex);
         entry.type == OpdsEntryType::BOOK ? chooseBookFormat(entry) : navigateToEntry(entry);
       }
@@ -702,10 +701,16 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
         listNav.selected = selectorIndex;
         screen.syncListViewport(listNav, props, count);
 
-        if (listNav.followPending && drawn > 0) {
-          if (selectorIndex >= prevTop && selectorIndex < prevTop + drawn) {
-            listNav.top = prevTop;
-            props.topIndex = static_cast<uint16_t>(prevTop);
+        // Page-by-page screen turning: keep the viewport on the current page while the selection is
+        // within it, and flip to a brand new screen when stepping or jumping past page boundaries.
+        if (listNav.followPending) {
+          if (selectorIndex < 0) {
+            listNav.top = 0;
+            props.topIndex = 0;
+          } else {
+            const int newTop = ListGrammar::pageTopFor(selectorIndex, prevTop, drawn, listNav.visibleRows, count);
+            listNav.top = newTop;
+            props.topIndex = static_cast<uint16_t>(newTop);
           }
         }
 
