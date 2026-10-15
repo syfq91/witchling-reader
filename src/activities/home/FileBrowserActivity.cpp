@@ -1247,6 +1247,7 @@ void FileBrowserActivity::drawChrome() {
           : (model.path() != "/") ? model.path().substr(model.path().rfind('/') + 1)
             // At the root, All files says which browser this is: the rows alone look like the book one.
             : (model.getMode() == Mode::AllFiles) ? std::string(tr(STR_ALL_FILES))
+            : (model.getMode() == Mode::Books)    ? std::string(tr(STR_LIBRARY))
                                                   : std::string(tr(STR_FILE_BROWSER));
   // A narrowed folder is indistinguishable from a small one unless the header says otherwise.
   if (model.isFiltered()) {
