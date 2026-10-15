@@ -57,8 +57,7 @@ repair the ordinary post-swap state (the write buffer holds the previous page), 
 when a grayscale pass ran with the secondary away (`cleanupGrayscaleWithPreviousBuffer()` then restores
 nothing). `LineReaderActivity` and `XtcReaderActivity` do not override the hook at all.
 
-**Why it matters.** The Overlay and Quick Resume sleep screens, the frontlight drawer and screenshots
-all draw on top of the write buffer.
+**Why it matters.** The frontlight drawer and screenshots all draw on top of the write buffer.
 
 **Tried.** `restoreCurrentPageToBufferIfStale()`, which also fires when no displayed frame is
 available. Reverted with the rest.
@@ -69,32 +68,12 @@ available. Reverted with the rest.
 
 **Open.** `ActivityManager::goToSleep()` replaces the activity and pumps `loop()` without the
 `syncWriteBufferFromDisplayed()` + `prepareFramebufferForCapture()` pair that
-`dispatchLightPanelGesture()` runs. `SleepActivity::renderOverlaySleepScreen()` and
-`renderLastScreenSleepScreen()` then draw onto whatever the write buffer holds. From an EPUB, the
-replace runs `EpubReaderActivity::onExit()`, which calls `restoreCurrentPageToBufferIfPreRendered()`,
-so there only the sync half is missing.
-
-**Narrowed.** With AA on it is correct: every completed or aborted AA pass ends in
-`cleanupGrayscaleWithPreviousBuffer()`, which copies the displayed frame into the write buffer (X3,
-2026-09-24: Overlay sleep after two quick turns showed the current page). Still possible with AA off,
-or for a sleep in the ~0.5 s before the deferred AA pass runs.
-
-**Tried.** `goToSleep()` running the pair under a `RenderLock` before the pump. Reverted.
-
-**Next.** Repeat the test with AA off. Re-land only if it shows the previous page.
+`dispatchLightPanelGesture()` runs. (The legacy overlay sleep and Quick Resume sleep screens
+have been removed, so this now only concerns capture-based flows if any sleep screen needs the prior frame.)
 
 ## D4: Quick Resume saves the post-swap slot
 
-**Open.** `SleepActivity::renderLastScreenSleepScreen()` draws the moon and calls
-`displayBuffer(HALF_REFRESH)`, which swaps. `saveSleepFrameBuffer()` in `main.cpp` then writes
-`renderer.getFrameBuffer()`, which is now the other slot: the page without the moon (or, with AA off,
-the page before), not what the panel shows.
-
-**Why it matters.** On wake, `loadSleepFrameBuffer()` restores that frame as the reader page.
-
-**Tried.** Nothing on a device. The wake check (does the restored frame show the moon?) never ran.
-
-**Next.** Run the check. The fix is to call `syncWriteBufferFromDisplayed()` before the write.
+**Resolved.** Removed along with Quick Resume on Timeout. Sleep screens now draw afresh.
 
 ## D5: a resident secondary can hold a frame that was never displayed
 
@@ -279,9 +258,7 @@ the release.
 the bitmap (`// TODO: Rotate bits`). A bitmap that is not rotation-symmetric lies on its side outside
 the panel's native orientation. The busy indicator draws its hourglass with `drawLine()` to avoid this.
 
-**Where.** Callers: `BootActivity`, `SleepActivity` and `SystemInformationActivity` (`Logo120`),
-`SleepActivity::renderLastScreenSleepScreen()` (`MoonIcon`), the Quick Resume path in `main.cpp`
-(`LoadingIcon`).
+**Where.** Callers: `BootActivity`, `SleepActivity` and `SystemInformationActivity` (`Logo120`).
 
 **Next.** Rotate the bits per orientation in `drawImage()` and check each caller in all four
 orientations.

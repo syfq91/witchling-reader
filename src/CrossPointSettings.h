@@ -20,13 +20,7 @@ class CrossPointSettings {
   CrossPointSettings(const CrossPointSettings&) = delete;
   CrossPointSettings& operator=(const CrossPointSettings&) = delete;
 
-  enum SLEEP_SCREEN_MODE {
-    DARK = 0,
-    LIGHT = 1,
-    CUSTOM = 2,
-    COVER = 3,
-    SLEEP_SCREEN_MODE_COUNT
-  };
+  enum SLEEP_SCREEN_MODE { DARK = 0, LIGHT = 1, CUSTOM = 2, COVER = 3, SLEEP_SCREEN_MODE_COUNT };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
   enum SLEEP_IMAGE_PICK_MODE { PICK_RANDOM = 0, PICK_SEQUENTIAL = 1, SLEEP_IMAGE_PICK_MODE_COUNT };
   enum SLEEP_SCREEN_COVER_FILTER {
@@ -41,17 +35,8 @@ class CrossPointSettings {
     EQUALIZE_TONE = 4,
     SLEEP_SCREEN_COVER_FILTER_COUNT
   };
-  enum QUICK_RESUME_SLEEP_SCREEN {
-    QUICK_RESUME_NEVER = 0,
-    QUICK_RESUME_AFTER_TIMEOUT = 1,
-    QUICK_RESUME_SLEEP_SCREEN_COUNT
-  };
 
-  enum STATUS_BAR_PROGRESS_BAR {
-    BOOK_PROGRESS = 0,
-    HIDE_PROGRESS = 1,
-    STATUS_BAR_PROGRESS_BAR_COUNT
-  };
+  enum STATUS_BAR_PROGRESS_BAR { BOOK_PROGRESS = 0, HIDE_PROGRESS = 1, STATUS_BAR_PROGRESS_BAR_COUNT };
   enum STATUS_BAR_PROGRESS_BAR_THICKNESS {
     PROGRESS_BAR_THIN = 0,
     PROGRESS_BAR_NORMAL = 1,
@@ -59,11 +44,7 @@ class CrossPointSettings {
     STATUS_BAR_PROGRESS_BAR_THICKNESS_COUNT
   };
   enum STATUS_BAR_TITLE { BOOK_TITLE = 0, CHAPTER_TITLE = 1, HIDE_TITLE = 2, STATUS_BAR_TITLE_COUNT };
-  enum STATUS_BAR_POSITION {
-    STATUS_BAR_TOP = 0,
-    STATUS_BAR_BOTTOM = 1,
-    STATUS_BAR_POSITION_COUNT
-  };
+  enum STATUS_BAR_POSITION { STATUS_BAR_TOP = 0, STATUS_BAR_BOTTOM = 1, STATUS_BAR_POSITION_COUNT };
   // Compatibility aliases
   using STATUS_BAR_ITEMS_POSITION = STATUS_BAR_POSITION;
   static constexpr uint8_t STATUS_BAR_ITEMS_TOP = STATUS_BAR_TOP;
@@ -317,20 +298,14 @@ class CrossPointSettings {
   enum IMAGE_DITHERING { IMAGE_DITHER_BAYER = 0, IMAGE_DITHERING_COUNT };
 #endif
 
-
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
   // Sleep screen cover mode settings
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter
   uint8_t sleepScreenCoverFilter = NO_FILTER;
-  // Apply information overlay with reading progress on sleep cover
-  uint8_t sleepCoverOverlay = 0;
   // Sleep image pick mode (random vs sequential walk-through)
   uint8_t sleepImagePickMode = PICK_RANDOM;
-  // Quick Resume on Timeout: keep current page on display with a moon icon when sleeping by timeout,
-  // and on wake restore the page directly (skipping the boot screen).
-  uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
   // Status bar settings
   uint8_t statusBarPosition = STATUS_BAR_BOTTOM;
   uint8_t statusBarLeft = SLOT_BOOK_PERCENTAGE;

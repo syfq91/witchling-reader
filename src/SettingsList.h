@@ -15,7 +15,6 @@
 
 #include "CrossPointSettings.h"
 #include "SdCardFontGlobals.h"
-
 #include "activities/settings/SettingInfo.h"
 
 // Shared settings list used by both the device settings UI and the web settings API.
@@ -64,7 +63,6 @@ inline std::string getRefreshFrequencyDisplay(void*) {
   if (v == 0) return std::string(tr(STR_NEVER));
   return std::to_string(v) + tr(STR_PAGES_SUFFIX);
 }
-
 
 // The visitor forEachSetting() hands the builder below, behind a plain function pointer. As a
 // template parameter it compiled the whole ~115-row builder once per visitor, seven copies of
@@ -142,21 +140,8 @@ inline void buildSettings(const RowSink& emit) {
                          {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED,
                           StrId::STR_FILTER_ADAPTIVE, StrId::STR_FILTER_EQUALIZE},
                          "sleepScreenCoverFilter", StrId::STR_CAT_DISPLAY));
-  emit(SettingInfo::Enum(
-           StrId::STR_SLEEP_COVER_OVERLAY, &CrossPointSettings::sleepCoverOverlay,
-           {StrId::STR_OVERLAY_OFF, StrId::STR_OVERLAY_WHITE, StrId::STR_OVERLAY_GRAY, StrId::STR_OVERLAY_BLACK},
-           "sleepCoverOverlay", StrId::STR_CAT_DISPLAY)
-           .withSelectorActivity());
   emit(SettingInfo::Enum(StrId::STR_SLEEP_IMAGE_PICK_MODE, &CrossPointSettings::sleepImagePickMode,
                          {StrId::STR_RANDOM, StrId::STR_SEQUENTIAL}, "sleepImagePickMode", StrId::STR_CAT_DISPLAY));
-  // A TOGGLE, not a two-option ENUM over Off/On -- which is what this used to be. The field is
-  // QUICK_RESUME_SLEEP_SCREEN (NEVER=0 / AFTER_TIMEOUT=1) and every consumer compares it
-  // numerically, so nothing about the stored value changes: JsonSettingsIO clamps an ENUM to
-  // enumValues.size() and a TOGGLE to 2, which for this row is the same bound. What does change is
-  // that the row now draws as a switch like every other on/off setting, and the web API reports it
-  // as "toggle" so the browser renders a checkbox rather than a two-item dropdown.
-  emit(SettingInfo::Toggle(StrId::STR_QUICK_RESUME_TIMEOUT, &CrossPointSettings::quickResumeSleepScreen,
-                           "quickResumeSleepScreen", StrId::STR_CAT_DISPLAY));
   emit(SettingInfo::Enum(StrId::STR_HIDE_BATTERY, &CrossPointSettings::hideBatteryPercentage,
                          {StrId::STR_NEVER, StrId::STR_IN_READER, StrId::STR_ALWAYS}, "hideBatteryPercentage",
                          StrId::STR_CAT_DISPLAY)
@@ -187,8 +172,6 @@ inline void buildSettings(const RowSink& emit) {
   emit(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                            StrId::STR_CAT_DISPLAY)
            .requiring(SettingRequires::SunlightFadingPanel));
-
-
 
   // --- Reader ---
   // General reader settings
@@ -294,8 +277,7 @@ inline void buildSettings(const RowSink& emit) {
            .withSubmenu(StrId::STR_BTN_CONFIRM)
            .withSelectorActivity());
   emit(SettingInfo::Enum(StrId::STR_BTN_LONG_PRESS, &CrossPointSettings::btnLongConfirm,
-                         makeBtnActionOptions(StrId::STR_BTN_DEF_IGNORE), "btnLongConfirm",
-                         StrId::STR_CAT_CONTROLS)
+                         makeBtnActionOptions(StrId::STR_BTN_DEF_IGNORE), "btnLongConfirm", StrId::STR_CAT_CONTROLS)
            .withSubmenu(StrId::STR_BTN_CONFIRM)
            .withSelectorActivity());
   // Left button: short=previous page, double=ignore, long=chapter back
@@ -393,9 +375,13 @@ inline void buildSettings(const RowSink& emit) {
   emit(SettingInfo::Enum(StrId::STR_STATUS_BAR_LOCATION, &CrossPointSettings::statusBarPosition,
                          {StrId::STR_TOP, StrId::STR_BOTTOM}, "statusBarPosition", StrId::STR_CUSTOMISE_STATUS_BAR));
   const std::vector<StrId> slotChoices = {
-      StrId::STR_HIDE,                  StrId::STR_BATTERY,                 StrId::STR_STATUS_BAR_PAGE_COUNT,
-      StrId::STR_STATUS_BAR_PERCENTAGE, StrId::STR_STATUS_BAR_PAGE_AND_PERCENTAGE,
-      StrId::STR_STATUS_BAR_CHAPTER_TITLE, StrId::STR_STATUS_BAR_BOOK_TITLE,
+      StrId::STR_HIDE,
+      StrId::STR_BATTERY,
+      StrId::STR_STATUS_BAR_PAGE_COUNT,
+      StrId::STR_STATUS_BAR_PERCENTAGE,
+      StrId::STR_STATUS_BAR_PAGE_AND_PERCENTAGE,
+      StrId::STR_STATUS_BAR_CHAPTER_TITLE,
+      StrId::STR_STATUS_BAR_BOOK_TITLE,
   };
   emit(SettingInfo::Enum(StrId::STR_STATUS_BAR_LEFT, &CrossPointSettings::statusBarLeft, slotChoices, "statusBarLeft",
                          StrId::STR_CUSTOMISE_STATUS_BAR));

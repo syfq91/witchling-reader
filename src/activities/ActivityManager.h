@@ -146,7 +146,7 @@ class ActivityManager {
   // The same, searching `query` on arrival: a finished book's "more by this author". Back goes Home.
   void goToBrowserWithSearch(std::string query);
   void goToReader(std::string path);
-  // fromTimeout=true marks this as an auto-sleep (used to gate Quick Resume on Timeout).
+  // fromTimeout=true marks this as an auto-sleep.
   void goToSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);

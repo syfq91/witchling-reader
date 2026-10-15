@@ -17,7 +17,6 @@ struct PendingBookmarkJumpState {
   }
 };
 
-
 class CrossPointState {
   // Static instance
   static CrossPointState instance;
@@ -31,8 +30,7 @@ class CrossPointState {
   // Options > View. Its own, not Browse Files' (SETTINGS.fileBrowserView): changing one leaves the
   // other as it was. Details (list view) by default.
   uint8_t recentBooksView = 1;
-  // When false, setup() skips the boot screen on wake and instead restores the
-  // saved framebuffer overlaid with a loading icon (Quick Resume).
+  // When false, setup() skips the boot screen on wake (used by reader resume).
   bool showBootScreen = true;
   PendingBookmarkJumpState pendingBookmarkJump;
   ~CrossPointState() = default;

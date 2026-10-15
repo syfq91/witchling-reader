@@ -63,7 +63,7 @@ void HalDisplay::begin(bool seamless) {
   }
 
   // Request resync after specific wakeup events to ensure clean display state.
-  // Skip when seamless=true so the current panel content is preserved (Quick Resume).
+  // Skip when seamless=true so the current panel content is preserved (e.g. reader resume).
   if (!seamless) {
     const auto wakeupReason = gpio.getWakeupReason();
     if (wakeupReason == HalGPIO::WakeupReason::PowerButton || wakeupReason == HalGPIO::WakeupReason::AfterFlash ||

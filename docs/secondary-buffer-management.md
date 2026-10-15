@@ -105,9 +105,6 @@ refresh.
 - `ActivityManager::dispatchLightPanelGesture()` and the screenshot path in `main.cpp`: sync, then
   `prepareFramebufferForCapture()`, which lets the reader re-render the current page when the write
   buffer holds a pre-render.
-- `SleepActivity::renderOverlaySleepScreen()` and `renderLastScreenSleepScreen()`: they draw onto
-  whatever the write buffer holds.
-- `saveSleepFrameBuffer()` in `main.cpp`: saves `getFrameBuffer()` after the sleep screen's refresh.
 
 ---
 
@@ -293,8 +290,7 @@ the secondary is lent, which is why `trimMemoryForNetworkSession()` returns a le
 reader's pre-reboot image warm pass.
 
 Deep sleep: `SleepActivity` releases the secondary for cover and custom screens and never reallocs;
-waking resets the chip. Quick Resume saves `getFrameBuffer()` to the SD card after the sleep screen
-(`saveSleepFrameBuffer()`); on wake `loadSleepFrameBuffer()` loads it and pushes it with HALF.
+waking resets the chip.
 
 ### Code patterns
 

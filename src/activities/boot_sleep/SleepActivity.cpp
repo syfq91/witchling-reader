@@ -20,13 +20,11 @@
 #include <memory>
 #include <new>
 
-#include "../reader/EpubProgressRecord.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
-#include "images/MoonIcon.h"
 
 namespace {
 
@@ -173,7 +171,7 @@ void shipSleepGrayBase(const GfxRenderer& renderer) {
   }
 }
 
-bool renderPngSleepScreen(const std::string& filename, GfxRenderer& renderer, const BookOverlayInfo& overlayInfo) {
+bool renderPngSleepScreen(const std::string& filename, GfxRenderer& renderer) {
   constexpr size_t MIN_FREE_HEAP = 60 * 1024;  // PNG decoder ~42 KB + overhead
   if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
     LOG_ERR("SLP", "Not enough heap for PNG sleep image: %s", filename.c_str());
@@ -243,45 +241,6 @@ bool renderPngSleepScreen(const std::string& filename, GfxRenderer& renderer, co
   // cache filename, so no separate invalidation is needed.
   if (!useCache && cacheW > 0) config.cachePath = cachePath;
 
-  // Overlay drawing is shared across all three rendering passes (BW + LSB + MSB) so the
-  // text appears on every plane. Captured by reference so the lambda sees the renderer.
-  const auto drawOverlay = [&]() {
-    if (overlayInfo.progressText.empty()) {
-      return;
-    }
-    const int lineHeight12 = renderer.getLineHeight(BOOKERLY_12_FONT_ID);
-    const int lineHeight10 = renderer.getLineHeight(UI_10_FONT_ID);
-    constexpr int lineSpacing = 3;
-    constexpr int sectionSpacing = 10;
-    const int maxTextWidth = pageWidth - 20;
-
-    int textBlockHeight = 0;
-    if (!overlayInfo.title.empty()) {
-      textBlockHeight += lineHeight12;
-      textBlockHeight += overlayInfo.author.empty() ? sectionSpacing : lineSpacing;
-    }
-    if (!overlayInfo.author.empty()) {
-      textBlockHeight += lineHeight10 + sectionSpacing;
-    }
-    textBlockHeight += lineHeight10;
-
-    const int overlayY = pageHeight - textBlockHeight - (lineHeight12 / 3) - (lineHeight10 * 2 / 3);
-    int y = overlayY + (lineHeight12 / 3);
-    if (!overlayInfo.title.empty()) {
-      const std::string title = renderer.truncatedText(BOOKERLY_12_FONT_ID, overlayInfo.title.c_str(), maxTextWidth);
-      renderer.drawText(BOOKERLY_12_FONT_ID, 10, y, title.c_str(), true);
-      y += lineHeight12;
-      y += overlayInfo.author.empty() ? sectionSpacing : lineSpacing;
-    }
-    if (!overlayInfo.author.empty()) {
-      const std::string author = renderer.truncatedText(UI_10_FONT_ID, overlayInfo.author.c_str(), maxTextWidth);
-      renderer.drawText(UI_10_FONT_ID, 10, y, author.c_str(), true);
-      y += lineHeight10 + sectionSpacing;
-    }
-    const std::string progress = renderer.truncatedText(UI_10_FONT_ID, overlayInfo.progressText.c_str(), maxTextWidth);
-    renderer.drawText(UI_10_FONT_ID, 10, y, progress.c_str(), true);
-  };
-
   PngToFramebufferConverter decoder;
 
   // Native grayscale: one decode, one push, every level the panel has.
@@ -311,12 +270,6 @@ bool renderPngSleepScreen(const std::string& filename, GfxRenderer& renderer, co
 
       renderer.setRenderMode(GfxRenderer::BW);
       if (decoder.decodeToFramebuffer(filename, renderer, nativeConfig)) {
-        // The overlay is 1-bit text and wants to stay that way: drawn through the
-        // normal render path into a cleared framebuffer, then stamped onto the
-        // canvas as solid black. Dithering it with the image would only soften it.
-        renderer.clearScreen();
-        drawOverlay();
-        renderer.stampBwOntoGray8Canvas(canvas, canvasStride);
         renderer.displayGray8Canvas();
         LOG_INF("SLP", "Sleep image rendered at %u levels: %s", static_cast<unsigned>(renderer.getGrayLevels()),
                 filename.c_str());
@@ -340,7 +293,6 @@ bool renderPngSleepScreen(const std::string& filename, GfxRenderer& renderer, co
     // decoding again.
     useCache = !config.cachePath.empty() && Storage.exists(cachePath.c_str());
   }
-  drawOverlay();
   // Fire the BW scrub without waiting where that is safe (see shipSleepGrayBase): the
   // waveform runs on the controller's own RAM, so the LSB decode below (CPU/SD-only work)
   // overlaps it. copyGrayscaleLsbBuffers() drains the pending finish before its SPI plane write.
@@ -364,7 +316,6 @@ bool renderPngSleepScreen(const std::string& filename, GfxRenderer& renderer, co
     renderer.setRenderMode(GfxRenderer::BW);
     return false;
   }
-  drawOverlay();
   renderer.copyGrayscaleLsbBuffers();
 
   // Pass 3: GRAYSCALE_MSB plane.
@@ -374,7 +325,6 @@ bool renderPngSleepScreen(const std::string& filename, GfxRenderer& renderer, co
     renderer.setRenderMode(GfxRenderer::BW);
     return false;
   }
-  drawOverlay();
   renderer.copyGrayscaleMsbBuffers();
 
   renderer.displayGrayBuffer();
@@ -470,15 +420,6 @@ void SleepActivity::onEnter() {
 void SleepActivity::renderSleepScreen() {
   RenderLock lock(*this);
 
-  // Quick Resume: paint a moon icon over the current page and keep the framebuffer
-  // intact for the next wake, on timeout sleeps when "Quick Resume on Timeout" is on.
-  const bool renderQuickResume =
-      fromTimeout &&
-      SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-  if (renderQuickResume) {
-    return renderLastScreenSleepScreen();
-  }
-
   // No "Entering sleep..." popup here: it shipped a full extra refresh (~500 ms on X3)
   // before the sleep screen's own refresh; the sleep screen appearing is the feedback.
   // The one exception is a cover that still has to be built — renderCoverSleepScreen()
@@ -511,19 +452,13 @@ void SleepActivity::renderCustomSleepScreen() const {
   // right after.
   if (renderer.hasSecondaryBuffer()) renderer.releaseSecondaryBuffer();
 
-  const BookOverlayInfo overlayInfo{};
-  const bool shouldLoadOverlayInfo =
-      SETTINGS.sleepCoverOverlay != 0 && APP_STATE.lastSleepFromReader && !APP_STATE.openEpubPath.empty();
-
   // An explicitly selected custom sleep image should override random images from /.sleep or /sleep.
   FsFile explicitSleepFile;
   if (Storage.openFileForRead("SLP", "/sleep.bmp", explicitSleepFile)) {
     Bitmap bitmap(explicitSleepFile, true, sleepImageToneMapping(), sleepEqualizeBlend(renderer));
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("SLP", "Loading explicit custom sleep image: /sleep.bmp");
-      const BookOverlayInfo resolvedOverlayInfo =
-          shouldLoadOverlayInfo ? getBookOverlayInfo(APP_STATE.openEpubPath) : overlayInfo;
-      renderBitmapSleepScreen(bitmap, resolvedOverlayInfo);
+      renderBitmapSleepScreen(bitmap);
       explicitSleepFile.close();
       return;
     }
@@ -531,10 +466,8 @@ void SleepActivity::renderCustomSleepScreen() const {
   }
   if (Storage.openFileForRead("SLP", "/sleep.png", explicitSleepFile)) {
     explicitSleepFile.close();
-    const BookOverlayInfo resolvedOverlayInfo =
-        shouldLoadOverlayInfo ? getBookOverlayInfo(APP_STATE.openEpubPath) : overlayInfo;
     LOG_DBG("SLP", "Loading explicit custom sleep image: /sleep.png");
-    if (renderPngSleepScreen("/sleep.png", renderer, resolvedOverlayInfo)) {
+    if (renderPngSleepScreen("/sleep.png", renderer)) {
       return;
     }
   }
@@ -543,18 +476,16 @@ void SleepActivity::renderCustomSleepScreen() const {
   const auto files = collectSleepImages(/*allowPng=*/true);
   const auto numFiles = files.size();
   if (numFiles > 0) {
-    const BookOverlayInfo resolvedOverlayInfo =
-        shouldLoadOverlayInfo ? getBookOverlayInfo(APP_STATE.openEpubPath) : overlayInfo;
     const auto renderSleepImage = [&](const std::string& filename) -> bool {
       if (FsHelpers::hasPngExtension(filename)) {
-        return renderPngSleepScreen(filename, renderer, resolvedOverlayInfo);
+        return renderPngSleepScreen(filename, renderer);
       }
       FsFile file;
       if (!Storage.openFileForRead("SLP", filename, file)) return false;
       delay(100);
       Bitmap bitmap(file, true, sleepImageToneMapping(), sleepEqualizeBlend(renderer));
       const bool parsed = bitmap.parseHeaders() == BmpReaderError::Ok;
-      if (parsed) renderBitmapSleepScreen(bitmap, resolvedOverlayInfo);
+      if (parsed) renderBitmapSleepScreen(bitmap);
       file.close();
       return parsed;
     };
@@ -599,97 +530,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
 
-BookOverlayInfo SleepActivity::getBookOverlayInfo(const std::string& bookPath) const {
-  BookOverlayInfo info;
-
-  if (FsHelpers::checkFileExtension(bookPath, ".xtc") || FsHelpers::checkFileExtension(bookPath, ".xtch")) {
-    Xtc xtc(bookPath, "/.crosspoint");
-    if (xtc.load()) {
-      info.title = xtc.getTitle();
-      info.author = xtc.getAuthor();
-
-      FsFile f;
-      if (Storage.openFileForRead("SLP", xtc.getCachePath() + "/progress.bin", f)) {
-        uint8_t data[4];
-        if (f.read(data, 4) == 4) {
-          uint32_t currentPage = static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8) |
-                                 (static_cast<uint32_t>(data[2]) << 16) | (static_cast<uint32_t>(data[3]) << 24);
-          uint32_t totalPages = xtc.getPageCount();
-          float progress = xtc.calculateProgress(currentPage) * 100.0f;
-          char buf[64];
-          snprintf(buf, sizeof(buf), tr(STR_OVERLAY_READING_PROGRESS), (unsigned long)currentPage + 1, totalPages,
-                   progress);
-          info.progressText = buf;
-        }
-        f.close();
-      }
-    }
-  } else if (FsHelpers::checkFileExtension(bookPath, ".epub")) {
-    Epub epub(bookPath, "/.crosspoint");
-    if (epub.load(true, true)) {
-      info.title = epub.getTitle();
-      info.author = epub.getAuthor();
-
-      FsFile f;
-      if (Storage.openFileForRead("SLP", epub.getCachePath() + "/progress.bin", f)) {
-        uint8_t data[EpubProgressRecord::kMaxSize];
-        const int dataSize = f.read(data, sizeof(data));
-        f.close();
-        if (const auto record = EpubProgressRecord::decode(data, dataSize > 0 ? static_cast<size_t>(dataSize) : 0)) {
-          const int currentSpineIndex = record->spineIndex;
-          const int currentPage = record->page;
-          const int pageCount = record->pageCount;
-          if (pageCount > 0) {
-            float chapterProgress = static_cast<float>(currentPage) / static_cast<float>(pageCount);
-            float bookProgress = epub.calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
-
-            // The reader records what its status bar showed when it closed the book: the page within
-            // the whole TOC chapter (#325) and the printed page. Records without it (older ones, a
-            // sync restore, a bookmark jump) count the page within its spine item, and pull the
-            // printed-page label (NCX <pageList> / EPUB 3 nav page-list / EPUB 2.01 page-map /
-            // inline doc-pagebreak) from the section cache without instantiating a Section +
-            // render parameters.
-            const auto& shown = record->shown;
-            const bool shownChapter = shown && shown->chapterTotal > 0;
-            std::string printedPagePrefix;
-            if (shown) {
-              if (!shown->printedPage.empty()) printedPagePrefix = shown->printedPage + " ";
-            } else if (const auto label = Section::getPrintedPageLabelFromCache(epub.getCachePath(), currentSpineIndex,
-                                                                                static_cast<uint16_t>(currentPage))) {
-              printedPagePrefix = *label + " ";
-            }
-
-            const int tocIndex = epub.getTocIndexForSpineIndex(currentSpineIndex);
-            if (tocIndex != -1) {
-              const auto tocItem = epub.getTocItem(tocIndex);
-              info.chapterName = tocItem.title;
-              const int chapterPage = shownChapter ? shown->chapterPage : currentPage + 1;
-              const int chapterTotal = shownChapter ? shown->chapterTotal : pageCount;
-              char suffix[64];
-              snprintf(suffix, sizeof(suffix), tr(STR_OVERLAY_CHAPTER_PAGE_SUFFIX), chapterPage, chapterTotal,
-                       bookProgress);
-              info.progressSuffix = printedPagePrefix + suffix;
-              info.progressText = info.chapterName + info.progressSuffix;
-            } else {
-              char buf[80];
-              snprintf(buf, sizeof(buf), tr(STR_OVERLAY_READING_PROGRESS), (unsigned long)currentPage + 1,
-                       (unsigned)pageCount, bookProgress);
-              info.progressText = printedPagePrefix + buf;
-            }
-          } else {
-            char buf[64];
-            snprintf(buf, sizeof(buf), tr(STR_OVERLAY_READING_PROGRESS_NO_TOTAL), (unsigned long)currentPage + 1);
-            info.progressText = buf;
-          }
-        }
-      }
-    }
-  }
-
-  return info;
-}
-
-void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const BookOverlayInfo& overlayInfo) const {
+void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
   int x, y;
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -744,8 +585,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const BookOver
   // On a panel that resolves more than four levels the image is painted straight
   // into the panel's own canvas at full depth further down, and this 2-bit pass
   // would be a whole extra read of the BMP off the SD card for a rendition that is
-  // then discarded. The framebuffer is still wanted -- cleared, carrying the
-  // overlay alone -- so the overlay can be composited over the grey image.
+  // then discarded.
   //
   // hasGreyscale gates it for the same reason it gates the plane path below: the
   // 1-bit and inverted filters have no levels to preserve, and the inversion
@@ -760,85 +600,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const BookOver
     }
   }
 
-  const uint8_t overlayMode = SETTINGS.sleepCoverOverlay;
-  // Set by drawOverlay() to the block it actually drew, and left at zero height
-  // when it draws nothing. The native path below composites this rectangle rather
-  // than stamping black pixels, because the block is opaque and its text may be
-  // white -- neither survives a stamp. See compositeBwRectOntoGray8Canvas.
-  int overlayRectY = 0;
-  int overlayRectHeight = 0;
-  const auto drawOverlay = [&]() {
-    const bool hasTitle = !overlayInfo.title.empty();
-    const bool hasProgress = !overlayInfo.progressText.empty();
-    const bool hasAuthor = !overlayInfo.author.empty();
-    // If there is no overlay progress text, do not draw the overlay background block.
-    if (!hasProgress) {
-      return;
-    }
-
-    const int lineHeight12 = renderer.getLineHeight(BOOKERLY_12_FONT_ID);
-    const int lineHeight10 = renderer.getLineHeight(UI_10_FONT_ID);
-    constexpr int lineSpacing = 3;
-    constexpr int sectionSpacing = 10;
-    const int availableWidth = pageWidth - 20;
-
-    int textBlockHeight = lineHeight10;  // progress line (always present here)
-    if (hasTitle) {
-      textBlockHeight += lineHeight12;
-      textBlockHeight += hasAuthor ? lineSpacing : sectionSpacing;
-    }
-    if (hasAuthor) {
-      textBlockHeight += lineHeight10 + sectionSpacing;
-    }
-
-    const bool textBlack = (overlayMode != 3);
-    const int topPadding = lineHeight12 / 3;
-    const int bottomPadding = lineHeight10 * 2 / 3;
-    const int overlayHeight = textBlockHeight + topPadding + bottomPadding;
-    const int overlayY = pageHeight - overlayHeight;
-    overlayRectY = overlayY;
-    overlayRectHeight = overlayHeight;
-
-    if (overlayMode == 2) {
-      renderer.fillRectDither(0, overlayY, pageWidth, overlayHeight, Color::LightGray);
-    } else {
-      renderer.fillRect(0, overlayY, pageWidth, overlayHeight, overlayMode == 3);
-    }
-
-    int currentY = overlayY + topPadding;
-
-    if (hasTitle) {
-      const std::string titleStr =
-          renderer.truncatedText(BOOKERLY_12_FONT_ID, overlayInfo.title.c_str(), availableWidth, EpdFontFamily::BOLD);
-      renderer.drawCenteredText(BOOKERLY_12_FONT_ID, currentY, titleStr.c_str(), textBlack, EpdFontFamily::BOLD);
-      currentY += lineHeight12 + (hasAuthor ? lineSpacing : sectionSpacing);
-    }
-
-    if (hasAuthor) {
-      const std::string authorStr = renderer.truncatedText(UI_10_FONT_ID, overlayInfo.author.c_str(), availableWidth);
-      renderer.drawCenteredText(UI_10_FONT_ID, currentY, authorStr.c_str(), textBlack);
-      currentY += lineHeight10 + sectionSpacing;
-    }
-
-    std::string progressStr;
-    if (!overlayInfo.chapterName.empty()) {
-      const int suffixWidth = renderer.getTextWidth(UI_10_FONT_ID, overlayInfo.progressSuffix.c_str());
-      const int maxChapterWidth = availableWidth - suffixWidth;
-      const std::string truncatedChapter =
-          maxChapterWidth > 0 ? renderer.truncatedText(UI_10_FONT_ID, overlayInfo.chapterName.c_str(), maxChapterWidth)
-                              : "";
-      progressStr = truncatedChapter + overlayInfo.progressSuffix;
-    } else {
-      progressStr = renderer.truncatedText(UI_10_FONT_ID, overlayInfo.progressText.c_str(), availableWidth);
-    }
-    renderer.drawCenteredText(UI_10_FONT_ID, currentY, progressStr.c_str(), textBlack);
-  };
-
-  drawOverlay();
-
-  // Native grayscale: the image goes into the panel's own canvas at full depth,
-  // and the framebuffer -- cleared above, and holding nothing but the overlay
-  // drawOverlay() just drew -- is composited on top of it.
+  // Native grayscale: the image goes into the panel's own canvas at full depth.
   if (nativeGray) {
     uint16_t canvasStride = 0;
     if (uint8_t* canvas = renderer.borrowGray8Canvas(&canvasStride)) {
@@ -848,12 +610,6 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const BookOver
       const GfxRenderer::Gray8Target target{canvas, canvasStride};
       bitmap.rewindToData();
       renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY, &target);
-      // Composite the overlay's whole block rather than stamping its dark pixels:
-      // the block is opaque, and in mode 3 it is black with WHITE text, so a
-      // stamp would drop the fill and the text with it.
-      if (overlayRectHeight > 0) {
-        renderer.compositeBwRectOntoGray8Canvas(target, 0, overlayRectY, pageWidth, overlayRectHeight);
-      }
       renderer.displayGray8Canvas();
       LOG_INF("SLP", "Sleep bitmap rendered at %u levels", static_cast<unsigned>(renderer.getGrayLevels()));
       return;
@@ -894,9 +650,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const BookOver
 
     // A differential plane starts empty and lets the B/W base supply black and
     // white. An absolute plane carries the whole frame, so it starts white --
-    // a clear bit is no longer "leave as is" -- and the overlay goes in as
-    // ordinary BW, which is already the right bits when white is 11 and black
-    // 00 across the pair.
+    // a clear bit is no longer "leave as is".
     const auto renderPlane = [&](const GfxRenderer::RenderMode mode) {
       bitmap.rewindToData();
       renderer.clearScreen(absolutePass ? 0xFF : 0x00);
@@ -906,7 +660,6 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const BookOver
       // setRenderMode(BW) also clears the absolute flag, hence re-arming it per
       // plane above.
       if (absolutePass) renderer.setRenderMode(GfxRenderer::BW);
-      drawOverlay();
     };
 
     renderPlane(GfxRenderer::GRAYSCALE_LSB);
@@ -992,10 +745,7 @@ void SleepActivity::renderCoverSleepScreen() const {
     Bitmap bitmap(file, /*dithering=*/true, sleepImageToneMapping(), sleepEqualizeBlend(renderer));
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("SLP", "Rendering sleep cover: %s", coverBmpPath.c_str());
-      const uint8_t overlayMode = SETTINGS.sleepCoverOverlay;
-      const BookOverlayInfo coverOverlayInfo =
-          overlayMode != 0 ? getBookOverlayInfo(APP_STATE.openEpubPath) : BookOverlayInfo{};
-      renderBitmapSleepScreen(bitmap, coverOverlayInfo);
+      renderBitmapSleepScreen(bitmap);
       file.close();
       return;
     }
@@ -1003,13 +753,4 @@ void SleepActivity::renderCoverSleepScreen() const {
   }
 
   return renderDefaultSleepScreen();
-}
-
-void SleepActivity::renderLastScreenSleepScreen() const {
-  // Keep whatever is currently in the framebuffer (the reader page) and overlay a small moon
-  // icon to signal sleep. main.cpp persists the framebuffer to SD so the next wake can restore
-  // it before the boot screen would otherwise paint.
-  const auto pageHeight = renderer.getScreenHeight();
-  renderer.drawImage(MoonIcon, 0, pageHeight - MOONICON_HEIGHT, MOONICON_WIDTH, MOONICON_HEIGHT);
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
