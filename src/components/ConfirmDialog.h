@@ -41,35 +41,18 @@ struct Spec {
   uint8_t messageMaxLines = 4;
 };
 
-// Cancel left, accept right, fixed, and the alternate between them. The hint strip's order DOES
-// follow the orientation (mapLabels swaps the pair when the front strip runs bottom-to-top), but
-// these are a different control in a different frame: a reader aims at the button that says Clear,
-// not at the one that happens to sit under a physical key. Keeping one order means the destructive
-// answer is never where the safe one was a moment ago.
+// Answers are displayed exclusively on the physical button hint strip at the bottom of the screen.
+// ConfirmDialog renders the modal card containing the title, headline, and message text.
 inline void draw(UiAppHost::UiScreen& screen, const Spec& spec) {
   namespace fui = freeink::ui;
   const auto& theme = screen.theme();
-
-  fui::DialogOption options[3];
-  uint8_t optionCount = 0;
-  options[optionCount].label = spec.cancelLabel;
-  options[optionCount++].action = spec.cancelAction;
-  if (spec.alternateLabel) {
-    options[optionCount].label = spec.alternateLabel;
-    options[optionCount++].action = spec.alternateAction;
-  }
-  options[optionCount].label = spec.acceptLabel;
-  options[optionCount++].action = spec.acceptAction;
 
   fui::OptionDialogProps props;
   props.title = spec.title;
   props.headline = spec.headline;
   props.message = spec.message;
-  props.options = options;
-  props.optionCount = optionCount;
-  // Three answers are stacked, one full-width button each: side by side they get a third of the
-  // panel, and translated labels ("Réinitialiser les infos") do not fit in that.
-  props.verticalOptions = optionCount > 2;
+  props.options = nullptr;
+  props.optionCount = 0;
 
   props.titleText = theme.smallText;
   props.titleText.align = fui::TextAlign::Center;
@@ -81,10 +64,6 @@ inline void draw(UiAppHost::UiScreen& screen, const Spec& spec) {
   props.messageText = theme.bodyText;
   props.messageText.align = fui::TextAlign::Center;
   props.messageText.maxLines = spec.messageMaxLines;
-  props.buttonText = theme.bodyText;
-  props.buttonText.bold = true;
-  props.buttonText.align = fui::TextAlign::Center;
-  props.buttonHeight = theme.minTouchSize;
   props.gap = theme.spaceMd;
 
   // The panel is sized to its text and is not clipped, so a long message (release notes, in

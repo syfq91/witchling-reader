@@ -8,11 +8,8 @@
 #include "components/UiAppHost.h"
 
 // The one way a screen asks a two-answer question, or one with a third answer between Cancel and
-// accept. Built on fui::optionDialog rather than hand-drawn text, so the answers are on-screen
-// buttons a finger can hit.
-//
-// The hint strip is still drawn, because it is how the physical buttons are labelled and it is the
-// only affordance a non-touch board has. The two are alternatives, not duplicates.
+// accept. Built on fui::optionDialog, the question is presented in the central dialog card and
+// the action labels are displayed on the bottom physical button hint strip.
 //
 // A screen whose question is one step of its own work (Check for Updates, Clear Cache) pushes this
 // too, and does the work from the result: the answer keys, the hints and the touch targets are then
