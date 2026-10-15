@@ -256,7 +256,7 @@ void SdFirmwareUpdateActivity::buildScreen(UiScreen& screen) {
     fui::ProgressBarProps barProps;
     barProps.value = pct;
     barProps.max = 100;
-    barProps.radius = 4;
+    barProps.radius = 0;
     barProps.borderWidth = 1;
     barProps.border = fui::Paint::solid(fui::Color::Black);
     barProps.fill = fui::Paint::solid(fui::Color::Black);
