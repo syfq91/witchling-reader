@@ -386,8 +386,10 @@ void ActivityManager::goToFileTransfer(NetworkMode /*selected*/) {
 void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToFileBrowser(std::string path, std::string focusName) {
-  replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path), std::move(focusName),
-                                                        FileBrowserActivity::Mode::Books));
+  const bool isRoot = (path.empty() || path == "/") && focusName.empty();
+  const auto mode = isRoot ? FileBrowserActivity::Mode::Recents : FileBrowserActivity::Mode::Books;
+  replaceActivity(
+      std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path), std::move(focusName), mode));
 }
 
 // Recent Books is Browse Files over the recent-books list: the same views, keys and Options.

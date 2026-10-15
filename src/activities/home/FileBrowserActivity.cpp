@@ -254,7 +254,8 @@ void FileBrowserActivity::onEnter() {
   recents.reset();
   int selectedIndex = 0;
 
-  if (!focusName.empty()) {
+  const bool hadFocusName = !focusName.empty();
+  if (hadFocusName) {
     const size_t idx = model.findEntry(focusName);
     if (idx < model.entryCount()) {
       selectedIndex = static_cast<int>(idx);
@@ -271,8 +272,8 @@ void FileBrowserActivity::onEnter() {
   RenderLock lock(*this);
   UiListActivity::onEnter();
   resetNavigation(selectedIndex);
-  if (hasTabs() && listCount() == 0) {
-    tabFocus = true;
+  if (hasTabs()) {
+    tabFocus = !hadFocusName || listCount() == 0;
   }
 }
 
