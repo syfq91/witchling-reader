@@ -368,3 +368,75 @@ TEST(ListGrammarDoubleTap, NoEarlierTapOrAnEarlierTimeIsNotADoubleTap) {
   EXPECT_FALSE(ListGrammar::completesDoubleTap(Key::Down, 100, Key::Down, 0, rows));
   EXPECT_FALSE(ListGrammar::completesDoubleTap(Key::Down, 900, Key::Down, 1000, rows));
 }
+
+// --- Page Top For Viewport Alignment --------------------------------------------------------
+
+TEST(ListGrammarPageTop, SelectionWithinCurrentWindowKeepsViewport) {
+  // 50 items, window starting at 0, 10 rows drawn
+  EXPECT_EQ(ListGrammar::pageTopFor(0, 0, 10, 10, 50), 0);
+  EXPECT_EQ(ListGrammar::pageTopFor(5, 0, 10, 10, 50), 0);
+  EXPECT_EQ(ListGrammar::pageTopFor(9, 0, 10, 10, 50), 0);
+
+  // Window starting at 10, 10 rows drawn
+  EXPECT_EQ(ListGrammar::pageTopFor(10, 10, 10, 10, 50), 10);
+  EXPECT_EQ(ListGrammar::pageTopFor(15, 10, 10, 10, 50), 10);
+  EXPECT_EQ(ListGrammar::pageTopFor(19, 10, 10, 10, 50), 10);
+}
+
+TEST(ListGrammarPageTop, SteppingDownPastEdgeFlipsToNextPage) {
+  // Stepping from row 9 to 10 flips from page 0 to page 1
+  EXPECT_EQ(ListGrammar::pageTopFor(10, 0, 10, 10, 50), 10);
+  // Stepping from row 19 to 20 flips from page 1 to page 2
+  EXPECT_EQ(ListGrammar::pageTopFor(20, 10, 10, 10, 50), 20);
+}
+
+TEST(ListGrammarPageTop, SteppingUpPastEdgeFlipsToPreviousPage) {
+  // Stepping from row 10 up to 9 flips from page 1 to page 0
+  EXPECT_EQ(ListGrammar::pageTopFor(9, 10, 10, 10, 50), 0);
+  // Stepping from row 20 up to 19 flips from page 2 to page 1
+  EXPECT_EQ(ListGrammar::pageTopFor(19, 20, 10, 10, 50), 10);
+}
+
+TEST(ListGrammarPageTop, ShortLastPageDisplaysCleanly) {
+  // 14 items, 10 per page -> page 0 (0..9), page 1 (10..13)
+  // Stepping from 9 to 10 lands on top 10
+  EXPECT_EQ(ListGrammar::pageTopFor(10, 0, 10, 10, 14), 10);
+
+  // Stepping within page 1 (rows 10..13 with drawn=4)
+  EXPECT_EQ(ListGrammar::pageTopFor(10, 10, 4, 10, 14), 10);
+  EXPECT_EQ(ListGrammar::pageTopFor(12, 10, 4, 10, 14), 10);
+  EXPECT_EQ(ListGrammar::pageTopFor(13, 10, 4, 10, 14), 10);
+
+  // Stepping up from row 10 returns to page 0 (top 0)
+  EXPECT_EQ(ListGrammar::pageTopFor(9, 10, 4, 10, 14), 0);
+}
+
+TEST(ListGrammarPageTop, LargeJumpsAndWrapAround) {
+  // Jump to last row (e.g. row 49 out of 50) from page 0
+  EXPECT_EQ(ListGrammar::pageTopFor(49, 0, 10, 10, 50), 40);
+
+  // Jump to first row (row 0) from page 4 (top 40)
+  EXPECT_EQ(ListGrammar::pageTopFor(0, 40, 10, 10, 50), 0);
+
+  // Wrap around from row 0 to row 24 on a 25-item list
+  EXPECT_EQ(ListGrammar::pageTopFor(24, 0, 10, 10, 25), 20);
+
+  // Wrap around from row 24 to row 0 on a 25-item list (top 20, drawn 5)
+  EXPECT_EQ(ListGrammar::pageTopFor(0, 20, 5, 10, 25), 0);
+}
+
+TEST(ListGrammarPageTop, VariableHeightRows) {
+  // Page 0 drew only 7 rows (rows 0..6) due to wrapped labels
+  EXPECT_EQ(ListGrammar::pageTopFor(6, 0, 7, 10, 50), 0);
+  // Stepping past row 6 to 7 flips to top 7
+  EXPECT_EQ(ListGrammar::pageTopFor(7, 0, 7, 10, 50), 7);
+}
+
+TEST(ListGrammarPageTop, EdgeConditionsEmptyAndSingleItem) {
+  EXPECT_EQ(ListGrammar::pageTopFor(0, 0, 0, 10, 0), 0);
+  EXPECT_EQ(ListGrammar::pageTopFor(-1, 0, 0, 10, 10), 0);
+  EXPECT_EQ(ListGrammar::pageTopFor(0, 0, 1, 10, 1), 0);
+  // First render before drawn rows are known
+  EXPECT_EQ(ListGrammar::pageTopFor(15, 0, 0, 10, 50), 10);
+}
+

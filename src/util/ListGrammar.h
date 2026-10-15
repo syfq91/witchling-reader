@@ -102,6 +102,9 @@ int last(const Rows& rows);
 // Whether every row fits in the drawn window, so there is no page to jump to.
 bool fitsOnePage(const Rows& rows);
 
+// Calculates the top row index for page-by-page list scrolling when stepping or jumping.
+int pageTopFor(int sel, int prevTop, int drawn, int visibleRows, int count);
+
 // Two Up/Down taps whose presses land this close together are a double-tap, which jumps a page.
 // The same window as ButtonEventManager::DOUBLE_WINDOW_MS (ListController asserts it).
 constexpr unsigned long kDoubleTapMs = 300;

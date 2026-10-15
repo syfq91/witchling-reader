@@ -175,4 +175,47 @@ bool completesDoubleTap(const Key key, const unsigned long pressMs, const Key pr
   return pressMs - previousPressMs < kDoubleTapMs;
 }
 
+int pageTopFor(int sel, const int prevTop, const int drawn, const int visibleRows, const int count) {
+  if (count <= 0 || sel < 0) return 0;
+  if (sel >= count) sel = count - 1;
+
+  const int fullPage = visibleRows > 0 ? visibleRows : (drawn > 0 ? drawn : 1);
+
+  if (drawn > 0) {
+    if (sel >= prevTop && sel < prevTop + drawn) {
+      return prevTop;
+    }
+
+    if (sel >= prevTop + drawn) {
+      int newTop;
+      if (sel < prevTop + drawn + fullPage) {
+        newTop = prevTop + drawn;
+      } else {
+        newTop = (sel / fullPage) * fullPage;
+      }
+      if (newTop >= count && count > 0) {
+        newTop = (count - 1) / fullPage * fullPage;
+      }
+      return newTop;
+    }
+
+    if (sel < prevTop) {
+      int newTop;
+      if (prevTop >= fullPage && sel >= prevTop - fullPage) {
+        newTop = prevTop - fullPage;
+      } else {
+        newTop = (sel / fullPage) * fullPage;
+      }
+      if (newTop < 0) newTop = 0;
+      return newTop;
+    }
+  }
+
+  int newTop = (sel / fullPage) * fullPage;
+  if (newTop >= count && count > 0) {
+    newTop = (count - 1) / fullPage * fullPage;
+  }
+  return newTop;
+}
+
 }  // namespace ListGrammar

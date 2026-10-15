@@ -13,6 +13,7 @@
 #include "activities/SliderPickerActivity.h"
 #include "components/UITheme.h"
 #include "settings/SliderSettingPicker.h"
+#include "util/ListGrammar.h"
 
 namespace fui = freeink::ui;
 
@@ -118,18 +119,17 @@ void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, c
   const int drawn = currentNav.trusts(count) ? currentNav.drawnRows : 0;
   currentNav.syncToProps(screen.body(), props.rowHeight, props.rowGap, count, props);
 
-  // A selection the last frame already drew needs no scroll, but the follow above does not
-  // know that: it clamps the viewport to count minus the fixed-height ESTIMATE of rows per
-  // page, and when labels wrap to two lines fewer rows really fit. On the last page that clamp
-  // pulled a still-visible selection one row up, and the next press down drew the selection
-  // off-page and paid a follow-correction rebuild -- a one-row jump and an extra build on
-  // every press near the bottom. Keep the viewport the measurement says is valid. Only for a
-  // follow: a swipe clears followPending and its new viewport must stand.
-  if (currentNav.followPending && drawn > 0) {
+  // Page-by-page screen turning: keep the viewport on the current page while the selection is
+  // within it, and flip to a brand new screen when stepping or jumping past page boundaries.
+  if (currentNav.followPending) {
     const int sel = props.selectedIndex;
-    if (sel >= prevTop && sel < prevTop + drawn) {
-      currentNav.top = prevTop;
-      props.topIndex = static_cast<uint16_t>(prevTop);
+    if (sel < 0) {
+      currentNav.top = 0;
+      props.topIndex = 0;
+    } else {
+      const int newTop = ListGrammar::pageTopFor(sel, prevTop, drawn, currentNav.visibleRows, count);
+      currentNav.top = newTop;
+      props.topIndex = static_cast<uint16_t>(newTop);
     }
   }
 }

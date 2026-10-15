@@ -119,6 +119,7 @@ class UiListActivity : public Activity, protected UiAppHost {
     int listCount() const override { return list.positionCount(); }
     ListWindow listWindow() const override { return list.positionWindow(); }
     int listLeadPositions() const override { return list.leadPositions(); }
+    bool listPagesAligned() const override { return true; }
     bool listSelectable(const int position) const override { return list.isPositionSelectable(position); }
     int listSelected() const override { return list.selectedPosition(); }
     void listSelect(const int position) override { list.selectPosition(position); }
