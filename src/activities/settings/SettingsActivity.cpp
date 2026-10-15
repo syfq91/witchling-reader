@@ -104,8 +104,6 @@ void SettingsActivity::onEnter() {
              std::move(SettingInfo::Action(StrId::STR_BTN_ACTIONS_OVERVIEW, SettingAction::ButtonActionsOverview)
                            .withSubcategory(StrId::STR_MENU_BTN_ACTIONS)));
 
-  addToMoved(readerSettings, SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
-
   addToMoved(systemSettings, SettingInfo::Action(StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts));
   addToMoved(systemSettings, std::move(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network)
                                            .withSubcategory(StrId::STR_MENU_SYS_NETWORK)));

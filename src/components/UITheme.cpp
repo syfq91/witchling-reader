@@ -6,7 +6,6 @@
 #include <I18n.h>
 #include <Logging.h>
 
-
 #include <algorithm>
 #include <cstdio>
 #include <memory>
@@ -34,13 +33,10 @@ uint8_t normalizeProgressBarThickness(const uint8_t thickness) {
 }
 
 uint8_t normalizeStatusBarPosition(const uint8_t position) {
-  return position < CrossPointSettings::STATUS_BAR_POSITION_COUNT ? position
-                                                                  : CrossPointSettings::STATUS_BAR_BOTTOM;
+  return position < CrossPointSettings::STATUS_BAR_POSITION_COUNT ? position : CrossPointSettings::STATUS_BAR_BOTTOM;
 }
 
-uint8_t normalizeStatusBarItemsPosition(const uint8_t position) {
-  return normalizeStatusBarPosition(position);
-}
+uint8_t normalizeStatusBarItemsPosition(const uint8_t position) { return normalizeStatusBarPosition(position); }
 
 }  // namespace
 
@@ -141,7 +137,6 @@ std::string UITheme::getCoverThumbPath(std::string coverBmpPath, int width, int 
   return coverBmpPath;
 }
 
-
 UIIcon UITheme::getFileIcon(const std::string& filename) {
   if (filename.back() == '/') {
     return Folder;
@@ -173,31 +168,38 @@ int UITheme::getStatusBarItemsHeight() {
 }
 
 bool UITheme::hasStatusBarItems() {
+  if (!SETTINGS.showStatusBar) {
+    return false;
+  }
   return SETTINGS.statusBarLeft != CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE ||
          SETTINGS.statusBarMiddle != CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE ||
          SETTINGS.statusBarRight != CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE;
 }
 
 int UITheme::getStatusBarTopHeight(const bool forceStatusItems) {
+  if (!SETTINGS.showStatusBar && !forceStatusItems) {
+    return 0;
+  }
   const uint8_t pos = normalizeStatusBarPosition(SETTINGS.statusBarPosition);
   if (pos != CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_TOP) {
     return 0;
   }
   const bool showStatusItems = forceStatusItems || hasStatusBarItems();
   const int statusItemsHeight = showStatusItems ? getStatusBarItemsHeight() : 0;
-  return getProgressBarHeight(SETTINGS.statusBarProgressBar, CrossPointSettings::PROGRESS_BAR_THIN) +
-         statusItemsHeight;
+  return getProgressBarHeight(SETTINGS.statusBarProgressBar, CrossPointSettings::PROGRESS_BAR_THIN) + statusItemsHeight;
 }
 
 int UITheme::getStatusBarBottomHeight(const bool forceStatusItems) {
+  if (!SETTINGS.showStatusBar && !forceStatusItems) {
+    return 0;
+  }
   const uint8_t pos = normalizeStatusBarPosition(SETTINGS.statusBarPosition);
   if (pos != CrossPointSettings::STATUS_BAR_POSITION::STATUS_BAR_BOTTOM) {
     return 0;
   }
   const bool showStatusItems = forceStatusItems || hasStatusBarItems();
   const int statusItemsHeight = showStatusItems ? getStatusBarItemsHeight() : 0;
-  return getProgressBarHeight(SETTINGS.statusBarProgressBar, CrossPointSettings::PROGRESS_BAR_THIN) +
-         statusItemsHeight;
+  return getProgressBarHeight(SETTINGS.statusBarProgressBar, CrossPointSettings::PROGRESS_BAR_THIN) + statusItemsHeight;
 }
 
 int UITheme::getStatusBarHeight(const bool forceStatusItems) {

@@ -108,9 +108,9 @@ TEST(ListRowTap, ResetRequiresAFirstTapAgain) {
   EXPECT_EQ(Result::Selected, state.applyPreference(3, Result::Activate, false));
 }
 
-// SettingsActivity compares in the BAND's frame and then shifts by one; StatusBarSettings
-// round-trips a uint8_t. Both hand apply() a plain int by reference, so the update has to be
-// visible to the caller — that is what lets those two adapt without duplicating the rule.
+// SettingsActivity compares in the BAND's frame and then shifts by one.
+// Both hand apply() a plain int by reference, so the update has to be
+// visible to the caller — that is what lets callers adapt without duplicating the rule.
 TEST(ListRowTap, UpdatesTheSelectionThroughTheReference) {
   int selection = 0;
   ListRowTap::apply(6, 10, selection);

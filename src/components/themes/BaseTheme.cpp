@@ -731,6 +731,9 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
                               const int paddingBottom, const bool isStarred, const std::string& printedPageLabel,
                               const bool fillMargin, const bool pageCountApproximate,
                               const std::vector<float>& chapterMarkers) const {
+  if (!SETTINGS.showStatusBar) {
+    return;
+  }
   // While a section is still being laid out the total page count is a byte-based estimate, shown
   // with a leading "~" so the reader knows it will firm up as the chapter finishes building.
   const char* pageCountPrefix = pageCountApproximate ? "~" : "";

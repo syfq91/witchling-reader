@@ -307,6 +307,7 @@ class CrossPointSettings {
   // Sleep image pick mode (random vs sequential walk-through)
   uint8_t sleepImagePickMode = PICK_RANDOM;
   // Status bar settings
+  uint8_t showStatusBar = 1;
   uint8_t statusBarPosition = STATUS_BAR_BOTTOM;
   uint8_t statusBarLeft = SLOT_BOOK_PERCENTAGE;
   uint8_t statusBarMiddle = SLOT_CHAPTER_TITLE;

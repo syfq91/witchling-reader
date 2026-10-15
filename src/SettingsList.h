@@ -249,6 +249,8 @@ inline void buildSettings(const RowSink& emit) {
            .withSubcategory(StrId::STR_MENU_READER_TWEAKS));
   emit(SettingInfo::Toggle(StrId::STR_INLINE_FOOTNOTE_PREVIEWS, &CrossPointSettings::inlineFootnotePreviews,
                            "inlineFootnotePreviews", StrId::STR_CAT_READER));
+  emit(SettingInfo::Toggle(StrId::STR_STATUS_BAR, &CrossPointSettings::showStatusBar, "showStatusBar",
+                           StrId::STR_CAT_READER));
 
   // --- Controls ---
   // --- Button Actions (short / double / long press per logical button) ---
@@ -369,26 +371,6 @@ inline void buildSettings(const RowSink& emit) {
   emit(SettingInfo::Enum(StrId::STR_OPDS_FILENAME_FORMAT, &CrossPointSettings::opdsFilenameFormat,
                          {StrId::STR_FMT_AUTHOR_TITLE, StrId::STR_FMT_TITLE_AUTHOR, StrId::STR_FMT_TITLE},
                          "opdsFilenameFormat"));
-  // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
-  emit(SettingInfo::Enum(StrId::STR_STATUS_BAR_LOCATION, &CrossPointSettings::statusBarPosition,
-                         {StrId::STR_TOP, StrId::STR_BOTTOM}, "statusBarPosition", StrId::STR_CUSTOMISE_STATUS_BAR));
-  const std::vector<StrId> slotChoices = {
-      StrId::STR_HIDE,
-      StrId::STR_BATTERY,
-      StrId::STR_STATUS_BAR_PAGE_COUNT,
-      StrId::STR_STATUS_BAR_PERCENTAGE,
-      StrId::STR_STATUS_BAR_PAGE_AND_PERCENTAGE,
-      StrId::STR_STATUS_BAR_CHAPTER_TITLE,
-      StrId::STR_STATUS_BAR_BOOK_TITLE,
-  };
-  emit(SettingInfo::Enum(StrId::STR_STATUS_BAR_LEFT, &CrossPointSettings::statusBarLeft, slotChoices, "statusBarLeft",
-                         StrId::STR_CUSTOMISE_STATUS_BAR));
-  emit(SettingInfo::Enum(StrId::STR_STATUS_BAR_MIDDLE, &CrossPointSettings::statusBarMiddle, slotChoices,
-                         "statusBarMiddle", StrId::STR_CUSTOMISE_STATUS_BAR));
-  emit(SettingInfo::Enum(StrId::STR_STATUS_BAR_RIGHT, &CrossPointSettings::statusBarRight, slotChoices,
-                         "statusBarRight", StrId::STR_CUSTOMISE_STATUS_BAR));
-  emit(SettingInfo::Enum(StrId::STR_PROGRESS_BAR, &CrossPointSettings::statusBarProgressBar,
-                         {StrId::STR_SHOW, StrId::STR_HIDE}, "statusBarProgressBar", StrId::STR_CUSTOMISE_STATUS_BAR));
 }
 
 // Answers each capability ONCE, so the rest of the codebase never has to ask

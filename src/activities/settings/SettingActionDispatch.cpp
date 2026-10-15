@@ -17,7 +17,6 @@
 #include "SdCardFontGlobals.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SilentRestart.h"
-#include "StatusBarSettingsActivity.h"
 #include "SystemInformationActivity.h"
 #include "activities/home/FileBrowserActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -29,8 +28,6 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<ButtonRemapActivity>(renderer, mappedInput);
     case SettingAction::ButtonActionsOverview:
       return std::make_unique<ButtonActionsOverviewActivity>(renderer, mappedInput);
-    case SettingAction::CustomiseStatusBar:
-      return std::make_unique<StatusBarSettingsActivity>(renderer, mappedInput);
     case SettingAction::OPDSBrowser:
       return std::make_unique<OpdsServerListActivity>(renderer, mappedInput);
     case SettingAction::Network:

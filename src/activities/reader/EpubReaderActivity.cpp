@@ -76,6 +76,9 @@ namespace {
 // Whether the status bar prints a page count. This fork's bar has no chapter progress bar, so
 // the chapter counter is on screen only when one of the three slots is a page-count slot.
 bool chapterCounterShown() {
+  if (!SETTINGS.showStatusBar) {
+    return false;
+  }
   const auto showsPageCount = [](const uint8_t slot) {
     return slot == CrossPointSettings::SLOT_PAGE_COUNT || slot == CrossPointSettings::SLOT_PAGE_AND_PERCENTAGE;
   };
@@ -5802,12 +5805,17 @@ void EpubReaderActivity::restoreCurrentPageToBufferIfPreRendered() {
 }
 
 void EpubReaderActivity::renderStatusBar() const {
+  const int currentPage = section ? section->currentPage + 1 : 1;
+  lastStatusBarPage = currentPage;
+  if (!SETTINGS.showStatusBar) {
+    return;
+  }
+
   // Calculate progress in book. During an active section build pageCount only reflects pages
   // built so far, not the final chapter length, so show a byte-based estimate ("page X of ~Y")
   // instead of the misleading watermark. estimatedTotalPages() returns 0 while it's still too
   // early to project, which suppresses the fraction/progress (same as a plain pageCount of 0).
   const bool building = section->hasActiveBuild();
-  const int currentPage = section->currentPage + 1;
   const int displayPageCount = building ? section->estimatedTotalPages() : section->pageCount;
   const float pageCount = static_cast<float>(displayPageCount);
   const float sectionChapterProg = (pageCount > 0) ? (static_cast<float>(currentPage) / pageCount) : 0;
@@ -6039,6 +6047,9 @@ bool EpubReaderActivity::skipLoopDelay() {
 }
 
 bool EpubReaderActivity::shouldSkipPeriodicUpdate() const {
+  if (!SETTINGS.showStatusBar) {
+    return true;
+  }
   // Polled once a minute by ActivityManager::loop() on the loop task with no lock held, so it
   // had the same unlocked read of `section` as the hints above (and raced render() on
   // statusRefreshDeferred_). A pass holding the lock means "cannot tell": request the update. At

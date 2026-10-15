@@ -9,6 +9,9 @@ namespace {
 using S = CrossPointSettings;
 
 TEST(StatusBarSettingsTest, DefaultStatusBarSettings) {
+  // Status bar toggle default: enabled (1)
+  EXPECT_EQ(SETTINGS.showStatusBar, 1);
+
   // Status bar position default: bottom
   EXPECT_EQ(SETTINGS.statusBarPosition, S::STATUS_BAR_POSITION::STATUS_BAR_BOTTOM);
 
