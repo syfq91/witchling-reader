@@ -452,7 +452,7 @@ class CrossPointSettings {
   // peer for every https call the firmware makes, so credentials sent to such a
   // server are only as safe as the network path. OTA is deliberately exempt:
   // firmware is executed, so it stays verified whatever this is set to.
-  uint8_t skipHttpsValidation = 0;
+  uint8_t skipHttpsValidation = 1;
 
   // Configurable actions for short / double / long press on each logical button.
   //
