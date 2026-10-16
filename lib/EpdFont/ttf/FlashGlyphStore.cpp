@@ -48,8 +48,6 @@ bool slotErased(const Slot& slot) { return slot.key == kErased && slot.value == 
 
 uint32_t nextSlot(const uint32_t i, const uint32_t slots) { return i + 1 == slots ? 0 : i + 1; }
 
-uint32_t recordBytes(const uint16_t dataLength) { return align4(kRecordHeaderBytes + dataLength); }
-
 uint32_t tableBytes(const uint32_t slots) { return alignUp(slots * kSlotBytes, kSectorBytes); }
 
 // The most entries a table of `capacity` takes before it counts as full.
@@ -200,6 +198,7 @@ FlashGlyphStore::OpenResult FlashGlyphStore::open(const uint8_t identity[kIdenti
   uint32_t wipeWord = kErased;
   if (!flash_.read(kWipeWordOffset, &wipeWord, sizeof wipeWord)) wipeWord = 0;  // unreadable: assume pending
   wipePending_ = wipeWord != kErased;
+  writesStopped_ = wipePending_;  // what filled the store, or failed, last session is not known
   for (uint8_t i = 0; i < kSizeEntries; ++i) {
     SizeEntry entry{};
     if (readSizeEntry(i, entry) && entry.claimed == 0) claimedSizes_ |= 1u << i;
@@ -224,6 +223,7 @@ void FlashGlyphStore::close() {
   logUsed_ = usedSlots_ = usedPairs_ = claimedSizes_ = 0;
   open_ = false;
   wipePending_ = false;
+  writesStopped_ = false;
   installing_.reset();  // an install that was never finished
 }
 
@@ -357,9 +357,16 @@ uint8_t* GlyphBatch::add(const uint32_t key, const EpdGlyph& metrics) {
   EpdGlyph glyph = metrics;
   glyph.dataOffset = 0;  // known at commit, when the record's place in the log is
   std::memcpy(record + 4, &glyph, sizeof glyph);
+  lastUsed_ = used_;
   used_ += bytes;
   ++count_;
   return record + kRecordHeaderBytes;
+}
+
+void GlyphBatch::dropLast() {
+  if (count_ == 0 || used_ == lastUsed_) return;
+  used_ = lastUsed_;
+  --count_;
 }
 
 // The record a glyph slot points at, if it is complete and really this key's: the slot value is the record's
@@ -411,13 +418,13 @@ FlashGlyphStore::Commit FlashGlyphStore::insertGlyphSlot(const uint32_t key, con
       return Commit::Stored;
     case Insert::ChainFull:
       LOG_INF("GST", "full: a probe chain passed %u slots; wipe pending", static_cast<unsigned>(kMaxProbe));
-      setWipePending();
+      stopWrites();
       return Commit::Full;
     case Insert::WriteFailed:
       break;
   }
   LOG_ERR("GST", "slot write failed; wipe pending");
-  setWipePending();
+  stopWrites();
   return Commit::WriteFailed;
 }
 
@@ -435,13 +442,13 @@ FlashGlyphStore::Commit FlashGlyphStore::writeBatch(GlyphBatch& batch) {
       return Commit::Refused;
     }
   }
-  if (wipePending_) return Commit::Full;
+  if (writesStopped_) return Commit::Full;
   if (logUsed_ + batch.used_ > limit(geometry_.logSize, kLogFullPercent) ||
       usedSlots_ + batch.count_ > limit(geometry_.indexSlots, kIndexLoadPercent)) {
     LOG_INF("GST", "full: log %u of %u B, %u of %u slots; wipe pending", static_cast<unsigned>(logUsed_),
             static_cast<unsigned>(geometry_.logSize), static_cast<unsigned>(usedSlots_),
             static_cast<unsigned>(geometry_.indexSlots));
-    setWipePending();
+    stopWrites();
     return Commit::Full;
   }
   // Each bitmap's offset is relative to the log base, known now.
@@ -456,7 +463,7 @@ FlashGlyphStore::Commit FlashGlyphStore::writeBatch(GlyphBatch& batch) {
   if (!flash_.program(geometry_.logOffset + base, batch.buffer_, batch.used_)) {
     LOG_ERR("GST", "log write of %u B at %u failed; wipe pending", static_cast<unsigned>(batch.used_),
             static_cast<unsigned>(base));
-    setWipePending();
+    stopWrites();
     return Commit::WriteFailed;
   }
   logUsed_ = base + batch.used_;
@@ -472,9 +479,9 @@ FlashGlyphStore::Commit FlashGlyphStore::writeBatch(GlyphBatch& batch) {
 
 FlashGlyphStore::Commit FlashGlyphStore::markNoGlyph(const uint32_t key) {
   if (!open_ || !isGlyphKey(key) || !sizeClaimed(key)) return Commit::Refused;
-  if (wipePending_) return Commit::Full;
+  if (writesStopped_) return Commit::Full;
   if (usedSlots_ + 1 > limit(geometry_.indexSlots, kIndexLoadPercent)) {
-    setWipePending();
+    stopWrites();
     return Commit::Full;
   }
   return insertGlyphSlot(key, kNoGlyph);
@@ -489,6 +496,7 @@ bool FlashGlyphStore::readSizeEntry(const uint8_t i, SizeEntry& entry) const {
 bool FlashGlyphStore::sizeIndex(const uint32_t ppem26_6, uint8_t* index) {
   if (!open_ || ppem26_6 == kErased || index == nullptr) return false;
   int free = -1;
+  uint8_t freeCount = 0;
   for (uint8_t i = 0; i < kSizeEntries; ++i) {
     SizeEntry entry{};
     if (!readSizeEntry(i, entry)) return false;
@@ -497,22 +505,34 @@ bool FlashGlyphStore::sizeIndex(const uint32_t ppem26_6, uint8_t* index) {
       return true;
     }
     // Free only if wholly erased: an entry cut short is never programmed again.
-    if (free < 0 && entry.ppem26_6 == kErased && entry.claimed == kErased) free = i;
+    if (entry.ppem26_6 == kErased && entry.claimed == kErased) {
+      if (free < 0) free = i;
+      ++freeCount;
+    }
   }
   if (wipePending_) return false;
   if (free < 0) {
+    // Only a new size is refused: the claimed ones go on storing, and the wipe at the next book open frees the
+    // table.
     LOG_INF("GST", "full: all %u sizes in use; wipe pending", static_cast<unsigned>(kSizeEntries));
-    setWipePending();
+    wipePending_ = true;
+    recordWipePending();
     return false;
   }
   const SizeEntry claim{ppem26_6, 0};  // `claimed` lands last and marks the entry in use
   if (!flash_.program(kSizeTableOffset + static_cast<uint32_t>(free) * sizeof(SizeEntry), &claim, sizeof claim)) {
     LOG_ERR("GST", "size table write failed; wipe pending");
-    setWipePending();
+    stopWrites();
     return false;
   }
   claimedSizes_ |= 1u << free;
   *index = static_cast<uint8_t>(free);
+  if (freeCount == 1) {
+    // That was the last entry: the next book open empties the table, before a new body size needs one.
+    LOG_INF("GST", "the last of %u sizes taken; wipe pending", static_cast<unsigned>(kSizeEntries));
+    wipePending_ = true;
+    recordWipePending();
+  }
   return true;
 }
 
@@ -538,7 +558,7 @@ bool FlashGlyphStore::findPair(const uint16_t left, const uint16_t right, const 
 bool FlashGlyphStore::storePair(const uint16_t left, const uint16_t right, const uint8_t style,
                                 const int16_t fontUnits) {
   const uint32_t key = pairKey(left, right);
-  if (!open_ || wipePending_ || key == kErased || style > 3) return false;
+  if (!open_ || writesStopped_ || key == kErased || style > 3) return false;
   // A full pair index only stops storing pairs; they come from the GPOS reader instead (never a wipe).
   if (usedPairs_ + 1 > limit(geometry_.pairSlots, kIndexLoadPercent)) return false;
   const uint32_t value = (static_cast<uint32_t>(style) << 16) | static_cast<uint16_t>(fontUnits);
@@ -552,13 +572,14 @@ bool FlashGlyphStore::storePair(const uint16_t left, const uint16_t right, const
       break;
   }
   LOG_ERR("GST", "pair write failed; wipe pending");
-  setWipePending();
+  stopWrites();
   return false;
 }
 
 // --- Wipe pending, and the wipe ---
 
-void FlashGlyphStore::setWipePending() {
+void FlashGlyphStore::stopWrites() {
+  writesStopped_ = true;
   if (wipePending_) return;
   wipePending_ = true;  // holds for the session even if the flash write below fails
   recordWipePending();
@@ -582,6 +603,7 @@ bool FlashGlyphStore::wipe() {
   // Wipe pending reaches flash before anything is erased. Then a cut anywhere below leaves it set and the next
   // wipe() finishes the job; without it a half-erased log would read as an empty store and be written over.
   wipePending_ = true;
+  writesStopped_ = true;
   if (!recordWipePending()) return false;
   const Geometry& g = geometry_;
   // Everything a lookup can reach goes first; the state sector, which holds the wipe word, goes last.
@@ -593,5 +615,6 @@ bool FlashGlyphStore::wipe() {
   logUsed_ = usedSlots_ = usedPairs_ = claimedSizes_ = 0;
   ++generation_;
   wipePending_ = false;
+  writesStopped_ = false;
   return true;
 }
