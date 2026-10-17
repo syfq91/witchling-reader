@@ -4667,6 +4667,7 @@ void EpubReaderActivity::renderNormalPass(RenderLock& lock, const RenderLayout& 
         lastRenderStats.fontCacheMisses, fontHitRatePct, lastRenderStats.fontGetBitmapCalls,
         lastRenderStats.fontGetBitmapTimeUs);
 
+
     // Pre-render was already scheduled in renderContents() before the lock was
     // released, so the loop task could start it during the waveform wait.
   }
@@ -5781,6 +5782,16 @@ void EpubReaderActivity::displayPreRenderedPage(const Page& page, const int orie
     // timings not otherwise recorded for the pre-rendered path
   }
   checkHeapIntegrity("after_bufferdisplay_aa");
+}
+
+void EpubReaderActivity::appendDebugState(std::string& out) const {
+  out += " book=";
+  out += epub ? epub->getPath() : std::string("none");
+  out +=
+      " spine=" + std::to_string(currentSpineIndex + 1) + "/" + std::to_string(epub ? epub->getSpineItemsCount() : 0);
+  const int page = section ? section->currentPage + 1 : 0;
+  const int pages = section ? section->pageCount : 0;
+  out += " page=" + std::to_string(page) + "/" + std::to_string(pages);
 }
 
 void EpubReaderActivity::restoreCurrentPageToBufferIfPreRendered() {

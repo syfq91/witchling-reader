@@ -575,6 +575,17 @@ bool ActivityManager::currentIsReaderActivity() const { return currentActivity &
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
 
+void ActivityManager::describeState(std::string& out) const {
+  out += "activity=";
+  out += currentActivity ? currentActivity->getName() : std::string("none");
+  out += " stack=";
+  for (size_t i = 0; i < stackActivities.size(); ++i) {
+    if (i > 0) out += ',';
+    out += stackActivities[i]->getName();
+  }
+  if (currentActivity) currentActivity->appendDebugState(out);
+}
+
 void ActivityManager::dispatchButtonAction(const CrossPointSettings::BUTTON_ACTION action) {
   if (currentIsReaderActivity()) {
     currentActivity->onButtonAction(action);

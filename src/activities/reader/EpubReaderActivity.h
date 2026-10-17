@@ -1027,8 +1027,9 @@ class EpubReaderActivity final : public Activity {
   // remedy as HomeActivity's cover decoding (see its skipLoopDelay). Polled by main.cpp's loop
   // without the render lock; see refreshLoopHints().
   bool skipLoopDelay() override;
-  // A pending pre-render leaves the *next* page in the frame buffer; redraw the current page
-  // so any raw frame-buffer capture matches what the user sees.
+  // " book=<path> spine=<i>/<count> page=<n>/<count>" (1-based page; 0/0 while no section is loaded).
+  void appendDebugState(std::string& out) const override;
+
   bool shouldSkipPeriodicUpdate() const override;
   void onButtonAction(CrossPointSettings::BUTTON_ACTION action) override;
   bool handleForcedRefresh(HalDisplay::RefreshMode mode) override;
