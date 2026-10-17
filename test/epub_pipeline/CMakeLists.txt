@@ -91,6 +91,7 @@ add_executable(EpubPipelineTest
   EpubPipelineTest.cpp
   FingerprintTest.cpp
   LostTocRetryTest.cpp
+  TocSourceTest.cpp
   PageListSinkTest.cpp
   MetadataSidecarTest.cpp
   SidecarFilesTest.cpp
@@ -101,9 +102,12 @@ add_executable(EpubPipelineTest
   ParagraphAnchorTest.cpp
   ParsedTextOffsetTest.cpp
   LowHeapLoadTest.cpp
+  LongChapterPageTablesTest.cpp
   TableRowFallbackArenaTest.cpp
   AnchorMapTest.cpp
   AnchorPageAccuracyTest.cpp
+  TocBoundariesAfterBuildTest.cpp
+  SpanAnchorTest.cpp
   ImageExtractionTest.cpp
   ImageManifestTest.cpp
   ImageWrapperWidthTest.cpp
@@ -119,6 +123,7 @@ add_executable(EpubPipelineTest
   PixelCacheWriteTest.cpp
   BufferedPrintTest.cpp
   CoverPipelineTest.cpp
+  CoverWrapperTest.cpp
   VisibleTextTest.cpp
   # No-op HeapTrack: PipelineRunner brackets the dump read-back with pause/resume, and the gtest
   # binary must NOT get the real one (it overrides malloc/free process-wide). The two dump
@@ -133,6 +138,9 @@ target_compile_definitions(EpubPipelineTest PRIVATE
   JPEG_FIXTURE_DIR="${REPO_ROOT}/test/jpeg_decoder/fixtures"
   ENABLE_SERIAL_LOG=1
   LOG_LEVEL=2
+  # LongChapterPageTablesTest refuses build-table chunks on purpose (see ChunkedVector.h). The
+  # hook is inert until a test arms it; firmware and the dump tools never define it.
+  CHUNKED_VECTOR_FAULT_INJECTION
 )
 target_link_libraries(EpubPipelineTest PRIVATE
   crosspoint_test_common

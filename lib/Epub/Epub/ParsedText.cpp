@@ -107,13 +107,14 @@ uint16_t measureWordWidth(const GfxRenderer& renderer, const int fontId, const s
   return static_cast<uint16_t>(raw * scale + 0.5f);
 }
 
-std::string buildLinePreview(const std::vector<std::string>& words, const std::vector<bool>& continuesVec,
-                             const size_t start, const size_t endExclusive, const size_t maxLen = 120) {
+std::string buildLinePreview(const std::vector<std::string>& words,
+                             const std::vector<TokenBoundary::Boundary>& boundaries, const size_t start,
+                             const size_t endExclusive, const size_t maxLen = 120) {
   // Build a readable line preview while preserving continuation semantics
-  // (no synthetic spaces before attached tokens).
+  // (no synthetic spaces before attached tokens or at CJK gaps).
   std::string preview;
   for (size_t idx = start; idx < endExclusive; ++idx) {
-    if (idx > start && idx < continuesVec.size() && !continuesVec[idx]) {
+    if (idx > start && idx < boundaries.size() && TokenBoundary::hasSpace(boundaries[idx])) {
       preview.push_back(' ');
     }
     preview += words[idx];
@@ -137,7 +138,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
 
   const size_t requiredSize = words.size() + 1;
   if (words.capacity() < requiredSize || wordStyles.capacity() < requiredSize ||
-      wordContinues.capacity() < requiredSize || wordSizes.capacity() < requiredSize ||
+      wordBoundaries.capacity() < requiredSize || wordSizes.capacity() < requiredSize ||
       wordVisibleOffsets.capacity() < requiredSize) {
     size_t newCapacity = std::max<size_t>(16, words.capacity());
     while (newCapacity < requiredSize) {
@@ -149,9 +150,9 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     // heap is nearly gone, and then a partial-cache abort beats a crash.
     {
       constexpr size_t ALLOC_HEADER_SLACK = 16;
-      const size_t needed =
-          newCapacity * (sizeof(std::string) + sizeof(EpdFontFamily::Style) + sizeof(uint8_t) + sizeof(uint32_t)) +
-          newCapacity / 8 + 5 * ALLOC_HEADER_SLACK;
+      const size_t needed = newCapacity * (sizeof(std::string) + sizeof(EpdFontFamily::Style) + sizeof(uint8_t) +
+                                           sizeof(uint32_t) + sizeof(TokenBoundary::Boundary)) +
+                            5 * ALLOC_HEADER_SLACK;
       if (ESP.getMaxAllocHeap() < needed) {
         wordGrowthRefused_ = true;
         return;
@@ -159,7 +160,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     }
     words.reserve(newCapacity);
     wordStyles.reserve(newCapacity);
-    wordContinues.reserve(newCapacity);
+    wordBoundaries.reserve(newCapacity);
     wordSizes.reserve(newCapacity);
     wordVisibleOffsets.reserve(newCapacity);
   }
@@ -170,7 +171,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     combinedStyle = static_cast<EpdFontFamily::Style>(combinedStyle | EpdFontFamily::UNDERLINE);
   }
   wordStyles.push_back(combinedStyle);
-  wordContinues.push_back(attachToPrevious);
+  wordBoundaries.push_back(TokenBoundary::Boundary{attachToPrevious, false});
   wordSizes.push_back(std::min(std::max(sizePct, MIN_WORD_SIZE_PCT), MAX_WORD_SIZE_PCT));
   wordVisibleOffsets.push_back(visibleOffset);
 }
@@ -203,6 +204,15 @@ int ParsedText::widthForLine(const int lineIndex, const int lineHeight, const in
   return std::max(1, pageWidth - indent);
 }
 
+int ParsedText::naturalGapBefore(const GfxRenderer& renderer, const int fontId, const size_t j) const {
+  const TokenBoundary::Boundary boundary = wordBoundaries[j];
+  const uint32_t left = lastCodepoint(words[j - 1]);
+  const uint32_t right = firstCodepoint(words[j]);
+  if (boundary.continues) return renderer.getKerning(fontId, left, right, wordStyles[j - 1]);
+  if (boundary.noSpaceBefore) return 0;
+  return renderer.getSpaceAdvance(fontId, left, right, wordStyles[j - 1]);
+}
+
 void ParsedText::layoutAndExtractLines(
     const GfxRenderer& renderer, const int bodyFontId, const uint16_t viewportWidth,
     const std::function<LineProcessResult(std::unique_ptr<TextBlock>, bool, bool)>& processLine,
@@ -224,14 +234,14 @@ void ParsedText::layoutAndExtractLines(
   std::vector<EpdFontFamily::Style> savedStyles;
   std::vector<uint8_t> savedSizes;
   std::vector<uint32_t> savedOffsets;
-  std::vector<bool> savedContinues;
+  std::vector<TokenBoundary::Boundary> savedBoundaries;
   bool savedIsContinuation = false;
   if (preserveSource) {
     savedWords = words;
     savedStyles = wordStyles;
     savedSizes = wordSizes;
     savedOffsets = wordVisibleOffsets;
-    savedContinues = wordContinues;
+    savedBoundaries = wordBoundaries;
     savedIsContinuation = isContinuation_;
   }
 
@@ -255,14 +265,14 @@ void ParsedText::layoutAndExtractLines(
   {
     size_t totalSize = 1;  // reserve room for a possible hyphen fallback
     for (size_t i = 0; i < words.size(); i++) {
-      if (i > 0 && !wordContinues[i]) totalSize += 1;
+      if (i > 0 && TokenBoundary::hasSpace(wordBoundaries[i])) totalSize += 1;
       totalSize += words[i].size();
     }
     std::string& allText = allText_;
     allText.clear();
     allText.reserve(totalSize);
     for (size_t i = 0; i < words.size(); i++) {
-      if (i > 0 && !wordContinues[i]) allText += ' ';
+      if (i > 0 && TokenBoundary::hasSpace(wordBoundaries[i])) allText += ' ';
       allText += words[i];
     }
     allText += '-';
@@ -299,11 +309,7 @@ void ParsedText::layoutAndExtractLines(
   if (blockStyle.textIndentYields && cssTextIndent > 0 && includeLastLine && !words.empty()) {
     int natural = wordWidths[0];
     for (size_t j = 1; j < words.size(); ++j) {
-      natural +=
-          wordWidths[j] + (wordContinues[j] ? renderer.getKerning(fontId, lastCodepoint(words[j - 1]),
-                                                                  firstCodepoint(words[j]), wordStyles[j - 1])
-                                            : renderer.getSpaceAdvance(fontId, lastCodepoint(words[j - 1]),
-                                                                       firstCodepoint(words[j]), wordStyles[j - 1]));
+      natural += wordWidths[j] + naturalGapBefore(renderer, fontId, j);
     }
     const int available = widthForLine(0, lineHeight, blockStartY, pageWidth);
     if (natural <= available && natural + firstLineIndent > available) {
@@ -320,11 +326,11 @@ void ParsedText::layoutAndExtractLines(
   splitInsertedHyphen.clear();
   if (hyphenationEnabled) {
     // Use greedy layout that can split words mid-loop when a hyphenated prefix fits.
-    computeHyphenatedLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, lineEndsWithHyphenatedWord,
+    computeHyphenatedLineBreaks(renderer, fontId, pageWidth, wordWidths, wordBoundaries, lineEndsWithHyphenatedWord,
                                 splitPrefixWordIndexes, splitInsertedHyphen, firstLineIndent, blockStartY, lineHeight,
                                 lineBreakIndices);
   } else {
-    computeLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, firstLineIndent, blockStartY, lineHeight,
+    computeLineBreaks(renderer, fontId, pageWidth, wordWidths, wordBoundaries, firstLineIndent, blockStartY, lineHeight,
                       lineBreakIndices);
     lineEndsWithHyphenatedWord.assign(lineBreakIndices.size(), false);
     splitPrefixWordIndexes.assign(lineBreakIndices.size(), -1);
@@ -334,13 +340,13 @@ void ParsedText::layoutAndExtractLines(
 
   for (size_t i = 0; i < lineCount; ++i) {
     const bool lineEndedWithHyphenation = i < lineEndsWithHyphenatedWord.size() ? lineEndsWithHyphenatedWord[i] : false;
-    const auto result = extractLine(i, pageWidth, wordWidths, wordContinues, lineBreakIndices, processLine, renderer,
+    const auto result = extractLine(i, pageWidth, wordWidths, wordBoundaries, lineBreakIndices, processLine, renderer,
                                     fontId, lineEndedWithHyphenation, false, firstLineIndent, blockStartY, lineHeight);
 
     if (result == LineProcessResult::RetryWithoutHyphenation && lineEndedWithHyphenation) {
       const size_t lineStart = i > 0 ? lineBreakIndices[i - 1] : 0;
       const size_t lineEnd = i < lineBreakIndices.size() ? lineBreakIndices[i] : lineStart;
-      const std::string firstAttemptPreview = buildLinePreview(words, wordContinues, lineStart, lineEnd);
+      const std::string firstAttemptPreview = buildLinePreview(words, wordBoundaries, lineStart, lineEnd);
       LOG_TRC("PTX", "Line %u requested rerender without hyphenation, first attempt: %s", static_cast<unsigned>(i),
               firstAttemptPreview.c_str());
       // Undo precomputed splits from this line onward so the retry starts from
@@ -372,7 +378,7 @@ void ParsedText::layoutAndExtractLines(
         words[splitIndex] = std::move(merged);
         words.erase(words.begin() + splitIndex + 1);
         wordStyles.erase(wordStyles.begin() + splitIndex + 1);
-        wordContinues.erase(wordContinues.begin() + splitIndex + 1);
+        wordBoundaries.erase(wordBoundaries.begin() + splitIndex + 1);
         wordSizes.erase(wordSizes.begin() + splitIndex + 1);
         wordVisibleOffsets.erase(wordVisibleOffsets.begin() + splitIndex + 1);
       }
@@ -382,7 +388,7 @@ void ParsedText::layoutAndExtractLines(
 
       // Keep previous lines fixed; recompute only this specific line without hyphenation.
       // Suppression is intentionally line-local.
-      const size_t retryBreak = computeSingleLineBreakNoHyphen(renderer, fontId, pageWidth, wordWidths, wordContinues,
+      const size_t retryBreak = computeSingleLineBreakNoHyphen(renderer, fontId, pageWidth, wordWidths, wordBoundaries,
                                                                lineStart, firstLineIndent, blockStartY, lineHeight);
 
       lineBreakIndices.resize(i + 1);
@@ -399,10 +405,10 @@ void ParsedText::layoutAndExtractLines(
       if (i < lineBreakIndices.size()) {
         const size_t retryLineStart = i > 0 ? lineBreakIndices[i - 1] : 0;
         const size_t retryLineEnd = i < lineBreakIndices.size() ? lineBreakIndices[i] : retryLineStart;
-        const std::string retryPreview = buildLinePreview(words, wordContinues, retryLineStart, retryLineEnd);
+        const std::string retryPreview = buildLinePreview(words, wordBoundaries, retryLineStart, retryLineEnd);
         LOG_TRC("PTX", "Rerendering line %u with hyphenation suppressed, retry attempt: %s", static_cast<unsigned>(i),
                 retryPreview.c_str());
-        extractLine(i, pageWidth, wordWidths, wordContinues, lineBreakIndices, processLine, renderer, fontId, false,
+        extractLine(i, pageWidth, wordWidths, wordBoundaries, lineBreakIndices, processLine, renderer, fontId, false,
                     true, firstLineIndent, blockStartY, lineHeight);
 
         // Resume regular hyphenation from the first word after the retried line.
@@ -414,7 +420,7 @@ void ParsedText::layoutAndExtractLines(
         suffixSplitPrefixWordIndexes.clear();
         suffixSplitInsertedHyphen.clear();
         const std::vector<size_t>& hyphenatedSuffixBreaks = suffixBreaks_;
-        computeHyphenatedLineBreaksFromIndex(renderer, fontId, pageWidth, wordWidths, wordContinues, resumeIndex,
+        computeHyphenatedLineBreaksFromIndex(renderer, fontId, pageWidth, wordWidths, wordBoundaries, resumeIndex,
                                              suffixLineEndsWithHyphenatedWord, suffixSplitPrefixWordIndexes,
                                              suffixSplitInsertedHyphen, blockStartY, lineHeight,
                                              static_cast<int>(i) + 1, suffixBreaks_);
@@ -446,7 +452,7 @@ void ParsedText::layoutAndExtractLines(
     const size_t consumed = lineBreakIndices[lineCount - 1];
     words.erase(words.begin(), words.begin() + consumed);
     wordStyles.erase(wordStyles.begin(), wordStyles.begin() + consumed);
-    wordContinues.erase(wordContinues.begin(), wordContinues.begin() + consumed);
+    wordBoundaries.erase(wordBoundaries.begin(), wordBoundaries.begin() + consumed);
     wordSizes.erase(wordSizes.begin(), wordSizes.begin() + consumed);
     wordVisibleOffsets.erase(wordVisibleOffsets.begin(), wordVisibleOffsets.begin() + consumed);
   }
@@ -457,7 +463,7 @@ void ParsedText::layoutAndExtractLines(
     wordStyles = std::move(savedStyles);
     wordSizes = std::move(savedSizes);
     wordVisibleOffsets = std::move(savedOffsets);
-    wordContinues = std::move(savedContinues);
+    wordBoundaries = std::move(savedBoundaries);
     isContinuation_ = savedIsContinuation;
   }
 }
@@ -489,7 +495,7 @@ void ParsedText::releaseLayoutScratch() {
   if (words.empty()) {
     std::vector<std::string>().swap(words);
     std::vector<EpdFontFamily::Style>().swap(wordStyles);
-    std::vector<bool>().swap(wordContinues);
+    std::vector<TokenBoundary::Boundary>().swap(wordBoundaries);
     std::vector<uint8_t>().swap(wordSizes);
     std::vector<uint32_t>().swap(wordVisibleOffsets);
   }
@@ -499,7 +505,7 @@ void ParsedText::reset(const BlockStyle& newBlockStyle) {
   // clear() keeps each vector's capacity; the strings inside `words` are destroyed here.
   words.clear();
   wordStyles.clear();
-  wordContinues.clear();
+  wordBoundaries.clear();
   wordSizes.clear();
   wordVisibleOffsets.clear();
   blockStyle = newBlockStyle;
@@ -516,8 +522,9 @@ void ParsedText::calculateWordWidths(const GfxRenderer& renderer, const int font
 }
 
 void ParsedText::computeLineBreaks(const GfxRenderer& renderer, const int fontId, const int pageWidth,
-                                   std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec,
-                                   const int firstLineIndent, const int16_t blockStartY, const int lineHeight,
+                                   std::vector<uint16_t>& wordWidths,
+                                   const std::vector<TokenBoundary::Boundary>& boundaries, const int firstLineIndent,
+                                   const int16_t blockStartY, const int lineHeight,
                                    std::vector<size_t>& lineBreakIndices) {
   lineBreakIndices.clear();
   if (words.empty()) {
@@ -545,13 +552,7 @@ void ParsedText::computeLineBreaks(const GfxRenderer& renderer, const int fontId
   std::vector<int>& interWordGaps = interWordGaps_;
   interWordGaps.assign(totalWordCount, 0);
   for (size_t j = 1; j < totalWordCount; ++j) {
-    if (!continuesVec[j]) {
-      interWordGaps[j] =
-          renderer.getSpaceAdvance(fontId, lastCodepoint(words[j - 1]), firstCodepoint(words[j]), wordStyles[j - 1]);
-    } else {
-      interWordGaps[j] =
-          renderer.getKerning(fontId, lastCodepoint(words[j - 1]), firstCodepoint(words[j]), wordStyles[j - 1]);
-    }
+    interWordGaps[j] = naturalGapBefore(renderer, fontId, j);
   }
 
   // Greedy pre-pass: map each word-start index to its line number so the DP can
@@ -610,7 +611,7 @@ void ParsedText::computeLineBreaks(const GfxRenderer& renderer, const int fontId
       }
 
       // Cannot break after word j if the next word attaches to it (continuation group)
-      if (j + 1 < totalWordCount && continuesVec[j + 1]) {
+      if (j + 1 < totalWordCount && !TokenBoundary::allowsBreak(boundaries[j + 1])) {
         continue;
       }
 
@@ -677,9 +678,9 @@ void ParsedText::computeLineBreaks(const GfxRenderer& renderer, const int fontId
 
 size_t ParsedText::computeSingleLineBreakNoHyphen(const GfxRenderer& renderer, const int fontId, const int pageWidth,
                                                   const std::vector<uint16_t>& wordWidths,
-                                                  const std::vector<bool>& continuesVec, const size_t lineStartIndex,
-                                                  const int firstLineIndent, const int16_t blockStartY,
-                                                  const int lineHeight) const {
+                                                  const std::vector<TokenBoundary::Boundary>& boundaries,
+                                                  const size_t lineStartIndex, const int firstLineIndent,
+                                                  const int16_t blockStartY, const int lineHeight) const {
   // One-line non-hyphenating breaker used by the page-boundary retry path.
   if (lineStartIndex >= wordWidths.size()) {
     return lineStartIndex;
@@ -694,16 +695,7 @@ size_t ParsedText::computeSingleLineBreakNoHyphen(const GfxRenderer& renderer, c
 
   while (currentIndex < wordWidths.size()) {
     const bool isFirstWord = currentIndex == lineStartIndex;
-    int spacing = 0;
-    if (!isFirstWord) {
-      if (!continuesVec[currentIndex]) {
-        spacing = renderer.getSpaceAdvance(fontId, lastCodepoint(words[currentIndex - 1]),
-                                           firstCodepoint(words[currentIndex]), wordStyles[currentIndex - 1]);
-      } else {
-        spacing = renderer.getKerning(fontId, lastCodepoint(words[currentIndex - 1]),
-                                      firstCodepoint(words[currentIndex]), wordStyles[currentIndex - 1]);
-      }
-    }
+    const int spacing = isFirstWord ? 0 : naturalGapBefore(renderer, fontId, currentIndex);
 
     const int candidateWidth = spacing + wordWidths[currentIndex];
     if (lineWidth + candidateWidth <= effectivePageWidth) {
@@ -718,7 +710,8 @@ size_t ParsedText::computeSingleLineBreakNoHyphen(const GfxRenderer& renderer, c
     break;
   }
 
-  while (currentIndex > lineStartIndex + 1 && currentIndex < wordWidths.size() && continuesVec[currentIndex]) {
+  while (currentIndex > lineStartIndex + 1 && currentIndex < wordWidths.size() &&
+         !TokenBoundary::allowsBreak(boundaries[currentIndex])) {
     --currentIndex;
   }
 
@@ -752,13 +745,11 @@ void ParsedText::applyParagraphIndent(const GfxRenderer& renderer, const int fon
 
 
 // Builds break indices while opportunistically splitting the word that would overflow the current line.
-void ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& renderer, const int fontId, const int pageWidth,
-                                             std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec,
-                                             std::vector<bool>& lineEndsWithHyphenatedWord,
-                                             std::vector<int>& splitPrefixWordIndexes,
-                                             std::vector<bool>& splitInsertedHyphen, const int firstLineIndent,
-                                             const int16_t blockStartY, const int lineHeight,
-                                             std::vector<size_t>& lineBreakIndices) {
+void ParsedText::computeHyphenatedLineBreaks(
+    const GfxRenderer& renderer, const int fontId, const int pageWidth, std::vector<uint16_t>& wordWidths,
+    const std::vector<TokenBoundary::Boundary>& boundaries, std::vector<bool>& lineEndsWithHyphenatedWord,
+    std::vector<int>& splitPrefixWordIndexes, std::vector<bool>& splitInsertedHyphen, const int firstLineIndent,
+    const int16_t blockStartY, const int lineHeight, std::vector<size_t>& lineBreakIndices) {
   lineBreakIndices.clear();
   // Pre-compute inter-word gaps to avoid repeated codepoint scanning and renderer
   // calls in the inner loop. When hyphenateWordAtIndex inserts a new word, we insert
@@ -767,13 +758,7 @@ void ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& renderer, const 
   std::vector<int>& interWordGaps = interWordGaps_;
   interWordGaps.assign(wordWidths.size(), 0);
   for (size_t j = 1; j < wordWidths.size(); ++j) {
-    if (!continuesVec[j]) {
-      interWordGaps[j] =
-          renderer.getSpaceAdvance(fontId, lastCodepoint(words[j - 1]), firstCodepoint(words[j]), wordStyles[j - 1]);
-    } else {
-      interWordGaps[j] =
-          renderer.getKerning(fontId, lastCodepoint(words[j - 1]), firstCodepoint(words[j]), wordStyles[j - 1]);
-    }
+    interWordGaps[j] = naturalGapBefore(renderer, fontId, j);
   }
 
   lineEndsWithHyphenatedWord.clear();
@@ -834,7 +819,8 @@ void ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& renderer, const 
 
     // Don't break before a continuation word (e.g., orphaned "?" after "question").
     // Backtrack to the start of the continuation group so the whole group moves to the next line.
-    while (currentIndex > lineStart + 1 && currentIndex < wordWidths.size() && continuesVec[currentIndex]) {
+    while (currentIndex > lineStart + 1 && currentIndex < wordWidths.size() &&
+           !TokenBoundary::allowsBreak(boundaries[currentIndex])) {
       --currentIndex;
     }
 
@@ -857,9 +843,10 @@ void ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& renderer, const 
 
 void ParsedText::computeHyphenatedLineBreaksFromIndex(
     const GfxRenderer& renderer, const int fontId, const int pageWidth, std::vector<uint16_t>& wordWidths,
-    std::vector<bool>& continuesVec, const size_t startIndex, std::vector<bool>& lineEndsWithHyphenatedWord,
-    std::vector<int>& splitPrefixWordIndexes, std::vector<bool>& splitInsertedHyphen, const int16_t blockStartY,
-    const int lineHeight, const int startLineIdx, std::vector<size_t>& lineBreakIndices) {
+    const std::vector<TokenBoundary::Boundary>& boundaries, const size_t startIndex,
+    std::vector<bool>& lineEndsWithHyphenatedWord, std::vector<int>& splitPrefixWordIndexes,
+    std::vector<bool>& splitInsertedHyphen, const int16_t blockStartY, const int lineHeight, const int startLineIdx,
+    std::vector<size_t>& lineBreakIndices) {
   // Same greedy hyphenating breaker as the full pass, but scoped to a suffix.
   lineBreakIndices.clear();
   if (startIndex >= wordWidths.size()) {
@@ -872,13 +859,7 @@ void ParsedText::computeHyphenatedLineBreaksFromIndex(
   std::vector<int>& interWordGaps = interWordGaps_;
   interWordGaps.assign(wordWidths.size(), 0);
   for (size_t j = 1; j < wordWidths.size(); ++j) {
-    if (!continuesVec[j]) {
-      interWordGaps[j] =
-          renderer.getSpaceAdvance(fontId, lastCodepoint(words[j - 1]), firstCodepoint(words[j]), wordStyles[j - 1]);
-    } else {
-      interWordGaps[j] =
-          renderer.getKerning(fontId, lastCodepoint(words[j - 1]), firstCodepoint(words[j]), wordStyles[j - 1]);
-    }
+    interWordGaps[j] = naturalGapBefore(renderer, fontId, j);
   }
 
   lineEndsWithHyphenatedWord.clear();
@@ -928,7 +909,8 @@ void ParsedText::computeHyphenatedLineBreaksFromIndex(
       break;
     }
 
-    while (currentIndex > lineStart + 1 && currentIndex < wordWidths.size() && continuesVec[currentIndex]) {
+    while (currentIndex > lineStart + 1 && currentIndex < wordWidths.size() &&
+           !TokenBoundary::allowsBreak(boundaries[currentIndex])) {
       --currentIndex;
     }
 
@@ -1034,8 +1016,8 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   //
   // This lets the backtracking loop keep the entire prefix group ("200 Quadrat-") on one
   // line, while "kilometer" moves to the next line.
-  // wordContinues[wordIndex] is intentionally left unchanged — the prefix keeps its original attachment.
-  wordContinues.insert(wordContinues.begin() + wordIndex + 1, false);
+  // wordBoundaries[wordIndex] is intentionally left unchanged — the prefix keeps its original attachment.
+  wordBoundaries.insert(wordBoundaries.begin() + wordIndex + 1, TokenBoundary::Boundary{});
 
   // Update cached widths to reflect the new prefix/remainder pairing.
   wordWidths[wordIndex] = static_cast<uint16_t>(chosenWidth);
@@ -1049,7 +1031,7 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
 
 ParsedText::LineProcessResult ParsedText::extractLine(
     const size_t breakIndex, const int pageWidth, const std::vector<uint16_t>& wordWidths,
-    const std::vector<bool>& continuesVec, const std::vector<size_t>& lineBreakIndices,
+    const std::vector<TokenBoundary::Boundary>& boundaries, const std::vector<size_t>& lineBreakIndices,
     const std::function<LineProcessResult(std::unique_ptr<TextBlock>, bool, bool)>& processLine,
     const GfxRenderer& renderer, const int fontId, const bool lineEndsWithHyphenatedWord,
     const bool suppressHyphenationRetry, const int firstLineIndent, const int16_t blockStartY, const int lineHeight) {
@@ -1074,16 +1056,20 @@ ParsedText::LineProcessResult ParsedText::extractLine(
     // Gaps before closing punctuation (. , ) » etc.) are excluded from justification
     // distribution so they stay at natural space width.
     const uint32_t firstCp = firstCodepoint(words[lastBreakAt + wordIdx]);
-    if (wordIdx > 0 && !continuesVec[lastBreakAt + wordIdx]) {
+    const TokenBoundary::Boundary boundary = boundaries[lastBreakAt + wordIdx];
+    if (wordIdx > 0 && !boundary.continues) {
+      // A word gap or a CJK gap: both stretch when justified, only the word gap has a width.
       const bool beforeClosing = isClosingPunctuation(firstCp);
       if (!beforeClosing) actualGapCount++;
-      // Inter-word gaps scale with the preceding word's effective size, matching wordStyles usage.
-      totalNaturalGaps +=
-          static_cast<int>(renderer.getSpaceAdvance(fontId, lastCodepoint(words[lastBreakAt + wordIdx - 1]), firstCp,
-                                                    wordStyles[lastBreakAt + wordIdx - 1]) *
-                               wordScale(lastBreakAt + wordIdx - 1) +
-                           0.5f);
-    } else if (wordIdx > 0 && continuesVec[lastBreakAt + wordIdx]) {
+      if (TokenBoundary::hasSpace(boundary)) {
+        // Inter-word gaps scale with the preceding word's effective size, matching wordStyles usage.
+        totalNaturalGaps +=
+            static_cast<int>(renderer.getSpaceAdvance(fontId, lastCodepoint(words[lastBreakAt + wordIdx - 1]), firstCp,
+                                                      wordStyles[lastBreakAt + wordIdx - 1]) *
+                                 wordScale(lastBreakAt + wordIdx - 1) +
+                             0.5f);
+      }
+    } else if (wordIdx > 0) {
       // Non-breaking space tokens (" " with continues=true) are visible, stretchable spaces —
       // count them as justifiable gaps so justifyExtra is distributed to them too.
       if (words[lastBreakAt + wordIdx] == " ") {
@@ -1130,7 +1116,7 @@ ParsedText::LineProcessResult ParsedText::extractLine(
   for (size_t wordIdx = 0; wordIdx < lineWordCount; wordIdx++) {
     lineXPos.push_back(xpos);
 
-    const bool nextIsContinuation = wordIdx + 1 < lineWordCount && continuesVec[lastBreakAt + wordIdx + 1];
+    const bool nextIsContinuation = wordIdx + 1 < lineWordCount && boundaries[lastBreakAt + wordIdx + 1].continues;
     if (nextIsContinuation) {
       int advance = wordWidths[lastBreakAt + wordIdx];
       // Cross-boundary kerning for continuation words (e.g. nonbreaking spaces, attached punctuation)
@@ -1140,7 +1126,7 @@ ParsedText::LineProcessResult ParsedText::extractLine(
                                       wordScale(lastBreakAt + wordIdx) +
                                   0.5f);
       // Non-breaking space tokens are stretchable — expand them during justification like normal spaces.
-      if (words[lastBreakAt + wordIdx] == " " && continuesVec[lastBreakAt + wordIdx] &&
+      if (words[lastBreakAt + wordIdx] == " " && boundaries[lastBreakAt + wordIdx].continues &&
           blockStyle.alignment == CssTextAlign::Justify && !isLastLine) {
         advance += justifyExtra;
       }
@@ -1149,10 +1135,13 @@ ParsedText::LineProcessResult ParsedText::extractLine(
       int gap = 0;
       if (wordIdx + 1 < lineWordCount) {
         const uint32_t nextFirstCp = firstCodepoint(words[lastBreakAt + wordIdx + 1]);
-        gap = static_cast<int>(renderer.getSpaceAdvance(fontId, lastCodepoint(words[lastBreakAt + wordIdx]),
-                                                        nextFirstCp, wordStyles[lastBreakAt + wordIdx]) *
-                                   wordScale(lastBreakAt + wordIdx) +
-                               0.5f);
+        // A CJK gap has no natural width; it only takes the justification share below.
+        if (TokenBoundary::hasSpace(boundaries[lastBreakAt + wordIdx + 1])) {
+          gap = static_cast<int>(renderer.getSpaceAdvance(fontId, lastCodepoint(words[lastBreakAt + wordIdx]),
+                                                          nextFirstCp, wordStyles[lastBreakAt + wordIdx]) *
+                                     wordScale(lastBreakAt + wordIdx) +
+                                 0.5f);
+        }
         // Don't stretch the gap before closing punctuation — it looks wrong with
         // extra space before ".", ")", "»" etc.
         const bool nextIsClosing = isClosingPunctuation(nextFirstCp);
@@ -1174,7 +1163,7 @@ ParsedText::LineProcessResult ParsedText::extractLine(
   // Carried into the block so a reader-side consumer can tell one logical word from the
   // fragments layout split it into (bionic-reading halves, attached punctuation). Nothing on
   // the render path reads it; the xpos above already encodes the spacing.
-  range.continues = &continuesVec;
+  range.boundaries = &boundaries;
   range.first = lastBreakAt;
   range.count = lineWordCount;
 

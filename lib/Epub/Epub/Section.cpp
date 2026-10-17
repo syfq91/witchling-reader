@@ -31,7 +31,13 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 83;  // v83: a TTF family kerns and draws fi/fl ligatures
+constexpr uint8_t SECTION_FILE_VERSION = 86;  // v86: a <span id> is in the anchor map
+                                              // v85: an <img> whose href has no extension is
+                                              // laid out as the image its bytes are; v84 pages
+                                              // hold its alt text
+                                              // v84: text declared at font-size 2px or less (a
+                                              // watermark span) is dropped; v83 pages show it
+                                              // v83: a TTF family kerns and draws fi/fl ligatures
                                               // v82: a TTF family draws every size with a face of its own
                                               // v81: a paragraph over 96 words gets its top margin and padding
                                               // v79: a <span> styled display:block is a block,
@@ -680,23 +686,29 @@ bool Section::loadSectionFile(const BuildParams& p) {
     return false;
   }
   // 4 bytes a page: a chapter is a few hundred bytes, a book that is one XHTML file several KB in
-  // one block. Without that block the pages read their offsets from the file instead (one more
-  // 4-byte read per page load) -- a failed resize would abort the device, and failing the load
-  // would delete a good cache.
-  if (!heapHasBlockFor(pageCount * sizeof(uint32_t))) {
+  // one block, taken as the table's first chunk. Without that block the pages read their offsets
+  // from the file instead (one more 4-byte read per page load) -- failing the load would delete a
+  // good cache. The reserve is nothrow, so an answer that went stale falls back the same way.
+  lut.clear();
+  if (!heapHasBlockFor(pageCount * sizeof(uint32_t)) || !lut.reserve(pageCount)) {
     LOG_ERR("SCT", "No %u-byte block for the %u-page LUT; reading page offsets from the file",
             static_cast<unsigned>(pageCount * sizeof(uint32_t)), pageCount);
-    lut.clear();
-    lut.shrink_to_fit();
     lutFileOffset_ = lutOffset;
   } else {
-    lut.resize(pageCount);
-    for (uint32_t& pos : lut) {
+    for (uint16_t i = 0; i < pageCount; ++i) {
+      uint32_t pos = 0;
       serialization::readPod(file, pos);
       if (pos < header::kSize || pos >= lutOffset) {
         LOG_ERR("SCT", "Deserialization failed: LUT entry %u out of range [%u, %u)", pos, header::kSize, lutOffset);
         clearCache();
         return false;
+      }
+      if (!lut.push_back(pos)) {
+        // Inside the reserved chunk this cannot be refused; if it ever is, read from the file
+        // (which range-checks every entry as it loads) rather than hold a table with a hole.
+        lut.clear();
+        lutFileOffset_ = lutOffset;
+        break;
       }
     }
   }
@@ -765,7 +777,9 @@ struct Section::BuildState {
   bool statValid = false;
   bool statResolved = false;  // resolveSpineStat ran (statValid/inflatedSize are meaningful)
   CssParser* cssParser = nullptr;
-  std::vector<uint32_t> lut;
+  // The parser stops a build at MAX_PAGES_PER_SECTION, so the table must never refuse below it.
+  static_assert(PageLut::minMaxSize() >= Page::MAX_PAGES_PER_SECTION, "page LUT smaller than a section may be");
+  PageLut lut;
   std::unique_ptr<ChapterHtmlSlimParser> visitor;
   // Live ZIP-side state of the parse, created on the first runBuildParse call and
   // released the moment the compressed stream is exhausted. zip must outlive reader
@@ -1060,7 +1074,8 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   st.lut.clear();
   // One u32 per page, appended by the completePageFn below across the whole parse. Pre-sized for
   // the same reason as the parser's paragraph LUT — see estimatePagesForSpine and
-  // docs/memory-allocation-strategy.md §9.6.
+  // docs/memory-allocation-strategy.md §9.6. Best effort: without the block the first page
+  // allocates a small chunk instead, and a chapter past the estimate grows in chunks either way.
   st.lut.reserve(estimatePagesForSpine(st.inflatedSize));
 
   // Derive the content base directory and image cache path prefix for the parser
@@ -1121,7 +1136,17 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   st.visitor = std::make_unique<ChapterHtmlSlimParser>(
       epub, renderer, p.fontId, p.lineCompression, p.extraParagraphSpacing, p.paragraphAlignment, p.viewportWidth,
       p.viewportHeight, p.hyphenationEnabled, p.fontSizeNormalization,
-      [this, &st](std::unique_ptr<Page> page) { st.lut.emplace_back(this->onPageComplete(std::move(page))); },
+      [this, &st](std::unique_ptr<Page> page) {
+        // The page's LUT entry first: a page written without one could never be loaded, and
+        // pageCount would run ahead of the table. Refused (no chunk for it), the page is not
+        // written and the parser stops the build there, keeping the pages before it.
+        if (!st.lut.push_back(0)) {
+          LOG_ERR("SCT", "No room in the page LUT for page %u; the build stops here", pageCount);
+          return false;
+        }
+        st.lut.back() = this->onPageComplete(std::move(page));
+        return true;
+      },
       p.embeddedStyle, st.contentBase, st.imageBasePath, p.imageRendering, std::move(tocAnchors), st.progressFn,
       st.cssParser, epub->getImageManifest());
   // Load printed-page list entries (NCX <pageList> or EPUB 3 nav page-list) for this
@@ -1737,7 +1762,11 @@ Section::BuildPhaseResult Section::runBuildFinalize(BuildState& st) {
     st.cssParser->clearCaches();
   }
 
-  buildTocBoundaries(anchors);
+  // From the anchor map just written, not from `anchors`: that holds only the records the parser
+  // kept resident, which since anchors spill to SD is normally none, so every TOC entry of the
+  // spine started at page 0 until the section was next loaded from the cache. The write handle
+  // is read/write, so this opens no second handle (see the LUT note below for why that matters).
+  buildTocBoundariesFromFile(file);
 
   // The labels were just written to the cache; the first query reads them back from there
   // (see pageBreakLabelsPending_ for why they are not copied from the parser here). Swap, not
@@ -2224,56 +2253,12 @@ void Section::warmAllImageCaches(const int xOffset, const int yOffset, const boo
   }
 }
 
-// Resolve TOC anchor-to-page mappings from the parser's in-memory anchor vector.
-// Called after createSectionFile when anchors are already in memory.
-// See buildTocBoundariesFromFile for the on-disk variant; the two are kept separate
-// because the anchor resolution has fundamentally different iteration patterns
-// (scan in-memory vector vs. stream from file with early exit).
-void Section::buildTocBoundaries(const std::vector<std::pair<std::string, uint16_t>>& anchors) {
-  const int startTocIndex = epub->getTocIndexForSpineIndex(spineIndex);
-  if (startTocIndex < 0) return;
-
-  // Count TOC entries for this spine and how many have anchors to resolve
-  const int tocCount = epub->getTocItemsCount();
-  uint16_t totalEntries = 0;
-  uint16_t unresolvedCount = 0;
-  for (int i = startTocIndex; i < tocCount; i++) {
-    const auto entry = epub->getTocItem(i);
-    if (entry.spineIndex != spineIndex) break;
-    totalEntries++;
-    if (!entry.anchor.empty()) unresolvedCount++;
-  }
-
-  // If no TOC entries have anchors, all chapters start at page 0 and
-  // getTocIndexForPage falls back to epub->getTocIndexForSpineIndex,
-  // so there's nothing to resolve and no value in storing boundaries.
-  if (totalEntries == 0 || unresolvedCount == 0) return;
-
-  tocBoundaries.reserve(totalEntries);
-  for (int i = startTocIndex; i < startTocIndex + totalEntries; i++) {
-    const auto entry = epub->getTocItem(i);
-    uint16_t page = 0;
-    if (!entry.anchor.empty()) {
-      for (const auto& [key, val] : anchors) {
-        if (key == entry.anchor) {
-          page = val;
-          break;
-        }
-      }
-    }
-    tocBoundaries.push_back({i, page});
-  }
-
-  // Defensive sort in case TOC entries are out of document order in a malformed epub
-  std::sort(tocBoundaries.begin(), tocBoundaries.end(),
-            [](const TocBoundary& a, const TocBoundary& b) { return a.startPage < b.startPage; });
-}
-
 // Resolve TOC anchor-to-page mappings by scanning the section cache's on-disk anchor data.
-// Called from loadSectionFile when anchors are not in memory. Caches the small set of
-// TOC anchor strings first (since getTocItem does file I/O to BookMetadataCache), then
-// streams through on-disk anchors matching only those, stopping as soon as all are found.
-// See buildTocBoundaries for the in-memory variant.
+// Called from loadSectionFile, and at the end of a build with the still-open write handle (the
+// anchors spill to SD during the parse, so the cache's anchor map is the only complete copy).
+// Caches the small set of TOC anchor strings first (since getTocItem does file I/O to
+// BookMetadataCache), then streams through on-disk anchors matching only those, stopping as
+// soon as all are found.
 void Section::buildTocBoundariesFromFile(FsFile& f) {
   const int startTocIndex = epub->getTocIndexForSpineIndex(spineIndex);
   if (startTocIndex < 0) return;

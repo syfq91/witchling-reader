@@ -54,6 +54,10 @@ class HalStorage {
   bool remove(const char* path);
   bool rename(const char* oldPath, const char* newPath);
   bool rmdir(const char* path);
+  // Whether two paths name one file or folder. FAT compares names without case, so
+  // "/Books/a.epub" and "/books/A.EPUB" are the same file, which comparing the strings misses.
+  // False when either cannot be opened, `same` then false as well.
+  bool areSameFile(const char* first, const char* second, bool& same);
 
   bool openFileForRead(const char* moduleName, const char* path, HalFile& file);
   bool openFileForRead(const char* moduleName, const std::string& path, HalFile& file);
@@ -71,6 +75,8 @@ class HalStorage {
   // `path` survives the wipe: the SDK takes `path` itself down with it, so the directory is then
   // recreated around the kept file. Fails if the wipe fails or that file cannot be put back.
   bool removeDir(const char* path, const char* keepFile = nullptr);
+  // Copies srcPath to dstPath (replacing it). True only for a complete copy: on any failure,
+  // a read error included, dstPath is removed rather than left half-written.
   bool copyFile(const char* moduleName, const std::string& srcPath, const char* dstPath);
 
   uint64_t sdTotalBytes() const;

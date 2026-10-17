@@ -5,6 +5,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
+#include <HeapFit.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <SaxParser/SaxParser.h>
@@ -24,6 +25,13 @@
 #include "../htmlEntities.h"
 
 namespace {
+// An entry whose name has no extension at all: FB2-to-EPUB conversions write <img
+// src="images/img_32"/>. Only its bytes can say whether it is an image we decode.
+bool hasNoFileExtension(const std::string& resolvedPath) {
+  const size_t slash = resolvedPath.rfind('/');
+  return resolvedPath.find('.', slash == std::string::npos ? 0 : slash + 1) == std::string::npos;
+}
+
 // Cache filename for an image extracted out of the EPUB, keyed by the archive entry it came from.
 //
 // The entry path is the only thing that identifies these bytes. It is deliberately NOT the parse
@@ -31,13 +39,26 @@ namespace {
 // when an image's dimensions cannot be resolved, and dimension resolution depends on images.bin
 // filling in over time -- so the same document could number its images differently between runs
 // and hand a block the file belonging to a different image. Hashing the entry cannot drift.
+//
+// The extension is the entry name's, or .img when the name has none. The decoder goes by the bytes
+// (ImageBlock::render), but the pixel-cache names are cut at the last dot: with none in the file
+// name the cut would land on the one in /.crosspoint, and every such image would share one .pxc.
 std::string imageCachePathFor(const std::string& imageBasePath, const std::string& resolvedPath) {
-  std::string ext;
-  const size_t extPos = resolvedPath.rfind('.');
-  if (extPos != std::string::npos) ext = resolvedPath.substr(extPos);
+  std::string ext = ".img";
+  if (!hasNoFileExtension(resolvedPath)) ext = resolvedPath.substr(resolvedPath.rfind('.'));
   char hash[17];
   snprintf(hash, sizeof(hash), "%016llx", static_cast<unsigned long long>(HashUtils::fnvHash64(resolvedPath)));
   return imageBasePath + hash + ext;
+}
+
+// Whether an image reference is worth resolving. A known extension goes by its name, as before; a
+// name without one is let through and judged by its bytes when its dimensions are read (the image
+// manifest and the ZIP header read both sniff the format, and neither answers for an unknown one),
+// so a non-image still ends as alt text. A name with some other extension (.svg, .webp) is still
+// turned away by name, without a ZIP read.
+// Based on crosspoint-reader PR #2386 (artwen, @artwem).
+bool isImageCandidate(const std::string& resolvedPath) {
+  return hasNoFileExtension(resolvedPath) || ImageDecoderFactory::isFormatSupported(resolvedPath);
 }
 }  // namespace
 
@@ -83,6 +104,12 @@ constexpr size_t MAX_ANCHORS_PER_CHAPTER = 1024;
 // under -fno-exceptions) is the worst possible response to that. 256 keeps a chapter's early
 // anchors navigable for ~7 KB; the rest degrade the same way they do past any cap.
 constexpr size_t MAX_RESIDENT_ANCHORS = 256;
+// Ids on <span> recorded per chapter, on top of MAX_ANCHORS_PER_CHAPTER (recordSpanAnchor). Some
+// books put their link targets on spans -- FB2 conversions wrap every note in one -- and a notes
+// chapter measured 151 of them; converters that tag every text run with a span id would otherwise
+// add thousands of entries no link names. Half the general cap: room for any notes chapter seen,
+// and a bound on what a converter-tagged chapter adds to the map and to a footnote jump's scan.
+constexpr size_t MAX_SPAN_ANCHORS_PER_CHAPTER = 512;
 // Write buffer for the anchor spill; see the emplace site in setup().
 constexpr size_t ANCHOR_SPILL_BUFFER_BYTES = 512;
 // Anchors that may wait for their first line at once. One per id'd element that has produced no
@@ -201,7 +228,7 @@ constexpr size_t MIN_MAX_ALLOC_FOR_TEXT_LAYOUT_HARD_ARENA = EHP_TEXT_LAYOUT_HARD
 constexpr size_t MAX_TABLE_ROW_BUFFER_BYTES = EHP_TABLE_BUFFER_BUDGET_BYTES;
 
 // Attributed cost of one buffered word: the std::string header in ParsedText::words (24 B under
-// 32-bit libstdc++) plus the parallel per-word vectors (wordStyles, wordSizes, wordContinues) and
+// 32-bit libstdc++) plus the parallel per-word vectors (wordStyles, wordSizes, wordBoundaries) and
 // the geometric growth headroom all four carry. Deliberately a fixed constant rather than
 // sizeof(std::string) so host goldens and device builds make the SAME switch decision -- a
 // host-derived width (32 B) would charge more per word and trip earlier than the device.
@@ -405,11 +432,11 @@ bool isHeaderOrBlock(const char* name) {
   return matches(name, HEADER_TAGS, NUM_HEADER_TAGS) || matches(name, BLOCK_TAGS, NUM_BLOCK_TAGS);
 }
 
-// Returns true if the HTML element is a purely inline, non-navigable wrapper.
-// IDs on these elements are never meaningful navigation targets in epub content.
-// Reading-system converters (Kobo KePub, Calibre, etc.) frequently inject thousands
-// of such IDs for progress tracking or internal bookkeeping, and recording each one
-// as a navigation anchor exhausts the heap on memory-constrained devices.
+// Returns true if the HTML element is a purely inline wrapper whose ids are mostly not
+// navigation targets. Reading-system converters (Kobo KePub, Calibre, etc.) frequently inject
+// thousands of such IDs for progress tracking or internal bookkeeping -- but some books do put
+// their note targets on one, so these ids are recorded under a budget of their own
+// (ChapterHtmlSlimParser::recordSpanAnchor) rather than dropped.
 // Block-level, sectioning, and structural elements are always considered navigable.
 bool isNonNavigableInlineElement(const char* name) { return strcmp(name, "span") == 0; }
 
@@ -1011,17 +1038,25 @@ void ChapterHtmlSlimParser::emitPage() {
   // A page with no noted element (nothing but spacing) starts where the next element does, which
   // noteElementOnPage fills in. The counter stands in only if no element ever follows; taken now,
   // mid-chunk, it could lie past the next page's first word.
-  const uint32_t start = currentPageVisibleOffsetSet_ ? currentPageVisibleOffset_ : visibleTextOffset_;
-  if (!currentPageVisibleOffsetSet_) pageStartsAwaitingElement_++;  // bounded by MAX_PAGES_PER_SECTION
-  paragraphLutPerPage.push_back({start, xpathParagraphIndex, xpathListItemIndex});
+  const bool awaitingElement = !currentPageVisibleOffsetSet_;
+  const uint32_t start = awaitingElement ? visibleTextOffset_ : currentPageVisibleOffset_;
   currentPageVisibleOffsetSet_ = false;
   // Both of these borrow elements of the page being handed off, so they must be dropped
   // before it goes -- and the deferred yPos update is moot on a fresh page anyway (a drop
   // cap stays on the emitted page).
   deferredPageImage_ = nullptr;
   deferredDropCapLine_ = nullptr;
-  completePageFn(std::move(currentPage));
-  completedPageCount++;
+  // The page is handed over only once both tables have its entry, so this table, the consumer's
+  // and completedPageCount move in lockstep or not at all.
+  if (pageTableFull_ || !paragraphLutPerPage.push_back({start, xpathParagraphIndex, xpathListItemIndex})) {
+    stopOnFullPageTable();
+  } else if (!completePageFn(std::move(currentPage))) {
+    paragraphLutPerPage.pop_back();
+    stopOnFullPageTable();
+  } else {
+    if (awaitingElement) pageStartsAwaitingElement_++;  // bounded by MAX_PAGES_PER_SECTION
+    completedPageCount++;
+  }
   releasePageBlock();  // the page and its lines are gone: rewind their arena bytes
   // The load side refuses a section past this many pages; stop here with the truncated status
   // (the pages so far are kept) rather than build a cache that is rebuilt on every open.
@@ -1046,6 +1081,24 @@ void ChapterHtmlSlimParser::emitPage() {
   }
 }
 
+void ChapterHtmlSlimParser::stopOnFullPageTable() {
+  // Destroyed before emitPage rewinds the page block its lines live in.
+  currentPage.reset();
+  if (pageTableFull_) return;
+  pageTableFull_ = true;
+  // A chunk of a page table could not be had: what the old std::vector growth turned into an
+  // abort -- and, since the same chapter rebuilds from page 0 on the next open, a reboot loop.
+  // Stopping here instead keeps the pages so far as a truncated section, like any low-heap stop:
+  // the reader shows it with its hint, and a background build discards it for a rebuild with the
+  // framebuffer released, which has the heap to finish the chapter. Based on crosspoint-reader
+  // PR #3027 (Sidney San Martín, @s4y), whose build likewise keeps its pages when the LUT runs out.
+  LOG_ERR("EHP", "Page table full at %d pages (%u free, %u max alloc); stopping the parse", completedPageCount,
+          ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  streamFailed = true;
+  layoutFailed = true;
+  saxParser_.stop();
+}
+
 void ChapterHtmlSlimParser::noteCapOverflow(const uint8_t flag, const char* what) {
   if (capOverflowFlags_ & flag) return;
   capOverflowFlags_ |= flag;
@@ -1059,6 +1112,14 @@ void ChapterHtmlSlimParser::recordPageBreakLabel(const std::string& label) {
   // The section file stores the count as a uint16.
   if (pageBreakLabelPages.size() >= 65535) {
     noteCapOverflow(kCapPageLabels, "printed-page labels per chapter");
+    return;
+  }
+
+  // One label per printed page, so in a book that is one XHTML file these two run to thousands of
+  // entries and double into blocks of several KB mid-parse. A label is worth less than the
+  // chapter: without the block, drop it rather than abort the build.
+  if (!heapReserveFor(pageBreakLabelPages, 1) || !heapReserveFor(pageBreakLabelPool, label.size() + 1)) {
+    noteCapOverflow(kCapPageLabels, "printed-page labels: no heap block to grow the record");
     return;
   }
 
@@ -1134,6 +1195,12 @@ void ChapterHtmlSlimParser::addExternalPageBreakAnchor(const std::string& id, co
     return;
   }
   if (externalPageBreakAnchorCount == UINT16_MAX) return;  // the page list itself is u16-counted
+  // A book that is one XHTML file brings its whole page list here, ~20 bytes an entry: this pool
+  // doubles into blocks of tens of KB. Without the block, the entry's label is lost, not the build.
+  if (!heapReserveFor(externalPageBreakAnchorPool, id.size() + label.size() + 2)) {
+    noteCapOverflow(kCapPageLabels, "page-list labels: no heap block to grow the pool");
+    return;
+  }
   externalPageBreakAnchorPool.append(id);
   externalPageBreakAnchorPool.push_back('\0');
   externalPageBreakAnchorPool.append(label);
@@ -1143,11 +1210,13 @@ void ChapterHtmlSlimParser::addExternalPageBreakAnchor(const std::string& id, co
 }
 
 void ChapterHtmlSlimParser::endExternalPageBreakAnchors() {
-  externalPageBreakAnchorPool.shrink_to_fit();
+  // Shrinking is a copy into a block of the exact size, which the heap may not have either.
+  if (heapHasBlockFor(externalPageBreakAnchorPool.size() + 1)) externalPageBreakAnchorPool.shrink_to_fit();
   // One label per matched anchor plus the top-of-file one: size the record here so it never
-  // doubles mid-parse (inline pagebreak markers past this hint still grow it normally).
-  pageBreakLabelPages.reserve(externalPageBreakAnchorCount + 1u);
-  pageBreakLabelPool.reserve(externalPageBreakLabelBytes);
+  // doubles mid-parse (inline pagebreak markers past this hint still grow it, through
+  // recordPageBreakLabel's heap check). Hints: without the blocks the record grows as it goes.
+  heapReserveFor(pageBreakLabelPages, externalPageBreakAnchorCount + 1u);
+  heapReserveFor(pageBreakLabelPool, externalPageBreakLabelBytes);
 }
 
 void ChapterHtmlSlimParser::attachPendingFloatImage(BlockStyle& bs) {
@@ -1640,18 +1709,19 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
   // Defer generic anchor recording until startNewTextBlock, after the previous block
   // is flushed to pages via makePages(). Skip pagebreak anchors since they were already recorded.
   //
-  // Skip IDs on non-navigable inline elements (e.g. <span>): these are never link targets
-  // in epub content, but reading-system converters can inject tens of thousands of them per
-  // chapter. That used to exhaust the heap; now that anchors stream it costs cache size and
-  // anchor-lookup time instead, which is what MAX_ANCHORS_PER_CHAPTER bounds -- see its
-  // definition. TOC anchors bypass both the span filter and the cap, since they drive page
-  // breaks and core navigation.
+  // IDs on <span> take their own path (recordSpanAnchor): reading-system converters inject them
+  // by the thousand, so they have a budget of their own and never count against
+  // MAX_ANCHORS_PER_CHAPTER, which the other elements keep whole -- see its definition. TOC
+  // anchors bypass both, since they drive page breaks and core navigation.
   if (!isPageBreakMarker && !idAttr.empty()) {
     const bool isTocAnchor =
         std::find(self->tocAnchors.begin(), self->tocAnchors.end(), idAttr) != self->tocAnchors.end();
-    if (isTocAnchor || (!isNonNavigableInlineElement(name) && self->anchorCount < self->anchorLimit())) {
+    if (isTocAnchor ||
+        (!isNonNavigableInlineElement(name) && self->anchorCount < self->anchorLimit() + self->spanAnchorCount_)) {
       self->pendingAnchorId = idAttr;
-    } else if (!isNonNavigableInlineElement(name)) {
+    } else if (isNonNavigableInlineElement(name)) {
+      self->recordSpanAnchor(idAttr);
+    } else {
       self->noteCapOverflow(kCapAnchorsPerChapter, "anchors per chapter");
     }
   }
@@ -1731,7 +1801,17 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
   // ancestor's scope, and the reset in endElement only fires at the depth that set it.
   // Known limit of the single slot: a descendant's explicit `color: black` cannot re-enable
   // text inside a transparent ancestor. No OCR layer does that; a stack would if one ever does.
-  if (cssStyle.isTextTransparent() && self->depth < self->skipTextUntilDepth) {
+  //
+  // Text declared too small to read takes the same exit (isFontSizeInvisible): a Polish watermark
+  // is a <span style="color:white; font-size:1px">===LxkoGigb...</span> in the prose, which the
+  // MIN_WORD_SIZE_PCT floor raised into visible gibberish. html/body are exempt: a root size is a
+  // baseline (the `html { font-size: 6.25% }` 1rem = 1px idiom), not a hidden run. The single
+  // slot's limit holds here too -- a descendant re-declaring a readable size stays hidden -- which
+  // is why `font-size: 0`, the zero-size container idiom whose children do exactly that, is left
+  // alone: it is not parsed as a size at all.
+  // Based on crosspoint-reader PR #2326 (Maciej, @mchuck), reworked to hide the text only.
+  const bool unreadablySmall = cssStyle.isFontSizeInvisible() && !isRootFontSizeElement(name);
+  if ((cssStyle.isTextTransparent() || unreadablySmall) && self->depth < self->skipTextUntilDepth) {
     self->skipTextUntilDepth = self->depth;
   }
 
@@ -2003,7 +2083,7 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
           // Resolve the image path relative to the HTML file
           std::string resolvedPath = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->contentBase + src));
 
-          if (ImageDecoderFactory::isFormatSupported(resolvedPath)) {
+          if (isImageCandidate(resolvedPath)) {
             // Determine SD cache path (image will be extracted here lazily at first render).
             const std::string cachedImagePath = imageCachePathFor(self->imageBasePath, resolvedPath);
 
@@ -2019,7 +2099,9 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
             bool dimsOk = false;
             bool manifestAnswered = false;
             bool imageDeferred = false;
-            if (attrWidth > 0 && attrHeight > 0) {
+            // A name without an extension promises nothing: its dimensions must come from its bytes,
+            // which is what proves it is an image at all, so the tag's own size cannot stand in.
+            if (attrWidth > 0 && attrHeight > 0 && !hasNoFileExtension(resolvedPath)) {
               dims.width = attrWidth;
               dims.height = attrHeight;
               dimsOk = true;
@@ -2359,7 +2441,7 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
             } else {
               LOG_ERR("EHP", "Failed to read image dimensions from ZIP: %s", resolvedPath.c_str());
             }
-          }  // isFormatSupported
+          }  // isImageCandidate
         }
       }
 
@@ -3577,6 +3659,37 @@ void ChapterHtmlSlimParser::queueAnchorForNextLine(std::string id) {
   anchorsAwaitingLine_.push_back(std::move(id));
 }
 
+// A <span id> used to be left out of the anchor map altogether, to keep converter-injected ids
+// out, and every book whose notes are targeted on spans paid for it: the jump missed the map and
+// landed on the fallback page, usually the notes chapter's first (crosspoint-reader #3667, #3798).
+// Based on crosspoint-reader PR #3799 (Ruslan Sukharev, @skhrv), reworked: theirs records only the
+// fragment a jump asks for, so a cached chapter is rebuilt for every note it has not yet been
+// asked for; this records every span id once, at build time, within MAX_SPAN_ANCHORS_PER_CHAPTER.
+void ChapterHtmlSlimParser::recordSpanAnchor(const std::string& id) {
+  // Kobo's KePub conversion gives every sentence a span with a kobo.<paragraph>.<sentence> id, for
+  // its own position tracking; no link targets one.
+  if (id.rfind("kobo.", 0) == 0) return;
+  // Only into the spill. The resident fallback holds the other anchors in RAM under a far lower
+  // cap, and spans are not worth a byte of it.
+  if (!anchorSpillWriter.has_value()) return;
+  if (spanAnchorCount_ >= MAX_SPAN_ANCHORS_PER_CHAPTER) {
+    noteCapOverflow(kCapAnchorsPerChapter, "span anchors per chapter");
+    return;
+  }
+  spanAnchorCount_++;
+  // A span is inline, so it is usually part of the block in progress, and the next line placed is
+  // that block's first: queue it. The exception is a span opened after its block's element has
+  // closed but before the next block started (FB2 conversions wrap a whole note,
+  // <span id><div><p>..</p></div></span>, in one): the block still in progress is the previous
+  // note's, so the id waits for the next block the way any element's does.
+  const bool opensNextBlock = currentTextBlock && !currentTextBlock->isEmpty() && currentBlockOwnerDepth_ < 0;
+  if (opensNextBlock && pendingAnchorId.empty()) {
+    pendingAnchorId = id;
+    return;
+  }
+  queueAnchorForNextLine(id);
+}
+
 bool ChapterHtmlSlimParser::lookupAnchorInActiveBuild(const std::string& id, uint16_t& page) {
   if (id.empty() || anchorCount == 0) return false;
   if (!anchorSpillWriter.has_value()) {
@@ -3638,6 +3751,12 @@ void ChapterHtmlSlimParser::recordAnchor(std::string id, const uint16_t page) {
   if (anchorSpillFailed || anchorCount >= MAX_RESIDENT_ANCHORS) {
     return;
   }
+  // Up to MAX_RESIDENT_ANCHORS the vector doubles to a 7 KB block (28 B an entry on the device),
+  // through the throwing operator new: without the block, drop the anchor the way the cap does.
+  if (!heapReserveFor(anchorData, 1)) {
+    noteCapOverflow(kCapAnchorsPerChapter, "resident anchors: no heap block to grow the table");
+    return;
+  }
   // Counts UP rather than being assigned anchorData.size(), so that a resident anchor recorded
   // after some were already spilled adds to them instead of replacing the total. Section writes
   // the spill first and these after, which is the order they were recorded in.
@@ -3680,12 +3799,12 @@ bool ChapterHtmlSlimParser::setup(const size_t totalInflatedSize) {
   layoutFailed = false;
   streamStartTimeMs = millis();
 
-  // Pre-size the two vectors that grow one entry at a time across the whole parse. Without
-  // this each doubles ~10 times mid-parse, and every growth is an allocate-copy-free of an
-  // increasing size interleaved with all the other parse traffic — the churn shape a
-  // no-compaction heap cannot recover from (CLAUDE.md Resource Protocol rule 7,
-  // docs/memory-allocation-strategy.md §9.6). The blocks are individually small, so this is
-  // an allocation-COUNT fix; it is not expected to move contig on its own.
+  // Pre-size the two tables that grow one entry at a time across the whole parse (this one and
+  // Section's page LUT), so a chapter within the estimate takes one block, at setup, instead of
+  // a run of chunks interleaved with all the other parse traffic (CLAUDE.md Resource Protocol
+  // rule 7, docs/memory-allocation-strategy.md §9.6). It is an allocation-COUNT fix; it is not
+  // expected to move contig on its own. Best effort: without the block the first page allocates
+  // a small chunk instead.
   paragraphLutPerPage.reserve(estimatePagesForSpine(totalInflatedSize));
   // Anchors stream to a spill file (see setAnchorSpillPath), so nothing here scales with how
   // many a chapter has. Opened at setup rather than lazily so a chapter that cannot spill finds
@@ -3705,7 +3824,7 @@ bool ChapterHtmlSlimParser::setup(const size_t totalInflatedSize) {
     // Fallback only. Reserve for the common case: reserving for the cap would cost ~28 KB up
     // front to save reallocations that only an anchor-heavy chapter would ever pay.
     constexpr size_t TYPICAL_ANCHORS_PER_CHAPTER = 32;
-    anchorData.reserve(TYPICAL_ANCHORS_PER_CHAPTER);
+    heapReserveFor(anchorData, TYPICAL_ANCHORS_PER_CHAPTER);  // a hint: recordAnchor asks again
   }
 
   // Choose progress granularity by chapter size. Each callback drives a full-screen
@@ -4416,7 +4535,7 @@ std::unique_ptr<ImageBlock> ChapterHtmlSlimParser::buildImageFromEpubPath(
     const std::string& resolvedPath, const std::string& alt, const uint16_t maxWidth, const uint16_t maxHeight,
     uint16_t* nativeWidth, uint16_t* nativeHeight) {
   if (resolvedPath.empty() || maxWidth == 0 || maxHeight == 0) return nullptr;
-  if (!ImageDecoderFactory::isFormatSupported(resolvedPath)) return nullptr;
+  if (!isImageCandidate(resolvedPath)) return nullptr;
 
   ImageDimensions dims = {0, 0};
   bool dimsOk = false;
@@ -4471,7 +4590,7 @@ void ChapterHtmlSlimParser::noteBackgroundImage(const char* name, const std::str
   }
   if (path.empty()) return;
   std::string resolved = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(path));
-  if (!ImageDecoderFactory::isFormatSupported(resolved)) return;
+  if (!isImageCandidate(resolved)) return;
   backgroundImageScopes_.push_back({depth, std::move(resolved)});
 }
 

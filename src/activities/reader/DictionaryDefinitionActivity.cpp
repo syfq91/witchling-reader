@@ -2,7 +2,9 @@
 
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
+#include <HeapFit.h>
 #include <I18n.h>
+#include <Logging.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -40,8 +42,15 @@ void DictionaryDefinitionActivity::onEnter() {
   // font APIs below both see the whole definition.
   std::replace(definition.begin(), definition.end(), '\0', '\n');
   if (!(htmlDefinition && definition.size() <= MAX_STYLED_HTML_BYTES && layoutHtmlPages())) {
-    definition = htmlToPlainText(definition);
-    wrapText();
+    htmlToPlainTextInPlace(definition);
+    if (!wrapText()) {
+      // Say so rather than show part of the definition as if it were all of
+      // it. Nothing draws either buffer now, so both go back to the heap.
+      layoutFailed = true;
+      std::vector<Line>().swap(lines);
+      definition.clear();
+      definition.shrink_to_fit();
+    }
   }
   requestUpdate();
 }
@@ -93,13 +102,39 @@ int DictionaryDefinitionActivity::measureSpan(const int fontId, const char* text
   return renderer.getTextWidth(fontId, buf);
 }
 
+// Grows the line table to `capacity` only when the heap has the block for it.
+// A definition runs to 64 KB, and its table to a quarter of that, so a failed
+// growth -- an abort with -fno-exceptions -- is a real outcome on a heap the
+// definition itself has just drawn down.
+//
+// Ported from crosspoint-reader PR #3988 (Uri Tauber), which checks each growth
+// of its line table the same way; it is kept a std::vector here, guarded by the
+// shared heapHasBlockFor().
+bool DictionaryDefinitionActivity::reserveLines(const size_t capacity) {
+  if (capacity <= lines.capacity()) return true;
+  if (!heapHasBlockFor(capacity * sizeof(Line))) {
+    LOG_ERR("DICT", "No %u-byte block for the definition's line table (%u lines)",
+            static_cast<unsigned>(capacity * sizeof(Line)), static_cast<unsigned>(capacity));
+    return false;
+  }
+  lines.reserve(capacity);
+  return true;
+}
+
 // Greedy word-wrap of `definition` into byte spans. '\n' breaks lines (blank
 // lines survive as paragraph spacing; NULs from multi-type StarDict entries were
 // normalized to newlines in onEnter); '\r' is dropped by treating it as a space
 // at a token edge.
-void DictionaryDefinitionActivity::wrapText() {
+//
+// False when the line table could not grow.
+bool DictionaryDefinitionActivity::wrapText() {
   lines.clear();
-  lines.reserve(definition.size() / 32 + 8);
+  // The size-based estimate (about one line per 32 bytes) first: one block and
+  // no regrowth for ordinary prose. When even that block is missing, a small
+  // start still serves a definition that turns out to need fewer lines, and
+  // growth below is checked the same way.
+  constexpr size_t MIN_LINE_CAPACITY = 64;
+  if (!reserveLines(definition.size() / 32 + 8) && !reserveLines(MIN_LINE_CAPACITY)) return false;
 
   const int fontId = DICTIONARY_FONT_ID;
   const BodyArea body = bodyArea();
@@ -115,17 +150,21 @@ void DictionaryDefinitionActivity::wrapText() {
   int lineWidth = 0;
 
   const auto flushLine = [&](uint32_t nextStart) {
+    // Half again rather than double: the smaller block is the likelier find on
+    // the fragmented heap this guards against.
+    if (lines.size() == lines.capacity() && !reserveLines(lines.capacity() + lines.capacity() / 2)) return false;
     lines.push_back({lineStart, static_cast<uint16_t>(lineEnd - lineStart)});
     lineStart = nextStart;
     lineEnd = nextStart;
     lineWidth = 0;
+    return true;
   };
 
   uint32_t i = 0;
   while (i < n) {
     const char c = text[i];
     if (c == '\n' || c == '\0') {
-      flushLine(i + 1);
+      if (!flushLine(i + 1)) return false;
       i++;
       continue;
     }
@@ -157,7 +196,7 @@ void DictionaryDefinitionActivity::wrapText() {
       lineEnd = tokenStart + tokenLen;
       lineWidth += spaceWidth + tokenWidth;
     } else {
-      flushLine(tokenStart);
+      if (!flushLine(tokenStart)) return false;
       lineEnd = tokenStart + tokenLen;
       lineWidth = tokenWidth;
     }
@@ -182,18 +221,19 @@ void DictionaryDefinitionActivity::wrapText() {
       }
       const uint32_t rest = lineStart + lastFit;
       lineEnd = rest;
-      flushLine(rest);
+      if (!flushLine(rest)) return false;
       lineEnd = rest + (len - lastFit);
       lineWidth = measureSpan(fontId, text + lineStart, lineEnd - lineStart);
     }
   }
-  if (lineEnd > lineStart) flushLine(n);
+  if (lineEnd > lineStart && !flushLine(n)) return false;
 
   // Trim trailing blank lines so the last page is not empty padding.
   while (!lines.empty() && lines.back().len == 0) lines.pop_back();
 
   totalPages = std::max(1, (static_cast<int>(lines.size()) + linesPerPage - 1) / linesPerPage);
   currentPage = 0;
+  return true;
 }
 
 void DictionaryDefinitionActivity::loop() {
@@ -215,19 +255,49 @@ void DictionaryDefinitionActivity::loop() {
     return;
   }
 
-  buttonNavigator.onNext([this] {
-    if (currentPage + 1 < totalPages) {
-      currentPage++;
-      requestUpdate();
-    }
-  });
+  buttonNavigator.onNext([this] { nextPage(); });
+  buttonNavigator.onPrevious([this] { previousPage(); });
+}
 
-  buttonNavigator.onPrevious([this] {
-    if (currentPage > 0) {
-      currentPage--;
-      requestUpdate();
-    }
-  });
+void DictionaryDefinitionActivity::nextPage() {
+  if (currentPage + 1 < totalPages) {
+    currentPage++;
+    requestUpdate();
+  }
+}
+
+void DictionaryDefinitionActivity::previousPage() {
+  if (currentPage > 0) {
+    currentPage--;
+    requestUpdate();
+  }
+}
+
+// Power set to turn pages turned them in the book but did nothing here: a reader-scoped action
+// reaches no screen but the reader, and the raw Power press that falls through instead is one this
+// screen has no use for. Taken only from Power -- the front and side buttons already page here, and
+// taking their configured page action as well would turn twice per press.
+//
+// Based on crosspoint-reader PR #3361 (Amin Alaee, @aminalaee), reworked to take the configured
+// action through the shared dispatch instead of reading the Power setting here.
+bool DictionaryDefinitionActivity::takesButtonAction(const CrossPointSettings::BUTTON_ACTION action,
+                                                     const MappedInputManager::Button button) const {
+  using BA = CrossPointSettings::BUTTON_ACTION;
+  return button == MappedInputManager::Button::Power && (action == BA::BTN_PAGE_FORWARD || action == BA::BTN_PAGE_BACK);
+}
+
+void DictionaryDefinitionActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION action) {
+  using BA = CrossPointSettings::BUTTON_ACTION;
+  switch (action) {
+    case BA::BTN_PAGE_FORWARD:
+      nextPage();
+      break;
+    case BA::BTN_PAGE_BACK:
+      previousPage();
+      break;
+    default:
+      break;
+  }
 }
 
 // Draws the current page: a styled Page when the HTML layout succeeded,
@@ -286,16 +356,22 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
                       headerY + metrics.headerHeight / 2, shown);
   }
 
-  // Body: two-pass draw inside a prewarm scope (the same pattern the reader's
-  // page render uses) so SD-card font glyphs load from the card in one batch
-  // instead of one on-demand read per character on every page turn.
-  const int fontId = DICTIONARY_FONT_ID;
-  const int bodyStartY = headerY + metrics.headerHeight + metrics.verticalSpacing;
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  drawBody(fontId, contentRect.x + SIDE_PADDING, bodyStartY);  // scan pass: records codepoints only
-  scope.endScanAndPrewarm();
-  drawBody(fontId, contentRect.x + SIDE_PADDING, bodyStartY);
+  if (layoutFailed) {
+    // No body to page through: the headword stays above the message, and Back
+    // (or Confirm, to try another dictionary) still answers below it.
+    GUI.drawPopup(renderer, tr(STR_DICT_LOW_MEMORY), /*overlayDisplayedFrame=*/false, PopupShip::Caller);
+  } else {
+    // Body: two-pass draw inside a prewarm scope (the same pattern the reader's
+    // page render uses) so SD-card font glyphs load from the card in one batch
+    // instead of one on-demand read per character on every page turn.
+    const int fontId = DICTIONARY_FONT_ID;
+    const int bodyStartY = headerY + metrics.headerHeight + metrics.verticalSpacing;
+    auto* fcm = renderer.getFontCacheManager();
+    auto scope = fcm->createPrewarmScope();
+    drawBody(fontId, contentRect.x + SIDE_PADDING, bodyStartY);  // scan pass: records codepoints only
+    scope.endScanAndPrewarm();
+    drawBody(fontId, contentRect.x + SIDE_PADDING, bodyStartY);
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), canSwitchDictionary() ? tr(STR_DICTIONARY) : "",
                                             (currentPage > 0 ? "<" : ""), (currentPage + 1 < totalPages ? ">" : ""));

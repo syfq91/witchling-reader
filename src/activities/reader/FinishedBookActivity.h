@@ -11,6 +11,7 @@ namespace BookFinished {
 std::string findNextBookInDirectory(const std::string& currentBookPath, const std::string& currentBookSeries,
                                     const std::string& currentBookSeriesIndex);
 
+
 enum class FinishedBookAction {
   Stay = 0,
   GoHome = 1,

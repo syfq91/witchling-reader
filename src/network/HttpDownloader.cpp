@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <CrossPointRoots.h>
+#include <FileReplace.h>
 #include <Logging.h>
 #include <RangeDownload.h>
 #include <SecureHttpClient.h>
@@ -213,9 +214,9 @@ HttpDownloader::DownloadError runGetSecureOnSession(HttpDownloader::Session& ses
   impl->http->setAllowInsecureFallback(false);
   impl->http->setAllowCertificateDateErrors(true);
   impl->http->clearHeaders();
-  if (!username.empty() && !password.empty()) {
-    impl->http->setBasicAuth(username, password);
-  }
+  // Unconditionally, so a file without credentials does not inherit the previous one's
+  // (sendRequest() leaves basic auth out unless both are set).
+  impl->http->setBasicAuth(username, password);
 
   const int rc = crosspoint::downloadToSink(*impl->http, url, sink, impl->chunking, &largestFreeBlock);
   if (rc == crosspoint::SecureHttpClient::ERR_ABORTED) return HttpDownloader::ABORTED;
@@ -340,8 +341,9 @@ HttpDownloader::DownloadError finishFileDownload(HttpDownloader::DownloadError r
     Storage.remove(partPath.c_str());
     return HttpDownloader::FILE_ERROR;
   }
-  if (Storage.exists(destPath.c_str())) Storage.remove(destPath.c_str());
-  if (!Storage.rename(partPath.c_str(), destPath.c_str())) {
+  // The file it replaces steps aside until the download is in its place, and comes back if it
+  // cannot be; it used to be removed first, and was lost when the rename then failed.
+  if (!FileReplace::replace(partPath.c_str(), destPath.c_str())) {
     LOG_ERR("HTTP", "Failed to move %s into place", partPath.c_str());
     Storage.remove(partPath.c_str());
     return HttpDownloader::FILE_ERROR;

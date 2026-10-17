@@ -72,6 +72,7 @@ void XtcReaderActivity::onExit() {
 
   UITheme::getInstance().getMutableTheme().onBookWillClose(xtc ? xtc->getPath() : "", nullptr, xtc.get());
   xtc.reset();
+
 }
 
 bool XtcReaderActivity::openChapterSelection() {
