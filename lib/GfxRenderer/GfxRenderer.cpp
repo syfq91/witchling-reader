@@ -228,7 +228,7 @@ uint8_t* GfxRenderer::allocScaledGlyphMask(const void* fontData, const uint32_t 
     // this is a designed, cheap event (the X4 Pro hit the 80-entry cap at ~1.9 KB
     // used; page summaries measured ~1.5 us per glyph call, i.e. mostly hits on
     // ~40 B masks). That "beneath notice" verdict does NOT extend to a synthesised
-    // body size: there every glyph is a resample of a 20 pt master glyph, ~1 ms
+    // body size: there every glyph is a resample of an 18 pt master glyph, ~1 ms
     // each at 24-26 pt, so a reset re-costs the page's working set at hundreds of
     // times the rate the measurement above saw. That is why the arena is larger
     // once a scaled font is registered -- see SCALED_GLYPH_ARENA_BYTES_SYNTH --
@@ -3214,6 +3214,10 @@ void GfxRenderer::tapToLogical(const float nx, const float ny, int& outX, int& o
 void GfxRenderer::tapToLogical(const Orientation orientation, const float nx, const float ny, int& outX,
                                int& outY) const {
   touchtransform::tapToLogical(static_cast<int>(orientation), panelWidth, panelHeight, nx, ny, outX, outY);
+}
+
+void GfxRenderer::logicalToTap(const int x, const int y, float& outNx, float& outNy) const {
+  touchtransform::logicalToTap(static_cast<int>(getOrientation()), panelWidth, panelHeight, x, y, outNx, outNy);
 }
 
 static bool logicalRectToPhysicalBounds(GfxRenderer::Orientation orientation, int lx, int ly, int lw, int lh,

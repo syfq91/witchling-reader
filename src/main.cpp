@@ -2,6 +2,7 @@
 #include <BoardConfig.h>
 #include <CooperativeAbort.h>
 #include <Epub.h>
+#include <Epub/BookFonts.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
 #include <FsHelpers.h>
@@ -35,6 +36,7 @@
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "SerialTestApi.h"
 #include "SilentRestart.h"
 #include "UiFontScale.h"
 #include "activities/Activity.h"
@@ -94,14 +96,6 @@ EpdFont bookerly18ItalicFont(&bookerly_18_italic);
 EpdFont bookerly18BoldItalicFont(&bookerly_18_bolditalic);
 EpdFontFamily bookerly18FontFamily(&bookerly18RegularFont, &bookerly18BoldFont, &bookerly18ItalicFont,
                                    &bookerly18BoldItalicFont);
-// The accessibility rung. Jumps from 18 to 24 rather than continuing in twos: the point is to be
-// readable by someone who cannot read 18 pt at all, and each extra rung costs flash in eight faces.
-EpdFont bookerly20RegularFont(&bookerly_20_regular);
-EpdFont bookerly20BoldFont(&bookerly_20_bold);
-EpdFont bookerly20ItalicFont(&bookerly_20_italic);
-EpdFont bookerly20BoldItalicFont(&bookerly_20_bolditalic);
-EpdFontFamily bookerly20FontFamily(&bookerly20RegularFont, &bookerly20BoldFont, &bookerly20ItalicFont,
-                                   &bookerly20BoldItalicFont);
 
 EpdFont notosans10RegularFont(&notosans_10_regular);
 EpdFont notosans10BoldFont(&notosans_10_bold);
@@ -133,12 +127,6 @@ EpdFont notosans18ItalicFont(&notosans_18_italic);
 EpdFont notosans18BoldItalicFont(&notosans_18_bolditalic);
 EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, &notosans18ItalicFont,
                                    &notosans18BoldItalicFont);
-EpdFont notosans20RegularFont(&notosans_20_regular);
-EpdFont notosans20BoldFont(&notosans_20_bold);
-EpdFont notosans20ItalicFont(&notosans_20_italic);
-EpdFont notosans20BoldItalicFont(&notosans_20_bolditalic);
-EpdFontFamily notosans20FontFamily(&notosans20RegularFont, &notosans20BoldFont, &notosans20ItalicFont,
-                                   &notosans20BoldItalicFont);
 
 EpdFont smallFont(&notosans_8_regular);
 EpdFontFamily smallFontFamily(&smallFont);
@@ -503,23 +491,26 @@ void setupDisplayAndFonts(bool seamless = false, bool skipSdFontDiscovery = fals
   renderer.insertFont(BOOKERLY_12_FONT_ID, bookerly12FontFamily);
   renderer.insertFont(BOOKERLY_16_FONT_ID, bookerly16FontFamily);
   renderer.insertFont(BOOKERLY_18_FONT_ID, bookerly18FontFamily);
-  renderer.insertFont(BOOKERLY_20_FONT_ID, bookerly20FontFamily);
-  // 22/24/26 pt have no faces: they render the 20 pt master scaled. Real faces for all three
-  // would cost ~1.9 MB the app partition does not have. See insertScaledFont() for why the scale
-  // belongs to the font ID rather than being threaded through the reader.
-  renderer.insertScaledFont(BOOKERLY_22_FONT_ID, bookerly20FontFamily, 22.0f / 20.0f);
-  renderer.insertScaledFont(BOOKERLY_24_FONT_ID, bookerly20FontFamily, 24.0f / 20.0f);
-  renderer.insertScaledFont(BOOKERLY_26_FONT_ID, bookerly20FontFamily, 26.0f / 20.0f);
 
   renderer.insertFont(NOTOSANS_10_FONT_ID, notosans10FontFamily);
   renderer.insertFont(NOTOSANS_12_FONT_ID, notosans12FontFamily);
   renderer.insertFont(NOTOSANS_14_FONT_ID, notosans14FontFamily);
   renderer.insertFont(NOTOSANS_16_FONT_ID, notosans16FontFamily);
   renderer.insertFont(NOTOSANS_18_FONT_ID, notosans18FontFamily);
-  renderer.insertFont(NOTOSANS_20_FONT_ID, notosans20FontFamily);
-  renderer.insertScaledFont(NOTOSANS_22_FONT_ID, notosans20FontFamily, 22.0f / 20.0f);
-  renderer.insertScaledFont(NOTOSANS_24_FONT_ID, notosans20FontFamily, 24.0f / 20.0f);
-  renderer.insertScaledFont(NOTOSANS_26_FONT_ID, notosans20FontFamily, 26.0f / 20.0f);
+
+  // 20/22/24/26 pt have no faces: they render the 18 pt master scaled, x1.11 to x1.44. Real faces
+  // cost about half a megabyte per size (20 pt's eight were 505,656 B) that the app partition does
+  // not have. See insertScaledFont() for why the scale belongs to the font ID rather than being
+  // threaded through the reader.
+  static_assert(CrossPointSettings::BUILTIN_FACE_MAX_POINTS == 18, "the masters below are the 18 pt families");
+  for (const auto& rung : CrossPointSettings::FONT_SIZE_RUNGS) {
+    if (rung.points <= CrossPointSettings::BUILTIN_FACE_MAX_POINTS) continue;
+    const float scale = CrossPointSettings::builtinFaceScale(rung.points);
+    renderer.insertScaledFont(CrossPointSettings::getBuiltinReaderFontId(CrossPointSettings::BOOKERLY, rung.size),
+                              bookerly18FontFamily, scale);
+    renderer.insertScaledFont(CrossPointSettings::getBuiltinReaderFontId(CrossPointSettings::NOTOSANS, rung.size),
+                              notosans18FontFamily, scale);
+  }
   // The three UI slots are bound by the font ladder rather than registered here, so the first
   // bind and every later rebind run the same code path.
   applyUiFontScale();
@@ -542,8 +533,29 @@ void ensureSdFontLoaded() { sdFontSystem.ensureLoaded(renderer); }
 
 void unloadSdFontIfLoaded() { sdFontSystem.unload(renderer); }
 
-void ensureSdFontLoadedForPath(const char* path) {
+namespace {
+// The cache of the EPUB at `path` when Publisher Fonts apply to it, else "": the setting is on, the book's own style
+// is in use, and no font family has been chosen for it, which is how a reader keeps one such book in their own font.
+std::string publisherFontsCache(const char* path, const RecentBook& book) {
+  const bool embeddedStyle =
+      book.embeddedStyleOverride >= 0 ? book.embeddedStyleOverride != 0 : SETTINGS.embeddedStyle != 0;
+  if (SETTINGS.publisherFonts == 0 || !embeddedStyle || book.fontFamilyOverride >= 0 ||
+      !book.sdFontFamilyOverride.empty()) {
+    return {};
+  }
+  return Epub::cachePathFor(path, "/.crosspoint");
+}
+}  // namespace
+
+bool bookFontsPendingForPath(const char* path) {
+  if (!path || !FsHelpers::hasEpubExtension(std::string_view(path)) || SETTINGS.publisherFonts == 0) return false;
+  const std::string cachePath = publisherFontsCache(path, RECENT_BOOKS.getBookByPath(path));
+  return !cachePath.empty() && BookFonts::read(cachePath) == BookFonts::State::Pending;
+}
+
+void ensureSdFontLoadedForPath(const char* path, const bool waitForBookFonts) {
   if (!path) {
+    sdFontSystem.selectBookFamily({});
     ensureSdFontLoaded();
     return;
   }
@@ -551,6 +563,7 @@ void ensureSdFontLoadedForPath(const char* path) {
   // moment; advertise it. Callers (goToReader/replaceWithReader) already hold a
   // RenderLock, so the lambda must not take one. Fires only on a genuine first load.
   const auto onColdFontLoad = [] { GUI.drawPopup(renderer, tr(STR_LOADING_FONT)); };
+
   // For EPUB: honour per-book SD font and/or size overrides. The book record
   // is available here — the reader activity hasn't started yet, but
   // RecentBooksStore already has the persisted overrides for this path.
@@ -558,16 +571,22 @@ void ensureSdFontLoadedForPath(const char* path) {
   const uint8_t effectiveSize =
       (book.fontSizeOverride >= 0) ? static_cast<uint8_t>(book.fontSizeOverride) : SETTINGS.fontPointSize;
 
+  // Publisher Fonts: not examined yet, what is loaded stays, until the reader has examined the book and asks again.
+  const std::string cachePath = publisherFontsCache(path, book);
+  if (waitForBookFonts && !cachePath.empty() && BookFonts::read(cachePath) == BookFonts::State::Pending) return;
+
+  // No family override: the global SD font (if any), at the effective size.
+  const char* family = SETTINGS.sdFontFamilyName;
   if (!book.sdFontFamilyOverride.empty()) {
-    // Per-book SD font override: load that family at the effective size.
-    sdFontSystem.ensureLoaded(renderer, book.sdFontFamilyOverride.c_str(), effectiveSize, onColdFontLoad);
+    family = book.sdFontFamilyOverride.c_str();  // per-book SD font override
   } else if (book.fontFamilyOverride >= 0) {
-    // Per-book built-in font override: no SD font needed; unload if one was active.
-    sdFontSystem.ensureLoaded(renderer, "", effectiveSize, onColdFontLoad);
-  } else {
-    // No family override: use global SD font (if any) at the effective size.
-    sdFontSystem.ensureLoaded(renderer, SETTINGS.sdFontFamilyName, effectiveSize, onColdFontLoad);
+    family = "";  // per-book built-in font override: no SD font needed; unload if one was active
   }
+  // A family BookFonts copied out of the book: its body family, or its accent family beside a built-in reader font.
+  if (sdFontSystem.selectBookFamily(cachePath, SETTINGS.publisherFonts, family[0] == '\0')) {
+    family = sdFontSystem.selectedFamilyName();
+  }
+  sdFontSystem.ensureLoaded(renderer, family, effectiveSize, onColdFontLoad);
 }
 
 // --- Temporary boot-phase heap-corruption bisect probes -------------------------------
@@ -1020,6 +1039,7 @@ void setup() {
   // is done — hand button sampling to the background sampler so presses are caught
   // on a steady ~10ms cadence even while the loop task is busy building sections.
   gpio.startInputSampler();
+  SerialTestApi::begin(renderer);
   // Now that the background sampler is live, let long lib-layer tasks (cover image
   // decoders) poll for queued presses and yield so button input keeps priority.
   CooperativeAbort::setLongTaskAbortPredicate(&hasPendingButtonInput);
@@ -1053,6 +1073,7 @@ void loop() {
   // Extra clearance from the panel edge, on top of the board profile's own inset. Pushed here
   // rather than once at boot so the Settings screen takes effect on the next render.
   renderer.setViewablePadding(SETTINGS.getEdgeMarginPadding());
+
 
   // Check for any user activity (button press or release, screen touch) or
   // active background work.
@@ -1360,6 +1381,22 @@ void loop() {
   const unsigned long activityStartTime = millis();
   activityManager.loop();
   const unsigned long activityDuration = millis() - activityStartTime;
+
+  // After the activity's pass, so a pending CMD:IDLE sees what it queued.
+  SerialTestApi::service();
+  switch (SerialTestApi::takePowerRequest()) {
+    case SerialTestApi::PowerRequest::None:
+      break;
+    case SerialTestApi::PowerRequest::Sleep:
+      // The reply is already out; deep sleep ends the USB link, and only a button wakes the device.
+      logSerial.flush();
+      enterDeepSleep(/*fromTimeout=*/false, BootDiag::SleepTrigger::SerialCommand);
+      return;
+    case SerialTestApi::PowerRequest::Reboot:
+      logSerial.flush();
+      silentRestart();
+      return;
+  }
 
   const unsigned long loopDuration = millis() - loopStartTime;
   if (loopDuration > maxLoopDuration) {

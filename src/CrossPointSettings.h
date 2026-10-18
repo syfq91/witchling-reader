@@ -81,6 +81,15 @@ class CrossPointSettings {
   // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
   enum FONT_FAMILY { BOOKERLY = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
+  // Publisher Fonts: what of a book's embedded fonts the reader uses. Off and Body Text keep Stage A's stored 0/1;
+  // the mode names follow crosspoint-reader PR #3934 (Justin Mitchell).
+  enum PUBLISHER_FONTS {
+    PUBLISHER_FONTS_OFF = 0,      // nothing from the book
+    PUBLISHER_FONTS_BODY = 1,     // its body family as the book's font
+    PUBLISHER_FONTS_ACCENTS = 2,  // the reader's font for the body, the book's other families where it uses them
+    PUBLISHER_FONTS_ALL = 3,      // Body Text and Accents
+    PUBLISHER_FONTS_COUNT
+  };
   // Font size options, in ASCENDING PIXEL ORDER, which is also the order the settings UI shows
   // them in -- a row's option index IS its stored value everywhere (device selector, web API,
   // settings JSON), so the two cannot be allowed to disagree.
@@ -97,10 +106,10 @@ class CrossPointSettings {
   // and the labels a reader sees have been point sizes since the UI stopped guessing at names.
   // Only the VALUES are persisted, never the identifiers, so the rename cost nothing.
   //
-  // PT_22/24/26 have no faces of their own: they render the 20 pt master scaled (see
-  // GfxRenderer::insertScaledFont). In every other respect they are ordinary rungs -- selectable
-  // as the default size, available as a per-book override, and cached separately because each
-  // carries its own font ID.
+  // PT_20/22/24/26 have no faces of their own: they render the 18 pt master scaled (see
+  // BUILTIN_FACE_MAX_POINTS and GfxRenderer::insertScaledFont). In every other respect they are
+  // ordinary rungs -- selectable as the default size, available as a per-book override, and
+  // cached separately because each carries its own font ID.
   enum FONT_SIZE {
     PT_10 = 0,
     PT_12 = 1,
@@ -187,17 +196,29 @@ class CrossPointSettings {
   /// and fontPointSizeFromStored() reads those files by these values. Never renumber or insert a
   /// rung in the middle -- an old file's "1" would then name a different size.
   ///
-  /// Adding a size at the TOP is: append a rung here, add the case to getBuiltinReaderFontId(),
-  /// generate the faces, register them in main.cpp.
+  /// Adding a size at the TOP is: append a rung here, add the case to getBuiltinReaderFontId(), and
+  /// add it to SYNTH_FONT_SIZES in lib/EpdFont/scripts/font-sizes.sh for its font ID. main.cpp
+  /// registers every rung above BUILTIN_FACE_MAX_POINTS as the master scaled, so it needs nothing.
   struct ReaderFontRung {
     FONT_SIZE size;
-    uint8_t points;  ///< the point size its faces are generated at
+    uint8_t points;  ///< the point size it renders at
   };
   static constexpr ReaderFontRung FONT_SIZE_RUNGS[] = {
       {PT_10, 10}, {PT_12, 12}, {PT_14, 14}, {PT_16, 16}, {PT_18, 18},
       {PT_20, 20}, {PT_22, 22}, {PT_24, 24}, {PT_26, 26},
   };
   static constexpr int FONT_SIZE_RUNG_COUNT = static_cast<int>(sizeof(FONT_SIZE_RUNGS) / sizeof(FONT_SIZE_RUNGS[0]));
+
+  /// The largest rung with faces of its own (font-sizes.sh's SYNTH_FONT_MASTER, which must agree).
+  /// Every rung above it has none and draws this size's faces enlarged, at builtinFaceScale(), so
+  /// its faces are the master. 20 pt had faces until they were dropped for the flash they took.
+  static constexpr uint8_t BUILTIN_FACE_MAX_POINTS = 18;
+
+  /// The scale a built-in rung draws its faces at: exactly 1 for a rung with faces of its own, its
+  /// size over the master's above that -- 20 pt is the 18 pt faces at x1.11.
+  static constexpr float builtinFaceScale(const uint8_t points) {
+    return points > BUILTIN_FACE_MAX_POINTS ? static_cast<float>(points) / BUILTIN_FACE_MAX_POINTS : 1.0f;
+  }
 
   /// The point size a FONT_SIZE renders at, or 0 if it names no rung.
   static constexpr uint8_t fontSizePoints(const uint8_t size) {
@@ -384,7 +405,7 @@ class CrossPointSettings {
   // Pixels to inset each edge by. Clamped against a corrupt settings file rather than trusted:
   // this reaches a renderer that has no other opinion about it.
   int getEdgeMarginPadding() const {
-    const uint8_t step = edgeMargin <= EDGE_MARGIN_LARGE ? edgeMargin : EDGE_MARGIN_NARROW;
+    const uint8_t step = edgeMargin <= EDGE_MARGIN_LARGE ? edgeMargin : static_cast<uint8_t>(EDGE_MARGIN_NARROW);
     return step * EDGE_MARGIN_STEP_PX;
   }
   // OPDS download destination folder ("" = SD root). Global; edited from the
@@ -408,6 +429,9 @@ class CrossPointSettings {
   uint8_t fadingFix = 0;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
   uint8_t embeddedStyle = 1;
+  // Publisher Fonts (PUBLISHER_FONTS; BookFonts). Off by default: opening a book in its own font installs its family
+  // into the single glyph store, and so does the next book.
+  uint8_t publisherFonts = PUBLISHER_FONTS_OFF;
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
   uint8_t showHiddenFiles = 0;
   // Show file extensions in the file browser (0 = hidden, 1 = show)
@@ -587,6 +611,9 @@ static_assert(CrossPointSettings::FONT_SIZE_RUNG_COUNT == static_cast<int>(Cross
                   CrossPointSettings::ladderCoversEveryFontSize(),
               "every FONT_SIZE must appear exactly once in FONT_SIZE_RUNGS; a FONT_SIZE without a rung has no "
               "point size, and builtinRungForPoints() could never choose it");
+static_assert(CrossPointSettings::fontSizePoints(CrossPointSettings::builtinRungForPoints(
+                  CrossPointSettings::BUILTIN_FACE_MAX_POINTS)) == CrossPointSettings::BUILTIN_FACE_MAX_POINTS,
+              "the scaling master must be a rung of its own; the sizes above it are drawn from its faces");
 
 // Helper macro to access settings
 #define SETTINGS CrossPointSettings::getInstance()

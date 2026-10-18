@@ -78,6 +78,9 @@ class HalGPIO {
   int edgeTail_ = 0;
   // Loop-side snapshot refreshed by update(); only the loop task reads/writes these.
   uint8_t snapState_ = 0;
+  // Counts of injected inputs, and of those update() has handed over; under inputMux_.
+  uint32_t injectedInputs_ = 0;
+  uint32_t deliveredInputs_ = 0;
   uint8_t snapPressed_ = 0;
   uint8_t snapReleased_ = 0;
 
@@ -107,6 +110,11 @@ class HalGPIO {
 
   // How far back an injected long press dates its press edge.
   static constexpr uint32_t INJECTED_LONG_PRESS_MS = 1500;
+  inline void injectTouch(float, float) {}
+  inline void injectSwipe(float, float, float, float) {}
+  // True while something injected (a press above) has not yet been handed to the loop
+  // by update(). The serial CMD:IDLE uses it to know a press it sent has reached the screen.
+  bool injectedInputPending() const;
   bool isPressed(uint8_t buttonIndex) const;
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;

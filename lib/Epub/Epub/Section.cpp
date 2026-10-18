@@ -31,7 +31,27 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 86;  // v86: a <span id> is in the anchor map
+constexpr uint8_t SECTION_FILE_VERSION = 93;  // v93: 20 pt is the 18 pt faces scaled, so the
+                                              // 20-26 pt font IDs changed; a v92 heading still
+                                              // names the old ones and would draw nothing
+                                              // v92: CJK text breaks between characters, with kinsoku
+                                              // v91: rem/px/pt font sizes are relative to the
+                                              // body (v90 compounded nested ones), and CSS
+                                              // specificity, compound, descendant/child
+                                              // selectors and `inherit` apply
+                                              // v90: small caps shrink ł ń ž ÿ, Greek and
+                                              // Cyrillic, and no longer Ł Ń Ž, and set fi/fl
+                                              // as two letters; v89 pages measured such words
+                                              // the old way
+                                              // v89: widow/orphan control, and a heading
+                                              // keeps room for two lines below it, so pages
+                                              // end earlier than in v88
+                                              // v88: page-break-after breaks, and a
+                                              // page-break-before keeps the paragraph before
+                                              // it on the old page
+                                              // v87: a block's bold/italic reaches the blocks
+                                              // nested inside it; v86 pages set them upright
+                                              // v86: a <span id> is in the anchor map
                                               // v85: an <img> whose href has no extension is
                                               // laid out as the image its bytes are; v84 pages
                                               // hold its alt text
@@ -312,7 +332,7 @@ uint32_t fnv1a(const uint8_t* data, size_t length) {
 }  // namespace
 
 uint32_t Section::calculatePropertyHash(const BuildParams& p) {
-  uint8_t buffer[64];
+  uint8_t buffer[96];
   size_t offset = 0;
 
   auto append = [&](const void* ptr, size_t size) {
@@ -334,6 +354,16 @@ uint32_t Section::calculatePropertyHash(const BuildParams& p) {
     append(&INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION, sizeof(INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION));
   }
   append(&p.imageRendering, sizeof(p.imageRendering));
+  // Only what the book's CSS can reach, and only when there is any: a variant without families keeps its old key.
+  if (p.embeddedStyle && p.fontFamilies && p.fontFamilies->count != 0) {
+    append(&p.fontFamilies->body, sizeof(p.fontFamilies->body));
+    for (int i = 0; i < p.fontFamilies->count; ++i) {
+      const BlockFontFamilies::Family& family = p.fontFamilies->families[i];
+      append(&family.key, sizeof(family.key));
+      append(&family.bodyFontId, sizeof(family.bodyFontId));
+      append(&family.ladder.nativeBase, sizeof(family.ladder.nativeBase));
+    }
+  }
 
   return fnv1a(buffer, offset);
 }
@@ -1174,6 +1204,7 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   }
   st.visitor->endExternalPageBreakAnchors();
   st.visitor->setFontSizeLadder(p.fontSizeLadder);
+  if (p.embeddedStyle && p.fontFamilies) st.visitor->setFontFamilies(*p.fontFamilies);
   // Anchors stream to SD as they are found rather than accumulating in the parser; the
   // finalizer below copies the spill into the section file's anchor map. Set before setup(),
   // which is where the parser opens it.
@@ -1575,7 +1606,7 @@ Section::BuildPhaseResult Section::runBuildParse(BuildState& st, const uint32_t 
     // means pages were cached with styles silently missing.
     //
     // ...but ONLY when the resolver could actually lose a rule. An arena-RESIDENT ruleset is
-    // served entirely from arena memory: lookupRule() returns from arenaResident_ before it
+    // served entirely from arena memory: lookupRules() returns from arenaResident_ before it
     // ever reads allowDiskLookup, so a lowHeapSkip there costs nothing and the styles are
     // complete. Counting those as degradation threw away correct builds — measured on X3, a
     // 14-page background build discarded after a single 960-byte dip below the lean floor,

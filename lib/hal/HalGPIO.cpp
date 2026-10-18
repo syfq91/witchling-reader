@@ -69,6 +69,12 @@ void HalGPIO::pushEdgeLocked(uint8_t button, bool pressed, uint32_t timeMs) {
   edgeTail_ = next;
 }
 
+bool HalGPIO::injectedInputPending() const {
+  portENTER_CRITICAL_SAFE(const_cast<portMUX_TYPE*>(&inputMux_));
+  const bool pending = deliveredInputs_ != injectedInputs_;
+  portEXIT_CRITICAL_SAFE(const_cast<portMUX_TYPE*>(&inputMux_));
+  return pending;
+}
 
 // One sampling pass: read + debounce the buttons, then latch any edges. Runs on
 // the sampler task once started; also called synchronously from update() before
@@ -198,7 +204,7 @@ void HalGPIO::update() {
   snapReleased_ = accumReleased_;
   accumPressed_ = 0;
   accumReleased_ = 0;
-
+  deliveredInputs_ = injectedInputs_;
   portEXIT_CRITICAL(&inputMux_);
   updateUsbState(millis());
 }
@@ -221,11 +227,14 @@ void HalGPIO::injectPress(const uint8_t buttonIndex, const bool longPress, const
   const uint32_t pressAt = releaseAt > holdMs ? releaseAt - holdMs : 0;
   portENTER_CRITICAL(&inputMux_);
   accumPressed_ |= (1u << buttonIndex);
+  injectedInputs_++;
   accumReleased_ |= (1u << buttonIndex);
   pushEdgeLocked(buttonIndex, true, pressAt);
   pushEdgeLocked(buttonIndex, false, releaseAt);
   portEXIT_CRITICAL(&inputMux_);
 }
+
+
 
 bool HalGPIO::isPressed(uint8_t buttonIndex) const { return (snapState_ & (1u << buttonIndex)) != 0; }
 

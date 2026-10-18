@@ -147,6 +147,8 @@ add_subdirectory(image_dimensions_guard)
 add_subdirectory(word_size_layout)
 add_subdirectory(text_block_range)
 add_subdirectory(token_boundary)
+add_subdirectory(cjk_line_break)
+add_subdirectory(cjk_layout)
 add_subdirectory(zip_entry_reader)
 # After zip_entry_reader: reuses its HalStorage shim.
 add_subdirectory(hal_storage)
@@ -160,7 +162,8 @@ add_subdirectory(font_group_stream)
 add_subdirectory(font_cache_manager)  # after font_group_stream: links its uzlib_font_ring
 add_subdirectory(gif_decoder)
 add_subdirectory(jpeg_decoder)
-
+add_subdirectory(serial_command_grammar)
+add_subdirectory(idle_gate)
 add_subdirectory(opds_filename)
 add_subdirectory(epub_pipeline)
 add_subdirectory(memory_arena)

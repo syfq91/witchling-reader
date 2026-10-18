@@ -109,6 +109,7 @@ void SettingsActivity::onEnter() {
                                            .withSubcategory(StrId::STR_MENU_SYS_NETWORK)));
   addToMoved(systemSettings, std::move(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser)
                                            .withSubcategory(StrId::STR_MENU_SYS_NETWORK)));
+
   addToMoved(systemSettings, std::move(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache)
                                            .withSubcategory(StrId::STR_MENU_SYS_SYSTEM)));
   addToMoved(systemSettings, std::move(SettingInfo::Action(StrId::STR_SCREEN_REPAIR, SettingAction::ScreenRepair)
@@ -147,6 +148,8 @@ void SettingsActivity::onEnter() {
   // and tab actions, points the screen at buildScreen(), and puts focus on the bar.
   enterCategory(0);
   TabbedUiListActivity::onEnter();
+  // Another tab when asked for one (the serial CMD:ACT:SETTINGS:<tab>), the way a tap on it goes.
+  if (initialTab > 0) selectTab(initialTab);
 }
 
 void SettingsActivity::onExit() {
@@ -314,6 +317,7 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   props.items = windowItems.data();
   props.itemsWindowFirst = windowFirst;
   props.itemsWindowCount = windowCount;
+  noteListSelection(props);
   screen.list(props);
 }
 

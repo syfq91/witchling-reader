@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "RecentBooksStore.h"
+#include "SerialTestApi.h"
 #include "UiFontScale.h"
 #include "components/BookProgressPresentation.h"
 #include "components/UITheme.h"
@@ -231,6 +232,7 @@ void LyraTheme::drawSubHeader(const GfxRenderer& renderer, Rect rect, const char
 
   renderer.drawLine(rect.x, rect.y + rect.height - 1, rect.x + rect.width - 1, rect.y + rect.height - 1, true);
 }
+
 
 void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                 const char* btn4) const {
@@ -553,6 +555,7 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
 
 Rect LyraTheme::drawPopup(const GfxRenderer& renderer, const char* message, const bool overlayDisplayedFrame,
                           const PopupShip ship) const {
+  SerialTestApi::notePopup(message);
   // See BaseTheme::drawPopup: overlay the box on the displayed frame unless the caller composed its
   // own full frame into the write buffer.
   if (overlayDisplayedFrame) renderer.syncWriteBufferFromDisplayed();

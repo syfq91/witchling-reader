@@ -27,6 +27,8 @@ class ContentOpfParser final : public Print {
     IN_BOOK_DESCRIPTION,
     IN_BOOK_SERIES,
     IN_BOOK_SERIES_INDEX,
+    IN_BOOK_IDENTIFIER,
+    IN_CREATOR_REFINE,
     IN_MANIFEST,
     IN_SPINE,
     IN_GUIDE,
@@ -110,6 +112,43 @@ class ContentOpfParser final : public Print {
 
   static constexpr uint16_t LARGE_SPINE_THRESHOLD = 400;
 
+  // One dc:creator as the <metadata> block describes it. Kept only until the block ends, to pick
+  // the primary author then: EPUB 3 states a creator's role and filing name in <meta refines="#id">
+  // elements that come after it.
+  struct Creator {
+    std::string id;
+    std::string name;
+    std::string role;
+    std::string fileAs;
+  };
+  // The first few creators are enough: books credit their authors first. Allocated from the heap,
+  // and only once a dc:creator appears, because the parser itself lives on the caller's stack.
+  static constexpr uint8_t MAX_CREATORS = 4;
+  // Longest creator name, id, role or filing name kept.
+  static constexpr size_t MAX_CREATOR_FIELD = 256;
+  std::unique_ptr<Creator[]> creators_;
+  uint8_t creatorCount_ = 0;
+  Creator* currentCreator_ = nullptr;    // the dc:creator being read; null past MAX_CREATORS or on OOM
+  std::string creatorText_;              // its text, gathered across however many pieces it arrives in
+  std::string* refineTarget_ = nullptr;  // the creator field a <meta refines> element's text fills
+
+  Creator* beginCreator(const char** atts);
+  std::string* creatorField(const char* id, const char* property);
+  void pickPrimaryAuthor();
+
+  // The dc:identifier being read: what its scheme attribute says it is, whether it is the package's
+  // unique identifier, and its text. Longer than any ISBN or ASIN can be means it is neither, and a
+  // cut-off identifier would be a wrong one, so one longer than MAX_IDENTIFIER is not kept at all.
+  enum class IdentifierScheme : uint8_t { Other, Isbn, Asin };
+  static constexpr size_t MAX_ISBN_OR_ASIN = 64;
+  static constexpr size_t MAX_IDENTIFIER = 256;
+  IdentifierScheme identifierScheme_ = IdentifierScheme::Other;
+  std::string identifierText_;
+  bool identifierTooLong_ = false;
+  bool identifierIsUnique_ = false;
+  std::string uniqueIdentifierId_;  // the package's unique-identifier attribute
+  void recordIdentifier();
+  bool metadataRead_ = false;
   // FNV-1a hash function
   static uint32_t fnvHash(const std::string& s) {
     uint32_t hash = 2166136261u;
@@ -146,10 +185,21 @@ class ContentOpfParser final : public Print {
 
   std::string title;
   std::string author;
+  std::string primaryAuthor;
+  std::string authorSort;
   std::string language;
   std::string description;
   std::string series;
   std::string seriesIndex;
+  // The first dc:identifier that is an ISBN, and the first that is an Amazon ASIN, without their
+  // "urn:isbn:" / "isbn:" prefixes. For KOReader sync's metadata; empty when the book gives none.
+  std::string isbn;
+  std::string asin;
+  // The package's unique identifier (the dc:identifier its unique-identifier attribute names, else
+  // the first) and its first urn:uuid: identifier, trimmed: the keys of a book's obfuscated fonts
+  // (BookFonts). Empty when the book gives none.
+  std::string uniqueIdentifier;
+  std::string uuidIdentifier;
   std::string tocNcxPath;
   std::string tocNavPath;   // EPUB 3 nav document path
   std::string pageMapPath;  // EPUB 2.01 page-map.xml document path
@@ -161,11 +211,16 @@ class ContentOpfParser final : public Print {
   std::string textReferenceHref;
   std::vector<std::string> cssFiles;  // CSS stylesheet paths
 
-  explicit ContentOpfParser(const std::string& cachePath, const std::string& baseContentPath, const size_t xmlSize,
-                            BookMetadataCache* cache)
-      : cachePath(cachePath), baseContentPath(baseContentPath), remainingSize(xmlSize), cache(cache) {}
+  // Out of line: three callers, and the members it initialises are many.
+  explicit ContentOpfParser(const std::string& cachePath, const std::string& baseContentPath, size_t xmlSize,
+                            BookMetadataCache* cache);
   ~ContentOpfParser() override;
 
+  // Set once </metadata> has closed: the stop flag of a read that wants the metadata alone (BookFonts' keys), so
+  // a large manifest is not parsed for nothing.
+  const bool* metadataRead() const { return &metadataRead_; }
+  // Hosts the SAX parser's state in `state` (SaxParser::stateBytes()) instead of the heap. Before setup().
+  void setParserState(void* state) { saxParser_.setExternalState(state, SaxParser::stateBytes()); }
   bool setup();
 
   size_t write(uint8_t) override;

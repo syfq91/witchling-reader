@@ -133,10 +133,11 @@ class Epub {
   void applyMetadataSidecar() const;
 
  public:
-  explicit Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
-    // create a cache key based on the filepath
-    cachePath = cacheDir + "/epub_" + std::to_string(std::hash<std::string>{}(this->filepath));
-  }
+  // Out of line: it initialises every member, about 1.5 KB of code, and GCC inlined it into a dozen of the
+  // callers that open an Epub only for its cache path.
+  explicit Epub(std::string filepath, const std::string& cacheDir);
+  // Where the book at `filepath` keeps its cache under `cacheDir` (what getCachePath() gives), without an Epub.
+  static std::string cachePathFor(const std::string& filepath, const std::string& cacheDir);
   ~Epub() = default;
   std::string& getBasePath() { return contentBasePath; }
   // `scratch`: a region lent for the duration of the load (the secondary framebuffer, on a
@@ -278,8 +279,14 @@ class Epub {
                                                        BuildArena* scratch = nullptr) const;
   uint8_t* readItemContentsToBytes(const std::string& itemHref, size_t* size = nullptr,
                                    bool trailingNullByte = false) const;
-  bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize,
-                                const bool* stop = nullptr) const;
+  // `scratch` (optional): hosts the read buffer and the inflate ring when it has room for the largest ring, as
+  // the region lent to load() does; else the heap.
+  bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize, const bool* stop = nullptr,
+                                BuildArena* scratch = nullptr) const;
+  // Where the OPF package document sits inside the book, read from META-INF/container.xml without
+  // loading anything else: for handing the OPF out as it is, sidecar or not (the web interface's
+  // Details dialog reads a book's own metadata from it).
+  bool contentOpfPath(std::string* out) const { return findContentOpfFile(out); }
   // Read up to maxBytes decompressed bytes from a ZIP entry — no SD write, header-only use.
   size_t readItemHeaderBytes(const std::string& itemHref, uint8_t* outBuf, size_t maxBytes) const;
   // Arena bytes one extractItemToFile() needs to keep its inflate ring off the heap:

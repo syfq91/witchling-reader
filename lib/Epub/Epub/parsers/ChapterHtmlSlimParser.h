@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../BlockFontFamilies.h"
 #include "../EpubImageManifest.h"
 #include "../FontSizeLadder.h"
 #include "../FootnoteEntry.h"
@@ -102,6 +103,21 @@ class ChapterHtmlSlimParser final : public Print {
   // leave one char at end for null pointer
   char partWordBuffer[MAX_WORD_SIZE + 1] = {};
   int partWordBufferIndex = 0;
+  // The tokens partWordBuffer's CJK run will become: its CJK codepoints, plus one for each run of
+  // non-CJK characters after the first CJK codepoint. consumeText flushes the run at
+  // kCjkRunCodepoints of them.
+  int partWordCjkCodepoints_ = 0;
+  // The last codepoint added to partWordBuffer was CJK, so a non-CJK character after it starts a
+  // run that counts toward partWordCjkCodepoints_.
+  bool partWordLastWasCjk_ = false;
+  // The last codepoint of the last word flushed, kept across whitespace (set by flushPartWordBuffer).
+  uint32_t lastTextCodepoint_ = 0;
+  // A whitespace run with a line break in it followed unspaced CJK text or a quotation mark
+  // (lastTextCodepoint_). If the next word starts with unspaced CJK, or with a quote after unspaced
+  // CJK (flushPartWordBuffer decides), the run vanishes instead of becoming a space (CSS Text 3
+  // segment-break rule; in CJK text the quotes are CJK punctuation): hard-wrapped Chinese and
+  // Japanese sources break lines mid-sentence.
+  bool cjkSegmentBreakPending_ = false;
   // KOReader sync content offsets (docs/contributing/koreader-synchronization.md).
   // visibleTextOffset_ counts VisibleText.h's visible bytes of the source text the SAX parser has
   // delivered: inside <body>, outside head/script/style, before any layout decision. The mappers
@@ -143,6 +159,16 @@ class ChapterHtmlSlimParser final : public Print {
   std::unique_ptr<Page> currentPage = nullptr;
   int16_t currentPageNextY = 0;
   int16_t lastBlockMarginBottom = 0;  // tracks previous block's marginBottom for CSS margin collapsing
+
+  // CSS page-break-before / page-break-after: a break waiting for the next content. It is taken
+  // once the text before it is laid out (applyPendingPageBreak), not at the tag: at a start tag
+  // the previous paragraph is still in currentTextBlock, and at an end tag so is the element's own.
+  bool pageBreakPending_ = false;
+  // Depths of the open elements that break after themselves. Fixed size, no heap; nesting deeper
+  // than this is pathological, and a deeper one only loses its own break.
+  static constexpr uint8_t kMaxBreakAfterDepth = 4;
+  uint8_t breakAfterCount_ = 0;
+  int breakAfterDepths_[kMaxBreakAfterDepth] = {};
 
   // Inline image beside paragraph text (CSS float context)
   // Fixed-size arrays — no heap allocation. Float nesting > 4 is pathological in practice.
@@ -210,6 +236,15 @@ class ChapterHtmlSlimParser final : public Print {
   // claims the slot; blocks that would need a different font keep the scale fallback.
   // A native ladder (a TTF family) has no such budget: its faces are read from the glyph store.
   int32_t auxFontId_ = 0;
+  // The book's other font families (see BlockFontFamilies); empty, font-family is not looked at. A block takes one
+  // family: its words' when they are all in one, else the family of the element that opened it. Words are tracked
+  // from the block's first (blockFamilyState_ 1: all in blockFirstFamily_, 2: in several); a block ends in
+  // startNewTextBlock, which starts the next one over.
+  BlockFontFamilies fontFamilies_;
+  uint32_t effectiveFontFamily_ = 0;  // CssStyle::fontFamily of the words being flushed
+  uint32_t blockFirstFamily_ = 0;
+  uint32_t blockOwnFamily_ = 0;
+  uint8_t blockFamilyState_ = 0;
   // EPUBs often set their running prose to a nominal CSS size such as 10pt,
   // 87%, or 0.875em. The reader's selected font size is our body size. Root
   // (html/body) sizes are normalized as inherited context; the main-text
@@ -248,12 +283,18 @@ class ChapterHtmlSlimParser final : public Print {
     bool hasMarginLeft = false;
     int16_t marginLeftPx = 0;  // margin-left in pixels, for span-level poem indents
     // Inline font-size as a percent of the PARENT element's size (em semantics).
-    // Nested entries compose multiplicatively in updateEffectiveInlineStyle().
+    // Nested entries compose multiplicatively in updateEffectiveInlineStyle(); one with
+    // fontSizeFromRoot (rem, px, pt) is a percent of the BODY size instead and does not.
     bool hasFontSize = false;
+    bool fontSizeFromRoot = false;
     uint8_t fontSizePct = 100;
+    // font-family (CssStyle::fontFamily), kept only while the book has other families (fontFamilies_).
+    bool hasFontFamily = false;
+    uint32_t fontFamily = 0;
   };
+  // Every element's own emphasis, blocks included, in document order: an inner element's entry
+  // comes later, so it overrides the ones around it, and is popped when the element closes.
   std::vector<StyleStackEntry> inlineStyleStack;
-  CssStyle currentCssStyle;
   bool effectiveBold = false;
   bool effectiveItalic = false;
   bool effectiveUnderline = false;
@@ -589,6 +630,18 @@ class ChapterHtmlSlimParser final : public Print {
   // there is room. Requires cssParser != nullptr.
   CssStyle resolvedImgStyle(const std::string& classAttr);
 
+  // Descendant and child selectors: which of the sheet's compounds each open element matches
+  // (CssParser::compoundMask), indexed by depth, so an element is matched against its ancestors
+  // without keeping their names. Fixed size, written in place: no heap per element. An element
+  // deeper than the stack resolves with no ancestry, so descendant and child rules skip it. Every
+  // element that opens below the CSS resolve records its slot; the SVG paths, which return
+  // earlier, clear theirs so a descendant never sees a stale sibling's mask.
+  static constexpr size_t kMaxCssAncestors = 32;
+  uint64_t cssAncestorMasks_[kMaxCssAncestors] = {};
+  // The ancestry of the element opening at `depth` (whose own mask it computes).
+  CssParser::Ancestry cssAncestry(const std::string& tagName, const std::string& classAttr,
+                                  const std::string& idAttr) const;
+
   // Default size for superscript/subscript text, percent of the surrounding size.
   // Sup/sub scaling flows through the ordinary per-word size channel (the SUP/SUB
   // style bits only shift the baseline at render time); an explicit CSS font-size
@@ -605,6 +658,16 @@ class ChapterHtmlSlimParser final : public Print {
   // Fold an element's CSS vertical-align into an inline style-stack entry. `baseline`
   // explicitly cancels an inherited sup/sub rather than being ignored.
   static void applyVerticalAlignToEntry(StyleStackEntry& entry, const CssStyle& cssStyle);
+  // Fold an element's CSS font-weight, font-style, text-decoration and font-variant into an
+  // inline style-stack entry. `text-decoration: none` cancels an inherited underline/strike.
+  static void applyCssEmphasisToEntry(StyleStackEntry& entry, const CssStyle& cssStyle);
+  // Fold an element's font-family into an entry, while the book has other families; true when it did.
+  bool applyCssFontFamilyToEntry(StyleStackEntry& entry, const CssStyle& cssStyle) const;
+  // A block's (or heading's) own emphasis, pushed at its depth so the blocks nested inside it
+  // inherit it and its end tag pops it. Nothing is pushed for a block that sets none.
+  void pushBlockStyleEntry(const CssStyle& cssStyle);
+  // Notes the family of a word going into currentTextBlock (see fontFamilies_).
+  void noteWordFamily();
   void initializeFontSizeBaseline();
   void observeFontSizeBaseline(const char* tagName, const CssStyle& cssStyle);
   CssStyle normalizeFontSizeForElement(const char* tagName, const CssStyle& cssStyle) const;
@@ -629,11 +692,21 @@ class ChapterHtmlSlimParser final : public Print {
   // if caches were actually released, i.e. it is worth re-testing the gate.
   bool recoverHeapForImageHeader();
   void startNewTextBlock(const BlockStyle& blockStyle);
+  // The text before this point and the text after it are not in one inline formatting context, so
+  // a line break between them stays a space (cjkSegmentBreakPending_).
+  void endCjkSegment() {
+    cjkSegmentBreakPending_ = false;
+    lastTextCodepoint_ = 0;
+  }
   void clearSpentBlockHeadingStyle();
   // Depth of the header/block element whose start tag set up the current text block, or -1 once
   // that element has closed. A <br> inside it splits the element into more blocks, which keep its
   // font size; after it has closed, what it leaves behind must not lend that size to a sibling.
   int currentBlockOwnerDepth_ = -1;
+  // The current block's own font-size is body-relative (rem/px/pt): its size then ignores the
+  // sizes of the inline containers it sits in. Set where a block or heading starts, cleared when
+  // it ends, as the single block-style slot did before blocks went onto the style stack.
+  bool currentBlockSizeFromRoot_ = false;
   // The open heading and the alignment and size its block was given. A block opening inside it is
   // heading text and takes both (applyHeadingScope): otherwise only the first such block got them,
   // by merging into the heading's still-empty block. INT_MAX when no heading is open.
@@ -722,6 +795,9 @@ class ChapterHtmlSlimParser final : public Print {
   // in lockstep. Every page break MUST go through this helper; open-coded completePageFn
   // calls risk desynchronising paragraphLutPerPage and failing the size check in Section.cpp.
   void emitPage();
+  // Take a pending page break (pageBreakPending_): emit the page if anything is on it. Called
+  // where the content before the break has been laid out and the next is about to be placed.
+  void applyPendingPageBreak();
   void recordPageBreakLabel(const std::string& label);
   // Attach the pending inline float image to `bs` and place it on the current page.
   // Clears pendingInlineImage_ on return.  No-op if pendingInlineImage_ is not active.
@@ -887,13 +963,17 @@ class ChapterHtmlSlimParser final : public Print {
   // Supplies the body font's sibling-size ladder (see FontSizeLadder). Blocks whose
   // effective font size differs from the body resolve to the nearest real font on it.
   void setFontSizeLadder(const FontSizeLadder& ladder) { fontSizeLadder_ = ladder; }
+  // Supplies the book's other font families (see BlockFontFamilies); none by default.
+  void setFontFamilies(const BlockFontFamilies& families) { fontFamilies_ = families; }
 
  private:
   // Snap a completed block's effective font size (block multiplier, after uniform per-word
   // folding) to the size ladder: sets headingFontId to the chosen real font and reduces
   // fontSizeMultiplier to the residual. Applies the one-aux-font-per-section budget and is
   // idempotent via bs.fontResolved. Must run before the block's first layout so measured
-  // widths, line heights and rendering all use the same (fontId, scale) pair.
+  // widths, line heights and rendering all use the same (fontId, scale) pair. A block in one
+  // of the book's other families (fontFamilies_) takes that family's face at its size instead,
+  // outside the budget: the body font scaled would not be its family.
   void resolveBlockFont(BlockStyle& bs);
   // Effective fontId for a block: its heading font when set, else the body fontId.
   int effectiveFontId(const BlockStyle& bs) const { return bs.headingFontId != 0 ? bs.headingFontId : fontId; }
@@ -906,6 +986,16 @@ class ChapterHtmlSlimParser final : public Print {
   void wireTextBlock();
   void wireParagraphLines(ParsedText& text);
   void beforeLineHook(uint8_t maxSizePct);
+  // Widow/orphan control and keep-with-next (CSS defaults: orphans 2, widows 2), decided before
+  // each line of currentTextBlock is placed: true when the page should end before a line that
+  // still fits. A placed line is never moved, so the decision looks ahead instead. `nextLine`
+  // asks the same for the line after the one about to be placed.
+  bool keepTogetherBreak(int lineHeight, bool nextLine = false) const;
+  static constexpr int kOrphans = 2;
+  static constexpr int kWidows = 2;
+  static constexpr int kKeepWithNextLines = 2;  // body lines a heading keeps room for below it
+  // Lines of the paragraph being laid out already on the current page.
+  uint16_t paragraphLinesOnPage_ = 0;
   void ensurePageBlock();
   void releasePageBlock();
 };

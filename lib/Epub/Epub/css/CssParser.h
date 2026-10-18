@@ -3,6 +3,7 @@
 #include <HalStorage.h>
 
 #include <list>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -25,13 +26,18 @@ class BuildArena;  // lib/Memory — optional backing store for the disk index (
  *   - Element selectors: p, div, h1, etc.
  *   - Class selectors: .classname
  *   - Combined: element.classname
+ *   - Compounds: .a.b, p.a.b, #id.a, p#id.a (up to 7 classes), and the universal *
+ *   - Descendant and child combinators between compounds: blockquote p, div.poem > p
  *   - Grouped: selector1, selector2 { }
  *
  * Not supported (silently ignored):
- *   - Descendant/child selectors
+ *   - Sibling combinators (+, ~) and attribute selectors
  *   - Pseudo-classes and pseudo-elements
  *   - Media queries (content is skipped)
- *   - @import, @font-face, etc.
+ *   - @import and the other at-rules
+ *
+ * @font-face rules are not styles: they are collected into a side file next to the rule cache
+ * (fontFaces / loadFontFaces), for the book's embedded fonts.
  */
 class CssParser {
  public:
@@ -48,9 +54,9 @@ class CssParser {
   };
 
   // True when the whole ruleset (index + style pool) is resident in arena memory, so every
-  // lookupRule() is served without touching SD. Callers use this to tell a REAL low-heap
+  // lookupRules() is served without touching SD. Callers use this to tell a REAL low-heap
   // degradation from a harmless one: under heap pressure resolveStyle() still counts a
-  // lowHeapSkip and passes allowDiskLookup=false, but the resident branch in lookupRule()
+  // lowHeapSkip and passes allowDiskLookup=false, but the resident branch in lookupRules()
   // returns before that flag is ever read — the styles come back complete either way.
   // Treating those skips as degradation discards correct work (measured on X3: a 14-page
   // background build thrown away, forcing the released-path rebuild that then fails its
@@ -93,10 +99,27 @@ class CssParser {
   //      a book whose picture is a CSS background (Alice's rabbit hole) kept showing none.
   // v21: `display` keeps Inline apart from Block (#388). A v20 cache stored display:inline as
   //      Block, which would now lay those spans out as blocks.
-  static constexpr uint8_t CSS_CACHE_VERSION = 21;
-  // Bytes before the sorted offset index: version(1) + ruleCount(2) + totalSelectorCandidates(4)
-  // + unsupportedSelectorSkips(4) + flags(1).
-  static constexpr uint32_t CSS_CACHE_HEADER_BYTES = 12;
+  // v22: every rule record carries its source order (u16 after the selector), and a selector
+  //      declared again further down is kept as a second record instead of merged into the first:
+  //      rules now apply by specificity, then stylesheet order (see resolveStyle).
+  // v23: compound selectors (.a.b, p#id.a, *): the header gains the byte count of the complex-rule
+  //      table, which follows it, before the sorted index (see complexTable).
+  // v24: page-break-before/after (and break-*) `auto`, `avoid` and `avoid-page` are kept as an explicit
+  //      "no break", so a more specific or later rule cancels an `always`; v23 dropped them.
+  // v25: descendant and child selectors: a complex rule is a chain of compounds (see complexTable).
+  // v26: `inherit` for font-weight, font-style and text-align is kept as an explicit marker that
+  //      beats lower rules and then leaves the element to its parent; v25 stored it as normal/left.
+  // v27: font-size records whether it is relative to the parent (em, %) or to the body (rem, px, pt,
+  //      keywords), so nested rem and px sizes stop compounding; v26 kept only the multiplier.
+  // v28: `font-family` is parsed and persisted (its first family, hashed; see fontFamilyHash), and
+  //      @font-face rules are recorded in a side file (see loadFontFaces). A v27 compile never
+  //      looked at either, so a book's embedded fonts would stay unknown.
+  // v29: `font-family` also keeps the list's generic serif or sans-serif (CssFontFamily), which v28
+  //      dropped.
+  static constexpr uint8_t CSS_CACHE_VERSION = 29;
+  // Bytes before the complex-rule table and the sorted offset index: version(1) + ruleCount(2) +
+  // totalSelectorCandidates(4) + unsupportedSelectorSkips(4) + flags(1) + complexTableBytes(2).
+  static constexpr uint32_t CSS_CACHE_HEADER_BYTES = 14;
 
   // Retained RAM per rule in disk-backed lookup mode (the sorted SelectorEntry index).
   // Heap gates (Section::heapAllowsEmbeddedStyle) size their contiguous-block floor
@@ -120,7 +143,9 @@ class CssParser {
 
   /**
    * Look up the style for an HTML element, considering tag name, class, and id attributes.
-   * Applies CSS cascade: element < class < element.class < #id < tag#id
+   * Applies the CSS cascade: every matching rule, ordered by specificity (ids, then classes, then
+   * the element name) and, between rules of equal specificity, by stylesheet order -- the later
+   * rule wins. The order of the classes in the class attribute plays no part.
    *
    * @param tagName The HTML element name (e.g., "p", "div")
    * @param classAttr The class attribute value (may contain multiple space-separated classes)
@@ -137,9 +162,34 @@ class CssParser {
   // parsed once and says so on every open, instead of re-parsing on every open and hitting the
   // cap again (memory audit 2026-09, R4).
   [[nodiscard]] bool rulesTruncated() const { return rulesTruncated_; }
+  // Selector census of the parsed (or loaded) sheets: selectors seen in rules with a supported
+  // declaration, and how many of those the resolver could not use. Diagnostics and host tests.
+  [[nodiscard]] uint32_t selectorCandidates() const { return totalSelectorCandidates_; }
+  [[nodiscard]] uint32_t unsupportedSelectors() const { return unsupportedSelectorSkips_; }
+  [[nodiscard]] uint16_t complexTableBytes() const { return complexBytes_; }
 
+  // Descendant and child selectors (`blockquote p`, `div.poem > p`) match an element against its
+  // open ancestors. A caller that walks the document keeps, for each open element, which of the
+  // sheet's compounds it matches (compoundMask) and passes those of the element's ancestors. No
+  // Ancestry (or depth 0): descendant and child rules do not match, everything else does.
+  struct Ancestry {
+    const uint64_t* masks = nullptr;  // outermost first; masks[depth - 1] is the parent
+    size_t depth = 0;
+    uint64_t self = 0;  // the element's own compoundMask
+  };
+  // True when the sheet has compound, descendant or child selectors, so compoundMask is worth
+  // calling; false for most books, which then pay nothing for any of this.
+  [[nodiscard]] bool hasComplexRules() const { return complexBytes_ > 0; }
+  // Which of the sheet's compounds the element matches, one bit each; 0 without complex rules.
+  [[nodiscard]] uint64_t compoundMask(const std::string& tagName, const std::string& classAttr,
+                                      const std::string& idAttr) const;
+
+  // dependsOnAncestors (optional) is set when a descendant or child rule could apply to the element:
+  // the style then depends on where the element stands, and must not be reused for another element
+  // with the same tag and class.
   [[nodiscard]] CssStyle resolveStyle(const std::string& tagName, const std::string& classAttr,
-                                      const std::string& idAttr = {}) const;
+                                      const std::string& idAttr = {}, const Ancestry* ancestry = nullptr,
+                                      bool* dependsOnAncestors = nullptr) const;
 
   /**
    * Parse an inline style attribute string.
@@ -270,12 +320,43 @@ class CssParser {
   // directory. Set before each appendCompiledFromStream / loadFromStream.
   void setStylesheetPath(const std::string& sheetPathInEpub);
   // The background picture of an element as an EPUB path (directory of its sheet + url, not yet
-  // normalised or unescaped), or nullptr. Same cascade as resolveStyle: tag < .class < tag.class
-  // < #id < tag#id, and among rules for the same selector the later one.
+  // normalised or unescaped), or nullptr. Same cascade as resolveStyle for the selectors it keeps
+  // (tag, .class, tag.class, #id, tag#id): the most specific wins, then the later rule.
   [[nodiscard]] const std::string* backgroundImageFor(const std::string& tagName, const std::string& classAttr,
                                                       const std::string& idAttr = {}) const;
 
+  // A book's embedded fonts: one @font-face rule each, in source order, recorded while the sheets
+  // are compiled (at most MAX_FONT_FACES) and kept in a side file next to the rule cache, absent
+  // when the book declares none. Read back as records (loadFontFaces), one face at a time
+  // (nextFontFace): a face's text points into them.
+  struct FontFace {
+    uint32_t family = 0;    // fontFamilyHash() of the declared name
+    uint16_t weight = 400;  // font-weight: 100-900, normal 400, bold 700
+    bool italic = false;    // font-style other than normal
+    std::string_view name;  // the declared family name as written, unquoted
+    // The src url() the reader can best use, joined to its sheet's directory: an EPUB path, not
+    // yet normalised or unescaped. TrueType first, then OpenType, then anything else; never
+    // WOFF2, SVG, EOT, a data: URI or a remote font.
+    std::string_view href;
+  };
+  static constexpr size_t MAX_FONT_FACES = 32;
+  // A family name's identity, as font-family and @font-face compare names: case-insensitive, runs
+  // of whitespace as one space, quotes removed. Never 0, which CssStyle::fontFamily keeps for the
+  // reader's font, and its low two bits are 0 (CssFontFamily).
+  [[nodiscard]] static uint32_t fontFamilyHash(std::string_view name);
+  // The face records of the book whose cache is at `cachePath`, for nextFontFace. False when there
+  // are none or the side file cannot be read.
+  static bool loadFontFaces(const std::string& cachePath, std::string& records);
+  // Takes the first face off `records`. False when none is left (or the rest is damaged).
+  static bool nextFontFace(std::string_view& records, FontFace& face);
+
  private:
+  // The faces recorded so far, as the side file stores them (see fontFacesFile), and their count.
+  std::string fontFaces_;
+  uint8_t fontFaceCount_ = 0;
+  void parseFontFace(std::string_view declarations);
+  void saveFontFaces() const;
+
   // See backgroundImageFor. An empty path records an explicit `none`, which cancels an earlier
   // rule's picture for the same selector.
   struct BackgroundImageRule {
@@ -290,8 +371,20 @@ class CssParser {
   void saveBackgroundImages() const;
   void loadBackgroundImages() const;
 
-  // Storage: maps normalized selector -> style properties
-  std::unordered_map<std::string, CssStyle> rulesBySelector_;
+  // A rule's place in the stylesheets: rules of equal specificity apply in this order. Every
+  // selector of one rule block shares it, and it counts on across stylesheets, so a later sheet's
+  // rules come after an earlier sheet's. Saturates (rule blocks beyond 65535 tie, which only a
+  // pathological sheet reaches: MAX_RULES caps the stored rules far below it).
+  uint16_t nextRuleOrder_ = 0;
+  struct OrderedStyle {
+    CssStyle style;
+    uint16_t order = 0;
+  };
+
+  // Storage: maps normalized selector -> style properties. A multimap: a selector declared again
+  // after other rules is kept as a second entry, because merging it into the first would move the
+  // first's declarations past the rules in between (see processRuleBlockWithStyle).
+  std::unordered_multimap<std::string, OrderedStyle> rulesBySelector_;
 
   std::string cachePath;
 
@@ -336,8 +429,9 @@ class CssParser {
   // drops them on clear()/clearCaches() and reloads on the next resolve.
   struct ResidentEntry {
     uint32_t hash;      // FNV-1a of the normalized selector (same as SelectorEntry::hash)
-    uint32_t styleOff;  // byte offset of this rule's compressed style within arenaStylePool_
-  };  // {u32,u32} = 8 B with no padding (vs a padded {u32,u16})
+    uint16_t styleOff;  // byte offset of this rule's compressed style within arenaStylePool_
+    uint16_t order;     // the rule's source order (see nextRuleOrder_)
+  };  // 8 B with no padding; a pool past 64 KB cannot be addressed and falls back to INDEX-only
   BuildArena* indexArena_ = nullptr;
   mutable ResidentEntry* arenaResident_ = nullptr;  // sorted by hash, cachedRuleCount_ entries
   mutable uint8_t* arenaStylePool_ = nullptr;       // distinct styles, sparse-compressed, length-prefixed
@@ -356,9 +450,10 @@ class CssParser {
 
   static uint32_t selectorHash(std::string_view s);
 
-  // Bounded hot cache of most recently used rules.
+  // Bounded hot cache of most recently used rules. Holds only selectors with a single rule: one
+  // declared again further down has several, and is always read from the index.
   mutable std::list<std::string> hotRuleLru_;
-  mutable std::unordered_map<std::string, std::pair<CssStyle, std::list<std::string>::iterator>> hotRuleCache_;
+  mutable std::unordered_map<std::string, std::pair<OrderedStyle, std::list<std::string>::iterator>> hotRuleCache_;
   mutable std::unordered_set<std::string> negativeRuleCache_;
   mutable ResolveStats resolveStats_;
   // Set while parsing when a selector matches on an id, and restored from the cache header
@@ -370,7 +465,14 @@ class CssParser {
   bool compileModeFailed_ = false;
   std::string compileTempPath_;
   FsFile compileTempFile_;
-  std::unordered_map<std::string, uint32_t> compileSelectorOffsets_;
+  // The latest staged record of each selector (the one a redeclaration may merge into), and the
+  // earlier records of selectors redeclared after other rules, which stay rules of their own.
+  struct StagedRule {
+    uint32_t offset;  // of the record in the staging file
+    uint16_t order;
+  };
+  std::unordered_map<std::string, StagedRule> compileSelectorOffsets_;
+  std::vector<uint32_t> compileRetiredOffsets_;
 
   // Reused scratch for the selector currently being processed (processRuleBlockWithStyle).
   // A member rather than a local so its buffer survives across selectors AND across rule
@@ -405,10 +507,57 @@ class CssParser {
 
   // On-demand rule loading helpers
   bool ensureCacheIndexLoaded() const;
-  bool lookupRule(const std::string& selector, CssStyle& outStyle, bool allowDiskLookup = true) const;
-  bool readRuleFromDiskAtOffset(uint32_t ruleOffset, const std::string& selector, CssStyle& outStyle) const;
+  // resolveStyle's accumulator: every matching rule is merged into it ranked by specificity, then
+  // source order (CssStyle::applyOver with ranks), so lookups may run in any order.
+  struct Cascade;
+  // Merges every rule stored for `selector` into `cascade` at `specificity`; true when any matched.
+  bool lookupRules(const std::string& selector, uint32_t specificity, Cascade& cascade,
+                   bool allowDiskLookup = true) const;
+  bool readRuleFromDiskAtOffset(uint32_t ruleOffset, const std::string& selector, CssStyle& outStyle,
+                                uint16_t& outOrder) const;
   static bool readCssStylePayload(FsFile& file, CssStyle& style);
   static void writeCssStylePayload(FsFile& file, const CssStyle& style);
+  // A rule record, the unit of the cache file and the compile staging file:
+  // selectorLen(2) selector order(2) style payload.
+  static void writeRuleRecord(FsFile& file, const std::string& selector, uint16_t order, const CssStyle& style);
+  // complexTableBytes(2) and the complex-rule table, as the cache header ends.
+  void writeComplexTable(FsFile& file) const;
   void touchHotRule(const std::string& selector) const;
-  void cacheHotRule(const std::string& selector, const CssStyle& style) const;
+  void cacheHotRule(const std::string& selector, const OrderedStyle& rule) const;
+
+  // --- Complex rules (v23) ---
+  // Selectors the hashed index cannot key -- a compound of several parts (.a.b, p.a.b, p#id.a), the
+  // universal `*`, and (v25) descendant and child selectors -- live in a small table of their own,
+  // matched by a scan per element. Only a sheet that has them pays: resolveStyle skips the scan
+  // when the table is empty. The table is
+  // held in RAM in every mode, built on the heap while parsing and loaded with the index (heap, or
+  // the build arena), because it is small and capped (MAX_COMPLEX_BYTES), and resolving from it
+  // must not cost a disk read per element. One contiguous block:
+  //   compoundCount(1) ruleCount(1) compoundBytes(2)
+  //   compounds: the distinct compounds, each flags(1) [tag(4)] [id(4)] class(4)...
+  //              (flags 0x80 element name, 0x40 id, low 3 bits the class count; names are
+  //              selectorHash of the lowercase name, classes sorted so equal compounds are equal
+  //              bytes). An element matches a compound when it has every part; bit i of an
+  //              element's compound mask says it matches compound i.
+  //   rules:     order(2) specificity(2) steps(1) styleLen(1) step(steps) compressed style(styleLen)
+  //              (v25) the steps are the selector's compounds right to left, the subject first:
+  //              each the compound index (low 6 bits) and, from the second on, 0x40 when it must
+  //              be the parent of the step before it (`>`) rather than any ancestor (a space).
+  // The pointer is the heap block (parse or heap-mode load) or the arena copy; nullptr = no table.
+  mutable std::unique_ptr<uint8_t[]> complexHeap_;
+  mutable const uint8_t* complexArena_ = nullptr;
+  mutable uint16_t complexBytes_ = 0;
+  mutable uint16_t complexCapacity_ = 0;  // of complexHeap_ while parsing
+  const uint8_t* complexTable() const { return complexArena_ ? complexArena_ : complexHeap_.get(); }
+  // Adds a compound selector to the table; false (the selector is then unsupported) for anything
+  // that is not one, or when a cap is reached.
+  bool addComplexRule(std::string_view selector, const CssStyle& style, uint16_t order);
+  bool growComplexTable(size_t needed);
+  // The element's compound mask from its names, hashed like the table's (selectorHash of the
+  // lowercase name); idHash is nullptr without an id.
+  uint64_t matchCompounds(uint32_t tagHash, const uint32_t* idHash, const uint32_t* classHashes,
+                          size_t classCount) const;
+  // Merges the complex rules that match the element (its compound mask `self`, its ancestors in
+  // `ancestry`) into `cascade`.
+  void applyComplexRules(uint64_t self, const Ancestry* ancestry, Cascade& cascade, bool* dependsOnAncestors) const;
 };

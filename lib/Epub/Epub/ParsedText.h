@@ -22,6 +22,15 @@ class ParsedText {
     RetryWithoutHyphenation,
   };
 
+  // Where the line being laid out sits in its paragraph (linePlace()): set before beforeLine_
+  // and processLine run, for the parser's widow/orphan and keep-with-next decisions.
+  struct LinePlace {
+    bool paragraphStart = false;  // the paragraph's first line (not a continuation pass)
+    // Lines from this one to the paragraph's last; 0 when that is not known yet (the pass
+    // stops short of the paragraph's end, see includeLastLine).
+    uint16_t linesLeft = 0;
+  };
+
  public:
   // Per-word font-size bounds, percent of the block's font size (microreader-style).
   // Inline CSS font-size composes multiplicatively through nested elements; anything
@@ -85,6 +94,7 @@ class ParsedText {
   // The first word's offset of the line most recently handed to processLine. Read by the parser's
   // line callbacks, which only get the TextBlock.
   uint32_t lastLineVisibleOffset_ = 0;
+  LinePlace linePlace_;
   BlockStyle blockStyle;
   bool extraParagraphSpacing;
   bool hyphenationEnabled;
@@ -106,9 +116,16 @@ class ParsedText {
   // The natural gap before words[j] (j > 0), unscaled: kerning across a glued boundary, nothing at a
   // CJK gap, else the space advance. Every breaker measures gaps through this.
   int naturalGapBefore(const GfxRenderer& renderer, int fontId, size_t j) const;
+  // Room in all five per-word vectors for `additional` more tokens; false (and wordGrowthRefused_)
+  // when the heap cannot hold the growth.
+  bool reserveWords(size_t additional);
+  void pushToken(std::string token, EpdFontFamily::Style style, TokenBoundary::Boundary boundary, uint8_t sizePct,
+                 uint32_t visibleOffset);
 
   // The three breakers fill `lineBreakIndices` (cleared first) rather than returning a vector,
   // so the caller's scratch member is reused instead of reallocated per paragraph.
+  // `boundaries` is always wordBoundaries itself: hyphenateWordAtIndex inserts into the member during
+  // the call, and the reference sees the insert. Passing a copy would desynchronize the indices.
   void computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth, std::vector<uint16_t>& wordWidths,
                          const std::vector<TokenBoundary::Boundary>& boundaries, int firstLineIndent,
                          int16_t blockStartY, int lineHeight, std::vector<size_t>& lineBreakIndices);
@@ -169,6 +186,9 @@ class ParsedText {
   // keeps the no-churn behaviour within a slice and the old floor across it.
   void releaseLayoutScratch();
 
+  // Adds a word from the source: a Latin word as one token, a word with CJK characters as one token per
+  // break the CJK rules allow (CjkLineBreak.h). attachToPrevious: no whitespace separated it from the
+  // previous word in the source.
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,
                uint8_t sizePct = DEFAULT_WORD_SIZE_PCT, uint32_t visibleOffset = 0);
   // True once addWord had to drop a word because the word vectors could not grow (see
@@ -189,6 +209,7 @@ class ParsedText {
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }
   uint32_t lastLineVisibleOffset() const { return lastLineVisibleOffset_; }
+  const LinePlace& linePlace() const { return linePlace_; }
   std::optional<uint32_t> firstWordVisibleOffset() const {
     if (wordVisibleOffsets.empty()) return std::nullopt;
     return wordVisibleOffsets.front();

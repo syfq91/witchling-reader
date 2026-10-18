@@ -12,6 +12,7 @@ set(PIPELINE_SOURCES
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
   ${REPO_ROOT}/lib/Epub/Epub/SpinePageIndex.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Page.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/CjkLineBreak.cpp
   ${REPO_ROOT}/lib/Epub/Epub/ParsedText.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
   ${REPO_ROOT}/lib/Epub/Epub/FootnotePreviews.cpp
@@ -89,6 +90,7 @@ set(PIPELINE_INCLUDES
 
 add_executable(EpubPipelineTest
   EpubPipelineTest.cpp
+  CjkRulesTest.cpp
   FingerprintTest.cpp
   LostTocRetryTest.cpp
   TocSourceTest.cpp
@@ -112,7 +114,11 @@ add_executable(EpubPipelineTest
   ImageManifestTest.cpp
   ImageWrapperWidthTest.cpp
   HeadingBlockLayoutTest.cpp
+  BlockEmphasisTest.cpp
+  PageBreakAfterTest.cpp
+  KeepTogetherTest.cpp
   NativeSizeLayoutTest.cpp
+  FontFamilyLayoutTest.cpp
   SpineCacheLayoutTest.cpp
   SaxStateInArenaTest.cpp
   JpegDownscaleTest.cpp
@@ -125,6 +131,10 @@ add_executable(EpubPipelineTest
   CoverPipelineTest.cpp
   CoverWrapperTest.cpp
   VisibleTextTest.cpp
+  BookFontsTest.cpp
+  # A book's embedded body font (Publisher Fonts): the probe and the extraction. Its SHA-1 comes from
+  # test/shims/wolfssl, standing in for wolfCrypt.
+  ${REPO_ROOT}/lib/Epub/Epub/BookFonts.cpp
   # No-op HeapTrack: PipelineRunner brackets the dump read-back with pause/resume, and the gtest
   # binary must NOT get the real one (it overrides malloc/free process-wide). The two dump
   # targets pick their own implementation, so this cannot be moved into PIPELINE_SOURCES.
@@ -136,6 +146,7 @@ target_compile_definitions(EpubPipelineTest PRIVATE
   CORPUS_DIR="${REPO_ROOT}/test/epubs"
   GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/goldens"
   JPEG_FIXTURE_DIR="${REPO_ROOT}/test/jpeg_decoder/fixtures"
+  FONT_FIXTURE_DIR="${REPO_ROOT}/lib/EpdFont/builtinFonts/source"
   ENABLE_SERIAL_LOG=1
   LOG_LEVEL=2
   # LongChapterPageTablesTest refuses build-table chunks on purpose (see ChunkedVector.h). The

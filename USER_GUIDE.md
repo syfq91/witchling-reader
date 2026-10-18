@@ -217,7 +217,7 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 
 **EPUB Font** (submenu):
 - **Font Family**: Font used for EPUB reading. Includes built-in fonts (Bookerly, Noto Sans) plus any fonts installed on the SD card (which are memory-mapped directly from storage for minimal RAM usage).
-- **Font Size**: For Bookerly and Noto Sans, 10pt to 26pt: 10pt to 20pt are typefaces designed at that size; 22, 24 and 26pt are the 20pt face enlarged. For a font on the SD card, the sizes its files were built at (the number in each file name: `MyFont_8.cpfont` is 8pt), then the standard sizes above its largest file, drawn from that file enlarged. A size the selected font does not offer, such as 8pt after switching from an SD font to Bookerly, is shown and drawn as the nearest size it does offer, and comes back when you switch back.
+- **Font Size**: For Bookerly and Noto Sans, 10pt to 26pt: 10pt to 18pt are typefaces designed at that size; 20, 22, 24 and 26pt are the 18pt face enlarged. For a font on the SD card, the sizes its files were built at (the number in each file name: `MyFont_8.cpfont` is 8pt), then the standard sizes above its largest file, drawn from that file enlarged. A size the selected font does not offer, such as 8pt after switching from an SD font to Bookerly, is shown and drawn as the nearest size it does offer, and comes back when you switch back.
 - **Text Anti-Aliasing**: Smooth grey edges on text. Slows page turns slightly. "ON" / "OFF"
 - **Text Darkness**: Ink density for rendered text: "Normal" (default), "Dark", "Extra Dark", "Max Dark"
 **Layout** (submenu):
@@ -233,6 +233,13 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 - **Large Image Placeholder**: Whether to substitute an explicit placeholder for images that are too large to display inline. "ON" / "OFF"
 
 - **Embedded Style**: Use the EPUB's own HTML/CSS styling. "ON" (default) / "OFF"
+- **Publisher Fonts**: what of a book's own fonts the reader uses. Needs **Embedded Style** on; a book you give a font of its own in the reader menu's Font Family keeps it. The fonts are copied out of the book on its first open (the "Indexing" popup); fonts that are OpenType CFF (`.otf`), WOFF or WOFF2, or encrypted, are not used.
+  - **Off** (default): your font for everything.
+  - **Body Text**: a book that embeds its body font as TrueType is read in that font instead of yours.
+  - **Accents**: your font for the body text, and the book's other fonts where it uses them: a heading, a dedication or a quotation set in a font of its own is drawn in it. The book's most-used such font is the one drawn, and only while your font is a built-in one (Bookerly, Noto Sans); with a font of yours from the card, and for the book's other fonts, a block in them takes the kind of font the book names after it: Noto Sans for sans-serif, Bookerly for serif. A block in plain `serif` or `sans-serif` gets that built-in font too, unless the body text is in that kind already; `monospace` stays your font.
+  - **All Text**: Body Text and Accents together. For now the book's body font is the only one of its own fonts drawn; its other fonts are drawn as Accents draws them beside a font of yours from the card.
+
+  The reader holds one TrueType family at a time, so moving between two books in fonts of their own, or back to a TrueType font of yours, installs the font again (a few seconds).
 - **Hyphenation**: Automatic hyphenation while reading. "ON" / "OFF"
 - **Synthetic TOC Fallback**: Generate a table of contents from headings when the EPUB has an invalid or missing TOC. "ON" / "OFF"
 - **Customise Status Bar**: Opens a submenu to configure the reading status bar: location (Top / Bottom), content slots for Left, Middle, and Right (Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title, or Hide), and a single progress bar (Book / Chapter / Hide) that sits at the selected status bar edge.

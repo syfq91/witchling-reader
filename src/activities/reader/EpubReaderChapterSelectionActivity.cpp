@@ -7,6 +7,7 @@
 
 #include "I18nKeys.h"
 #include "MappedInputManager.h"
+#include "SerialTestApi.h"
 #include "components/UITheme.h"
 
 namespace fui = freeink::ui;
