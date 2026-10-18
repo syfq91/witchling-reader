@@ -1369,6 +1369,7 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
     }
     case WifiSelectionState::SCANNING: {
       screen.header(tr(STR_WIFI_NETWORKS), cachedMacAddress.c_str());
+      screen.takeBottom(screen.theme().footerHeight);
       fui::TextStyle titleStyle = screen.theme().titleText;
       titleStyle.bold = true;
       titleStyle.align = fui::TextAlign::Center;
@@ -1379,6 +1380,7 @@ void WifiSelectionActivity::buildScreen(UiScreen& screen) {
     case WifiSelectionState::AUTO_CYCLING:
     case WifiSelectionState::CONNECTING: {
       screen.header(tr(STR_WIFI_NETWORKS), cachedMacAddress.c_str());
+      screen.takeBottom(screen.theme().footerHeight);
       fui::TextStyle titleStyle = screen.theme().titleText;
       titleStyle.bold = true;
       titleStyle.align = fui::TextAlign::Center;
@@ -1497,6 +1499,11 @@ void WifiSelectionActivity::afterUiRender() {
     const char* optionsLabel = hasSaved ? tr(STR_OPTIONS_BUTTON) : "";
     const char* rescanLabel = tr(STR_RETRY);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, optionsLabel, rescanLabel);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == WifiSelectionState::AUTO_CONNECTING || state == WifiSelectionState::AUTO_CYCLING ||
+             state == WifiSelectionState::CONNECTING || state == WifiSelectionState::SCANNING) {
+    const bool autoConnect = isAutoConnectInProgress();
+    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), autoConnect ? tr(STR_SHOW_NETWORKS) : "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == WifiSelectionState::CONNECTED) {
     const auto labels = mappedInput.mapLabels(tr(STR_DONE), "", "", "");
