@@ -433,21 +433,14 @@ void ActivityManager::goToBrowserWithSearch(std::string query) {
 }
 
 void ActivityManager::goToReader(std::string path) {
-  {
-    RenderLock lock;
-    ensureSdFontLoadedForPath(path.c_str());
-  }
+  // The book's font is loaded by ReaderActivity::onEnter(), once the activity it replaces has exited.
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
 }
 
 void ActivityManager::replaceWithReader(std::string path, ReturnHint hint) {
   returnHint = std::move(hint);
   hasReturnHint = true;
-  {
-    RenderLock lock;
-    ensureSdFontLoadedForPath(path.c_str());
-  }
-  replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
+  replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));  // see goToReader()
 }
 
 void ActivityManager::replaceWithFileBrowser(std::string path, ReturnHint hint, std::string focusName) {

@@ -23,6 +23,7 @@
 #include <builtinFonts/all.h>
 #include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
+#include <hal/usb_serial_jtag_ll.h>
 
 #include <cstring>
 #include <vector>
@@ -555,14 +556,15 @@ bool bookFontsPendingForPath(const char* path) {
 
 void ensureSdFontLoadedForPath(const char* path, const bool waitForBookFonts) {
   if (!path) {
-    sdFontSystem.selectBookFamily({});
+    sdFontSystem.selectBookFamilies({});
     ensureSdFontLoaded();
     return;
   }
   // Writing a not-yet-cached SD font into the flash partition stalls the open for a
-  // moment; advertise it. Callers (goToReader/replaceWithReader) already hold a
+  // moment; advertise it. Callers (ReaderActivity::onEnter and the reader) already hold a
   // RenderLock, so the lambda must not take one. Fires only on a genuine first load.
   const auto onColdFontLoad = [] { GUI.drawPopup(renderer, tr(STR_LOADING_FONT)); };
+
 
   // For EPUB: honour per-book SD font and/or size overrides. The book record
   // is available here — the reader activity hasn't started yet, but
@@ -582,11 +584,12 @@ void ensureSdFontLoadedForPath(const char* path, const bool waitForBookFonts) {
   } else if (book.fontFamilyOverride >= 0) {
     family = "";  // per-book built-in font override: no SD font needed; unload if one was active
   }
-  // A family BookFonts copied out of the book: its body family, or its accent family beside a built-in reader font.
-  if (sdFontSystem.selectBookFamily(cachePath, SETTINGS.publisherFonts, family[0] == '\0')) {
-    family = sdFontSystem.selectedFamilyName();
-  }
-  sdFontSystem.ensureLoaded(renderer, family, effectiveSize, onColdFontLoad);
+  // The families BookFonts copied out of the book: its body family in place of the reader's font, and its accent
+  // family beside whichever draws the body. They load together, the body's first.
+  sdFontSystem.selectBookFamilies(cachePath, SETTINGS.publisherFonts, family);
+  if (sdFontSystem.bookFamilyName()[0] != '\0') family = sdFontSystem.bookFamilyName();
+  const char* families[] = {family, sdFontSystem.accentFamilyName()};
+  sdFontSystem.ensureLoaded(renderer, families, 2, effectiveSize, onColdFontLoad);
 }
 
 // --- Temporary boot-phase heap-corruption bisect probes -------------------------------
@@ -631,6 +634,7 @@ static HalGPIO::WakeGestures wakeGestureFromSettings() {
   gestures.longHold = true;
   return gestures;
 }
+
 
 void setup() {
   // FIRST statement, ahead of the NVS read and the wake gate: on the X4 the battery
