@@ -23,6 +23,7 @@
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
+#include "SerialTestApi.h"
 #include "XtcReaderChapterSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -49,6 +50,7 @@ void XtcReaderActivity::onEnter() {
   APP_STATE.saveToFile();
   RECENT_BOOKS.addBook(xtc->getPath(), xtc->getTitle(), xtc->getAuthor(), "",
                        ReaderActivity::coverThumbPlaceholder(xtc->getPath()));
+
 
   // Trigger first update
   requestUpdate();

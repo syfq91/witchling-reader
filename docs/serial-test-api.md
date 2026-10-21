@@ -22,6 +22,9 @@ screenshot. This page explains what the commands do, how to use them, and how to
   - [Touch: `TOUCH` and `SWIPE`](#touch-touch-and-swipe)
   - [Logging: `LOG`](#logging-log)
   - [Power: `SLEEP` and `REBOOT`](#power-sleep-and-reboot)
+  - [Heap ballast: `HEAP`](#heap-ballast-heap)
+  - [TrueType fonts: `TTF`](#truetype-fonts-ttf)
+  - [Files on the card: `FS`](#files-on-the-card-fs)
   - [Other: `BOOTLOG`, `HELP`](#other-bootlog-help)
 - [The USB Transfer screen](#the-usb-transfer-screen)
 - [Safety notes](#safety-notes)
@@ -76,6 +79,9 @@ Things to know about the port:
 - **Opening the port does not reset the device** with the default DTR/RTS lines.
   `tools/serial_transfer.py` deasserts them, and that *does* reset an ESP32-C3 (see
   [The USB Transfer screen](#the-usb-transfer-screen)).
+- **Closing it can.** On Windows a plain close drops DTR before RTS, and an ESP32-C3 takes RTS high
+  with DTR low as a reset request: it restarts to Home (`resetReason=11` in the boot log). Set RTS
+  low, then DTR low, then close, as `tools/devctl.py` does.
 - **The port goes away on a reboot or sleep.** The USB device re-enumerates. A long-running host
   has to close and reopen the port; `tools/devctl.py` does this by itself.
 - **One program at a time.** Close your monitor before running a script, and never hold the port
@@ -156,7 +162,9 @@ Reply: `ACT_OK`, or `ACT_ERROR:<reason>` (`no such file <path>`, `bad position <
 `unknown activity <name>`, `unknown settings tab <name>`, `unknown library tab <name>`).
 
 - Paths are paths on the SD card (`/test/book.epub`). A file name may itself contain `@`: only the
-  text after the last `@` is read as a position, and only when it has one of the two forms.
+  text after the last `@` is read as a position, and only when it has one of the two forms. A book
+  under `/test/` stays out of the recent books and the reading stats (see
+  [Safety notes](#safety-notes)).
 - Positions are for EPUB books, and need the full API (so do `DICT`, `FILE_TRANSFER`,
   `USB_TRANSFER` and the settings tab). `@<spine>:<page>` counts from 1, exactly as `STATE` reports
   `spine=` and `page=`: `@20:12` opens the 12th page of the 20th spine item and `STATE` then says
@@ -284,6 +292,14 @@ That is what you want before a screenshot after a page turn or after opening a b
 Send `CMD:IDLE` after the command it should wait for; the device handles them in order. While an
 `IDLE` is pending, the device still answers other commands; a second `IDLE` replaces the first.
 
+**`IDLE:<ms>` is no timing of what it waited for.** It counts from when the device read the `IDLE`
+line, and the device reads one command line per loop pass: work that holds the loop before that
+is left out. Opening a book whose font family has to be installed first (the "Loading font..."
+popup) holds the loop for seconds, so an `IDLE` sent right behind the `ACT` is read only after the
+install. A 20.6 s open of a book with a TrueType family not yet installed was answered
+`IDLE:3580`. Time an open on the host, from sending `ACT` to the `IDLE` reply:
+`tools/devctl.py --log <file>` stamps every line with the host's clock.
+
 ```
 > CMD:BTN:RIGHT
 < BTN_OK
@@ -305,6 +321,9 @@ unasked (off is the default, so normal logs stay clean):
 EVT:ACT <screen>                    a different screen is on top
 EVT:POPUP <text>                    a popup was drawn
 EVT:BUILD_DONE spine=<n> pages=<m>  a chapter (spine item n, 1-based) finished building, with m pages
+EVT:TTF_FULL fills=<n>              the TrueType glyph store filled up (n since boot)
+EVT:TTF_WIPE ms=<t> wipes=<n>       the glyph store was emptied, in t ms (n since boot)
+EVT:FONT_INSTALLED family=<name> ok=<0|1>  a font download ended, from the Font Manager or the web page
 ```
 
 Events are a log of what happened, for a script that wants to know a build finished or a popup
@@ -320,7 +339,8 @@ CMD:SET:<key>=<value>
 ```
 
 The keys are the ones the web settings page uses (`GET /api/settings` in
-[webserver-endpoints.md](webserver-endpoints.md)); `CMD:GET:*` lists every key the board offers.
+[webserver-endpoints.md](webserver-endpoints.md)), plus `language` (below); `CMD:GET:*` lists every
+key the board offers.
 
 Replies:
 
@@ -331,6 +351,7 @@ SET_OK:<key>=<value>[ label=<option>]        the value as stored afterwards
 GET_ERROR:unknown key <key>
 SET_ERROR:unknown key <key> | out of range <value> | bad value <value>
 SET_ERROR:not writable <key> | expected <key>=<value>
+SET_ERROR:not saved <key>                    applied, but the settings file was not written
 GET_ERROR / SET_ERROR:font families not loaded on this screen <key>   (boot straight into USB Transfer)
 ```
 
@@ -352,6 +373,32 @@ GET_ERROR / SET_ERROR:font families not loaded on this screen <key>   (boot stra
 ...
 > CMD:SET:btnDoublePower=6
 < SET_OK:btnDoublePower=6 label=Standby
+```
+
+**The UI language** is not a setting (it is kept in `/.crosspoint/language.bin`, and the web
+settings page has no row for it), but `GET` and `SET` take it as the key `language`, and `GET:*`
+lists it last:
+
+```
+GET:language=<code> label=<name>
+SET_OK:language=<code> label=<name>
+SET_ERROR:bad value <value>
+```
+
+- The value is the language's code in any case (`EN`, `de`, `ZH`), its name exactly as the
+  language picker shows it (`Deutsch`, `简体中文`), or its index in the build's language list
+  (English is 0).
+- `SET` makes the switch the language picker makes, saves it, and redraws the screen on display.
+  A screen that built its rows when it opened keeps them until it is opened again.
+- Change it back afterwards: the setting persists, and the next session reads it.
+
+```
+> CMD:GET:language
+< GET:language=EN label=English
+> CMD:SET:language=de
+< SET_OK:language=DE label=Deutsch
+> CMD:SET:language=EN
+< SET_OK:language=EN label=English
 ```
 
 ### Dictionary: `ACT:DICT`
@@ -423,6 +470,96 @@ Replies: `SLEEP_OK`, `REBOOT_OK`, sent before the device acts.
 - `REBOOT` restarts to Home the way the firmware's own maintenance restarts do: the reading session
   is closed, no boot screen. The port re-enumerates; reopen it.
 
+### Heap ballast: `HEAP`
+
+```
+CMD:HEAP
+CMD:HEAP:HOLD=<bytes>[,<blocks>]
+CMD:HEAP:FREE
+CMD:HEAP:REFUSE=<decodes>[,<reloads>]
+```
+
+Reply: `HEAP_OK:free=<bytes> largest=<bytes> held=<bytes>` (free heap, its largest block, the ballast
+held), `HEAP_OK:refuse decodes=<n> reloads=<n>`, or `HEAP_ERROR:expected HOLD=<bytes>[,<blocks>],
+REFUSE=<decodes>[,<reloads>] or FREE`, or `HEAP_ERROR:not all held:...` when the heap could not give
+every block (what was taken stays held).
+
+Holds `<bytes>` more of the heap, in `<blocks>` equal blocks (1 to 16 in all, default 1), until
+`CMD:HEAP:FREE` gives it all back. Nothing else frees it, so a test can put the device where a short
+or broken-up heap takes it, on demand: with enough held, the decode of a page's image is refused and
+the reader's memory ladder (`src/activities/reader/ImageMemoryLadder.h`) climbs, one step further
+for each step that still leaves too little. Several blocks take several of the heap's free regions,
+which shrinks its largest block as well as what is free. Only in builds with the full API.
+
+```sh
+python3 tools/devctl.py cmd:HEAP cmd:HEAP:HOLD=24000,4 "cmd:ACT:READER:/test/book.epub@3:1" idle:60000 \
+  shot:page.png cmd:HEAP:FREE
+```
+
+Free it before you leave the device: held ballast survives every screen until a restart. And take
+it once the screen you test is open: code that allocates with a throwing `new` aborts the device when
+the heap is short (a book open loads the recent-books list that way), and ballast held across a
+screen change can starve it.
+
+`REFUSE` reaches what ballast cannot. With the lent framebuffer as the decoders' arena, their heap
+floors are 16 KB, and the ladder's first relief step frees about 15 KB of font memory (X4, four
+TrueType families): ballast that makes that step fail leaves the reader no heap to draw with.
+`REFUSE=<decodes>` makes the ladder's next `<decodes>` decode steps fail as if the heap had refused
+them (the step's font memory is still freed and taken back for real), and `<reloads>` the next
+reloads of the TrueType set after its heavy step. `REFUSE=2` shows the heavy step, `REFUSE=3` (more,
+for the image lane's tries) the "not enough memory" boxes, `REFUSE=2,1` an accent family left out;
+`REFUSE=0` clears them. Test builds only, like `HOLD`.
+
+### TrueType fonts: `TTF`
+
+```
+CMD:TTF
+CMD:TTF:FULL
+```
+
+Reply to `CMD:TTF`, the loaded TrueType families and their glyph store:
+
+```
+TTF:families=1 names=NotoSansTC sd=1 log_used=80800 log_size=1835008 slots=512 ring=0 pending=0 renders=540 hits=2210 fills=0 wipes=1 last_wipe_ms=1312
+```
+
+`names` lists the set's families in its order (the body's first, then a book's accent families); `sd=1` when one
+reads its outlines from the card; `log_used`/`log_size` the store's log in bytes; `slots` its index slots in use;
+`ring=1` while new glyphs are drawn without being stored (the store filled up, or a write failed); `pending=1` while
+a wipe waits for the next book open; `renders` and `hits` the glyphs drawn from outlines and read from the store
+since the set loaded. `fills`, `wipes` and `last_wipe_ms` count since boot, whichever set was loaded. With no
+TrueType family loaded the set's fields are replaced by `none`: `TTF:none fills=0 wipes=0 last_wipe_ms=0`.
+
+`CMD:TTF:FULL` makes the store act as if it had just filled up: `TTF_OK:full`, or `TTF_ERROR:no TrueType family
+loaded`. New glyphs go to the ring and the wipe is pending, exactly as when the log runs out, so what a full store
+does can be tested at any size without reading until it fills. Development builds only.
+
+### Files on the card: `FS`
+
+```
+CMD:FS:LS:<folder>
+CMD:FS:RM:<path>
+```
+
+`LS` lists a folder, one line an entry, then the count:
+
+```
+FS:d 0 epub_2247170459
+FS:f 32946 cjk_store_fill.epub
+FS_END:2
+```
+
+`RM` removes a file, or a folder with everything in it: `FS_OK:removed <path>`. Errors: `FS_ERROR:expected
+LS:/<folder> or RM:/<path>`, `FS_ERROR:protected <path>`, `FS_ERROR:not found <path>`, `FS_ERROR:not a folder
+<path>`, `FS_ERROR:could not remove <path>`.
+
+Both work while the reader runs, without the USB Transfer screen and the restart that leaving it costs: deleting a
+book's section cache (`/.crosspoint/epub_<hash>/spines/...`) forces a cold build of a chapter, and a font folder
+under `/.crosspoint/fonts` can be looked at or removed between runs. Hidden folders can be reached; the credential
+stores (`wifi.json`, `opds.json`, `koreader.json`), a dot-named item itself (`/.crosspoint` cannot be removed) and
+any path spelled with an 8.3 alias are refused (`lib/FsHelpers/ProtectedPaths.h`). Removing what an open book is
+using is not guarded: do it from Home. Development builds only.
+
 ### Other: `BOOTLOG`, `HELP`
 
 - `CMD:BOOTLOG` prints the boot summary again (for a monitor attached after boot) as log lines,
@@ -466,6 +603,14 @@ The commands act on a real device with a real user's books and settings:
 - **Opening a book changes its reading position.** The reader saves where it is, and a
   `@<spine>:<page>` open saves that page at once. Test with books kept for testing (a `/test`
   folder), not the user's own.
+- **A book under `/test/` is a test book** in builds with the full API (in any case: `/TEST/` is
+  the same folder on FAT, and the file browser opens it so): opening it records it neither in the
+  recent books (Home, the library's Recent tab) nor in the reading stats. Both keep a fixed number
+  of books (10 and 100), and a test run that opened its books used to push the user's own out of
+  them. The rest is as for any book: its position is saved in its cache, `state.json` names it as
+  the book last open, and a per-book setting changed on it holds while it stays open, but is not
+  kept, since per-book settings live in the recent-books entry it does not get
+  (`SerialTestApi::isTestBook`).
 - **Presses do what the user configured.** A double press of Power may be bound to sleep, a long
   Confirm to a sync. Check the binding with `GET` first, or bind it to something harmless for the
   test and restore it.
@@ -500,11 +645,14 @@ screenshot -> page.png
 ...
 ```
 
-Steps: `cmd:<TEXT>` (send `CMD:<TEXT>`, fail on an error reply), `state` and `check:<key>=<regex>`
-(test a field of the last `STATE`), `idle[:<ms>[:SCREEN]]`, `shot:<file.png>`, `wait:<seconds>`,
-`expect:<regex>:<seconds>` (wait for a log line). `--script FILE` reads one step per line (`#`
-comments), `--keep-going` runs all steps and reports every failure, `--rotate` sets the screenshot
-rotation. A script file makes a reusable regression check:
+Steps: `cmd:<TEXT>` (send `CMD:<TEXT>`, fail on an error reply; `GET:*` and `FS:LS:` print every line of
+their reply), `state` and `check:<key>=<regex>` (test a field of the last `STATE`), `idle[:<ms>[:SCREEN]]`,
+`shot:<file.png>`, `wait:<seconds>`, `expect:<regex>:<seconds>` (wait for a log line), `select:<regex>[:<n>]` (press
+Down, waiting for each press to land, until the selected row's label matches; at most n presses, 40 by default).
+`--script FILE` reads one step per line (`#` comments), `--keep-going` runs all steps and reports every failure,
+`--rotate` sets the screenshot rotation. Paths may be given as Git Bash writes them (`/c/tmp/page.png`); output is
+UTF-8 whatever the console, and the port is closed without resetting the device even when a step fails. A script
+file makes a reusable regression check:
 
 ```
 # settings round trip: the binding is restored at the end
@@ -515,6 +663,13 @@ idle
 state
 check:activity=Home
 cmd:SET:btnDoublePower=6
+```
+
+`select:` reaches a row by its label instead of counting presses: presses sent back to back reach a list faster than
+it redraws, and it lands further down than asked. Opening the Font Manager from the Reader settings:
+
+```sh
+python3 tools/devctl.py cmd:ACT:SETTINGS:READER idle:20000 "select:Font Manager" cmd:BTN:CONFIRM idle:60000:SCREEN
 ```
 
 For a long session, capture the full log separately as well (one reader of the port at a time:

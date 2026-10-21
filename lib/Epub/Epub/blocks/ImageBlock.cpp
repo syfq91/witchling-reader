@@ -1,11 +1,13 @@
 #include "ImageBlock.h"
 
+#include <Arduino.h>     // ESP.getFreeHeap(), as the decoders ask it
 #include <BuildArena.h>  // image_scratch::canServe needs the complete type
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <Serialization.h>
+#include <esp_heap_caps.h>
 
 #include "../../../../src/fontIds.h"
 #include "../../Epub.h"
@@ -94,9 +96,31 @@ bool ImageBlock::imageExists() const { return Storage.exists(imagePath.c_str());
 namespace image_scratch {
 namespace {
 BuildArena* g_arena = nullptr;
-}
+uint32_t g_heapShort = 0;
+CoarseNeed g_coarseNeed;
+}  // namespace
 BuildArena* get() { return g_arena; }
 void set(BuildArena* arena) { g_arena = arena; }
+void noteHeapShort() { ++g_heapShort; }
+uint32_t heapShortCount() { return g_heapShort; }
+void noteCoarse(const CoarseNeed& need) {
+  noteHeapShort();
+  if (need.bytes > g_coarseNeed.bytes) g_coarseNeed = need;
+}
+CoarseNeed takeCoarseNeed() {
+  const CoarseNeed need = g_coarseNeed;
+  g_coarseNeed = {};
+  return need;
+}
+bool coarseNeedFits(const CoarseNeed& need, const uint32_t freedFirst) {
+  if (need.bytes == 0) return false;
+  if (canServe(need.bytes)) return true;
+  // As JpegWorkPool takes it from the heap: one block, with the floor free beside it. The allocator's own header too.
+  constexpr size_t ALLOCATOR_SLACK = 64;
+  return heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT) + freedFirst >=
+             need.bytes + ALLOCATOR_SLACK &&
+         ESP.getFreeHeap() + freedFirst >= need.bytes + need.heapFloor;
+}
 bool canServe(const size_t bytes) {
   if (!g_arena || !g_arena->valid()) return false;
   const size_t used = g_arena->used();
@@ -330,17 +354,44 @@ bool ImageBlock::hasPixelCache() const { return Storage.exists(getBwCachePath(im
 
 bool ImageBlock::hasGrayscaleCache() const { return Storage.exists(getGrayscaleCachePath(imagePath).c_str()); }
 
-bool ImageBlock::dropCoarseCache(const bool monochromeOutput) const {
-  const std::string& cachePath = monochromeOutput ? getBwCachePath(imagePath) : getGrayscaleCachePath(imagePath);
+namespace {
+// The image's pixel cache for the variant `monochromeOutput` selects.
+std::string variantCachePath(const std::string& imagePath, const bool monochromeOutput) {
+  return monochromeOutput ? getBwCachePath(imagePath) : getGrayscaleCachePath(imagePath);
+}
+// Where CoarseRedecodeScope keeps a coarse cache while the image decodes again.
+std::string coarseAsidePath(const std::string& cachePath) { return cachePath + ".coarse"; }
+// Where a JPEG decode stopped for input parks (RenderConfig::checkpointPath).
+std::string checkpointPathFor(const std::string& imagePath) { return imagePath + ".ckpt"; }
+}  // namespace
+
+bool ImageBlock::setCoarseCacheAside(const bool monochromeOutput) const {
+  const std::string cachePath = variantCachePath(imagePath, monochromeOutput);
   FsFile cacheFile;
   if (!Storage.exists(cachePath.c_str()) || !Storage.openFileForRead("IMG", cachePath, cacheFile)) return false;
   uint16_t magic = 0;
   const bool coarse = cacheFile.read(&magic, 2) == 2 && magic == PixelCache::PXC_MAGIC_COARSE;
   cacheFile.close();
   if (!coarse) return false;
-  LOG_INF("IMG", "Dropping coarse pixel cache for a full decode: %s", cachePath.c_str());
-  Storage.remove(cachePath.c_str());
+  const std::string aside = coarseAsidePath(cachePath);
+  Storage.remove(aside.c_str());  // one a reset left behind mid-decode: FAT rename does not overwrite
+  if (!Storage.rename(cachePath.c_str(), aside.c_str())) return false;
+  LOG_INF("IMG", "Decoding a coarse pixel cache again: %s", cachePath.c_str());
   return true;
+}
+
+void ImageBlock::restoreCoarseCache(const bool monochromeOutput) const {
+  const std::string cachePath = variantCachePath(imagePath, monochromeOutput);
+  const std::string aside = coarseAsidePath(cachePath);
+  if (Storage.exists(cachePath.c_str())) {
+    Storage.remove(aside.c_str());  // the decode wrote the image's cache again
+    return;
+  }
+  // A decode that stopped for input parked beside it: with the coarse picture back, no pass decodes the image again
+  // to resume it, so it goes rather than stay on the card.
+  Storage.remove(checkpointPathFor(imagePath).c_str());
+  Storage.remove(PixelCache::partPathFor(cachePath).c_str());
+  Storage.rename(aside.c_str(), cachePath.c_str());
 }
 
 bool ImageBlock::wouldShowPlaceholder(bool forceLoad, bool monochromeOutput) const {
@@ -370,26 +421,31 @@ std::unique_ptr<ImageBlock> ImageBlock::makeCrop(const int16_t srcYOffset, const
 }
 
 bool ImageBlock::placeholderOnly_ = false;
+ImageBlock::Placeholder ImageBlock::placeholderOnlyKind_ = ImageBlock::Placeholder::Loading;
 uint16_t ImageBlock::placeholdersDrawn_ = 0;
+uint16_t ImageBlock::lowMemoryDrawn_ = 0;
 
-void ImageBlock::renderPlaceholder(GfxRenderer& renderer, const int x, const int y, const bool loading) const {
+void ImageBlock::renderPlaceholder(GfxRenderer& renderer, const int x, const int y, const Placeholder kind) const {
   constexpr int BORDER = 1;
   constexpr int PADDING = 6;
 
+  if (kind == Placeholder::LowMemory && lowMemoryDrawn_ < UINT16_MAX) lowMemoryDrawn_++;
   renderer.drawRect(x, y, width, height, BORDER, true);
 
   const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
   const bool hasAlt = !altText.empty();
-  // Loading: the alt text (if any) and one "indexing" line. Large image: three lines as before.
-  const int lineCount = loading ? (hasAlt ? 2 : 1) : (hasAlt ? 3 : 2);
+  // Loading, low memory: the alt text (if any) and one line saying which. Large image: three lines as before.
+  const bool large = kind == Placeholder::Large;
+  const int lineCount = large ? (hasAlt ? 3 : 2) : (hasAlt ? 2 : 1);
   const int totalTextH = lineH * lineCount;
 
   if (lineH > 0 && width > PADDING * 2 && height > totalTextH + PADDING * 2) {
     const int textX = x + PADDING;
     const int textY = y + (height - totalTextH) / 2;
-    if (loading) {
+    if (!large) {
       if (hasAlt) renderer.drawText(UI_10_FONT_ID, textX, textY, altText.c_str());
-      renderer.drawText(UI_10_FONT_ID, textX, textY + lineH * (lineCount - 1), tr(STR_INDEXING));
+      renderer.drawText(UI_10_FONT_ID, textX, textY + lineH * (lineCount - 1),
+                        kind == Placeholder::Loading ? tr(STR_INDEXING) : tr(STR_DICT_LOW_MEMORY));
       return;
     }
     renderer.drawText(UI_10_FONT_ID, textX, textY, tr(STR_LARGE_IMAGE));
@@ -437,13 +493,13 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, const b
   // decode on the build's heap.
   if (placeholderOnly_) {
     if (placeholdersDrawn_ < UINT16_MAX) placeholdersDrawn_++;
-    renderPlaceholder(renderer, x, y, /*loading=*/true);
+    renderPlaceholder(renderer, x, y, placeholderOnlyKind_);
     return;
   }
 
   if (wouldShowPlaceholder(forceLoad, monochromeOutput)) {
     LOG_DBG("IMG", "Large image placeholder at %d,%d (%dx%d): %s", x, y, width, height, imagePath.c_str());
-    renderPlaceholder(renderer, x, y);
+    renderPlaceholder(renderer, x, y, Placeholder::Large);
     return;
   }
 
@@ -542,13 +598,19 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, const b
   // RenderConfig::checkpointPath): the reader's image lane gives its region back on every page
   // turn, and used to throw the decode away with it.
   const bool jpeg = format == ImageFormatDetector::Format::Jpeg;
-  if (jpeg) config.checkpointPath = imagePath + ".ckpt";
+  if (jpeg) config.checkpointPath = checkpointPathFor(imagePath);
 
   // A resumed decode draws only the rows after its park; the finished cache has them all.
   const bool resuming = jpeg && Storage.exists(config.checkpointPath.c_str());
+  const uint32_t heapShortBefore = image_scratch::heapShortCount();
   bool success = decoder->decodeToFramebuffer(imagePath, renderer, config);
   if (!success) {
     LOG_ERR("IMG", "Failed to decode image: %s", imagePath.c_str());
+    // Short of memory: say so in the image's place rather than leave it blank. Not in a pass that writes the
+    // caches alone (the image lane, getWriteRows() 0): the framebuffer holds another page there.
+    if (image_scratch::heapShortCount() != heapShortBefore && renderer.getWriteRows() > 0) {
+      renderPlaceholder(renderer, x, y, Placeholder::LowMemory);
+    }
     return;
   }
   if (resuming && !Storage.exists(config.checkpointPath.c_str())) {

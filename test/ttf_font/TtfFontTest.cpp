@@ -3,14 +3,21 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "BuildArena.h"
 #include "EpdFontFamily.h"
+#include "GlyphProvider.h"
 #include "SimNorFlash.h"
 #include "TtfBuilder.h"
 #include "TtfFont.h"
@@ -19,6 +26,52 @@
 #include "TtfTestUtil.h"
 
 using namespace ttf_test;
+
+namespace {
+// A nothrow array new of exactly this many bytes fails, as the scratch block's does on a heap without room for it.
+size_t refuseArrayBytes = 0;
+// The bytes the program's news hold now: what a loaded family keeps is the difference across its load.
+size_t heapBytesHeld = 0;
+
+// A block with its size in front of it (malloc and free underneath, which the sanitizers pair as they pair any other).
+constexpr size_t kSizeHeader = alignof(std::max_align_t);
+void* holdBytes(const size_t size) noexcept {
+  auto* const block = static_cast<unsigned char*>(std::malloc(kSizeHeader + size));
+  if (!block) return nullptr;
+  std::memcpy(block, &size, sizeof size);
+  heapBytesHeld += size;
+  return block + kSizeHeader;
+}
+void freeBytes(void* p) noexcept {
+  if (!p) return;
+  auto* const block = static_cast<unsigned char*>(p) - kSizeHeader;
+  size_t size = 0;
+  std::memcpy(&size, block, sizeof size);
+  heapBytesHeld -= size;
+  std::free(block);
+}
+}  // namespace
+
+// The test program's new and delete, so a test can refuse an array new and count what the heap holds.
+void* operator new(const size_t size) {
+  if (void* p = holdBytes(size)) return p;
+  throw std::bad_alloc();
+}
+void* operator new(const size_t size, const std::nothrow_t&) noexcept { return holdBytes(size); }
+void* operator new[](const size_t size) {
+  if (void* p = holdBytes(size)) return p;
+  throw std::bad_alloc();
+}
+void* operator new[](const size_t size, const std::nothrow_t&) noexcept {
+  if (refuseArrayBytes != 0 && size == refuseArrayBytes) return nullptr;
+  return holdBytes(size);
+}
+void operator delete(void* p) noexcept { freeBytes(p); }
+void operator delete(void* p, size_t) noexcept { freeBytes(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { freeBytes(p); }
+void operator delete[](void* p) noexcept { freeBytes(p); }
+void operator delete[](void* p, size_t) noexcept { freeBytes(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { freeBytes(p); }
 
 namespace {
 
@@ -94,6 +147,7 @@ class TtfFontTest : public ::testing::Test {
   }
   void TearDown() override {
     TtfFont::setHooks({});
+    refuseArrayBytes = 0;
     EXPECT_EQ(0u, flash.violations());
     EXPECT_EQ(0u, flash.reprograms());
   }
@@ -352,6 +406,34 @@ TEST_F(TtfFontTest, AWipeAtTheNextBookOpenEndsTheRing) {
   const uint8_t* bitmap = nullptr;
   EXPECT_FALSE(font->ownsBitmap(a, bitmap));
   expectDrawnAs(reference(files[kRegular].bytes, 'A', 14), *font, kRegular, a);
+}
+
+TEST_F(TtfFontTest, AStoreMarkedFullActsAsAFullOneAndIsCounted) {
+  // CMD:TTF:FULL: what a filled store does, at any size, without filling it.
+  const TtfFontSet::StoreEvents before = TtfFontSet::storeEvents();
+  {
+    const auto font = open();
+    ASSERT_NE(nullptr, font);
+    ASSERT_NE(nullptr, font->glyph(kRegular, 'A'));
+    TtfFontSet::Stats stats = font.set->stats();
+    EXPECT_EQ(1, stats.families);
+    EXPECT_FALSE(stats.ringMode);
+    EXPECT_FALSE(stats.wipePending);
+    EXPECT_GT(stats.logUsed, 0u);
+    EXPECT_GT(stats.logSize, stats.logUsed);
+    EXPECT_EQ(1u, stats.renders);
+    ASSERT_TRUE(font.set->markFull());
+    stats = font.set->stats();
+    EXPECT_TRUE(stats.ringMode);
+    EXPECT_TRUE(stats.wipePending);
+    EXPECT_EQ(before.fills + 1, TtfFontSet::storeEvents().fills);
+    expectDrawnAs(reference(files[kRegular].bytes, 'B', 14), *font, kRegular, font->glyph(kRegular, 'B'));
+    EXPECT_TRUE(font->ringMode());  // drawn, not stored
+  }
+  const auto font = open();  // the next boot finishes the pending wipe
+  ASSERT_NE(nullptr, font);
+  EXPECT_FALSE(font.set->stats().wipePending);
+  EXPECT_EQ(before.wipes + 1, TtfFontSet::storeEvents().wipes);
 }
 
 TEST_F(TtfFontTest, AFullStoreSwitchesToTheRingAndTheLoadAfterItWipes) {
@@ -858,6 +940,42 @@ TEST_F(TtfFontTest, AFontWithoutKerningAsksNothing) {
   EXPECT_EQ(0u, font->kernLookups());
 }
 
+// What a family keeps on the heap grows with the styles it has, a native size's too: a book's accent family of one
+// style holds no memory for the three it lacks.
+TEST_F(TtfFontTest, AFamilyHoldsMemoryOnlyForTheStylesItHas) {
+  Font built = kernedBoxes();
+  built.extraTables.clear();  // no kerning: nothing else a style holds differs between them
+  const std::vector<uint8_t> bytes = buildFont(built);
+  const uint8_t* const identities[] = {kIdentityA, kIdentityB, kIdentityA};
+  const int styleCounts[] = {1, 2, 4};
+  size_t family[3] = {};
+  size_t native[3] = {};
+  for (int i = 0; i < 3; ++i) {
+    for (int s = 0; s < 4; ++s) {
+      files[s].bytes = s < styleCounts[i] ? bytes : std::vector<uint8_t>{};
+    }
+    ASSERT_NE(nullptr, open(identities[i]));  // installed: what an install or the first mapping keeps is not counted
+    const size_t before = heapBytesHeld;
+    const auto font = open(identities[i]);
+    ASSERT_NE(nullptr, font);
+    family[i] = heapBytesHeld - before;
+    const EpdFont* fonts[4] = {};
+    const size_t beforeNative = heapBytesHeld;
+    ASSERT_TRUE(font->nativeFonts(40, fonts));
+    native[i] = heapBytesHeld - beforeNative;
+    for (int s = 0; s < 4; ++s) EXPECT_EQ(s < styleCounts[i], fonts[s] != nullptr) << s;
+    EXPECT_EQ(styleCounts[i] > kBold, font->font(kBold) != nullptr);
+  }
+  std::printf("[  heap    ] loaded set, 1/2/4 styles: %zu/%zu/%zu B; a native size: %zu/%zu/%zu B\n", family[0],
+              family[1], family[2], native[0], native[1], native[2]);
+  const size_t perStyle = family[1] - family[0];
+  EXPECT_GT(perStyle, 0u);
+  EXPECT_EQ(3 * perStyle, family[2] - family[0]);
+  const size_t perNativeStyle = native[1] - native[0];
+  EXPECT_GT(perNativeStyle, 0u);
+  EXPECT_EQ(3 * perNativeStyle, native[2] - native[0]);
+}
+
 TEST_F(TtfFontTest, TheFiLigatureDrawsTheGlyphGsubNames) {
   Font font;
   font.glyphs.resize(4);
@@ -1105,4 +1223,606 @@ TEST_F(TtfFontSetTest, AnAccentFamilyWithoutARegularStyleRefusesTheSetBeforeAnyE
   EXPECT_EQ(nullptr, openSet());
   EXPECT_EQ(0, busy);
   EXPECT_EQ(0u, flash.totalSectorErases());
+}
+
+// --- Stage B phase 3: several accent families ------------------------------------------------------------------
+
+namespace {
+
+// Families of files, in the set's order, loaded on `chip` at 14 pt as the set `identity`; null when the set cannot
+// be drawn.
+std::unique_ptr<TtfFontSet> openFamilies(SimNorFlash& chip, const std::vector<MemoryFile*>& families, int& busy,
+                                         const uint8_t* identity = kIdentitySet) {
+  auto set = std::make_unique<TtfFontSet>(chip);
+  std::vector<std::array<ttf::FileSource, 4>> sources(families.size());
+  for (size_t f = 0; f < families.size(); ++f) {
+    for (int s = 0; s < 4; ++s) {
+      if (!families[f][s].bytes.empty()) sources[f][s] = families[f][s].source();
+    }
+  }
+  static_assert(sizeof(std::array<ttf::FileSource, 4>) == sizeof(TtfFontSet::Files), "one family's files");
+  if (!set->load(reinterpret_cast<const TtfFontSet::Files*>(sources.data()), static_cast<uint8_t>(families.size()),
+                 identity, [&busy] { ++busy; })) {
+    return nullptr;
+  }
+  for (uint8_t f = 0; f < families.size(); ++f) {
+    if (!set->font(f)->setBodySize(14)) return nullptr;
+  }
+  return set;
+}
+
+}  // namespace
+
+TEST_F(TtfFontSetTest, ABodyAndThreeAccentFamiliesAreDrawnFromOneStore) {
+  // Inter as the body (two styles), and three one-style accent families: the four of TtfFontSet::kMaxFamilies.
+  MemoryFile ubuntu[4];
+  MemoryFile ubuntuBold[4];
+  MemoryFile bookerly[4];
+  ubuntu[kRegular].bytes = readFont("Ubuntu/Ubuntu-Regular.ttf");
+  ubuntuBold[kRegular].bytes = readFont("Ubuntu/Ubuntu-Bold.ttf");
+  bookerly[kRegular].bytes = files[kRegular].bytes;
+  const auto set = openFamilies(flash, {accent, ubuntu, ubuntuBold, bookerly}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(TtfFontSet::kMaxFamilies, set->familyCount());
+  EXPECT_EQ(1, busy);
+  const MemoryFile* const sources[] = {accent, ubuntu, ubuntuBold, bookerly};
+  for (uint8_t f = 0; f < 4; ++f) {
+    expectDrawnAs(reference(sources[f][kRegular].bytes, 'g', 14), *set->font(f), kRegular,
+                  set->font(f)->glyph(kRegular, 'g'));
+  }
+}
+
+namespace {
+
+// Sector erases over the store's first style blocks: `bytes` from where planLayout puts them, a page in.
+uint32_t erasesOver(const SimNorFlash& flash, const uint32_t bytes) {
+  uint32_t total = 0;
+  const uint32_t first = glyphstore::kHeaderRegionBytes / glyphstore::kSectorBytes;
+  for (uint32_t s = first; s < first + glyphstore::alignUp(bytes, glyphstore::kSectorBytes) / glyphstore::kSectorBytes;
+       ++s) {
+    total += flash.sectorErases(s);
+  }
+  return total;
+}
+
+}  // namespace
+
+TEST_F(TtfFontSetTest, AnotherSetWithTheSameLeadingFamilyKeepsItsStyleBlocks) {
+  // A TrueType reader font beside one book's accent family, then beside another's: the reader font's blocks hold
+  // their files where the new layout puts them, and are neither erased nor written again.
+  ASSERT_NE(nullptr, openSet());
+  const uint32_t bodyBytes = static_cast<uint32_t>(files[kRegular].bytes.size());
+  const uint32_t before = erasesOver(flash, bodyBytes);
+  MemoryFile ubuntu[4];
+  ubuntu[kRegular].bytes = readFont("Ubuntu/Ubuntu-Regular.ttf");
+  const auto set = openFamilies(flash, {files, ubuntu}, busy, kIdentityB);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(2, busy);                               // installed again: another set
+  EXPECT_EQ(before, erasesOver(flash, bodyBytes));  // Bookerly Regular's block kept
+  EXPECT_EQ(0u, flash.reprograms());                // and nothing written over it
+  expectDrawnAs(reference(files[kBold].bytes, 'W', 14), *set->font(0), kBold, set->font(0)->glyph(kBold, 'W'));
+  expectDrawnAs(reference(ubuntu[kRegular].bytes, 'W', 14), *set->font(1), kRegular,
+                set->font(1)->glyph(kRegular, 'W'));  // where Inter was: written anew
+}
+
+TEST_F(TtfFontSetTest, ABlockHoldingAnotherFileIsWrittenAgain) {
+  ASSERT_NE(nullptr, openSet());
+  const uint32_t interBytes = static_cast<uint32_t>(accent[kRegular].bytes.size());
+  const uint32_t before = erasesOver(flash, interBytes);
+  // Inter first: its block starts where Bookerly Regular's did, which holds Bookerly.
+  const auto swapped = openSet(kIdentityB, 2, /*accentFirst=*/true);
+  ASSERT_NE(nullptr, swapped);
+  EXPECT_LT(before, erasesOver(flash, interBytes));
+  expectDrawnAs(reference(accent[kRegular].bytes, 'A', 14), *swapped->font(0), kRegular,
+                swapped->font(0)->glyph(kRegular, 'A'));
+}
+
+TEST_F(TtfFontSetTest, MoreStylesThanTheStoreHoldsAreRefusedBeforeAnyErase) {
+  // Bookerly's four, Inter's two, Bookerly's four again: ten style blocks for the store's eight.
+  EXPECT_EQ(nullptr, openFamilies(flash, {files, accent, files}, busy));
+  EXPECT_EQ(0, busy);
+  EXPECT_EQ(0u, flash.totalSectorErases());
+}
+
+// --- Stage 2c-4: SD mode, a style's tables in the store and its outlines on the card ---------------------------
+
+namespace {
+
+constexpr uint32_t kPage = glyphstore::kPageBytes;
+// Bookerly's four styles take 35 of a font area's pages in flash mode (the whole files), 19 in SD mode (their tables,
+// 3 pages each): on 24 pages only SD mode fits.
+constexpr uint32_t kSdOnlyBytes = 24 * kPage;
+
+void expectWrittenOnce(const SimNorFlash& chip) {
+  EXPECT_EQ(0u, chip.violations());
+  EXPECT_EQ(0u, chip.reprograms());
+}
+
+uint32_t erasesBetween(const SimNorFlash& chip, const uint32_t from, const uint32_t to) {
+  uint32_t total = 0;
+  for (uint32_t sector = from / glyphstore::kSectorBytes; sector < to / glyphstore::kSectorBytes; ++sector) {
+    total += chip.sectorErases(sector);
+  }
+  return total;
+}
+
+}  // namespace
+
+TEST_F(TtfFontSetTest, AFamilyTooLargeForFlashModeIsDrawnFromTheCardAsFlashModeDrawsIt) {
+  SimNorFlash chip{kSdOnlyBytes};
+  {
+    const auto set = openFamilies(chip, {files}, busy);
+    ASSERT_NE(nullptr, set);
+    EXPECT_EQ(1, busy);
+    TtfFont& font = *set->font(0);
+    EXPECT_TRUE(font.readsCard());
+    for (uint8_t style = 0; style < 4; ++style) {
+      for (const uint32_t cp : {uint32_t{'A'}, uint32_t{'g'}, uint32_t{'W'}, uint32_t{0xE9}, uint32_t{' '}}) {
+        expectDrawnAs(reference(files[style].bytes, cp, 14), font, style, font.glyph(style, cp));
+      }
+    }
+    const EpdFont* fonts[4] = {};
+    ASSERT_TRUE(font.nativeFonts(40, fonts));
+    expectDrawnAs(referenceAt(files[kRegular].bytes, 'M', px(40)), font, kRegular, nativeGlyph(fonts[kRegular], 'M'));
+    EXPECT_GT(set->sdPageReads(), 0u);
+  }
+  // The next boot draws them from the store: neither rendered again nor read from the card, but for the table
+  // directory the open compares with the block's.
+  for (MemoryFile& file : files) file.offsets.clear();
+  const auto set = openFamilies(chip, {files}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(1, busy);
+  expectDrawnAs(reference(files[kBold].bytes, 'W', 14), *set->font(0), kBold, set->font(0)->glyph(kBold, 'W'));
+  EXPECT_EQ(0u, set->font(0)->renders());
+  const std::vector<uint8_t>& bold = files[kBold].bytes;
+  const uint32_t directoryEnd = 12 + 16u * static_cast<uint32_t>(bold[4] << 8 | bold[5]);
+  ASSERT_FALSE(files[kBold].offsets.empty());
+  for (const uint32_t offset : files[kBold].offsets) EXPECT_LT(offset, directoryEnd);
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontSetTest, KerningAndLigaturesInSdModeAreFlashModes) {
+  SimNorFlash chip{kSdOnlyBytes};
+  const auto card = openFamilies(chip, {files}, busy);
+  const auto whole = openFamilies(flash, {files}, busy);
+  ASSERT_NE(nullptr, card);
+  ASSERT_NE(nullptr, whole);
+  ASSERT_TRUE(card->font(0)->readsCard());
+  ASSERT_FALSE(whole->font(0)->readsCard());
+  for (const auto& [left, right] : {std::pair<uint32_t, uint32_t>{'A', 'V'}, {'T', 'o'}, {'W', 'e'}, {'f', 'i'}}) {
+    EXPECT_EQ(whole->font(0)->kerning(kRegular, left, right), card->font(0)->kerning(kRegular, left, right));
+  }
+  EXPECT_NE(0, card->font(0)->kerning(kRegular, 'A', 'V'));
+  const EpdFont* regular = card->font(0)->font(kRegular);
+  ASSERT_NE(nullptr, regular);
+  ASSERT_GT(regular->data->ligaturePairCount, 0u);  // GSUB read from the store, in place
+  EXPECT_EQ(whole->font(0)->font(kRegular)->data->ligaturePairCount, regular->data->ligaturePairCount);
+  const EpdGlyph* fromCard = card->font(0)->glyph(kRegular, 0xFB01);
+  const EpdGlyph* fromFlash = whole->font(0)->glyph(kRegular, 0xFB01);
+  ASSERT_NE(nullptr, fromCard);
+  ASSERT_NE(nullptr, fromFlash);
+  EXPECT_EQ(bitmapOf(*whole->font(0), kRegular, fromFlash), bitmapOf(*card->font(0), kRegular, fromCard));
+}
+
+TEST_F(TtfFontSetTest, APrefetchReadsTheOutlinesForwardThroughTheFile) {
+  // A backward seek makes SdFat walk the file's cluster chain from its start (spec 5.1): the page's misses, in
+  // whatever order the text has them, are drawn in glyph order, which is file order.
+  SimNorFlash chip{kSdOnlyBytes};
+  const auto set = openFamilies(chip, {files}, busy);
+  ASSERT_NE(nullptr, set);
+  files[kRegular].offsets.clear();
+  set->font(0)->prefetch(kRegular, "zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA");
+  const std::vector<uint32_t>& reads = files[kRegular].offsets;
+  ASSERT_GT(reads.size(), 4u);
+  EXPECT_TRUE(std::is_sorted(reads.begin(), reads.end()));
+  const uint32_t rendered = set->font(0)->renders();
+  EXPECT_EQ(52u, rendered);
+  for (const uint32_t cp : {uint32_t{'a'}, uint32_t{'q'}, uint32_t{'Z'}}) {
+    expectDrawnAs(reference(files[kRegular].bytes, cp, 14), *set->font(0), kRegular, set->font(0)->glyph(kRegular, cp));
+  }
+  EXPECT_EQ(rendered, set->font(0)->renders());  // stored by the batch
+}
+
+TEST_F(TtfFontSetTest, AFileOnTheCardThatChangedInstallsTheSetAgain) {
+  // The identity covers each file's name, size and time; its stamp, the path too. A store whose SD-mode file is
+  // another than the one its tables came from would read outlines at the wrong offsets, so it is installed again.
+  SimNorFlash chip{kSdOnlyBytes};
+  ASSERT_NE(nullptr, openFamilies(chip, {files}, busy));
+  files[kItalic].stamp ^= 1;  // the same name, size and time, in another directory
+  auto set = openFamilies(chip, {files}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(2, busy);
+  expectDrawnAs(reference(files[kItalic].bytes, 'g', 14), *set->font(0), kItalic, set->font(0)->glyph(kItalic, 'g'));
+  set.reset();
+  // Another file of another size under the same identity: installed again too, its own outlines drawn.
+  files[kItalic].bytes = readFont("Bookerly/Bookerly-BoldItalic.ttf");
+  set = openFamilies(chip, {files}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(3, busy);
+  expectDrawnAs(reference(files[kItalic].bytes, 'g', 14), *set->font(0), kItalic, set->font(0)->glyph(kItalic, 'g'));
+  set.reset();
+  ASSERT_NE(nullptr, openFamilies(chip, {files}, busy));
+  EXPECT_EQ(3, busy);  // and kept from then on
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontSetTest, AFileRewrittenInPlaceAtTheSameSizeAndTimeInstallsTheSetAgain) {
+  // The stamp and the size match; the file's table directory does not (one table's checksum changed).
+  SimNorFlash chip{kSdOnlyBytes};
+  ASSERT_NE(nullptr, openFamilies(chip, {files}, busy));
+  std::vector<uint8_t>& italic = files[kItalic].bytes;
+  italic[findRecord(italic, "GPOS") + 4] ^= 0x5A;
+  const auto set = openFamilies(chip, {files}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(2, busy);
+  expectDrawnAs(reference(italic, 'k', 14), *set->font(0), kItalic, set->font(0)->glyph(kItalic, 'k'));
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontSetTest, AnAccentStaysWholeWhenNothingWithMoreOnTheCardFits) {
+  // 47 pages and 17 free mapping pages: both families whole fit with a 4-page log, which the 8-page rule would
+  // refuse; but Inter's tables, mapped beside Bookerly's largest style, pass the mapping budget. Whole beats left
+  // out.
+  SimNorFlash tight{47 * kPage, 17};
+  const auto set = openFamilies(tight, {files, accent}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(2, set->familyCount());
+  EXPECT_FALSE(set->font(0)->readsCard());
+  EXPECT_FALSE(set->font(1)->readsCard());
+}
+
+TEST_F(TtfFontSetTest, ACardReadErrorDrawsTheGlyphAsMissingAndAsksAgain) {
+  SimNorFlash chip{kSdOnlyBytes};
+  const auto set = openFamilies(chip, {files}, busy);
+  ASSERT_NE(nullptr, set);
+  files[kRegular].failReads = true;
+  EXPECT_EQ(nullptr, set->font(0)->glyph(kRegular, 'R'));  // transient: not marked as missing
+  files[kRegular].failReads = false;
+  expectDrawnAs(reference(files[kRegular].bytes, 'R', 14), *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'R'));
+  EXPECT_FALSE(set->ringMode());
+}
+
+TEST_F(TtfFontSetTest, TheBodyStaysInFlashModeWhileTheAccentFamilyGoesToTheCard) {
+  // 42 pages: Bookerly's and Inter's whole files (40 pages and a header) leave no room for a log; Bookerly whole
+  // and Inter's tables (6 pages) leave 7.
+  SimNorFlash chip{42 * kPage};
+  {
+    const auto set = openFamilies(chip, {files, accent}, busy);
+    ASSERT_NE(nullptr, set);
+    EXPECT_FALSE(set->font(0)->readsCard());
+    EXPECT_TRUE(set->font(1)->readsCard());
+    expectDrawnAs(reference(files[kRegular].bytes, 'Q', 14), *set->font(0), kRegular,
+                  set->font(0)->glyph(kRegular, 'Q'));
+    expectDrawnAs(reference(accent[kBold].bytes, 'Q', 14), *set->font(1), kBold, set->font(1)->glyph(kBold, 'Q'));
+    for (MemoryFile& file : files) file.reads = 0;
+    accent[kRegular].reads = 0;
+    ASSERT_NE(nullptr, set->font(0)->glyph(kRegular, 'k'));
+    ASSERT_NE(nullptr, set->font(1)->glyph(kRegular, 'k'));
+    EXPECT_EQ(0u, files[kRegular].reads);   // the body's outlines come from flash
+    EXPECT_GT(accent[kRegular].reads, 0u);  // the accent's from the card
+  }
+  const auto set = openFamilies(chip, {files, accent}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(1, busy);
+  expectDrawnAs(reference(accent[kBold].bytes, 'Q', 14), *set->font(1), kBold, set->font(1)->glyph(kBold, 'Q'));
+  EXPECT_EQ(0u, set->font(1)->renders());
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontSetTest, AnAccentFamilyKeepsFlashModeOnlyWhileTheLogKeepsEightPages) {
+  // 47 pages: both families whole leave a log of 4 pages (the least the planner allows), Inter on the card one of
+  // 10. The accent goes to the card; the body stays whole.
+  SimNorFlash tight{47 * kPage};
+  const auto set = openFamilies(tight, {files, accent}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_FALSE(set->font(0)->readsCard());
+  EXPECT_TRUE(set->font(1)->readsCard());
+  // The test's 53 pages leave both whole a log of 9: both stay in flash mode, as before SD mode.
+  const auto roomy = openFamilies(flash, {files, accent}, busy);
+  ASSERT_NE(nullptr, roomy);
+  EXPECT_FALSE(roomy->font(0)->readsCard());
+  EXPECT_FALSE(roomy->font(1)->readsCard());
+}
+
+TEST_F(TtfFontSetTest, ABodyTooLargeForFlashModeTakesTheAccentFamiliesToTheCardWithIt) {
+  // 26 pages: Bookerly whole does not fit; every style's tables do (12 + 6 pages, a header and a log of 5).
+  SimNorFlash chip{26 * kPage};
+  const auto set = openFamilies(chip, {files, accent}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_TRUE(set->font(0)->readsCard());
+  EXPECT_TRUE(set->font(1)->readsCard());
+  expectDrawnAs(reference(files[kItalic].bytes, 'y', 14), *set->font(0), kItalic, set->font(0)->glyph(kItalic, 'y'));
+  expectDrawnAs(reference(accent[kRegular].bytes, 'y', 14), *set->font(1), kRegular,
+                set->font(1)->glyph(kRegular, 'y'));
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontSetTest, AnSdModeBlockThatHoldsItsTablesIsKept) {
+  // Bookerly whole beside Inter's tables, then beside Inter's and Ubuntu's: the first six blocks hold what the new
+  // layout puts there, the SD-mode ones included, and only Ubuntu's tables are written.
+  SimNorFlash chip{46 * kPage};
+  ASSERT_NE(nullptr, openFamilies(chip, {files, accent}, busy));
+  const uint32_t interAt = glyphstore::kHeaderRegionBytes + 4 * 7 * kPage;
+  const uint32_t before = erasesBetween(chip, glyphstore::kHeaderRegionBytes, interAt + 6 * kPage);
+  MemoryFile ubuntu[4];
+  ubuntu[kRegular].bytes = readFont("Ubuntu/Ubuntu-Regular.ttf");
+  const auto set = openFamilies(chip, {files, accent, ubuntu}, busy, kIdentityB);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(2, busy);
+  EXPECT_FALSE(set->font(0)->readsCard());
+  ASSERT_TRUE(set->font(1)->readsCard());
+  ASSERT_TRUE(set->font(2)->readsCard());
+  EXPECT_EQ(before, erasesBetween(chip, glyphstore::kHeaderRegionBytes, interAt + 6 * kPage));  // all six kept
+  expectDrawnAs(reference(accent[kBold].bytes, 'B', 14), *set->font(1), kBold, set->font(1)->glyph(kBold, 'B'));
+  expectDrawnAs(reference(ubuntu[kRegular].bytes, 'B', 14), *set->font(2), kRegular,
+                set->font(2)->glyph(kRegular, 'B'));
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontSetTest, APowerCutInAnSdModeInstallIsInstalledWholeAtTheNextLoad) {
+  // Inter Regular on 10 pages: its tables (3 pages) fit, its file (6) does not. A cut at every 997th step of the
+  // install (a block made from the file's tables, then the header): the next boot finds no store, or a whole one, and
+  // draws from it what the file draws, without programming a byte twice.
+  MemoryFile inter[4];
+  inter[kRegular].bytes = accent[kRegular].bytes;
+  SimNorFlash dry{10 * kPage};
+  ASSERT_NE(nullptr, openFamilies(dry, {inter}, busy));
+  ASSERT_TRUE(openFamilies(dry, {inter}, busy)->font(0)->readsCard());
+  const Reference want = reference(inter[kRegular].bytes, 'G', 14);
+  const uint64_t steps = dry.steps();
+  for (const bool partial : {false, true}) {
+    for (uint64_t cut = 0; cut < steps; cut += 997) {
+      SimNorFlash chip{10 * kPage};
+      chip.partialCut(partial);
+      chip.cutAfterSteps(static_cast<int64_t>(cut));
+      openFamilies(chip, {inter}, busy);
+      chip.powerCycle();
+      const auto set = openFamilies(chip, {inter}, busy);
+      ASSERT_NE(nullptr, set) << cut;
+      expectDrawnAs(want, *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'G'));
+      expectWrittenOnce(chip);
+      if (HasFailure()) return;
+    }
+  }
+}
+
+TEST_F(TtfFontSetTest, AWholeReaderFontAndThreeAccentFamiliesOnTheCardFitTogether) {
+  // The X4 case of phase 3: Bookerly whole as the reader's font, and a book's three accent families (Inter in two
+  // styles, Noto Sans Italic, Ubuntu Bold). Whole, they need 56 of the font area's 53 pages, and phase 3 left two of
+  // them out; with their tables on the card all four load, eight style blocks.
+  MemoryFile script[4];
+  MemoryFile code[4];
+  script[kRegular].bytes = readFont("NotoSans/NotoSans-Italic.ttf");
+  code[kRegular].bytes = readFont("Ubuntu/Ubuntu-Bold.ttf");
+  const auto set = openFamilies(flash, {files, accent, script, code}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(4, set->familyCount());
+  EXPECT_FALSE(set->font(0)->readsCard());
+  for (uint8_t f = 1; f < 4; ++f) EXPECT_TRUE(set->font(f)->readsCard()) << int{f};
+  const MemoryFile* const sources[] = {files, accent, script, code};
+  for (uint8_t f = 0; f < 4; ++f) {
+    expectDrawnAs(reference(sources[f][kRegular].bytes, 'e', 14), *set->font(f), kRegular,
+                  set->font(f)->glyph(kRegular, 'e'));
+  }
+}
+
+TEST_F(TtfFontSetTest, AFamilyTooLargeEvenForSdModeIsRefusedBeforeAnyErase) {
+  SimNorFlash chip{16 * kPage};  // Bookerly's tables alone take 12 pages and a header
+  EXPECT_EQ(nullptr, openFamilies(chip, {files}, busy));
+  EXPECT_EQ(0, busy);
+  EXPECT_EQ(0u, chip.totalSectorErases());
+}
+
+// --- What only a miss needs: made for the first glyph the store does not hold, in a lent arena or on the heap ------
+
+TEST_F(TtfFontSetTest, AGlyphFromTheStoreNeedsNoMissMemory) {
+  {
+    const auto set = openSet();
+    ASSERT_NE(nullptr, set);
+    ASSERT_NE(nullptr, set->font(0)->glyph(kRegular, 'A'));
+    ASSERT_NE(nullptr, set->font(1)->glyph(kRegular, 'A'));
+  }
+  const auto set = openSet();  // the next boot: the store holds both
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(0u, set->releaseMissMemory());  // nothing made at load
+  const uint32_t drawn = glyph_miss::drawnCount();
+  expectDrawnAs(reference(files[kRegular].bytes, 'A', 14), *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'A'));
+  expectDrawnAs(reference(accent[kRegular].bytes, 'A', 14), *set->font(1), kRegular,
+                set->font(1)->glyph(kRegular, 'A'));
+  set->font(0)->prefetch(kRegular, "AAA");
+  EXPECT_EQ(0u, set->font(0)->renders());
+  EXPECT_EQ(drawn, glyph_miss::drawnCount());
+  EXPECT_EQ(0u, set->releaseMissMemory());  // and nothing made for them
+}
+
+TEST_F(TtfFontSetTest, TheFirstMissMakesTheScratchBlockAndTheReleaseFreesIt) {
+  const auto set = openSet();
+  ASSERT_NE(nullptr, set);
+  ASSERT_GT(set->scratchBytes(), 0u);  // planned at load
+  EXPECT_EQ(0u, set->releaseMissMemory());
+  const uint32_t drawn = glyph_miss::drawnCount();
+  expectDrawnAs(reference(files[kRegular].bytes, 'Q', 14), *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'Q'));
+  EXPECT_EQ(drawn + 1, glyph_miss::drawnCount());
+  // Held on the heap for the misses after it, in either family, until the release.
+  expectDrawnAs(reference(accent[kRegular].bytes, 'Q', 14), *set->font(1), kRegular,
+                set->font(1)->glyph(kRegular, 'Q'));
+  EXPECT_EQ(set->scratchBytes(), set->releaseMissMemory());  // flash mode: the scratch block alone, no ring
+  EXPECT_EQ(0u, set->releaseMissMemory());
+  // Made again by the next miss, and the glyphs stored meanwhile need none.
+  expectDrawnAs(reference(files[kRegular].bytes, 'Q', 14), *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'Q'));
+  EXPECT_EQ(0u, set->releaseMissMemory());
+  expectDrawnAs(reference(files[kRegular].bytes, 'z', 14), *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'z'));
+  EXPECT_EQ(set->scratchBytes(), set->releaseMissMemory());
+}
+
+TEST_F(TtfFontSetTest, AMissInALentArenaDrawsThereAndGivesItBack) {
+  const auto set = openSet();
+  ASSERT_NE(nullptr, set);
+  BuildArena arena(48 * 1024);
+  ASSERT_TRUE(arena.valid());
+  // What the arena's owner holds, as a section build holds its page block while it lays a line out.
+  BuildArena::Block page = arena.reserveBlock();
+  auto* line = static_cast<uint8_t*>(arena.alloc(100));
+  ASSERT_NE(nullptr, line);
+  std::fill_n(line, 100, uint8_t{0x5A});
+  const size_t used = arena.used();
+  {
+    const glyph_miss::Scope misses(&arena);
+    expectDrawnAs(reference(files[kRegular].bytes, 'W', 14), *set->font(0), kRegular,
+                  set->font(0)->glyph(kRegular, 'W'));
+    set->font(1)->prefetch(kRegular, "Wavy");
+    EXPECT_EQ(4u, set->font(1)->renders());
+    EXPECT_FALSE(misses.starved());
+    {
+      const glyph_miss::Scope heap(nullptr);  // nested: none lent
+      expectDrawnAs(reference(files[kRegular].bytes, 'v', 14), *set->font(0), kRegular,
+                    set->font(0)->glyph(kRegular, 'v'));
+    }
+    EXPECT_EQ(&arena, glyph_miss::arena());
+  }
+  EXPECT_EQ(nullptr, glyph_miss::arena());
+  EXPECT_GE(arena.highWater(), used + set->scratchBytes());  // drawn in the arena
+  EXPECT_EQ(used, arena.used());                             // and given back
+  EXPECT_TRUE(std::all_of(line, line + 100, [](const uint8_t b) { return b == 0x5A; }));
+  EXPECT_TRUE(arena.release(page));  // the owner's block is still the newest
+  // Only the nested lookup outside the arena made its block on the heap.
+  EXPECT_EQ(set->scratchBytes(), set->releaseMissMemory());
+}
+
+TEST_F(TtfFontSetTest, AnArenaWithoutRoomLeavesTheMissToTheHeap) {
+  const auto set = openSet();
+  ASSERT_NE(nullptr, set);
+  BuildArena small(1024);
+  {
+    const glyph_miss::Scope misses(&small);
+    expectDrawnAs(reference(files[kRegular].bytes, 'M', 14), *set->font(0), kRegular,
+                  set->font(0)->glyph(kRegular, 'M'));
+  }
+  EXPECT_EQ(0u, small.used());
+  EXPECT_EQ(0u, small.highWater());
+  EXPECT_EQ(0u, small.failedAllocSize());  // never asked: its log would say its owner ran out
+  EXPECT_EQ(set->scratchBytes(), set->releaseMissMemory());
+}
+
+TEST_F(TtfFontSetTest, AMissThatFindsNoMemoryIsDrawnAsMissingCountedAndAskedAgain) {
+  const auto set = openSet();
+  ASSERT_NE(nullptr, set);
+  refuseArrayBytes = set->scratchBytes();
+  const uint32_t renders = set->font(0)->renders();
+  {
+    const glyph_miss::Scope misses(nullptr);
+    set->font(0)->prefetch(kRegular, "Kite");  // draws nothing, and says nothing: the lookups ask again
+    EXPECT_FALSE(misses.starved());
+    EXPECT_EQ(nullptr, set->font(0)->glyph(kRegular, 'K'));
+    EXPECT_TRUE(misses.starved());
+  }
+  EXPECT_EQ(renders, set->font(0)->renders());
+  EXPECT_EQ(0u, set->releaseMissMemory());
+  // Not marked missing in the store: drawn once the memory is there.
+  refuseArrayBytes = 0;
+  const uint32_t starved = glyph_miss::starvedCount();
+  expectDrawnAs(reference(files[kRegular].bytes, 'K', 14), *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'K'));
+  EXPECT_EQ(starved, glyph_miss::starvedCount());
+  EXPECT_EQ(renders + 1, set->font(0)->renders());
+}
+
+TEST_F(TtfFontSetTest, WhatTheAppCanSpareIsFreedOnceBeforeAMissGoesWithout) {
+  const auto set = openSet();
+  ASSERT_NE(nullptr, set);
+  static int reclaims = 0;
+  static bool frees = false;
+  reclaims = 0;
+  frees = true;
+  TtfFont::setHooks({nullptr, nullptr, [] {
+                       ++reclaims;
+                       if (frees) refuseArrayBytes = 0;  // the built-in font caches given back
+                       return frees;
+                     }});
+  const Reference r = reference(files[kRegular].bytes, 'R', 14);  // before any refusal
+  refuseArrayBytes = set->scratchBytes();
+  expectDrawnAs(r, *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'R'));
+  EXPECT_EQ(1, reclaims);
+  EXPECT_EQ(set->scratchBytes(), set->releaseMissMemory());
+  // Nothing to spare: asked once, and the miss goes without.
+  frees = false;
+  refuseArrayBytes = set->scratchBytes();
+  const uint32_t starved = glyph_miss::starvedCount();
+  EXPECT_EQ(nullptr, set->font(0)->glyph(kRegular, 'S'));
+  EXPECT_EQ(2, reclaims);
+  EXPECT_EQ(starved + 1, glyph_miss::starvedCount());
+  // The rest of the pass goes without at once, with nothing asked of the heap or the app; the next pass asks again.
+  refuseArrayBytes = 0;
+  EXPECT_EQ(nullptr, set->font(0)->glyph(kRegular, 'T'));
+  EXPECT_EQ(2, reclaims);
+  EXPECT_EQ(starved + 2, glyph_miss::starvedCount());
+  EXPECT_EQ(0u, set->releaseMissMemory());
+  const Reference t = reference(files[kRegular].bytes, 'T', 14);
+  expectDrawnAs(t, *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'T'));
+}
+
+TEST_F(TtfFontSetTest, ASetLoadedAgainWithoutAnInstallOpensTheStoreAsItIsOrNotAtAll) {
+  // The ladder's heavier step unloads the set for a decode and loads the same one again: cheap, as the store holds
+  // it; and never an install, which would erase the store under the page being drawn.
+  {
+    const auto set = openSet();
+    ASSERT_NE(nullptr, set);
+    ASSERT_NE(nullptr, set->font(1)->glyph(kRegular, 'A'));
+  }
+  ttf::FileSource sources[2][4];
+  for (int s = 0; s < 4; ++s) {
+    if (!files[s].bytes.empty()) sources[0][s] = files[s].source();
+    if (!accent[s].bytes.empty()) sources[1][s] = accent[s].source();
+  }
+  const uint32_t erases = flash.totalSectorErases();
+  {
+    TtfFontSet again(flash);
+    ASSERT_TRUE(again.load(sources, 2, kIdentitySet, [this] { ++busy; }, TtfFontSet::Install::Never));
+    ASSERT_TRUE(again.font(1)->setBodySize(14));
+    expectDrawnAs(reference(accent[kRegular].bytes, 'A', 14), *again.font(1), kRegular,
+                  again.font(1)->glyph(kRegular, 'A'));
+    EXPECT_EQ(0u, again.font(1)->renders());  // from the store
+  }
+  // Another set, here the body alone, is refused, and the store keeps what it holds.
+  {
+    TtfFontSet other(flash);
+    EXPECT_FALSE(other.load(sources, 1, kIdentityA, [this] { ++busy; }, TtfFontSet::Install::Never));
+  }
+  EXPECT_EQ(1, busy);
+  EXPECT_EQ(erases, flash.totalSectorErases());
+  TtfFontSet same(flash);
+  EXPECT_TRUE(same.load(sources, 2, kIdentitySet, {}, TtfFontSet::Install::Never));
+}
+
+TEST_F(TtfFontSetTest, AnSdModeMissMakesItsPageCacheWhereItMakesTheScratchBlock) {
+  SimNorFlash chip{kSdOnlyBytes};
+  const auto set = openFamilies(chip, {files}, busy);
+  ASSERT_NE(nullptr, set);
+  ASSERT_TRUE(set->readsCard());
+  EXPECT_EQ(0u, set->releaseMissMemory());  // nothing made at load, the page cache neither
+  // In a lent arena, the page cache with the scratch block, both given back.
+  BuildArena arena(48 * 1024);
+  {
+    const glyph_miss::Scope misses(&arena);
+    expectDrawnAs(reference(files[kRegular].bytes, 'A', 14), *set->font(0), kRegular,
+                  set->font(0)->glyph(kRegular, 'A'));
+  }
+  EXPECT_GE(arena.highWater(), set->scratchBytes() + sizeof(ttf::SdPageCache));
+  EXPECT_EQ(0u, arena.used());
+  EXPECT_EQ(0u, set->releaseMissMemory());
+  const uint32_t pagesRead = set->sdPageReads();
+  EXPECT_GT(pagesRead, 0u);  // kept count of when the cache went
+  // On the heap, until the release, the ring with them once the store stops taking glyphs.
+  ASSERT_NE(nullptr, set->font(0)->glyph(kRegular, 'B'));
+  chip.failNextProgram();
+  ASSERT_NE(nullptr, set->font(0)->glyph(kRegular, 'C'));
+  ASSERT_TRUE(set->ringMode());
+  ASSERT_GT(set->ringBytes(), 0u);
+  const uint32_t ring = set->ringBytes();
+  EXPECT_EQ(set->scratchBytes() + sizeof(ttf::SdPageCache) + ring, set->releaseMissMemory());
+  EXPECT_EQ(0u, set->ringBytes());
+  EXPECT_GT(set->sdPageReads(), pagesRead);
+  // Made again for the next miss, which reads its outline from the card through it.
+  for (MemoryFile& file : files) file.reads = 0;
+  expectDrawnAs(reference(files[kRegular].bytes, 'g', 14), *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'g'));
+  EXPECT_GT(files[kRegular].reads, 0u);
 }

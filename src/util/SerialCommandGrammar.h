@@ -42,9 +42,19 @@ bool parseInt(std::string_view text, int& out);
 // Exactly `count` comma-separated integers ("x,y" for a tap, "x1,y1,x2,y2" for a swipe).
 bool parseIntList(std::string_view text, int* out, size_t count);
 
+// CMD:HEAP's ballast: "HOLD=<bytes>" or "HOLD=<bytes>,<blocks>", the bytes split over 1..maxBlocks equal blocks.
+bool parseHeapHold(std::string_view arg, int& bytes, int& blocks, int maxBlocks);
+// CMD:HEAP's refusals: "REFUSE=<decodes>" or "REFUSE=<decodes>,<reloads>", each 0..255.
+bool parseHeapRefuse(std::string_view arg, int& decodes, int& reloads);
+
 // The log levels of lib/Logging (0 = ERR .. 3 = TRC), by their tag or its long name:
 // ERR|ERROR, INF|INFO, DBG|DEBUG, TRC|TRACE. Case-insensitive.
 bool parseLogLevel(std::string_view text, uint8_t& level);
+
+// A UI language for CMD:SET:language=, out of `count` languages given by their codes (EN, DE, ZH...)
+// and native names: its code in any case, its name exactly as the picker shows it, or its index.
+bool parseLanguage(std::string_view text, const char* const* codes, const char* const* names, size_t count,
+                   size_t& index);
 
 // Appends " <key>=<value>" to a CMD:STATE line. A value that holds a space, a quote, a backslash or
 // an '=' is written in double quotes with '"' and '\' escaped by a backslash, so a host can split

@@ -18,6 +18,7 @@
 // (X3: highWater=9216/10240, failedAlloc=0, build time neutral). The former
 // per-site new/realloc path has been removed.
 #include <BuildArena.h>
+#include <GlyphProvider.h>
 #include <InflateReader.h>
 
 #include <algorithm>
@@ -26,12 +27,23 @@
 #include "Epub/css/CssParser.h"
 #include "FootnotePreviews.h"
 #include "Page.h"
+#include "TypographyProfile.h"
 #include "blocks/ImageBlock.h"  // image_scratch: pass-wide decode arena
 #include "hyphenation/Hyphenator.h"
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 93;  // v93: 20 pt is the 18 pt faces scaled, so the
+constexpr uint8_t SECTION_FILE_VERSION = 96;  // v96: CJK punctuation is narrowed by the book's
+                                              // table, a mark is a token of its own, CJK lines
+                                              // justify flush, zh/ja text sits on a whole-em grid
+                                              // v95: a paragraph whose size undoes the book's
+                                              // root size is body text (Calibre: body 1.125em,
+                                              // p 0.88889em); v94 laid it out at 0.889
+                                              // v94: a word in another of the book's families
+                                              // than its block's is laid out in that family's
+                                              // face (a line's word fonts, TextBlock::WordFont);
+                                              // v93 lines hold it in the block's font
+                                              // v93: 20 pt is the 18 pt faces scaled, so the
                                               // 20-26 pt font IDs changed; a v92 heading still
                                               // names the old ones and would draw nothing
                                               // v92: CJK text breaks between characters, with kinsoku
@@ -333,6 +345,8 @@ uint32_t fnv1a(const uint8_t* data, size_t length) {
 
 uint32_t Section::calculatePropertyHash(const BuildParams& p) {
   uint8_t buffer[96];
+  static_assert(sizeof(buffer) >= 21 + sizeof(uint32_t) + BlockFontFamilies::kMaxFamilies * 3 * sizeof(int32_t),
+                "the settings (21 B) and every family fit");
   size_t offset = 0;
 
   auto append = [&](const void* ptr, size_t size) {
@@ -1212,7 +1226,11 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   // Only the lent framebuffer region has room for the parser's SAX state (~10 KB) on top of the
   // build's own use; the owned heap arena is 10 KB in total and would just move the block.
   if (st.arena && st.arena != st.ownedArena.get()) st.visitor->setBuildArena(st.arena);
-  Hyphenator::setPreferredLanguage(epub->getLanguage());
+  // The book's language decides its typography (TypographyProfile.h): hyphenation patterns, CJK punctuation widths,
+  // the CJK grid.
+  const TypographyProfile typography = TypographyProfile::forLanguage(epub->getLanguage());
+  Hyphenator::setLanguageHyphenator(typography.hyphenator);
+  st.visitor->setTypography(typography);
 
   // Inline footnote previews are NOT wired up here: the note text this spine needs may not be
   // in the store yet, and resolving it needs the spine's inflated XHTML — which phase (a) is
@@ -2008,12 +2026,25 @@ Section::BuildStep Section::stepSectionBuild(const BuildParams& params, const ui
     }
   }
 
+  // A glyph the layout measures and the glyph store does not hold yet is drawn in the lent region rather than on the
+  // heap (glyph_miss). One that found no memory at all was measured as missing: the layout is not kept, and the build
+  // fails as a heap-short one does, so it runs again with more memory (released, or at a quieter moment).
+  const glyph_miss::Scope misses(buildState_->arena != buildState_->ownedArena.get() ? buildState_->arena : nullptr);
+  const auto starved = [&] {
+    if (!misses.starved()) return false;
+    LOG_ERR("SCT", "stepSectionBuild spine=%d: a glyph found no memory to be drawn in; the build is not kept",
+            spineIndex);
+    abortSectionBuild();
+    return true;
+  };
+
   // The CSS fallback (parse-failed-with-CSS) downgrades to a no-CSS build by restarting
   // from setup. Loop rather than recurse; at most one downgrade ever happens.
   while (true) {
     if (runBuildParse(*buildState_, budgetMs) == BuildPhaseResult::More) {
-      return BuildStep::More;
+      return starved() ? BuildStep::Failed : BuildStep::More;
     }
+    if (starved()) return BuildStep::Failed;
 
     const BuildPhaseResult fin = runBuildFinalize(*buildState_);
     if (fin == BuildPhaseResult::RetryNoCss) {

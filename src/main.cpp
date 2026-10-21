@@ -3,6 +3,7 @@
 #include <CooperativeAbort.h>
 #include <Epub.h>
 #include <Epub/BookFonts.h>
+#include <Epub/CjkLineBreak.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
 #include <FsHelpers.h>
@@ -30,6 +31,7 @@
 
 #include "BootDiagnostics.h"
 #include "ButtonEventManager.h"
+#include "CjkUiFonts.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "GlobalBookmarkIndex.h"
@@ -512,6 +514,20 @@ void setupDisplayAndFonts(bool seamless = false, bool skipSdFontDiscovery = fals
     renderer.insertScaledFont(CrossPointSettings::getBuiltinReaderFontId(CrossPointSettings::NOTOSANS, rung.size),
                               notosans18FontFamily, scale);
   }
+  // CJK glyphs behind every UI face, so a Chinese, Japanese or Korean UI draws, and the language
+  // picker draws those languages' names whatever the UI language is. See CjkUiFonts.h.
+  CjkUiFonts::attach(smallFont, 8);
+  CjkUiFonts::attach(ui10RegularFont, 10);
+  CjkUiFonts::attach(ui10BoldFont, 10);
+  CjkUiFonts::attach(ui12RegularFont, 12);
+  CjkUiFonts::attach(ui12BoldFont, 12);
+  // The faces ship compressed; those the language pack does not hold decode through the same
+  // decompressor as the reader faces, glyph by glyph.
+  CjkUiFonts::setDecompressor(&fontDecompressor);
+  CjkUiFonts::setLanguage(I18N.getLanguage());
+  // Chinese and Japanese write no spaces: wrapped UI text breaks between their characters by the
+  // reader's CJK rules, kinsoku included.
+  renderer.setWordBreaker(&CjkLineBreak::breakByteOffsets);
   // The three UI slots are bound by the font ladder rather than registered here, so the first
   // bind and every later rebind run the same code path.
   applyUiFontScale();
@@ -576,6 +592,11 @@ void ensureSdFontLoadedForPath(const char* path, const bool waitForBookFonts) {
   // Publisher Fonts: not examined yet, what is loaded stays, until the reader has examined the book and asks again.
   const std::string cachePath = publisherFontsCache(path, book);
   if (waitForBookFonts && !cachePath.empty() && BookFonts::read(cachePath) == BookFonts::State::Pending) return;
+  // They do not apply to the book now (off, the book's own style off, a font chosen for it): the accent families the
+  // memory ladder left out of it are tried again once they do (BookFonts::accentLimit).
+  if (cachePath.empty()) {
+    BookFonts::setAccentLimit(Epub::cachePathFor(path, "/.crosspoint"), 0, BookFonts::kMaxAccents);
+  }
 
   // No family override: the global SD font (if any), at the effective size.
   const char* family = SETTINGS.sdFontFamilyName;
@@ -585,11 +606,12 @@ void ensureSdFontLoadedForPath(const char* path, const bool waitForBookFonts) {
     family = "";  // per-book built-in font override: no SD font needed; unload if one was active
   }
   // The families BookFonts copied out of the book: its body family in place of the reader's font, and its accent
-  // family beside whichever draws the body. They load together, the body's first.
+  // families beside whichever draws the body. They load together, the body's first and the most used accent next.
   sdFontSystem.selectBookFamilies(cachePath, SETTINGS.publisherFonts, family);
   if (sdFontSystem.bookFamilyName()[0] != '\0') family = sdFontSystem.bookFamilyName();
-  const char* families[] = {family, sdFontSystem.accentFamilyName()};
-  sdFontSystem.ensureLoaded(renderer, families, 2, effectiveSize, onColdFontLoad);
+  const char* families[1 + BookFonts::kMaxAccents] = {family};
+  for (uint8_t n = 0; n < BookFonts::kMaxAccents; ++n) families[1 + n] = sdFontSystem.accentFamilyName(n);
+  sdFontSystem.ensureLoaded(renderer, families, 1 + BookFonts::kMaxAccents, effectiveSize, onColdFontLoad);
 }
 
 // --- Temporary boot-phase heap-corruption bisect probes -------------------------------
@@ -890,6 +912,9 @@ void setup() {
 
   HalSystem::checkPanic();
   HalSystem::clearPanic();  // TODO: move this to an activity when we have one to display the panic info
+  // A CJK language's pack carries its CJK UI faces, so the faces are read straight from flash
+  // instead of decoded per glyph (CjkUiFonts.h). Registered before the first pack is resolved.
+  I18N.setPackExtension(&CjkUiFonts::packExtension());
   I18N.loadSettings();
   OPDS_STORE.loadFromFile();
   UITheme::getInstance().reload();

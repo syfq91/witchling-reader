@@ -8,7 +8,9 @@
 #include <string>
 #include <vector>
 
+#include "CjkPunctuation.h"
 #include "TokenBoundary.h"
+#include "TypographyProfile.h"
 #include "blocks/BlockStyle.h"
 #include "blocks/TextBlock.h"
 
@@ -53,6 +55,15 @@ class ParsedText {
   // per book on the host census once the word vectors stopped regrowing (memory audit
   // 2026-09, R2). clear() keeps their capacity, so a chapter allocates them once.
   std::vector<uint16_t> wordWidths_;
+  // Each token's CjkPunctuation::Class when it is one full-width mark, and how much wider (> 0) or narrower (< 0) it
+  // is at the line edge its mark acts at than mid-line, in pixels: where a line starts at an opening mark, where it
+  // ends after any other. Two bytes a token. Layout scratch in step with wordWidths_: calculateWordWidths fills both,
+  // hyphenateWordAtIndex inserts into both.
+  std::vector<uint8_t> markClass_;
+  std::vector<int8_t> edgeTrim_;
+  // How far the block's lines sit in from the left: half of what rounding the width down to whole ems took (the CJK
+  // grid, spec section 5.5). Set by each layout pass.
+  int16_t gridInset_ = 0;
   std::vector<size_t> lineBreakIndices_;
   std::vector<bool> lineEndsWithHyphenatedWord_;
   std::vector<int> splitPrefixWordIndexes_;
@@ -82,10 +93,16 @@ class ParsedText {
   // How each word joins the one before it (TokenBoundary.h): a space, glued, or a breakable CJK gap.
   // In lockstep with `words` through every insert/erase, like the per-word vectors below.
   std::vector<TokenBoundary::Boundary> wordBoundaries;
-  // Per-word font size, percent of the block font size (100 = block size). Kept in
+  // Per-word font size, percent of the block font size (100 = block size), and font slot. Kept in
   // lockstep with `words` through every insert/erase; the sizes are handed to each
-  // TextBlock line so inline font-size spans survive into the page cache.
-  std::vector<uint8_t> wordSizes;
+  // TextBlock line so inline font-size spans survive into the page cache. The slot indexes
+  // fontSlots_: a word in another of the book's families than the block's (Publisher Fonts)
+  // is measured and drawn in that family's face, which the parser puts in its slot; slot 0
+  // (every word, without families) is the block's font until the parser says otherwise.
+  // Per-word slots follow crosspoint-reader PR #3934 (Justin Mitchell), its wordSizeSlots.
+  std::vector<TextBlock::WordSize> wordSizes;
+  TextBlock::WordFont fontSlots_[TextBlock::kMaxWordFonts] = {};
+  uint8_t fontSlotsUsed_ = 0;  // a bit per slot a word of the block has had
   // Where each word begins in the chapter's visible text (VisibleText.h's rule), in lockstep with
   // `words` through every insert/erase. The section cache records the first word of each page from
   // it (KOReader sync, content offsets). 4 B per word; grown with the other word vectors in one
@@ -96,6 +113,8 @@ class ParsedText {
   uint32_t lastLineVisibleOffset_ = 0;
   LinePlace linePlace_;
   BlockStyle blockStyle;
+  // The book's typography (TypographyProfile.h): Latin rules until the parser sets the book's.
+  TypographyProfile typography_;
   bool extraParagraphSpacing;
   bool hyphenationEnabled;
   bool isContinuation_ = false;  ///< true after an intermediate flush; suppresses re-applying paragraph indent
@@ -106,9 +125,21 @@ class ParsedText {
   bool wordGrowthRefused_ = false;
 
   void applyParagraphIndent(const GfxRenderer& renderer, int fontId);
-  // Effective measurement scale of words[i]: the block-level multiplier combined
-  // with the word's own inline size percentage.
-  float wordScale(const size_t i) const { return blockStyle.fontSizeMultiplier * (wordSizes[i] / 100.0f); }
+  // Effective measurement scale of words[i]: the block-level multiplier (a word font's own scale for a word in
+  // another family) combined with the word's own inline size percentage.
+  float wordScale(const size_t i) const {
+    const TextBlock::WordFont& font = fontSlots_[wordSizes[i].fontSlot];
+    return (font.fontId != 0 ? font.scale : blockStyle.fontSizeMultiplier) * (wordSizes[i].pct / 100.0f);
+  }
+  // The font words[i] is measured in: its slot's, else the block's (`fontId`).
+  int wordFontId(const size_t i, const int fontId) const {
+    const int32_t slotFont = fontSlots_[wordSizes[i].fontSlot].fontId;
+    return slotFont != 0 ? slotFont : fontId;
+  }
+  // The space before words[j] (j > 0), unscaled, in the font of the word before it; and the kerning across a glued
+  // boundary there, none between words in two fonts.
+  int spaceBefore(const GfxRenderer& renderer, int fontId, size_t j) const;
+  int kernBefore(const GfxRenderer& renderer, int fontId, size_t j) const;
   // Returns the available line width at a given 0-based line index, accounting
   // for any active float zones in blockStyle.  lineHeight==0 is a fast path
   // (no float zones active) that returns pageWidth unchanged.
@@ -120,7 +151,7 @@ class ParsedText {
   // when the heap cannot hold the growth.
   bool reserveWords(size_t additional);
   void pushToken(std::string token, EpdFontFamily::Style style, TokenBoundary::Boundary boundary, uint8_t sizePct,
-                 uint32_t visibleOffset);
+                 uint32_t visibleOffset, uint8_t fontSlot);
 
   // The three breakers fill `lineBreakIndices` (cleared first) rather than returning a vector,
   // so the caller's scratch member is reused instead of reallocated per paragraph.
@@ -163,6 +194,16 @@ class ParsedText {
   // Fills `out` (cleared first); uses blockStyle.fontSizeMultiplier internally.
   void calculateWordWidths(const GfxRenderer& renderer, int fontId,
                            std::vector<uint16_t>& out);  // uses blockStyle.fontSizeMultiplier internally
+  // Narrows each CJK mark that is a token to its mid-line width and fills markClass_/edgeTrim_.
+  void applyPunctuationWidths(const GfxRenderer& renderer, int fontId, std::vector<uint16_t>& widths);
+  // How token i's width changes when a line starts at it, and when a line ends after it.
+  int lineStartTrim(const size_t i) const { return opensLine(i) ? edgeTrim_[i] : 0; }
+  int lineEndTrim(const size_t i) const { return opensLine(i) ? 0 : edgeTrim_[i]; }
+  bool opensLine(const size_t i) const { return markClass_[i] == static_cast<uint8_t>(CjkPunctuation::Class::Opening); }
+  // A line first..last as drawn: its first and last token at their line-edge widths.
+  int withEdgeTrims(const int naturalWidth, const size_t first, const size_t last) const {
+    return naturalWidth + lineStartTrim(first) + lineEndTrim(last);
+  }
 
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool hyphenationEnabled = false,
@@ -189,8 +230,16 @@ class ParsedText {
   // Adds a word from the source: a Latin word as one token, a word with CJK characters as one token per
   // break the CJK rules allow (CjkLineBreak.h). attachToPrevious: no whitespace separated it from the
   // previous word in the source.
+  // fontSlot: the word's font slot (see setFontSlot), below TextBlock::kMaxWordFonts.
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,
-               uint8_t sizePct = DEFAULT_WORD_SIZE_PCT, uint32_t visibleOffset = 0);
+               uint8_t sizePct = DEFAULT_WORD_SIZE_PCT, uint32_t visibleOffset = 0, uint8_t fontSlot = 0);
+  // The face the words in `slot` are laid out in; a fontId of 0 (every slot after reset()) is the block's font. The
+  // parser fills the slots its block's words use once it knows the block's font (see fontSlotsUsed).
+  void setFontSlot(const uint8_t slot, const TextBlock::WordFont& font) {
+    if (slot < TextBlock::kMaxWordFonts) fontSlots_[slot] = font;
+  }
+  // The slots the block's words have been in, a bit per slot.
+  uint8_t fontSlotsUsed() const { return fontSlotsUsed_; }
   // True once addWord had to drop a word because the word vectors could not grow (see
   // wordGrowthRefused_). ChapterHtmlSlimParser::ensureHeapForTextLayout turns it into a
   // partial-cache abort.
@@ -203,6 +252,8 @@ class ParsedText {
   // before the first layout pass of the block; callers skip continuations.
   bool foldUniformWordSizes();
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
+  // Survives reset(): it is the book's, not the block's.
+  void setTypography(const TypographyProfile& typography) { typography_ = typography; }
   // See lineArena_ / beforeLine_. Both survive reset().
   void setLineArena(BuildArena* arena) { lineArena_ = arena; }
   void setBeforeLineHook(std::function<void(uint8_t maxSizePct)> hook) { beforeLine_ = std::move(hook); }

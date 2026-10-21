@@ -27,6 +27,7 @@
 #include <FontDecompressor.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <GlyphProvider.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -45,6 +46,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
+#include "DisplayedPage.h"
 #include "EpubReaderChapterSelectionActivity.h"
 #include "EpubReaderFootnotesActivity.h"
 #include "EpubReaderPercentSelectionActivity.h"
@@ -53,6 +55,7 @@
 #include "GlobalBookmarkIndex.h"
 #include "MappedInputManager.h"
 #include "OpdsProgressionSyncActivity.h"
+#include "PreRenderGate.h"
 #include "QuickOverridesActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
@@ -119,26 +122,8 @@ std::optional<int> parsePrintedPageLabel(const std::string& label) {
   return value;
 }
 
-// Pre-render of the next page within the current chapter only runs when heap is healthy.
-// 44 KB, derived from what the pass actually consumes rather than from what happens to be
-// free — this floor was set the other way twice and was wrong both times:
-//   2026-06-11 (X3): 64 KB silently disabled Background A whenever steady free dipped to
-//     ~65 KB (e.g. right after a cache rebuild), which also starved Background B behind it.
-//     Lowered to 56 KB.
-//   2026-08-02 (X3): the scaled-glyph mask cache (~4.75 KB, see GfxRenderer) moved steady
-//     free down ~5 KB, so even the post-AA peak (~54.9 KB) fell under 56 KB and A stopped
-//     running for entire sessions — silently, which is why the skips below now log.
-// Measured 2026-08-02 (X3, prerender_begin/after_load/end snapshots, 4 consecutive pages):
-//   Page::deserialize      10504-10636 B  (the dominant cost, and the only one that had
-//                                          never been measured)
-//   prewarm buffers        -448..+1872 B  (net ~neutral: replaces the previous page's)
-//   deepest transient      peakTemp, up to 8467 B on this font, inside prewarm decompress
-//   => ~23 KB of headroom below the entry point, nothing retained afterwards (the Page dies
-//      with the pass; only framebuffer pixels survive).
-// 44 KB therefore troughs at ~21 KB worst case, above the ~16 KB the sliced section build
-// reserves, and leaves X3 (which enters at 53-55 KB) ~10 KB of margin instead of ~2. The
-// transient is also held under RenderLock, so no other reader work can allocate into the dip.
-constexpr uint32_t PRE_RENDER_MIN_FREE_HEAP_BYTES = 44 * 1024;
+// Pre-render of the next page within the current chapter only runs when heap is healthy: PreRenderGate has the
+// floor, from the costs the passes measure (preRenderCostMax_).
 
 // A page arena at least this large is freed once its page is on the panel (releasePageGlyphArena).
 // An SD font's arena holds the page's distinct glyph bitmaps, copied from the card: 3-10 KB on a
@@ -148,7 +133,7 @@ constexpr uint32_t PRE_RENDER_MIN_FREE_HEAP_BYTES = 44 * 1024;
 // redraw reads its glyphs from the card either way: the release adds no card reads to those.
 constexpr size_t PAGE_ARENA_RELEASE_MIN_BYTES = 12 * 1024;
 
-// A pre-render after a release does not replace a resident arena (the floor above assumes it
+// A pre-render after a release does not replace a resident arena (the measured floor assumes it
 // does, "net ~neutral"): it allocates the next page's whole arena on top. Measured on X3: a
 // pre-render costs ~18 KB plus that arena (Hong Lou Meng 44-47 KB, Soseki 30 KB, with 29 KB and
 // 12.6 KB arenas). The floor then has to leave the 16 KB trough the comment above keeps.
@@ -270,6 +255,9 @@ constexpr uint32_t LARGEST_FREE_BLOCK_SLACK = 16;
 #ifndef BG_BUILD_THROUGH_PAGES
 #define BG_BUILD_THROUGH_PAGES 3
 #endif
+// Every page a decode can meet the build on gets its yield (see kMaxYields).
+static_assert(LaneBeforeBuild::kMaxYields >= BG_BUILD_THROUGH_PAGES + 1,
+              "B must be able to yield to the pictures on every page it builds through");
 
 // The image lane's settle after a page turn, a draw or a preempted decode (see
 // stepImageWarmLocked). Short on purpose: the lane also waits for any gesture in flight and for
@@ -634,6 +622,34 @@ int clampPercent(int percent) {
   return percent;
 }
 
+// The secondary framebuffer lent as a bump arena for the scope, or nothing when there is none to lend (arena() is
+// nullptr). The block never enters the heap, so giving it back cannot fail; it is given back with the scope, or at
+// giveBack(). returnSecondaryBuffer() seeds the buffer from the framebuffer as it is then, so the lend ends before the
+// page is displayed, never after. The image decodes, the TrueType misses and the built-in fonts' group rings of a
+// render draw in it.
+class LentSecondary {
+ public:
+  explicit LentSecondary(GfxRenderer& renderer) : renderer_(renderer) {
+    size_t size = 0;
+    uint8_t* const block = renderer_.borrowSecondaryBuffer(&size);
+    if (block) arena_.emplace(block, size);
+  }
+  ~LentSecondary() { giveBack(); }
+  LentSecondary(const LentSecondary&) = delete;
+  LentSecondary& operator=(const LentSecondary&) = delete;
+
+  BuildArena* arena() { return arena_ ? &*arena_ : nullptr; }
+  void giveBack() {
+    if (!arena_) return;
+    arena_.reset();
+    renderer_.returnSecondaryBuffer();
+  }
+
+ private:
+  GfxRenderer& renderer_;
+  std::optional<BuildArena> arena_;
+};
+
 int getImageOnlyPageYOffset(const Page& page, const int viewportHeight) {
   if (viewportHeight <= 0 || page.elements.empty()) {
     return 0;
@@ -943,7 +959,8 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  // Debug-only: periodic serial dump of background-work counters (no-op in release).
+  // Periodic serial dump of background-work counters (DEBUG_BACKGROUND_WORK, defined at the top of
+  // this file -- on in release builds too).
   serviceBackgroundDebugLog();
 
   if (pendingProgressSave.pending.load(std::memory_order_acquire)) {
@@ -1054,6 +1071,7 @@ void EpubReaderActivity::loop() {
     if (!buttonPrevTurn && !buttonNextTurn) {
       // Input-idle and no page turn pending: hand the idle slice to the background
       // routines (deferred AA, then Background A pre-render, then Background B).
+      serviceOwedPeriodicRefresh();
       serviceBackgroundWork();
       return;
     }
@@ -1108,6 +1126,26 @@ void EpubReaderActivity::loop() {
   }
 }
 
+void EpubReaderActivity::serviceOwedPeriodicRefresh() {
+  // Settled means: no pass running or queued (the turn's pre-render is requested only after its
+  // AA), no deferred AA still to run, no waveform still on the panel.
+  if (!periodicRefreshOwed_ || RenderLock::peek() || isUpdateSuperseded()) {
+    return;
+  }
+  {
+    RenderLock lock;
+    if (pendingGrayscale_.active || renderer.isRefreshPending()) {
+      return;
+    }
+  }
+  periodicRefreshOwed_ = false;
+  // The tick's own checks: a turn since has drawn the new minute, and there is nothing left to
+  // do. A pass that started in between owes it again.
+  if (!shouldSkipPeriodicUpdate()) {
+    requestUpdate();
+  }
+}
+
 void EpubReaderActivity::serviceBackgroundWork() {
   // Priority order, highest first. Each routine self-gates on its own pending state and
   // is expected to do a bounded amount of work and return so the next loop tick can
@@ -1146,8 +1184,15 @@ void EpubReaderActivity::serviceBackgroundDebugLog() {
   if (lastBgDebugLogMs_ != 0UL && (now - lastBgDebugLogMs_) < 5000UL) {
     return;
   }
+  // Never waits for the lock: DEBUG_BACKGROUND_WORK is on in every build, and a blocking take
+  // here held the loop task -- input, the IDLE answer, the minute tick -- for as long as the pass
+  // in flight, up to a page turn's 2.4 s HALF refresh, every 5 s. A busy lock tries again on the
+  // next loop pass.
+  RenderLock lock(RenderLock::Mode::Try);
+  if (!lock.ownsLock()) {
+    return;
+  }
   lastBgDebugLogMs_ = now;
-  RenderLock lock;
   // B state + gate inputs so a stalled B explains itself from the log alone (e.g. parked
   // in waitheap because free/contig sit below the BG_BUILD_* floors, or css=1 with too
   // little heap for Section::heapAllowsEmbeddedStyle()).
@@ -1246,11 +1291,11 @@ void EpubReaderActivity::runDeferredGrayscalePass() {
 }
 
 uint32_t EpubReaderActivity::preRenderMinFreeHeap(const bool inkOnly) const {
-  if (releasedPageArenaBytes_ == 0) return PRE_RENDER_MIN_FREE_HEAP_BYTES;
+  const uint32_t floor = PreRenderGate::minFreeHeap(preRenderCostMax_, lastPageDrewMisses_ ? preRenderMissCostMax_ : 0);
+  if (releasedPageArenaBytes_ == 0) return floor;
   // An ink-only pre-render keeps half the 2-bit bytes the last page's arena held.
   const uint32_t arena = inkOnly ? releasedPageArenaBytes_ / 2 : releasedPageArenaBytes_;
-  return std::max<uint32_t>(PRE_RENDER_MIN_FREE_HEAP_BYTES,
-                            PRE_RENDER_BASE_COST_BYTES + PRE_RENDER_TROUGH_BYTES + arena);
+  return std::max<uint32_t>(floor, PRE_RENDER_BASE_COST_BYTES + PRE_RENDER_TROUGH_BYTES + arena);
 }
 
 bool EpubReaderActivity::inkOnlyPrerenderAvailable() const {
@@ -1344,10 +1389,8 @@ void EpubReaderActivity::startActivityForResult(std::unique_ptr<Activity>&& acti
     // spine to the foreground once it is hit. An overlay opening says nothing about whether the
     // parse fits between two turns, so letting it burn that budget would mean two visits to the
     // reader menu permanently demote the next section to a blocking Background-C build with its
-    // popup. Restore the count so B resumes with exactly the budget it had.
-    const uint8_t preemptionsBeforeOverlay = backgroundPreemptCount_;
-    endBackgroundBorrow();
-    backgroundPreemptCount_ = preemptionsBeforeOverlay;
+    // popup. So it is not counted: B resumes with exactly the budget it had.
+    endBackgroundBorrow(/*preemption=*/false);
     // The child draws over the page, so nothing staged for this screen survives it: the owed
     // deferred AA of the page on it, and a queued or finished pre-render of the next page (it lives
     // in the write framebuffer, which the child draws into). Left armed, the render that follows
@@ -1387,12 +1430,10 @@ void EpubReaderActivity::suspendBackgroundWork() {
     // the look-ahead's own Probe state discards the Section object the moment
     // loadSectionFile() finds the file. Dropping it here would free nothing
     // worth having and cost the next visit a needless re-open.
-    const uint8_t preemptionsBeforeOverlay = backgroundPreemptCount_;
-    endBackgroundBorrow();
-    // Same reasoning as startActivityForResult's: an overlay opening says
-    // nothing about whether the parse fits between two page turns, so it must
-    // not burn the budget that makes B abandon a spine.
-    backgroundPreemptCount_ = preemptionsBeforeOverlay;
+    // Not a preemption, for the same reason as in startActivityForResult: an
+    // overlay opening says nothing about whether the parse fits between two
+    // page turns, so it must not burn the budget that makes B abandon a spine.
+    endBackgroundBorrow(/*preemption=*/false);
     // Discard the pre-rendered next page: it lives in the WRITE framebuffer
     // (renderPageContentOnly draws there, not into the secondary), which is exactly
     // what the overlay is about to draw over.
@@ -1421,6 +1462,7 @@ void EpubReaderActivity::resetBackgroundBuild() {
   backgroundBuildState_ = BackgroundBuildState::Probe;
   backgroundBuildPercent_ = -1;
   backgroundPreemptCount_ = 0;
+  backgroundImageYields_ = 0;
   backgroundBuildStarved_ = false;
 }
 
@@ -1467,7 +1509,7 @@ bool EpubReaderActivity::beginBackgroundBorrow() {
   return true;
 }
 
-void EpubReaderActivity::endBackgroundBorrow() {
+void EpubReaderActivity::endBackgroundBorrow(const bool preemption) {
   if (!backgroundBorrowActive_) {
     return;
   }
@@ -1497,7 +1539,7 @@ void EpubReaderActivity::endBackgroundBorrow() {
   // is deliberately NOT reset here — it is what stops this from looping forever on a spine whose
   // parse cannot fit between two page turns.
   if (buildWasLive) {
-    backgroundPreemptCount_++;
+    if (preemption) backgroundPreemptCount_++;
     backgroundBuildState_ = BackgroundBuildState::Probe;
     backgroundBuildGateCheckMs_ = 0;
   }
@@ -1519,6 +1561,15 @@ void EpubReaderActivity::endBackgroundBorrow() {
     statusRefreshDeferred_ = false;
     requestUpdate();
   }
+}
+
+void EpubReaderActivity::yieldBackgroundBorrowToImages(const char* to) {
+  if (!backgroundBorrowActive_) return;
+  LOG_INF("ERS", "Background-B: giving the buffer back to %s (spine %d, yield %u of %u)", to,
+          backgroundBuildSpineIndex_, static_cast<unsigned>(backgroundImageYields_ + 1),
+          static_cast<unsigned>(LaneBeforeBuild::kMaxYields));
+  endBackgroundBorrow(/*preemption=*/false);  // a yield instead (LaneBeforeBuild)
+  backgroundImageYields_++;
 }
 
 void EpubReaderActivity::stepBackgroundSectionBuild() {
@@ -1545,7 +1596,7 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
 
   // Background A re-arm (one retry per displayed page): A's pass runs right after the
   // page render, while the deferred AA still holds the just-rendered page (~10 KB) —
-  // its heap floor (PRE_RENDER_MIN_FREE_HEAP_BYTES) can refuse at that moment (first seen as
+  // its heap floor (preRenderMinFreeHeap) can refuse at that moment (first seen as
   // 55.9 KB free against what was then a 56 KB floor) and nothing retries it. Done HERE, under the render lock, because
   // it dereferences section state the render task mutates — an earlier unlocked version in serviceBackgroundWork()
   // raced buildSection's reassignment of `section`. B keeps waiting behind pendingPreRender until the retry has run,
@@ -1576,10 +1627,11 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
     requestUpdate();
     return;
   }
-  // Images the reader is about to reach outrank a section fifty pages away: warm them first,
-  // then let B look ahead. Only while B is not holding the borrow -- a build in progress
-  // finishes its slices; the next page turn hands the buffer back anyway.
-  if (backgroundBuildState_ != BackgroundBuildState::Building && stepImageWarmLocked()) {
+  // Images the reader is about to reach outrank a section fifty pages away (LaneBeforeBuild): the lane looks at its
+  // window first, takes the buffer back from a B build when it has a decode to do, and B takes the buffer only once
+  // the lane has found nothing (WaitHeap below).
+  const LaneBeforeBuild::Window laneWindow = stepImageWarmLocked();
+  if (laneWindow == LaneBeforeBuild::Window::Dirty) {
     return;
   }
 
@@ -1718,6 +1770,14 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
       // The next chapter, a few pages away, does not wait for a quiet window: page turns no longer
       // discard its build (see BG_BUILD_THROUGH_PAGES).
       const bool buildThrough = targetSpine == currentSpineIndex + 1 && nearChapterEndForBuildThrough();
+      // Either way B waits for the image lane: the pictures about to be read are decoded before the build may take
+      // the buffer they need (LaneBeforeBuild). Not starved, the lane is a few pages from done; and asked again on the
+      // next tick rather than in a second.
+      if (!LaneBeforeBuild::buildMayBorrow(laneWindow)) {
+        backgroundBuildStarved_ = false;
+        backgroundBuildGateCheckMs_ = 0;
+        return;
+      }
       if (!inputQueued && (buildThrough || (now - lastActivityMs) >= BG_BUILD_BORROW_QUIET_MS) &&
           esp_get_free_heap_size() >= borrowFreeFloor &&
           heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT) >=
@@ -1865,11 +1925,20 @@ void EpubReaderActivity::stepBackgroundSectionBuild() {
   }
 }
 
-bool EpubReaderActivity::stepImageWarmLocked() {
-  if (!section || section->hasActiveBuild() || section->pageCount == 0) return false;
-  if (secondaryBorrowed_ || backgroundBorrowActive_ || !renderer.hasSecondaryBuffer()) return false;
+LaneBeforeBuild::Window EpubReaderActivity::stepImageWarmLocked() {
+  using LaneBeforeBuild::Window;
+  if (!section || section->hasActiveBuild() || section->pageCount == 0) return Window::Closed;
+  // Background-C's borrow, or no buffer at all, closes the lane. B's does not: the lane takes the buffer back from B
+  // for a decode while B has yields left (LaneBeforeBuild), and waits for B's build once it has none.
+  if (backgroundBorrowActive_) {
+    if (LaneBeforeBuild::decodeWhileBuilding(backgroundImageYields_) == LaneBeforeBuild::Decode::AfterBuild) {
+      return Window::Unknown;
+    }
+  } else if (secondaryBorrowed_ || !renderer.hasSecondaryBuffer()) {
+    return Window::Closed;
+  }
   const int cur = section->currentPage;
-  if (imageWarmCleanSpine_ == currentSpineIndex && imageWarmCleanPage_ == cur) return false;
+  if (imageWarmCleanSpine_ == currentSpineIndex && imageWarmCleanPage_ == cur) return Window::Clean;
   // When to start. A decode holds the loop for seconds and yields to input only by aborting, so:
   //  - no gesture in flight: the abort hook fires on NEW edges, and a tap whose edges were
   //    already drained (released, waiting out the 300 ms double-click window) would be held for
@@ -1890,7 +1959,7 @@ bool EpubReaderActivity::stepImageWarmLocked() {
   const unsigned long lastActivityMs = std::max({lastPageOnScreenMs_, imageWarmPreemptedMs_});
   if (CooperativeAbort::shouldAbortLongTask() || buttonEvents.isGestureInFlight() ||
       now - lastActivityMs < IMAGE_LANE_SETTLE_MS) {
-    return false;
+    return Window::Unknown;
   }
 
   // Large images are warmed too (forceLoad), whatever the placeholder setting says: that setting
@@ -1898,7 +1967,9 @@ bool EpubReaderActivity::stepImageWarmLocked() {
   // Once the cache exists the image renders directly (wouldShowPlaceholder is false for a cached
   // image). Run 17: the chapter's opening illustration was left as a placeholder and cost 6.3 s
   // when the reader asked for it.
-  const bool warmGrayscale = getEffectiveTextAntiAliasing() && !secondaryBufferDegraded_;
+  // B's borrow degrades the buffer only until B gives it back: the window is looked at as its pages will be drawn
+  // then, grey caches included, so a window found clean while B builds stays clean after it.
+  const bool warmGrayscale = getEffectiveTextAntiAliasing() && (!secondaryBufferDegraded_ || backgroundBorrowActive_);
 
   // The window, in reading order: the page on screen first (a placeholder there is what the
   // reader is looking at), then the next kImageWarmLookahead pages of this section. Loading a
@@ -1906,13 +1977,16 @@ bool EpubReaderActivity::stepImageWarmLocked() {
   const int lastPage = static_cast<int>(section->pageCount) - 1;
   const int windowEnd = cur + kImageWarmLookahead;
   for (int p = cur; p <= std::min(lastPage, windowEnd); ++p) {
-    if (imageWarmGaveUp(currentSpineIndex, p)) continue;
-    if (CooperativeAbort::shouldAbortLongTask()) return false;
+    // A page the reader's own ladder just gave up on is not climbed again here: every step was refused a moment ago.
+    if (imageWarmGaveUp(currentSpineIndex, p) || memoryDegradedPage(currentSpineIndex, p)) continue;
+    if (CooperativeAbort::shouldAbortLongTask()) return Window::Unknown;
     section->currentPage = p;
     auto page = section->loadPageFromSectionFile();
     section->currentPage = cur;
     if (!page || !page->hasUncachedImages(/*forceLoad=*/true, /*monochromeOutput=*/true, warmGrayscale)) continue;
-    return warmPageForImageLane(*page, currentSpineIndex, p, /*onScreen=*/p == cur, warmGrayscale);
+    // Nothing to lend after all: the lane cannot run, and B must not wait for it.
+    return warmPageTakingBuffer(*page, currentSpineIndex, p, /*onScreen=*/p == cur, warmGrayscale) ? Window::Dirty
+                                                                                                   : Window::Closed;
   }
 
   // The window runs past this section's end: continue into the next section's first pages when
@@ -1921,17 +1995,21 @@ bool EpubReaderActivity::stepImageWarmLocked() {
   // no-CSS fallback cache is skipped: the reader rebuilds that one on entry.
   const int spill = windowEnd - lastPage;
   const int nextSpine = currentSpineIndex + 1;
-  if (spill > 0 && nextSpine < epub->getSpineItemsCount()) {
+  // Not the section B is building: it has no cache yet, and its file is being written.
+  const bool nextBeingBuilt =
+      backgroundBuildSpineIndex_ == nextSpine && backgroundSection_ && backgroundSection_->hasActiveBuild();
+  if (spill > 0 && nextSpine < epub->getSpineItemsCount() && !nextBeingBuilt) {
     auto next = makeUniqueNoThrow<Section>(epub, nextSpine, renderer);
     if (next && next->loadSectionFile(makeSectionBuildParams()) && !next->isEmbeddedStyleFallback()) {
       const int nextLast = std::min<int>(static_cast<int>(next->pageCount), spill) - 1;
       for (int p = 0; p <= nextLast; ++p) {
         if (imageWarmGaveUp(nextSpine, p)) continue;
-        if (CooperativeAbort::shouldAbortLongTask()) return false;
+        if (CooperativeAbort::shouldAbortLongTask()) return Window::Unknown;
         next->currentPage = p;
         auto page = next->loadPageFromSectionFile();
         if (!page || !page->hasUncachedImages(true, true, warmGrayscale)) continue;
-        return warmPageForImageLane(*page, nextSpine, p, /*onScreen=*/false, warmGrayscale);
+        return warmPageTakingBuffer(*page, nextSpine, p, /*onScreen=*/false, warmGrayscale) ? Window::Dirty
+                                                                                            : Window::Closed;
       }
     }
   }
@@ -1939,7 +2017,13 @@ bool EpubReaderActivity::stepImageWarmLocked() {
   // section the window reaches into -- see the Background-B completion).
   imageWarmCleanSpine_ = currentSpineIndex;
   imageWarmCleanPage_ = cur;
-  return false;
+  return Window::Clean;
+}
+
+bool EpubReaderActivity::warmPageTakingBuffer(const Page& page, const int spine, const int pageIndex,
+                                              const bool onScreen, const bool warmGrayscale) {
+  yieldBackgroundBorrowToImages("the image lane");  // no-op unless B holds the buffer
+  return warmPageForImageLane(page, spine, pageIndex, onScreen, warmGrayscale);
 }
 
 bool EpubReaderActivity::warmPageForImageLane(const Page& page, const int spine, const int pageIndex,
@@ -1960,24 +2044,25 @@ bool EpubReaderActivity::warmPageForImageLane(const Page& page, const int spine,
   const int viewportHeight = std::max(0, renderer.getScreenHeight() - layout.marginTop - layout.marginBottom);
   const int contentTop = layout.marginTop + getImageOnlyPageYOffset(page, viewportHeight);
 
-  size_t borrowedSize = 0;
-  uint8_t* borrowed = renderer.borrowSecondaryBuffer(&borrowedSize);
-  if (!borrowed) return false;
-  auto scratch = makeUniqueNoThrow<BuildArena>(borrowed, borrowedSize);
+  LentSecondary lend(renderer);
+  BuildArena* const arena = lend.arena();
+  if (!arena) return false;
   const unsigned long t0 = millis();
   imageProcessingActive_ = true;
   CooperativeAbort::clearAborted();
+  ImageMemoryLadder::Action ladder;
   {
-    image_scratch::ScopedArena scratchScope(scratch && scratch->valid() ? scratch.get() : nullptr);
+    image_scratch::ScopedArena scratchScope(arena);
     GfxRenderer::ScopedCacheOnlyImageWrites cacheOnly(renderer);
-    page.warmImageCaches(renderer, layout.marginLeft, contentTop, /*forceLoad=*/true, /*monochromeOutput=*/true,
-                         warmGrayscale);
+    // Cheaper here than on a page turn: a page whose images the lane decodes is drawn from their caches.
+    ladder = warmImagesClimbingLadder(page, layout.marginLeft, contentTop, /*forceLoad=*/true, warmGrayscale, arena,
+                                      /*drawsPage=*/false);
   }
   // Preempted by input: not a failure, the next quiet moment retries.
   const bool preempted = CooperativeAbort::consumeAborted();
   imageProcessingActive_ = false;
-  scratch.reset();
-  renderer.returnSecondaryBuffer();  // cannot fail: the region never entered the heap
+  lend.giveBack();
+  if (finishLadder(ladder)) return true;
 
   const bool complete = !page.hasUncachedImages(true, true, warmGrayscale);
   if (!complete && !preempted) noteImageWarmMiss(spine, pageIndex);
@@ -2020,6 +2105,164 @@ bool EpubReaderActivity::imageWarmGaveUp(const int spine, const int page) const 
   return std::any_of(imageWarmMisses_.begin(), imageWarmMisses_.end(), [&](const ImageWarmMiss& m) {
     return m.spine == spine && m.page == page && m.tries >= kImageWarmMaxTries;
   });
+}
+
+namespace {
+// The ladder's log names its actions, the relief steps among them, by these.
+constexpr const char* kLadderActionNames[] = {
+    "done", "light relief", "heavy relief", "an accent family fewer", "emergency: images as boxes", "restart"};
+static_assert(sizeof(kLadderActionNames) / sizeof(kLadderActionNames[0]) ==
+                  static_cast<size_t>(ImageMemoryLadder::Action::Restart) + 1,
+              "a name for every ImageMemoryLadder::Action");
+const char* ladderActionName(const ImageMemoryLadder::Action action) {
+  return kLadderActionNames[static_cast<uint8_t>(action)];
+}
+}  // namespace
+
+void EpubReaderActivity::prewarmPageFonts(const Page& page, const int xOffset, const int yOffset) {
+  auto scope = renderer.getFontCacheManager()->createPrewarmScope();
+  page.renderTextOnly(renderer, getEffectiveReaderFontId(), xOffset, yOffset);  // scan pass
+  scope.endScanAndPrewarm();
+}
+
+ImageMemoryLadder::Action EpubReaderActivity::warmImagesClimbingLadder(const Page& page, const int xOffset,
+                                                                       const int yOffset, const bool forceLoad,
+                                                                       const bool warmGrayscale, BuildArena* arena,
+                                                                       const bool drawsPage) {
+  using ImageMemoryLadder::Action;
+  using ImageMemoryLadder::Decode;
+  using ImageMemoryLadder::Step;
+  // What is loaded, and whether a build is live, stay as they are while the ladder climbs: only the heavy step, the
+  // last, unloads the set, and no build steps beside a decode (imageProcessingActive_).
+  ImageMemoryLadder::Input in;
+  in.accents = sdFontSystem.bookAccentsLoaded();
+  in.ttfLoaded = sdFontSystem.ttfLoaded();
+  // A live build has laid text out with the set, and goes on from where it is.
+  in.canUnload =
+      !(section && section->hasActiveBuild()) && !(backgroundSection_ && backgroundSection_->hasActiveBuild());
+  unsigned long reloadMs = 0;
+  image_scratch::CoarseNeed coarse;  // what the plain step's coarse pictures need for a finer one
+  for (;;) {
+    const uint32_t heapShortBefore = image_scratch::heapShortCount();
+    image_scratch::takeCoarseNeed();  // none from a decode before the step's
+    if (arena) arena->reset();        // nothing of the step before lives in it
+    if (in.step != Step::Plain) {
+      const bool light = in.step == Step::LightRelief;
+      // The light step puts the page's glyphs into the store first, drawn in the lent region: from there the page
+      // needs no miss after. Both steps free the built-in font caches; the light one then what the TrueType set's
+      // misses hold, the heavy one the whole set.
+      if (light && drawsPage) {
+        const glyph_miss::Scope misses(arena);
+        prewarmPageFonts(page, xOffset, yOffset);
+      }
+      const uint32_t freeBefore = esp_get_free_heap_size();
+      renderer.releaseFontCaches();
+      if (light) {
+        sdFontSystem.releaseTtfMissMemory();
+      } else {
+        sdFontSystem.suspendTtf(renderer);
+      }
+      const uint32_t freeNow = esp_get_free_heap_size();
+      LOG_INF("ERS", "Memory ladder: %s, %ld B freed (free=%lu)",
+              ladderActionName(light ? Action::LightRelief : Action::HeavyRelief),
+              static_cast<long>(freeNow) - static_cast<long>(freeBefore), static_cast<unsigned long>(freeNow));
+    }
+    if (SerialTestApi::takeDecodeRefusal()) {
+      // A test build's CMD:HEAP:REFUSE: the step's decode fails as one the heap refused would.
+      image_scratch::noteHeapShort();
+      LOG_INF("ERS", "Memory ladder: decode refused (CMD:HEAP:REFUSE)");
+    } else {
+      // A relief step decodes a coarse picture again too, only where, with what it freed, the workspace of a finer one
+      // can be had now; the picture stays until a decode replaces it.
+      const bool finer = in.step != Step::Plain && image_scratch::coarseNeedFits(coarse);
+      if (in.step != Step::Plain && coarse.bytes != 0 && !finer) {
+        LOG_INF("ERS", "Memory ladder: still no %lu B for a finer picture: the coarse one stays",
+                static_cast<unsigned long>(coarse.bytes));
+      }
+      page.warmImageCaches(renderer, xOffset, yOffset, forceLoad, /*monochromeOutput=*/true, warmGrayscale,
+                           /*redecodeCoarse=*/finer);
+    }
+    // The set comes back at once, while the decode's buffers are just freed and the heap least broken up. What the
+    // light step freed, the next prewarm and the next miss make again.
+    if (in.step == Step::HeavyRelief) {
+      const unsigned long start = millis();
+      in.fontsBack = sdFontSystem.resumeTtf(renderer);
+      reloadMs = millis() - start;
+    }
+    // Short of memory with every image cached: a decode published a coarse picture (image_scratch::noteCoarse); a
+    // decode the heap refused leaves none.
+    const bool heapShort = image_scratch::heapShortCount() != heapShortBefore;
+    if (in.step == Step::Plain) coarse = image_scratch::takeCoarseNeed();
+    if (CooperativeAbort::wasAborted()) {
+      in.decode = Decode::Failed;
+    } else if (page.hasUncachedImages(forceLoad, true, warmGrayscale)) {
+      in.decode = heapShort ? Decode::HeapShort : Decode::Failed;
+    } else {
+      in.decode = heapShort ? Decode::Coarse : Decode::Done;
+    }
+    if (in.decode == Decode::Coarse && in.step == Step::Plain) {
+      // Worth the light step only where what it frees, the TrueType misses' memory, makes room for a finer one.
+      in.coarseFits = image_scratch::coarseNeedFits(coarse, sdFontSystem.ttfMissMemoryBytes());
+      LOG_INF("ERS", "Memory ladder: a coarse picture, %lu B from a finer one%s",
+              static_cast<unsigned long>(coarse.bytes), in.coarseFits ? "" : " that cannot be had: kept");
+    }
+    const Action action = ImageMemoryLadder::next(in);
+    switch (action) {
+      case Action::LightRelief:
+        in.step = Step::LightRelief;
+        continue;
+      case Action::HeavyRelief:
+        in.step = Step::HeavyRelief;
+        continue;
+      case Action::DropAccent:
+        // For good (BookFonts::accentLimit); finishLadder() loads the fonts the book keeps.
+        sdFontSystem.limitBookAccents(static_cast<uint8_t>(in.accents - 1));
+        break;
+      case Action::Done:
+      case Action::Emergency:
+      case Action::Restart:
+        break;
+    }
+    if (in.step == Step::Plain && in.decode == Decode::Done) {
+      LOG_DBG("ERS", "Memory ladder: decoded without relief (free=%lu)",
+              static_cast<unsigned long>(esp_get_free_heap_size()));
+    } else {
+      // The set's reload, by the heavy step: one that failed is what DropAccent and Restart are for.
+      LOG_INF("ERS", "Memory ladder: %s after step %u (reload %lu ms, free=%lu)", ladderActionName(action),
+              static_cast<unsigned>(in.step), reloadMs, static_cast<unsigned long>(esp_get_free_heap_size()));
+    }
+    return action;
+  }
+}
+
+bool EpubReaderActivity::finishLadder(const ImageMemoryLadder::Action action) {
+  switch (action) {
+    case ImageMemoryLadder::Action::Done:
+    case ImageMemoryLadder::Action::LightRelief:
+    case ImageMemoryLadder::Action::HeavyRelief:
+    case ImageMemoryLadder::Action::Emergency:
+      return false;
+    case ImageMemoryLadder::Action::DropAccent:  // the family is left out already (warmImagesClimbingLadder)
+      break;
+    case ImageMemoryLadder::Action::Restart:
+      // The images are cached by now; a fresh heap is what the fonts need.
+      saveStateForRestart();
+      if (trySilentRestartToReaderForHeapRecovery()) return true;
+      // Refused: one heap restart since the last cold boot already. The page is drawn with its images as boxes
+      // then, without the ladder, or the next render would climb it to here again.
+      if (section) {
+        memoryDegradedSpine_ = currentSpineIndex;
+        memoryDegradedPage_ = section->currentPage;
+      }
+      break;
+  }
+  // The book's fonts as it has them now, with an install for a set the store does not hold, and the chapter laid out
+  // with them at the next render.
+  ensureSdFontLoadedForPath(epub->getPath().c_str());
+  preRenderedPage = {};  // a font popup may have drawn over it
+  fontRelayoutPending_ = true;
+  requestUpdate();
+  return true;
 }
 
 void EpubReaderActivity::noteImageWarmMiss(const int spine, const int page) {
@@ -2823,7 +3066,10 @@ void EpubReaderActivity::applyBookReaderOverrides(
   // what the path-based resolution reads, and the RenderLock this holds is the one the cold-load
   // popup expects its caller to own.
   if (epub) ensureSdFontLoadedForPath(epub->getPath().c_str());
+  resetSectionKeepingPosition();
+}
 
+void EpubReaderActivity::resetSectionKeepingPosition() {
   if (section) {
     const int currentPage = section->currentPage;
     if (!section->hasActiveBuild()) {
@@ -3005,8 +3251,9 @@ static FontSizeLadder buildReaderFontSizeLadder(const int bodyFontId) {
 // Publisher Fonts' Accents and All Text: the book's other families, for the blocks set in them. A generic serif or
 // sans-serif goes to the built-in family of that kind, unless the body is already in it (the reader's own family, or
 // the generic the book's body names: the reader's font stands for that). Monospace stays the reader's font: no
-// monospace face is built in. The book's accent family is in it when it is loaded beside the body: a built-in font,
-// a TrueType reader font, or the book's own body family in All Text (not beside a .cpfont reader font).
+// monospace face is built in. Each of the book's accent families is in it when it is loaded beside the body: a
+// built-in font, a TrueType reader font, or the book's own body family in All Text (not beside a .cpfont reader
+// font); one the glyph store had no room for is not.
 // Deterministic from the book's selection and the body font, as the ladder is from the body font.
 static void buildBookFontFamilies(BlockFontFamilies& families, const std::string& cachePath, const int bodyFontId,
                                   const uint8_t pointSize) {
@@ -3030,12 +3277,14 @@ static void buildBookFontFamilies(BlockFontFamilies& families, const std::string
     if ((book->body & CssFontFamily::kGenericMask) == family + 1u || familyBody[family] == bodyFontId) continue;
     families.add(family + 1u, familyBody[family], builtinFontSizeLadder(family, bodyPt));
   }
-  const char* accent = sdFontSystem.accentFamilyNameFor(cachePath);
-  const int accentId = accent[0] != '\0' ? resolveSdCardFontId(accent, pointSize) : 0;
-  if (const auto native = accentId != 0 ? sdFontSystem.ttfNativeSizes(accentId) : std::nullopt) {
-    FontSizeLadder ladder;
-    ladder.setNative(native->base, native->bodyPpem, native->minPx, native->maxPx);
-    families.add(book->accent, accentId, ladder);
+  for (uint8_t n = 0; n < BookFonts::kMaxAccents; ++n) {
+    const char* accent = sdFontSystem.accentFamilyNameFor(cachePath, n);
+    const int accentId = accent[0] != '\0' ? resolveSdCardFontId(accent, pointSize) : 0;
+    if (const auto native = accentId != 0 ? sdFontSystem.ttfNativeSizes(accentId) : std::nullopt) {
+      FontSizeLadder ladder;
+      ladder.setNative(native->base, native->bodyPpem, native->minPx, native->maxPx);
+      families.add(book->accents[n], accentId, ladder);
+    }
   }
 }
 
@@ -3817,6 +4066,7 @@ void EpubReaderActivity::renderPreRenderPass(const RenderLayout& layout) {
   // way endBackgroundBorrow() reads Background B's. B is never live here (render() returns its
   // buffer first), but if the monitor is somehow already running it is left alone.
   const bool trackLow = heap_caps_monitor_local_minimum_free_size_start() == ESP_OK;
+  const uint32_t missesBefore = glyph_miss::drawnCount();
   const int savedPage = section->currentPage;
   section->currentPage = nextPage;
   auto p = buildActive ? section->loadPageFromActiveBuild(static_cast<uint16_t>(nextPage))
@@ -3873,18 +4123,28 @@ void EpubReaderActivity::renderPreRenderPass(const RenderLayout& layout) {
     preRenderRearmSpine_ = currentSpineIndex;
     preRenderRearmPage_ = savedPage;
   } else if (drawn) {
+    // What the floor is derived from (PreRenderGate), a pass that drew glyphs the store did not hold yet apart: it paid
+    // for their memory too.
+    lastPageDrewMisses_ = glyph_miss::drawnCount() != missesBefore;
+    if (lowest != 0 && freeHeap > lowest) {
+      uint32_t& costMax = lastPageDrewMisses_ ? preRenderMissCostMax_ : preRenderCostMax_;
+      costMax = std::max(costMax, freeHeap - lowest);
+    }
     // An incomplete draw keeps `ready` (the framebuffer does hold that page now; the sleep
     // overlay and screenshots restore the current one from it) but is never shown: the turn
     // renders afresh, without this pass's Page in the heap.
     const bool incomplete = glyphsDropped > 0 || imagesMissed > 0;
     preRenderedPage = {true, currentSpineIndex, nextPage, preRenderDuration, millis(), incomplete};
+    // Drawn whole, the page that had a gap for lack of memory (renderContents) is shown without the sign.
+    if (!incomplete && glyphStarvedPage(currentSpineIndex, nextPage)) glyphStarvedSpine_ = glyphStarvedPage_ = -1;
 #if DEBUG_BACKGROUND_WORK
     if (!incomplete) bgCounters_.aCompletes++;
 #endif
-    LOG_DBG("ERS", "Pre-rendered page %d/%d in %lums (heap %lu at start, %lu lowest, cost %lu)%s", nextPage,
+    LOG_DBG("ERS", "Pre-rendered page %d/%d in %lums (heap %lu at start, %lu lowest, cost %lu, floor %lu)%s", nextPage,
             section->pageCount - 1, preRenderDuration, static_cast<unsigned long>(freeHeap),
             static_cast<unsigned long>(lowest),
             static_cast<unsigned long>(lowest && freeHeap > lowest ? freeHeap - lowest : 0),
+            static_cast<unsigned long>(preRenderMinFreeHeap(inkOnly)),
             incomplete ? "; incomplete, will not be shown" : "");
     if (glyphsDropped > 0) {
       LOG_ERR("ERS", "Pre-render of page %d dropped %u glyphs for lack of memory", nextPage, glyphsDropped);
@@ -4827,17 +5087,22 @@ void EpubReaderActivity::renderNormalPass(RenderLock& lock, const RenderLayout& 
   {
     RenderLock relock;
 
-    // Defensive guard: section can be invalidated by loop-side flows while the
-    // render lock was released during display waveform wait.
-    if (!section) {
-      LOG_ERR("ERS", "render: section became null after display completion");
-      return;
+    // The loop task had the lock during the waveform, and a page turn taken then has moved the position on; one that
+    // crossed into another spine has reset the section. So everything below describes the page this pass drew, from
+    // the identity renderContents() pinned under the lock, not the live position (DisplayedPage.h).
+    const DisplayedPage::Identity drawn{lastRenderedSpineIndex_, lastRenderedPageIndex_, lastRenderedPageCount_};
+    const DisplayedPage::Settlement settled = DisplayedPage::settle(
+        drawn, {section != nullptr, currentSpineIndex, section ? section->currentPage : 0}, epub->getSpineItemsCount());
+    if (settled.superseded) {
+      LOG_DBG("ERS", "Page spine=%d page=%d superseded during its display: now spine=%d page=%d", drawn.spine,
+              drawn.page, currentSpineIndex, section ? section->currentPage : -1);
     }
-
-    pendingProgressSave.spineIndex = currentSpineIndex;
-    pendingProgressSave.page = section->currentPage;
-    pendingProgressSave.pageCount = section->pageCount;
-    pendingProgressSave.pending.store(true, std::memory_order_release);
+    if (settled.recordProgress) {
+      pendingProgressSave.spineIndex = settled.progress.spine;
+      pendingProgressSave.page = settled.progress.page;
+      pendingProgressSave.pageCount = settled.progress.pageCount;
+      pendingProgressSave.pending.store(true, std::memory_order_release);
+    }
     lastRenderStats.freeHeapAfter = esp_get_free_heap_size();
     // Avoid heap walk in the hot render path; largest free block is sampled in index lifecycle logs.
     lastRenderStats.largestFreeBlockAfter = 0;
@@ -4849,11 +5114,10 @@ void EpubReaderActivity::renderNormalPass(RenderLock& lock, const RenderLayout& 
         "ERS",
         "Page summary: spine=%d page=%d/%d prerendered=0 refresh=%s mode=0x%02X renderMs=%lu "
         "prewarmMs=%lu bwMs=%lu displayMs=%lu fontHits=%lu fontMisses=%lu fontHitPct=%lu glyphCalls=%lu glyphUs=%lu",
-        currentSpineIndex, lastRenderedPageIndex_, lastRenderedPageCount_, refreshModeName(lastPageRefreshMode_),
-        lastPageDisplayModeByte_, lastRenderStats.requestRenderMs, lastRenderStats.phases.prewarmMs,
-        lastRenderStats.phases.bwRenderMs, lastRenderStats.phases.displayMs, lastRenderStats.fontCacheHits,
-        lastRenderStats.fontCacheMisses, fontHitRatePct, lastRenderStats.fontGetBitmapCalls,
-        lastRenderStats.fontGetBitmapTimeUs);
+        drawn.spine, drawn.page, drawn.pageCount, refreshModeName(lastPageRefreshMode_), lastPageDisplayModeByte_,
+        lastRenderStats.requestRenderMs, lastRenderStats.phases.prewarmMs, lastRenderStats.phases.bwRenderMs,
+        lastRenderStats.phases.displayMs, lastRenderStats.fontCacheHits, lastRenderStats.fontCacheMisses,
+        fontHitRatePct, lastRenderStats.fontGetBitmapCalls, lastRenderStats.fontGetBitmapTimeUs);
 
 
     // Pre-render was already scheduled in renderContents() before the lock was
@@ -4929,6 +5193,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // this one (cleared before recoverSecondaryBufferIfNeeded, which may end B's borrow).
   statusRefreshDeferred_ = false;
   recoverSecondaryBufferIfNeeded();
+  if (fontRelayoutPending_) {
+    // The memory ladder changed the book's fonts (finishLadder): the chapter is laid out again with them.
+    fontRelayoutPending_ = false;
+    resetSectionKeepingPosition();
+  }
 
   const int spineCount = epub->getSpineItemsCount();
   if (spineCount <= 0) {
@@ -5075,20 +5344,9 @@ bool EpubReaderActivity::maybeRestartForFragmentedHeap(const uint32_t freeHeap, 
   }
 
   fragmentationRecoveryRestartAttempted_ = true;
-
-  // Persist the live position only when it is authoritative. During a section (re)build
-  // (readerPhase_ != READING, or section already reset for one) the saved navTarget has not
-  // been applied yet — a fresh Section still sits at currentPage 0 — and saving that would
-  // clobber the user's real position in progress.bin, which already holds the correct value
-  // (issue #75: progress reset to the chapter start after a heap-recovery reboot).
+  saveStateForRestart();
   const int page = (section ? section->currentPage : 0);
   const int pageCount = (section ? section->pageCount : 0);
-  if (section && readerPhase_ == ReaderPhase::READING) {
-    saveProgress(currentSpineIndex, page, pageCount);
-  }
-  // The reboot skips onExit, which is where the stack is otherwise saved. Unlike the position it
-  // does not depend on the build phase: every entry was recorded when its link was followed.
-  saveLinkBackStack();
 
   // Release both framebuffers (primary + secondary already gone) to free ~48 KB
   // more contiguous heap, then do a pre-reboot warm pass for any images that
@@ -5119,6 +5377,20 @@ bool EpubReaderActivity::maybeRestartForFragmentedHeap(const uint32_t freeHeap, 
   }
   LOG_ERR("ERS", "Heap recovery restart blocked by safety latch; staying in degraded mode");
   return false;
+}
+
+void EpubReaderActivity::saveStateForRestart() {
+  // Persist the live position only when it is authoritative. During a section (re)build
+  // (readerPhase_ != READING, or section already reset for one) the saved navTarget has not
+  // been applied yet — a fresh Section still sits at currentPage 0 — and saving that would
+  // clobber the user's real position in progress.bin, which already holds the correct value
+  // (issue #75: progress reset to the chapter start after a heap-recovery reboot).
+  if (section && readerPhase_ == ReaderPhase::READING) {
+    saveProgress(currentSpineIndex, section->currentPage, section->pageCount);
+  }
+  // The reboot skips onExit, which is where the stack is otherwise saved. Unlike the position it
+  // does not depend on the build phase: every entry was recorded when its link was followed.
+  saveLinkBackStack();
 }
 
 bool EpubReaderActivity::writeReaderProgressCache(const std::string& cachePath, const int spineIndex,
@@ -5178,6 +5450,25 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   const int viewportHeight = std::max(0, renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom);
   const int contentTop = orientedMarginTop + getImageOnlyPageYOffset(*page, viewportHeight);
 
+  // Building through a chapter's last pages, Background-B kept the secondary buffer for its build of the next one
+  // (recoverSecondaryBufferIfNeeded). A decode now would run on the heap beside that build (LaneBeforeBuild): B gives
+  // the buffer back first, and the page renders as if B had never held it. Past B's yields the images wait for it as
+  // placeholders, and the image lane decodes them and redraws the page once B is done.
+  bool imagesWaitForBuild = false;
+  if (backgroundBorrowActive_ && section && !memoryDegradedPage(currentSpineIndex, section->currentPage) &&
+      page->hasUncachedImages(forceLoadLargeImages || !SETTINGS.largeImagePlaceholder, /*monochromeOutput=*/true)) {
+    switch (LaneBeforeBuild::decodeWhileBuilding(backgroundImageYields_)) {
+      case LaneBeforeBuild::Decode::TakeFromBuild:
+        yieldBackgroundBorrowToImages("the page render");
+        break;
+      case LaneBeforeBuild::Decode::AfterBuild:
+        imagesWaitForBuild = true;
+        LOG_INF("ERS", "Page %d: images drawn as placeholders until Background-B's build is done (%u yields spent)",
+                section->currentPage, static_cast<unsigned>(backgroundImageYields_));
+        break;
+    }
+  }
+
   const bool aaEnabledForThisRender =
       getEffectiveTextAntiAliasing() && renderer.hasSecondaryBuffer() && !secondaryBufferDegraded_;
   if (getEffectiveTextAntiAliasing() && !aaEnabledForThisRender) {
@@ -5217,7 +5508,11 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   // bail on RenderLock::peek(), and this whole pass runs under the lock the render task took
   // before calling renderContents()) — this flag is a second, explicit guard against that
   // invariant silently breaking if a future change adds a yield point in here.
-  imageProcessingActive_ = page->hasUncachedImages(warmForceLoad, imageMonochrome, warmGrayscaleImageCache);
+  // A page the memory ladder gave up on draws its undecoded images as low-memory boxes at once (see the BW render):
+  // every decode was refused a moment ago, and a clock tick that redraws the page must not climb the ladder again.
+  const bool ladderGaveUp = section && memoryDegradedPage(currentSpineIndex, section->currentPage);
+  imageProcessingActive_ = !ladderGaveUp && !imagesWaitForBuild &&
+                           page->hasUncachedImages(warmForceLoad, imageMonochrome, warmGrayscaleImageCache);
   // BORROW the secondary buffer as the decode scratch rather than releasing it. Both give the
   // decoders the same ~52 KB, but the borrowed block never enters the heap:
   //   - it cannot be carved up by the decode's own churn (rule 4 — this pass was the documented
@@ -5229,33 +5524,24 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   // Release stays as the fallback for when there is nothing to lend (already released for a C
   // build, or no secondary buffer at all), so the previous behaviour is intact on those paths.
   // See docs/memory-allocation-strategy.md §9.3.
-  std::unique_ptr<BuildArena> warmScratch;
-  bool borrowedSecondaryForWarm = false;
+  std::optional<LentSecondary> warmLend;
   if (imageProcessingActive_ && renderer.hasSecondaryBuffer()) {
-    size_t borrowedSize = 0;
-    if (uint8_t* borrowed = renderer.borrowSecondaryBuffer(&borrowedSize)) {
-      warmScratch = makeUniqueNoThrow<BuildArena>(borrowed, borrowedSize);
-      if (warmScratch && warmScratch->valid()) {
-        borrowedSecondaryForWarm = true;
-        LOG_DBG("ERS", "Borrowed secondary buffer (%u bytes) as image warm scratch",
-                static_cast<uint32_t>(borrowedSize));
-      } else {
-        warmScratch.reset();
-        renderer.returnSecondaryBuffer();  // cannot fail: the region never entered the heap
-      }
-    }
-    if (!borrowedSecondaryForWarm) {
+    warmLend.emplace(renderer);
+    if (!warmLend->arena()) {
+      warmLend.reset();
       renderer.releaseSecondaryBuffer();
       releasedSecondaryForWarm = true;
       LOG_DBG("ERS", "Released secondary buffer for image warm pass (nothing to lend)");
     }
   }
-  {
+  BuildArena* const warmScratch = warmLend ? warmLend->arena() : nullptr;
+  ImageMemoryLadder::Action ladder = ImageMemoryLadder::Action::Done;
+  if (imageProcessingActive_) {
     // Scoped so the arena is uninstalled before the borrow is returned below — a stale
     // image_scratch pointer into a region the display owns again would be a use-after-free.
-    image_scratch::ScopedArena warmScratchScope(warmScratch.get());
-    page->warmImageCaches(renderer, orientedMarginLeft, contentTop, warmForceLoad, imageMonochrome,
-                          warmGrayscaleImageCache);
+    image_scratch::ScopedArena warmScratchScope(warmScratch);
+    ladder = warmImagesClimbingLadder(*page, orientedMarginLeft, contentTop, warmForceLoad, warmGrayscaleImageCache,
+                                      warmScratch, /*drawsPage=*/true);
   }
   // The borrow is returned after clearScreen() below, not here: returnSecondaryBuffer() seeds the
   // restored buffer from the live framebuffer, and right now that still holds the decode's
@@ -5291,23 +5577,45 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   }
   imageProcessingActive_ = false;
   renderer.clearScreen();
-  if (borrowedSecondaryForWarm) {
-    // Now that the framebuffer is clean, hand the block back. returnSecondaryBuffer() seeds the
-    // restored secondary from it and arms the one-shot RED baseline, exactly as
-    // reallocSecondaryBuffer() would have — so the release path's careful
-    // "do NOT syncRedRamFromFrameBuffer()" reasoning above applies unchanged here. Unlike that
-    // path this cannot fail, so there is no eviction and no restart branch.
-    warmScratch.reset();
-    renderer.returnSecondaryBuffer();
+  // Now that the framebuffer is clean, hand the block back. returnSecondaryBuffer() seeds the
+  // restored secondary from it and arms the one-shot RED baseline, exactly as
+  // reallocSecondaryBuffer() would have — so the release path's careful
+  // "do NOT syncRedRamFromFrameBuffer()" reasoning above applies unchanged here. Unlike that
+  // path this cannot fail, so there is no eviction and no restart branch.
+  warmLend.reset();
+  if (finishLadder(ladder)) {
+    lock.unlock();  // renderNormalPass takes it again; the page is drawn once the chapter is laid out again
+    return;
   }
 
   logReaderMemSnapshot("prewarm_begin");
 
   // Font prewarm: scan pass accumulates text, then prewarm, then real render
   const uint32_t heapBefore = esp_get_free_heap_size();
-  auto scope = fcm->createPrewarmScope();
-  page->renderTextOnly(renderer, getEffectiveReaderFontId(), orientedMarginLeft, contentTop);  // scan pass
-  scope.endScanAndPrewarm();
+  const uint32_t starvedBefore = glyph_miss::starvedCount();
+  const uint32_t missesBefore = glyph_miss::drawnCount();
+  {
+    // The prewarm puts the page's TrueType glyphs into the glyph store, and each one the store does not hold yet (the
+    // store installed again, a new size or style) is a miss: a 10.5-14.5 KB scratch block, in SD mode a 4.2 KB page
+    // cache too. Made on the heap, that stayed until the pass gave RenderLock back (X3, the first page after the store
+    // was installed again: free fell from 50.3 to 38.7 KB in the prewarm and was still 39.9 KB at the BW render). The
+    // built-in fonts' prewarm streams each glyph group through a ring of up to 4 KB on the heap beside the page slots
+    // it fills. The image warm is over and nothing reads the secondary buffer before the page is displayed, so it is
+    // lent to both, as to a decode above: a miss and a ring each take their block from it and give it back before
+    // they return (glyph_miss, FontDecompressor's ringArena()). The page slots stay on the heap: the BW render and the
+    // AA pass read them after the lend. Not when Background-B holds the buffer.
+    std::optional<LentSecondary> prewarmLend;
+    if (renderer.hasSecondaryBuffer()) prewarmLend.emplace(renderer);
+    const glyph_miss::Scope misses(prewarmLend ? prewarmLend->arena() : nullptr);
+    prewarmPageFonts(*page, orientedMarginLeft, contentTop);
+  }
+  // What a miss made on the heap anyway goes back now, not with RenderLock: the BW render draws from the store, and a
+  // miss there makes it again (TtfFontSet::releaseMissMemory, which keeps the starved-glyph count).
+  const uint32_t missMemoryFreed = sdFontSystem.releaseTtfMissMemory();
+  if (missMemoryFreed > 0) {
+    LOG_DBG("ERS", "Freed %lu B of TrueType miss memory after the prewarm",
+            static_cast<unsigned long>(missMemoryFreed));
+  }
   const uint32_t heapAfter = esp_get_free_heap_size();
   fcm->logStats("prewarm");
   const auto tPrewarm = millis();
@@ -5366,8 +5674,42 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   }
 
   logReaderMemSnapshot("before_bw_render");
-  page->render(renderer, getEffectiveReaderFontId(), orientedMarginLeft, contentTop, effectiveForceLoad,
-               imageMonochrome);
+  ImageBlock::takeLowMemoryPlaceholders();  // the warm pass's boxes were cleared with the screen
+  {
+    // The ladder found no decode fits: the images are boxes, and no decode is tried again on the heap. Or they wait
+    // for Background-B's build (above).
+    std::optional<ImageBlock::PlaceholderOnlyScope> boxes;
+    if (ladderGaveUp || ladder == ImageMemoryLadder::Action::Emergency) {
+      boxes.emplace(ImageBlock::Placeholder::LowMemory);
+    } else if (imagesWaitForBuild) {
+      boxes.emplace(ImageBlock::Placeholder::Loading);
+    }
+    page->render(renderer, getEffectiveReaderFontId(), orientedMarginLeft, contentTop, effectiveForceLoad,
+                 imageMonochrome);
+  }
+  // An image drawn as a low-memory box: the status bar says so while the page is on screen, and its redraws skip
+  // the decodes. Cleared once the page draws without one.
+  if (ImageBlock::takeLowMemoryPlaceholders() > 0 && section) {
+    memoryDegradedSpine_ = currentSpineIndex;
+    memoryDegradedPage_ = section->currentPage;
+  } else if (section && memoryDegradedPage(currentSpineIndex, section->currentPage)) {
+    memoryDegradedSpine_ = memoryDegradedPage_ = -1;
+  }
+  lastPageDrewMisses_ = glyph_miss::drawnCount() != missesBefore;  // the next page's likely do too (PreRenderGate)
+  // A TrueType glyph that found no memory to be drawn in, not even with the built-in font caches freed for it
+  // (glyph_miss), left a gap: the status bar says so while the page is on screen, and the page is drawn once more as
+  // soon as this pass has given its memory back. A gap in that redraw too is left until the page draws whole.
+  if (section && glyph_miss::starvedCount() != starvedBefore) {
+    const bool again = glyphStarvedPage(currentSpineIndex, section->currentPage);
+    glyphStarvedSpine_ = currentSpineIndex;
+    glyphStarvedPage_ = section->currentPage;
+    if (!again) {
+      LOG_ERR("ERS", "Page %d drawn with glyphs missing for lack of memory; drawing it again", section->currentPage);
+      glyphStarvedRedraw_ = true;  // asked for where the pre-render would be, below
+    }
+  } else if (section && glyphStarvedPage(currentSpineIndex, section->currentPage)) {
+    glyphStarvedSpine_ = glyphStarvedPage_ = -1;
+  }
   // The BW render also touches images (placeholder/cache draws) and runs the full
   // glyph pipeline; check here too so a clean after_image_warm_pass followed by a
   // corrupt reading convicts the BW render rather than the decode.
@@ -5624,7 +5966,13 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   // result is discarded — no correctness issue.
   // Not during a build-through: on the X3 the post-waveform frame sync reads this very buffer
   // when there is no second one (see BG_BUILD_THROUGH_PAGES).
-  if (!preRenderedPage.ready && !backgroundBuildThrough_ && section && section->currentPage + 1 < section->pageCount) {
+  if (glyphStarvedRedraw_) {
+    // The page drew with gaps (above): the next pass draws it again, once this one has given its memory back, and not
+    // as a pre-render, which would find no more memory than this pass did. Its AA is not worth waiting for.
+    glyphStarvedRedraw_ = false;
+    requestUpdate();
+  } else if (!preRenderedPage.ready && !backgroundBuildThrough_ && section &&
+             section->currentPage + 1 < section->pageCount) {
     pendingPreRender = true;
     markStagedForCurrentPage();
     // Do NOT request the update while a deferred AA is owed: isUpdateSuperseded()
@@ -5706,9 +6054,10 @@ void EpubReaderActivity::displayBuildPage(RenderLock& lock, const Page& page, co
     // Only while the buffer is actually lent; otherwise buildScratch_ is null and the scope
     // self-disables, leaving the heap path exactly as it was.
     FontCacheManager::ScopedSlotArena slotArena(*fcm, secondaryBorrowed_ ? buildScratch_.get() : nullptr);
-    auto scope = fcm->createPrewarmScope();
-    page.renderTextOnly(renderer, getEffectiveReaderFontId(), layout.marginLeft, contentTop);  // scan pass
-    scope.endScanAndPrewarm();
+    // And a TrueType miss draws in it too, for the lookup alone (glyph_miss): the build stored the page's glyphs as it
+    // laid them out, so there are few.
+    const glyph_miss::Scope misses(secondaryBorrowed_ ? buildScratch_.get() : nullptr);
+    prewarmPageFonts(page, layout.marginLeft, contentTop);
 
     renderer.clearScreen();
     {
@@ -5782,9 +6131,8 @@ uint16_t EpubReaderActivity::renderPageContentOnly(const Page& page, const int o
   const int viewportHeight = std::max(0, renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom);
   const int contentTop = orientedMarginTop + getImageOnlyPageYOffset(page, viewportHeight);
 
-  auto scope = fcm->createPrewarmScope();
-  page.renderTextOnly(renderer, getEffectiveReaderFontId(), orientedMarginLeft, contentTop);
-  scope.endScanAndPrewarm();
+  const uint32_t starvedBefore = glyph_miss::starvedCount();
+  prewarmPageFonts(page, orientedMarginLeft, contentTop);
 
   // On a single-push panel the pre-render owes the SAME thing a fresh render
   // produces, or a pre-rendered page would look different from one rendered on
@@ -5828,7 +6176,9 @@ uint16_t EpubReaderActivity::renderPageContentOnly(const Page& page, const int o
   // values, and so outside the capture. It carries no anti-aliasing either way:
   // UI chrome is 1-bit and produces no AA pixels at all.
   const FontDecompressor* fdc = fcm->getDecompressor();
-  return fdc ? fdc->getStats().fallbackOomGlyphs : 0;
+  // A TrueType glyph that found no memory to be drawn in (glyph_miss) left a gap as well.
+  return static_cast<uint16_t>((fdc ? fdc->getStats().fallbackOomGlyphs : 0) + glyph_miss::starvedCount() -
+                               starvedBefore);
 }
 
 bool EpubReaderActivity::usesDeferredAa() const {
@@ -5949,12 +6299,7 @@ void EpubReaderActivity::displayPreRenderedPage(const Page& page, const int orie
     // and replaying against a metadata-only table dereferences a null bitmap base
     // (observed: Load access fault at glyph->dataOffset + heap corruption). When the
     // cache is still warm this is nearly free via the prewarm coverage fast-path.
-    {
-      auto* fcm = renderer.getFontCacheManager();
-      auto scope = fcm->createPrewarmScope();
-      page.renderTextOnly(renderer, fontId, orientedMarginLeft, contentTop);  // scan pass
-      scope.endScanAndPrewarm();
-    }
+    prewarmPageFonts(page, orientedMarginLeft, contentTop);
     renderer.setFastGrayscaleLut(SETTINGS.fastAntiAliasing);
     // No waveform to hide behind on this path (displayBuffer() above already returned), so the
     // per-element abort translates directly into saved wall-clock on both devices.
@@ -6038,7 +6383,10 @@ bool EpubReaderActivity::hasPendingBackgroundWork() {
   // clean when nothing is left to decode; until then it has its scan (and maybe a decode) to do.
   // The same preconditions as stepImageWarmLocked(), without which it never runs.
   const bool imageLaneCanRun =
-      section->pageCount > 0 && !secondaryBorrowed_ && !backgroundBorrowActive_ && renderer.hasSecondaryBuffer();
+      section->pageCount > 0 &&
+      (backgroundBorrowActive_
+           ? LaneBeforeBuild::decodeWhileBuilding(backgroundImageYields_) == LaneBeforeBuild::Decode::TakeFromBuild
+           : !secondaryBorrowed_ && renderer.hasSecondaryBuffer());
   return imageLaneCanRun && (imageWarmCleanSpine_ != currentSpineIndex || imageWarmCleanPage_ != section->currentPage);
 }
 #endif  // SERIAL_TEST_API
@@ -6115,9 +6463,12 @@ void EpubReaderActivity::renderStatusBar() const {
   const std::string printedPageLabel = section && SETTINGS.statusBarPrintedPage
                                            ? printedPageLabelFor(static_cast<uint16_t>(section->currentPage))
                                            : std::string();
+  const bool lowMemory = (section != nullptr) && (memoryDegradedPage(currentSpineIndex, section->currentPage) ||
+                                                  glyphStarvedPage(currentSpineIndex, section->currentPage));
   const auto& markers = epub ? epub->getChapterProgressMarkers() : std::vector<float>{};
   GUI.drawStatusBar(renderer, bookProgress, chapter.page, chapter.total, bookTitle, chapterTitle, 0, isStarred,
-                    printedPageLabel, /*fillMargin=*/true, /*pageCountApproximate=*/chapter.approximate, markers);
+                    printedPageLabel, /*fillMargin=*/true, /*pageCountApproximate=*/chapter.approximate, markers,
+                    lowMemory);
 
 #if DEBUG_BACKGROUND_WORK
   renderBackgroundDebugOverlay();
@@ -6325,15 +6676,24 @@ bool EpubReaderActivity::shouldSkipPeriodicUpdate() const {
   }
   // Polled once a minute by ActivityManager::loop() on the loop task with no lock held, so it
   // had the same unlocked read of `section` as the hints above (and raced render() on
-  // statusRefreshDeferred_). A pass holding the lock means "cannot tell": request the update. At
-  // worst that is one redundant status-bar refresh, where skipping could leave the clock a minute
-  // behind if the pass in flight drew its status bar before the minute turned. It does not take
-  // B's borrow from a live build either: the pass in flight already returned it on entry
-  // (recoverSecondaryBufferIfNeeded), unless build-through keeps it, and then the extra render
-  // keeps it too.
+  // statusRefreshDeferred_). A pass holding the lock means "cannot tell" -- and it is usually a
+  // page turn: its display, its AA replay, the next page's pre-render. Requesting the update then
+  // queued a full redraw of the same page behind the turn, and the queued request made the turn's
+  // AA skip as if the page were on its way out (aaPreemptedByNavigation): on the X3 such a turn
+  // took 2.5-3.7 s instead of 1.8 s. Skipping outright could leave the clock a minute behind, as
+  // the pass in flight may have drawn its status bar before the minute turned. So the refresh is
+  // owed, and loop() asks again once the reader has settled (serviceOwedPeriodicRefresh) -- by
+  // when a page turn has drawn the new minute anyway, or the checks below find it still missing.
   RenderLock lock(RenderLock::Mode::Try);
   if (!lock.ownsLock()) {
-    return false;
+    periodicRefreshOwed_ = true;
+    return true;
+  }
+  // Between a turn's pass and its deferred AA: a request now would cost the page its AA the same
+  // way.
+  if (pendingGrayscale_.active) {
+    periodicRefreshOwed_ = true;
+    return true;
   }
   // Background-B holds the secondary buffer: any render takes it back, and taking it back
   // discards B's live build (endBackgroundBorrow). A clock-minute or battery tick would do that
@@ -6647,9 +7007,12 @@ bool EpubReaderActivity::drawCurrentPageToBuffer(const std::string& filePath, Gf
   p.inlineFootnotePreviews = effectiveInlineFootnotePreviews;
   p.imageRendering = effectiveImageRendering;
   p.fontSizeLadder = buildReaderFontSizeLadder(effectiveFontId);
-  BlockFontFamilies fontFamilies;
-  buildBookFontFamilies(fontFamilies, epub->getCachePath(), effectiveFontId, effectiveFontSize);
-  p.fontFamilies = &fontFamilies;
+  // On the heap: about 0.5 KB with the book's accent families, too much for this frame under a section build.
+  const auto fontFamilies = makeUniqueNoThrow<BlockFontFamilies>();
+  if (fontFamilies) {
+    buildBookFontFamilies(*fontFamilies, epub->getCachePath(), effectiveFontId, effectiveFontSize);
+    p.fontFamilies = fontFamilies.get();
+  }
   if (!section->loadSectionFile(p)) {
     LOG_DBG("SLP", "EPUB: section cache not found for spine %d, rebuilding", spineIndex);
     if (!section->createSectionFile(p, nullptr, /*skipEviction=*/false)) {

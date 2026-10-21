@@ -56,6 +56,16 @@ void notePopup(const char* text);
 void noteSelection(int index, const char* label);
 // A section build finished: `spineIndex` is 0-based, as the reader holds it.
 void noteBuildDone(int spineIndex, int pageCount);
+// A font family's download ended, installed (`ok`) or not: the Font Manager's or the web page's.
+void noteFontInstalled(const char* family, bool ok);
+// CMD:HEAP:REFUSE: the memory ladder's next decode steps, and reloads of the TrueType set, fail as if the heap were
+// short. Each true answer uses one up. The reader asks before each decode step, SdCardFontSystem before a reload.
+bool takeDecodeRefusal();
+bool takeReloadRefusal();
+// A device test's book: one under /test/ (in any case, as FAT). Opening it records it neither in the recent books
+// nor in the reading stats, whose caps (10 and 100 books) a test run would otherwise fill, pushing the reader's own
+// books out.
+bool isTestBook(std::string_view path);
 #else
 inline void handleLine(std::string_view) {}
 inline void sendScreenshot(const uint8_t*, uint32_t, int, int, bool) {}
@@ -65,6 +75,10 @@ inline PowerRequest takePowerRequest() { return PowerRequest::None; }
 inline void notePopup(const char*) {}
 inline void noteSelection(int, const char*) {}
 inline void noteBuildDone(int, int) {}
+inline void noteFontInstalled(const char*, bool) {}
+inline bool takeDecodeRefusal() { return false; }
+inline bool takeReloadRefusal() { return false; }
+inline bool isTestBook(std::string_view) { return false; }
 #endif
 
 }  // namespace SerialTestApi

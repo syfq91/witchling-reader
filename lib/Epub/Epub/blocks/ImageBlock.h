@@ -59,6 +59,27 @@ void set(BuildArena* arena);
 // heap fallback inside the decoder, which is already handled — it cannot crash.
 bool canServe(size_t bytes);
 
+// A decode refused for the heap, or cut short by an allocation that failed (its pixel cache included), or one that
+// published a coarse picture for lack of it (noteCoarse), says so here: the reader's memory ladder (ImageMemoryLadder)
+// retries such a decode with more memory, and leaves one that failed for any other reason alone. A count, so a caller
+// compares it before and after its decodes.
+void noteHeapShort();
+uint32_t heapShortCount();
+
+// What the next finer scale of a decode that published a coarse picture for lack of memory would take: a workspace of
+// `bytes`, from the arena, or from the heap with `heapFloor` more left free (PixelCache::PXC_MAGIC_COARSE). 0: none.
+struct CoarseNeed {
+  uint32_t bytes = 0;
+  uint32_t heapFloor = 0;
+};
+// A decode published a coarse picture: short of memory (noteHeapShort), and this much from a finer one. The largest
+// need since the last takeCoarseNeed() is kept, so the ladder never decodes again for a picture that cannot improve.
+void noteCoarse(const CoarseNeed& need);
+CoarseNeed takeCoarseNeed();
+// Whether `need` can be had now, the decoder's way: the arena has room for it, or the heap a block of it and its floor
+// beside; with `freedFirst` more bytes counted as free in both (what a relief step would free).
+bool coarseNeedFits(const CoarseNeed& need, uint32_t freedFirst = 0);
+
 // RAII installer — restores the previous value, so nesting is safe.
 class ScopedArena {
  public:
@@ -121,13 +142,6 @@ class ImageBlock final : public Block {
   // True when the 4-level .pxc pixel cache exists (grayscale AA rendering).
   bool hasGrayscaleCache() const;
 
-  // Deletes the mode's .pxc when it was stamped coarse (PixelCache::PXC_MAGIC_COARSE: a decode
-  // that settled for a lower scale or the DC preview because the heap was short) so the next
-  // render decodes it again. Returns true when a cache was removed. Only warm passes that run
-  // with the framebuffers released call this -- at reading-time heap the decode would only
-  // come out coarse again.
-  bool dropCoarseCache(bool monochromeOutput) const;
-
   // Render the 4-level cache into the framebuffer using the renderer's current
   // mode (GRAYSCALE_LSB or GRAYSCALE_MSB). No-op if no grayscale cache exists.
   // Called by the AA grayscale passes to give images proper gray tones.
@@ -165,11 +179,30 @@ class ImageBlock final : public Block {
   // Returns true if the file is ready for decoding.
   bool ensureExtracted() const;
 
-  // `loading`: the box says the image is still being prepared (a mid-build draw) rather than
-  // "large image, press to load".
-  void renderPlaceholder(GfxRenderer& renderer, int x, int y, bool loading = false) const;
+  // CoarseRedecodeScope's halves, for the variant `monochromeOutput` selects: the cache moved aside when stamped
+  // coarse (true when it was), and moved back unless a cache has taken its place.
+  bool setCoarseCacheAside(bool monochromeOutput) const;
+  void restoreCoarseCache(bool monochromeOutput) const;
+
+ public:
+  // What a placeholder box says beside the alt text: "large image, press to load", the image is still being
+  // prepared (a mid-build draw), or there was not memory enough to decode it.
+  enum class Placeholder : uint8_t { Large, Loading, LowMemory };
+
+  // The LowMemory placeholders drawn since the last call: the reader shows its low-memory indicator while the page
+  // on screen has one.
+  static uint16_t takeLowMemoryPlaceholders() {
+    const uint16_t drawn = lowMemoryDrawn_;
+    lowMemoryDrawn_ = 0;
+    return drawn;
+  }
+
+ private:
+  void renderPlaceholder(GfxRenderer& renderer, int x, int y, Placeholder kind) const;
   static bool placeholderOnly_;
+  static Placeholder placeholderOnlyKind_;
   static uint16_t placeholdersDrawn_;
+  static uint16_t lowMemoryDrawn_;
 
  public:
   // While one of these is live, render() draws every image that is not already in its pixel
@@ -181,14 +214,46 @@ class ImageBlock final : public Block {
   // placeholdersDrawn() is for a caller that must not show a page with a placeholder on it at
   // all (the next-page pre-render): a cache that exists can still fail to replay -- a stale
   // version is deleted on read, a width mismatch is refused -- and only the draw finds out.
+  //
+  // `kind` LowMemory: the reader's memory ladder found that no decode of these images fits (see
+  // ImageMemoryLadder), so the page is drawn with them as "not enough memory" boxes instead.
   struct PlaceholderOnlyScope {
-    PlaceholderOnlyScope() {
+    explicit PlaceholderOnlyScope(const Placeholder kind = Placeholder::Loading) {
       placeholderOnly_ = true;
+      placeholderOnlyKind_ = kind;
       placeholdersDrawn_ = 0;
     }
     ~PlaceholderOnlyScope() { placeholderOnly_ = false; }
     PlaceholderOnlyScope(const PlaceholderOnlyScope&) = delete;
     PlaceholderOnlyScope& operator=(const PlaceholderOnlyScope&) = delete;
     [[nodiscard]] uint16_t placeholdersDrawn() const { return placeholdersDrawn_; }
+  };
+
+  // While one of these is live, `image`'s pixel cache is out of the way when it was stamped coarse
+  // (PixelCache::PXC_MAGIC_COARSE: a decode that settled for a lower scale or the DC preview because the heap was
+  // short), so a render decodes the image again; at its end the coarse cache comes back unless that decode wrote one
+  // in its place. A decode that fails, or stops for input, leaves the coarse picture, never none, and nothing it
+  // parked (no pass would resume it). For the variant `monochromeOutput` selects, and with `alsoGrayscale` the
+  // 4-level one beside a 1-bit too. Only for a pass with memory to spare (Page::warmImageCaches' redecodeCoarse: the
+  // pass before a heap restart, the memory ladder's light step where the finer workspace fits).
+  class CoarseRedecodeScope {
+   public:
+    CoarseRedecodeScope(const ImageBlock& image, const bool monochromeOutput, const bool alsoGrayscale)
+        : image_(image),
+          monochromeOutput_(monochromeOutput),
+          primaryAside_(image.setCoarseCacheAside(monochromeOutput)),
+          grayscaleAside_(alsoGrayscale && image.setCoarseCacheAside(false)) {}
+    ~CoarseRedecodeScope() {
+      if (primaryAside_) image_.restoreCoarseCache(monochromeOutput_);
+      if (grayscaleAside_) image_.restoreCoarseCache(false);
+    }
+    CoarseRedecodeScope(const CoarseRedecodeScope&) = delete;
+    CoarseRedecodeScope& operator=(const CoarseRedecodeScope&) = delete;
+
+   private:
+    const ImageBlock& image_;
+    bool monochromeOutput_ = true;
+    bool primaryAside_ = false;
+    bool grayscaleAside_ = false;
   };
 };

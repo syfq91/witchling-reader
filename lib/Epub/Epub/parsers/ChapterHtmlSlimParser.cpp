@@ -852,6 +852,14 @@ CssStyle ChapterHtmlSlimParser::normalizeFontSizeForElement(const char* tagName,
     if (pct >= 100 - deadZone && pct <= 100 + deadZone) {
       normalized.fontSizeMultiplier = 1.0f;
     }
+    // A size that undoes the dropped root size is the book's body text: Calibre sets <body> to its base size and
+    // sizes every paragraph back down by a class (1.125em x 0.88889em = 1). Dropping only the root's factor left
+    // such paragraphs at 0.889 of the reader's size, drawn as the body face shrunk. Only an exact undo, within 1%:
+    // a size its designer chose below the body text's (0.85em under a 1.2em body, 1.02) is kept.
+    const float fromRoot = normalized.fontSizeMultiplier * rootFontSizeBaseline_;
+    if (hasRootFontSizeBaseline_ && fromRoot > 0.99f && fromRoot < 1.01f) {
+      normalized.fontSizeMultiplier = 1.0f;
+    }
   }
   return normalized;
 }
@@ -1169,9 +1177,16 @@ bool ChapterHtmlSlimParser::flushPartWordBuffer() {
     if (pendingInlineImage_.active && currentTextBlock->isEmpty()) {
       attachPendingFloatImage(currentTextBlock->getBlockStyle());
     }
-    if (fontFamilies_.count != 0) noteWordFamily();
+    uint8_t fontSlot = 0;
+    if (fontFamilies_.count != 0) {
+      noteWordFamily();
+      fontSlot = fontFamilies_.slotOf(effectiveFontFamily_);
+    }
+    const bool newFontSlot = (currentTextBlock->fontSlotsUsed() & (1u << fontSlot)) == 0;
     currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, effectiveSizePct,
-                              partWordVisibleOffset_);
+                              partWordVisibleOffset_, fontSlot);
+    // A block laid out in parts has its font already: a family its later words bring in gets its face now.
+    if (newFontSlot && wordFontsSize_ != 0) resolveWordFont(fontSlot);
 
     if (currentTextBlock->size() > 96) {
       if (!ensureHeapForTextLayout("long-block split", currentTextBlock.get())) {
@@ -1593,6 +1608,10 @@ bool ChapterHtmlSlimParser::tryStartDropCapCapture(const CssStyle& cssStyle) {
   pendingDropCap_.depth = depth;
   pendingDropCap_.multiplier = mult;
   pendingDropCap_.style = capStyle;
+  // Its family, with the book's other families in use: the span's own, else the one it sits in.
+  pendingDropCap_.family = fontFamilies_.count == 0      ? 0
+                           : cssStyle.defined.fontFamily ? cssStyle.fontFamily
+                                                         : effectiveFontFamily_;
   pendingDropCap_.textLen = 0;
   return true;
 }
@@ -1611,7 +1630,13 @@ void ChapterHtmlSlimParser::finalizePendingDropCap() {
   // rather than falling back to scaling the small body font — same decompressor budget.
   int32_t capFontId = 0;  // 0 = body font
   float capScale = pendingDropCap_.multiplier;
-  if (fontSizeLadder_.native()) {
+  if (const BlockFontFamilies::Family* family = fontFamilies_.family(fontFamilies_.slotOf(pendingDropCap_.family))) {
+    // A cap in another of the book's families (a display face for the initials): that family's face at the cap's
+    // size, as a heading in it takes, outside the body ladder's one-auxiliary-face budget.
+    const FontSizeLadder::Resolved r = resolveFamilyFont(family, pendingDropCap_.multiplier);
+    capFontId = r.fontId;
+    capScale = r.residual;
+  } else if (fontSizeLadder_.native()) {
     // Every size has a face of its own: the cap is drawn at its own size, scaled only above the largest face.
     const FontSizeLadder::Resolved r = fontSizeLadder_.resolve(pendingDropCap_.multiplier * 100.0f);
     capFontId = r.fontId;
@@ -1853,6 +1878,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
     if (!currentTextBlock->isEmpty()) makePages();
   }
   blockFamilyState_ = 0;  // the next block's words start over
+  wordFontsSize_ = 0;
   applyPendingPageBreak();
   // If the pending anchor is a TOC chapter boundary, force a page break after the previous
   // block is flushed so the chapter starts on a fresh page.
@@ -1880,6 +1906,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
     currentTextBlock.reset(new (std::nothrow)
                                ParsedText(extraParagraphSpacing, hyphenationEnabled, blockStyleWithIndent));
   }
+  if (currentTextBlock) currentTextBlock->setTypography(typography_);
   wireTextBlock();
   wordsExtractedInBlock = 0;
 }
@@ -2265,6 +2292,7 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
     row.cells.back().colSpan = colSpan;
     row.cells.back().text =
         std::unique_ptr<ParsedText>(new ParsedText(false, false));  // no paragraph spacing, no hyphenation in cells
+    row.cells.back().text->setTypography(self->typography_);
     self->currentTable->pendingRowBytes += TABLE_BUFFER_BYTES_PER_CELL;
     row.effectiveCols = static_cast<uint8_t>(row.effectiveCols + colSpan);
     // Column overflow: this row cannot be a grid row. Not degraded here — the cell just created is
@@ -4295,33 +4323,55 @@ bool ChapterHtmlSlimParser::finalize() {
   return success;
 }
 
+static_assert(BlockFontFamilies::kMaxFamilies < TextBlock::kMaxWordFonts,
+              "a word's font slot is its family's (BlockFontFamilies::slotOf) or the body's");
+
 void ChapterHtmlSlimParser::resolveBlockFont(BlockStyle& bs) {
   if (bs.fontResolved) return;
   bs.fontResolved = true;
   if (bs.headingFontId != 0) return;
-  // A block in another of the book's families: that family's face at the block's size, at its body size included.
-  if (const BlockFontFamilies::Family* family =
-          blockFamilyState_ == 0 ? nullptr
-                                 : fontFamilies_.find(blockFamilyState_ == 1 ? blockFirstFamily_ : blockOwnFamily_)) {
-    const FontSizeLadder::Resolved r = family->ladder.resolve(bs.fontSizeMultiplier * 100.0f);
-    bs.headingFontId = r.fontId != 0 ? r.fontId : family->bodyFontId;
-    bs.fontSizeMultiplier = r.residual;
-    return;
-  }
-  if (bs.fontSizeMultiplier == 1.0f) return;
-  const FontSizeLadder::Resolved r = fontSizeLadder_.resolve(bs.fontSizeMultiplier * 100.0f);
-  if (r.fontId == 0) {
-    // Nearest rung is the body font (or the ladder is empty, e.g. SD fonts):
-    // keep the pure-scale path — identical to the legacy behavior.
-    bs.fontSizeMultiplier = r.residual;
-    return;
-  }
-  if (!fontSizeLadder_.native()) {
-    if (auxFontId_ == 0) auxFontId_ = r.fontId;
-    if (r.fontId != auxFontId_) return;  // aux budget already claimed by another size — scale fallback
-  }
+  const uint8_t slot =
+      blockFamilyState_ == 0 ? 0 : fontFamilies_.slotOf(blockFamilyState_ == 1 ? blockFirstFamily_ : blockOwnFamily_);
+  const float size = bs.fontSizeMultiplier;
+  const FontSizeLadder::Resolved r = resolveFamilyFont(fontFamilies_.family(slot), size);
   bs.headingFontId = r.fontId;
   bs.fontSizeMultiplier = r.residual;
+  // The block's words in other families than its own: each family's face at the block's size.
+  if (fontFamilies_.count == 0 || !currentTextBlock || &currentTextBlock->getBlockStyle() != &bs) return;
+  wordFontsSize_ = size;
+  blockFontSlot_ = slot;
+  for (uint8_t s = 0; s <= fontFamilies_.count; ++s) {
+    if ((currentTextBlock->fontSlotsUsed() & (1u << s)) != 0) resolveWordFont(s);
+  }
+}
+
+FontSizeLadder::Resolved ChapterHtmlSlimParser::resolveFamilyFont(const BlockFontFamilies::Family* family,
+                                                                  const float size) {
+  // Another of the book's families: its face at the size, at its body size included.
+  if (family) {
+    FontSizeLadder::Resolved r = family->ladder.resolve(size * 100.0f);
+    if (r.fontId == 0) r.fontId = family->bodyFontId;
+    return r;
+  }
+  if (size == 1.0f) return {};
+  const FontSizeLadder::Resolved r = fontSizeLadder_.resolve(size * 100.0f);
+  // Nearest rung is the body font (or the ladder is empty, e.g. SD fonts): keep the pure-scale
+  // path — identical to the legacy behavior.
+  if (r.fontId == 0) return r;
+  if (!fontSizeLadder_.native()) {
+    if (auxFontId_ == 0) auxFontId_ = r.fontId;
+    if (r.fontId != auxFontId_) return {0, size};  // aux budget already claimed by another size — scale fallback
+  }
+  return r;
+}
+
+void ChapterHtmlSlimParser::resolveWordFont(const uint8_t slot) {
+  if (slot == blockFontSlot_) return;  // the block's own family: its font, the slot's default
+  const FontSizeLadder::Resolved r = resolveFamilyFont(fontFamilies_.family(slot), wordFontsSize_);
+  const TextBlock::WordFont font{r.fontId != 0 ? r.fontId : fontId, r.residual};
+  const BlockStyle& bs = currentTextBlock->getBlockStyle();
+  if (font.fontId == effectiveFontId(bs) && font.scale == bs.fontSizeMultiplier) return;  // the block's font after all
+  currentTextBlock->setFontSlot(slot, font);
 }
 
 int ChapterHtmlSlimParser::effectiveLineHeight(const BlockStyle& bs) const {
@@ -5099,6 +5149,7 @@ bool ChapterHtmlSlimParser::degradeRowAtOpenCell(const char* reason) {
     ok = emitCellAsParagraph(chunk, /*emitImage=*/false);
   }
   open.text = std::unique_ptr<ParsedText>(new ParsedText(false, false));
+  open.text->setTypography(typography_);
 
   t.pendingRow.cells.push_back(std::move(open));
   t.pendingRow.effectiveCols = 0;

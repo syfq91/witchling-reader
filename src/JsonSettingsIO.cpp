@@ -2,9 +2,11 @@
 
 #include <ArduinoJson.h>
 #include <HalStorage.h>
+#include <HeapFit.h>
 #include <Logging.h>
 #include <ObfuscationUtils.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <string>
@@ -96,7 +98,7 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
 
 bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path) {
   JsonDocument doc;
-  forEachSetting([&](const SettingInfo& info) {
+  forEachPersistedSetting([&](const SettingInfo& info) {
     if (!info.key) return;
     // persistPtr covers rows whose UI type carries no field pointer of its own (slider ACTIONs).
     // Dynamic entries are stored in their own files — skip.
@@ -168,7 +170,27 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
 
   auto clamp = [](uint8_t val, uint8_t maxVal, uint8_t def) -> uint8_t { return val < maxVal ? val : def; };
 
-  forEachSetting([&](const SettingInfo& info) {
+#if CP_TOUCH_UI
+  // Gesture keys written against an older generation of the shipped defaults are
+  // ignored below, so the compiled defaults win. Absent (0) counts as older,
+  // which is exactly the case for every file written before the stamp existed.
+  const bool staleGestureDefaults =
+      doc["gestureDefaultsV"].as<int>() < static_cast<int>(CrossPointSettings::GESTURE_DEFAULTS_VERSION);
+  // Cannot match on a board with no digitiser: the loop below walks the FILTERED
+  // settings list, which carries no gesture rows there, so no gesture key ever
+  // reaches this. Gated rather than left to be evaluated and always fail, because
+  // the BINDINGS table it walks is 400 bytes of .rodata that nothing else in such
+  // a build refers to.
+  const auto isGestureKey = [](const char* key) {
+    if (key == nullptr) return false;
+    for (const auto& binding : TouchGestures::BINDINGS) {
+      if (std::strcmp(key, binding.key) == 0) return true;
+    }
+    return false;
+  };
+#endif
+
+  forEachPersistedSetting([&](const SettingInfo& info) {
     if (!info.key) return;
     // See the matching comment in saveSettings.
     const auto field = info.valuePtr ? info.valuePtr : info.persistPtr;
@@ -553,16 +575,32 @@ bool JsonSettingsIO::saveRecentBooks(const RecentBooksStore& store, const char* 
   return Storage.writeFile(path, json);
 }
 
-bool JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) {
+RecentBooksLoad JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) {
   JsonDocument doc;
   auto error = deserializeJson(doc, json);
+  if (error == DeserializationError::NoMemory) {
+    LOG_ERR("RBS", "No memory to read the recent books");
+    return RecentBooksLoad::ShortOfMemory;
+  }
   if (error) {
     LOG_ERR("RBS", "JSON parse error: %s", error.c_str());
-    return false;
+    return RecentBooksLoad::Broken;
   }
 
   store.recentBooks.clear();
   JsonArray arr = doc["books"].as<JsonArray>();
+  // The list and every entry's strings come from the throwing operator new, which aborts the device on a short heap
+  // (a book opened at the memory ladder's lowest, 2026-10): the list asked for in one block, and the strings, at most
+  // the file's own text and their block headers, against what is free. Short, nothing is read.
+  constexpr size_t kMaxBooks = 10;
+  constexpr size_t kStringOverhead = 6 * 16;  // a heap block header for each of an entry's strings
+  const size_t count = std::min<size_t>(arr.size(), kMaxBooks);
+  if (!heapHasBlockFor(count * sizeof(RecentBook)) ||
+      !heapHasFree(count * (sizeof(RecentBook) + kStringOverhead) + strlen(json))) {
+    LOG_ERR("RBS", "No memory to read %u recent books", static_cast<unsigned>(count));
+    return RecentBooksLoad::ShortOfMemory;
+  }
+  store.recentBooks.reserve(count);
   // Which meaning the per-book size overrides in this file carry (point sizes since version 2).
   // Absent (0) is every file written before the sizes were put in pixel order.
   const auto fontSizeOrderV = static_cast<uint8_t>(doc["fontSizeOrderV"] | 0);
@@ -574,7 +612,9 @@ bool JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) 
   };
 
   for (JsonObject obj : arr) {
-    if (store.getCount() >= 10) break;
+    // The list as filled so far, not getCount(): that asks ensureLoaded(), and the store is not loaded until this
+    // returns.
+    if (store.recentBooks.size() >= kMaxBooks) break;
     RecentBook book;
     book.path = obj["path"] | std::string("");
     book.title = obj["title"] | std::string("");
@@ -604,11 +644,11 @@ bool JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) 
     book.hyphenationOverride = clampInt8(obj["hyphenationOverride"] | -1, -1, 1, -1);
     book.fontSizeNormalizationOverride = clampInt8(obj["fontSizeNormalizationOverride"] | -1, -1, 1, -1);
     book.inlineFootnotePreviewsOverride = clampInt8(obj["inlineFootnotePreviewsOverride"] | -1, -1, 1, -1);
-    store.recentBooks.push_back(book);
+    store.recentBooks.push_back(std::move(book));
   }
 
-  LOG_DBG("RBS", "Recent books loaded from file (%d entries)", store.getCount());
-  return true;
+  LOG_DBG("RBS", "Recent books loaded from file (%u entries)", static_cast<unsigned>(store.recentBooks.size()));
+  return RecentBooksLoad::Loaded;
 }
 
 // ---- OpdsServerStore ----

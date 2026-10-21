@@ -156,6 +156,41 @@ TEST(SerialCommandGrammar, IntegersAndLists) {
   EXPECT_FALSE(SerialCommandGrammar::parseIntList("1,", xy, 2));
 }
 
+TEST(SerialCommandGrammar, HeapBallastInBytesAndBlocks) {
+  int bytes = 0;
+  int blocks = 0;
+  ASSERT_TRUE(SerialCommandGrammar::parseHeapHold("HOLD=20000", bytes, blocks, 16));
+  EXPECT_EQ(20000, bytes);
+  EXPECT_EQ(1, blocks);
+  ASSERT_TRUE(SerialCommandGrammar::parseHeapHold("HOLD=24000,6", bytes, blocks, 16));
+  EXPECT_EQ(24000, bytes);
+  EXPECT_EQ(6, blocks);
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapHold("HOLD=0", bytes, blocks, 16));
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapHold("HOLD=-5", bytes, blocks, 16));
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapHold("HOLD=4000,17", bytes, blocks, 16)) << "more blocks than held";
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapHold("HOLD=4000,0", bytes, blocks, 16));
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapHold("HOLD=3,4", bytes, blocks, 16)) << "less than a byte a block";
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapHold("HOLD=4000,2,1", bytes, blocks, 16));
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapHold("KEEP=4000", bytes, blocks, 16));
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapHold("HOLD", bytes, blocks, 16));
+}
+
+TEST(SerialCommandGrammar, HeapRefusalsOfDecodesAndReloads) {
+  int decodes = -1;
+  int reloads = -1;
+  ASSERT_TRUE(SerialCommandGrammar::parseHeapRefuse("REFUSE=2", decodes, reloads));
+  EXPECT_EQ(2, decodes);
+  EXPECT_EQ(0, reloads);
+  ASSERT_TRUE(SerialCommandGrammar::parseHeapRefuse("REFUSE=2,1", decodes, reloads));
+  EXPECT_EQ(2, decodes);
+  EXPECT_EQ(1, reloads);
+  ASSERT_TRUE(SerialCommandGrammar::parseHeapRefuse("REFUSE=0", decodes, reloads));  // none: clears them
+  EXPECT_EQ(0, decodes);
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapRefuse("REFUSE=256", decodes, reloads));
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapRefuse("REFUSE=-1", decodes, reloads));
+  EXPECT_FALSE(SerialCommandGrammar::parseHeapRefuse("HOLD=2", decodes, reloads));
+}
+
 TEST(SerialCommandGrammar, LogLevelsByTagOrName) {
   uint8_t level = 9;
   ASSERT_TRUE(SerialCommandGrammar::parseLogLevel("ERR", level));
@@ -167,6 +202,26 @@ TEST(SerialCommandGrammar, LogLevelsByTagOrName) {
   ASSERT_TRUE(SerialCommandGrammar::parseLogLevel("trc", level));
   EXPECT_EQ(level, 3);
   EXPECT_FALSE(SerialCommandGrammar::parseLogLevel("WARN", level)) << "the firmware has no WARN level";
+}
+
+TEST(SerialCommandGrammar, LanguagesByCodeNameOrIndex) {
+  const char* const codes[] = {"EN", "DE", "ZH"};
+  const char* const names[] = {"English", "Deutsch", "\xE7\xAE\x80\xE4\xBD\x93\xE4\xB8\xAD\xE6\x96\x87"};
+  size_t index = 9;
+  ASSERT_TRUE(SerialCommandGrammar::parseLanguage("ZH", codes, names, 3, index));
+  EXPECT_EQ(index, 2u);
+  ASSERT_TRUE(SerialCommandGrammar::parseLanguage("de", codes, names, 3, index)) << "a code in any case";
+  EXPECT_EQ(index, 1u);
+  ASSERT_TRUE(
+      SerialCommandGrammar::parseLanguage("\xE7\xAE\x80\xE4\xBD\x93\xE4\xB8\xAD\xE6\x96\x87", codes, names, 3, index));
+  EXPECT_EQ(index, 2u);
+  ASSERT_TRUE(SerialCommandGrammar::parseLanguage("0", codes, names, 3, index));
+  EXPECT_EQ(index, 0u);
+  EXPECT_FALSE(SerialCommandGrammar::parseLanguage("3", codes, names, 3, index)) << "past the last language";
+  EXPECT_FALSE(SerialCommandGrammar::parseLanguage("-1", codes, names, 3, index));
+  EXPECT_FALSE(SerialCommandGrammar::parseLanguage("FR", codes, names, 3, index));
+  EXPECT_FALSE(SerialCommandGrammar::parseLanguage("english", codes, names, 3, index)) << "a name matches exactly";
+  EXPECT_FALSE(SerialCommandGrammar::parseLanguage("", codes, names, 3, index));
 }
 
 TEST(SerialCommandGrammar, PlainValuesAreWrittenBare) {

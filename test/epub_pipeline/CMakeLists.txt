@@ -13,7 +13,9 @@ set(PIPELINE_SOURCES
   ${REPO_ROOT}/lib/Epub/Epub/SpinePageIndex.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Page.cpp
   ${REPO_ROOT}/lib/Epub/Epub/CjkLineBreak.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/CjkPunctuation.cpp
   ${REPO_ROOT}/lib/Epub/Epub/ParsedText.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/TypographyProfile.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
   ${REPO_ROOT}/lib/Epub/Epub/FootnotePreviews.cpp
   ${REPO_ROOT}/lib/Epub/Epub/FootnoteShape.cpp
@@ -118,6 +120,7 @@ add_executable(EpubPipelineTest
   PageBreakAfterTest.cpp
   KeepTogetherTest.cpp
   NativeSizeLayoutTest.cpp
+  RootFontSizeTest.cpp
   FontFamilyLayoutTest.cpp
   SpineCacheLayoutTest.cpp
   SaxStateInArenaTest.cpp
@@ -130,8 +133,10 @@ add_executable(EpubPipelineTest
   BufferedPrintTest.cpp
   CoverPipelineTest.cpp
   CoverWrapperTest.cpp
+  CoverFallbackTest.cpp
   VisibleTextTest.cpp
   BookFontsTest.cpp
+  FirstOpenIndexingTest.cpp
   # A book's embedded body font (Publisher Fonts): the probe and the extraction. Its SHA-1 comes from
   # test/shims/wolfssl, standing in for wolfCrypt.
   ${REPO_ROOT}/lib/Epub/Epub/BookFonts.cpp
@@ -139,6 +144,9 @@ add_executable(EpubPipelineTest
   # binary must NOT get the real one (it overrides malloc/free process-wide). The two dump
   # targets pick their own implementation, so this cannot be moved into PIPELINE_SOURCES.
   HeapTrackStub.cpp
+  # Refuses large blocks as a fragmented device heap would, and tracks the live heap
+  # (FirstOpenIndexingTest). Unarmed it only counts.
+  ${REPO_ROOT}/test/book_metadata_cache/AllocationRefusal.cpp
   ${PIPELINE_SOURCES}
 )
 target_include_directories(EpubPipelineTest PRIVATE ${PIPELINE_INCLUDES})
@@ -152,6 +160,8 @@ target_compile_definitions(EpubPipelineTest PRIVATE
   # LongChapterPageTablesTest refuses build-table chunks on purpose (see ChunkedVector.h). The
   # hook is inert until a test arms it; firmware and the dump tools never define it.
   CHUNKED_VECTOR_FAULT_INJECTION
+  # Central-directory walk counters (ZipFile.h), for the tests that bound them. Inert otherwise.
+  ZIP_FILE_SCAN_STATS
 )
 target_link_libraries(EpubPipelineTest PRIVATE
   crosspoint_test_common

@@ -93,6 +93,16 @@ void drawSyncIndicator(const GfxRenderer& renderer, const int x, const int y, co
       return;
   }
 }
+
+// A memory chip, as wide as the sync indicator: a body with its die, and pins above and below.
+void drawLowMemoryIndicator(const GfxRenderer& renderer, const int x, const int y) {
+  renderer.drawRect(x + 1, y + 2, SYNC_INDICATOR_SIZE - 2, SYNC_INDICATOR_SIZE - 4, true);
+  renderer.fillRect(x + 4, y + 5, SYNC_INDICATOR_SIZE - 8, SYNC_INDICATOR_SIZE - 10, true);
+  for (int pin = x + 3; pin < x + SYNC_INDICATOR_SIZE - 2; pin += 2) {
+    renderer.fillRect(pin, y, 1, 2, true);
+    renderer.fillRect(pin, y + SYNC_INDICATOR_SIZE - 2, 1, 2, true);
+  }
+}
 }  // namespace
 
 void BaseTheme::drawBatteryOutline(const GfxRenderer& renderer, int x, int y, int battWidth, int rectHeight) {
@@ -733,7 +743,8 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
                               const int pageCount, const std::string& bookTitle, const std::string& chapterTitle,
                               const int paddingBottom, const bool isStarred, const std::string& printedPageLabel,
                               const bool fillMargin, const bool pageCountApproximate,
-                              const std::vector<float>& chapterMarkers) const {
+                              const std::vector<float>& chapterMarkers,
+                              const bool lowMemory) const {
   if (!SETTINGS.showStatusBar) {
     return;
   }
@@ -797,7 +808,7 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     }
   }
 
-  if (!UITheme::hasStatusBarItems()) {
+  if (!UITheme::hasStatusBarItems() && !lowMemory) {
     return;
   }
 
@@ -923,6 +934,9 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
                           text.c_str());
       }
     }
+  }
+  if (lowMemory) {
+    drawLowMemoryIndicator(renderer, rightEdge - rightClusterWidth - 14, textY + 6);
   }
 }
 

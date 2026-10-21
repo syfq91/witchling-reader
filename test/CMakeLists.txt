@@ -91,6 +91,8 @@ set(I18N_GENERATED_KEYS "${I18N_GENERATED_DIR}/I18nKeys.h")
 set(I18N_GENERATED_STRINGS "${I18N_GENERATED_DIR}/I18nStrings.cpp")
 
 file(GLOB I18N_TRANSLATION_FILES "${REPO_ROOT}/lib/I18n/translations/*.yaml")
+# gen_i18n.py also checks every translation against the UI font headers.
+file(GLOB I18N_UI_FONT_HEADERS "${REPO_ROOT}/lib/EpdFont/builtinFonts/*.h")
 
 add_custom_command(
   OUTPUT ${I18N_GENERATED_KEYS} ${I18N_GENERATED_STRINGS}
@@ -98,6 +100,7 @@ add_custom_command(
   COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/gen_i18n.py
           ${REPO_ROOT}/lib/I18n/translations ${I18N_GENERATED_DIR}
   DEPENDS ${REPO_ROOT}/scripts/gen_i18n.py ${I18N_TRANSLATION_FILES}
+          ${REPO_ROOT}/lib/EpdFont/scripts/ui_font_coverage.py ${I18N_UI_FONT_HEADERS}
   COMMENT "Generating I18n headers for host tests"
   VERBATIM
 )
@@ -122,6 +125,7 @@ add_subdirectory(book_details_cache)
 add_subdirectory(path_containment)
 add_subdirectory(protected_paths)
 add_subdirectory(firmware_board_tag)
+add_subdirectory(upload_buffer)
 add_subdirectory(cover_grid_layout)
 add_subdirectory(card_text_fit)
 add_subdirectory(list_grammar)
@@ -149,21 +153,22 @@ add_subdirectory(text_block_range)
 add_subdirectory(token_boundary)
 add_subdirectory(cjk_line_break)
 add_subdirectory(cjk_layout)
+add_subdirectory(typography)
 add_subdirectory(zip_entry_reader)
-# After zip_entry_reader: reuses its HalStorage shim.
-add_subdirectory(hal_storage)
 # After zip_entry_reader: reuses its inflate_reader_host target.
 add_subdirectory(png_decoder)
 # After zip_entry_reader: reuses its inflate_reader_host target.
 add_subdirectory(book_metadata_cache)
 add_subdirectory(uzlib_lzcopy)
 add_subdirectory(sdfat_alloc)
+add_subdirectory(hal_storage)  # after sdfat_alloc: links its sdfat_host
 add_subdirectory(font_group_stream)
 add_subdirectory(font_cache_manager)  # after font_group_stream: links its uzlib_font_ring
 add_subdirectory(gif_decoder)
 add_subdirectory(jpeg_decoder)
 add_subdirectory(serial_command_grammar)
 add_subdirectory(idle_gate)
+add_subdirectory(indexing_progress_gate)
 add_subdirectory(opds_filename)
 add_subdirectory(epub_pipeline)
 add_subdirectory(memory_arena)
@@ -172,11 +177,16 @@ add_subdirectory(sd_font_intervals)
 add_subdirectory(sd_font_arena)
 add_subdirectory(sd_font_kern)
 add_subdirectory(font_size_ladder)
+add_subdirectory(scaled_glyph)
 add_subdirectory(font_lookup)
 add_subdirectory(reader_font_sizes)
 add_subdirectory(list_row_tap)
 add_subdirectory(list_row_cache)
 add_subdirectory(chapter_page_span)
+add_subdirectory(image_memory_ladder)
+add_subdirectory(pre_render_gate)
+add_subdirectory(lane_before_build)
+add_subdirectory(displayed_page)
 add_subdirectory(settings_grouping)
 add_subdirectory(status_bar_settings)
 add_subdirectory(setting_info_options)
@@ -184,6 +194,7 @@ add_subdirectory(epub_progress_record)
 add_subdirectory(home_menu)
 add_subdirectory(ui_font_ladder)
 add_subdirectory(text_truncation)
+add_subdirectory(text_wrap)
 add_subdirectory(default_ignorable)
 add_subdirectory(utf8_compose)
 add_subdirectory(utf8_lower)
@@ -191,6 +202,9 @@ add_subdirectory(adaptive_tone)
 add_subdirectory(gray8_writer)
 add_subdirectory(glyph_fallback)
 add_subdirectory(glyph_provider)
+add_subdirectory(fallback_face_provider)  # after font_group_stream: links its uzlib_font_ring
+add_subdirectory(ui_font_compression)  # likewise
+add_subdirectory(flash_lang_partition)  # likewise
 add_subdirectory(glyph_store)
 add_subdirectory(ttf_rasterizer)
 add_subdirectory(ttf_font)
@@ -198,5 +212,7 @@ add_subdirectory(ttf_font)
 add_subdirectory(dictionary)
 add_subdirectory(font_manifest_parser)
 add_subdirectory(folder_count_memo)
+add_subdirectory(folder_walk)
 add_subdirectory(bitmap_rows)
 add_subdirectory(xtc_parser)
+add_subdirectory(usb_link_debounce)

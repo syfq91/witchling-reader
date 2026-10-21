@@ -159,12 +159,15 @@ class BaseTheme {
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message, bool overlayDisplayedFrame = true,
                          PopupShip ship = PopupShip::Blocking) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
+  // lowMemory: the page is drawn short of memory (an image as a "not enough memory" box, see ImageMemoryLadder): a
+  // chip icon beside the sync indicator says so.
   virtual void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
                              const int pageCount, const std::string& bookTitle, const std::string& chapterTitle,
                              const int paddingBottom = 0, const bool isStarred = false,
                              const std::string& printedPageLabel = std::string(), const bool fillMargin = true,
                              const bool pageCountApproximate = false,
-                             const std::vector<float>& chapterMarkers = {}) const;
+                             const std::vector<float>& chapterMarkers = {},
+                             const bool lowMemory = false) const;
   virtual void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;
   virtual void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
                              int contentStartX = 0, int contentWidth = 0) const;

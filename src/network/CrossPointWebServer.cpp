@@ -23,6 +23,7 @@
 #include "OpdsServerStore.h"
 #include "SdCardFontGlobals.h"
 #include "SdCardFontRegistry.h"
+#include "SerialTestApi.h"
 #include "SettingsByKey.h"
 #include "SettingsList.h"
 #include "SystemStatus.h"
@@ -55,6 +56,12 @@ static constexpr uint32_t MIN_HEAP_FOR_JSON = 8192;
 // so we require 12KB headroom before attempting a large static file.
 static constexpr uint32_t MIN_HEAP_FOR_HTML = 12288;
 
+// The answer to a request the heap cannot serve now: 503, and when to ask again.
+static void sendLowMemory(WebServer* server) {
+  server->sendHeader("Retry-After", "5");
+  server->send(503, "application/json", "{\"error\":\"low memory\"}");
+}
+
 static bool rejectIfLowMemory(WebServer* server, uint32_t minAlloc = MIN_HEAP_FOR_JSON) {
   const uint32_t avail = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT);
   if (avail >= minAlloc) {
@@ -62,8 +69,7 @@ static bool rejectIfLowMemory(WebServer* server, uint32_t minAlloc = MIN_HEAP_FO
   }
   LOG_DBG("WEB", "Low memory — rejecting request (maxAlloc=%lu, need=%lu)", (unsigned long)avail,
           (unsigned long)minAlloc);
-  server->sendHeader("Retry-After", "5");
-  server->send(503, "application/json", "{\"error\":\"low memory\"}");
+  sendLowMemory(server);
   return true;
 }
 
@@ -816,20 +822,20 @@ static unsigned long totalWriteTime = 0;
 static size_t writeCount = 0;
 
 static bool flushUploadBuffer(CrossPointWebServer::UploadState& state) {
-  if (state.bufferPos > 0 && state.file) {
+  const size_t buffered = state.buffer.size();
+  if (buffered > 0 && state.file) {
     HalSystem::feedWatchdog();  // Reset watchdog before potentially slow SD write
     const unsigned long writeStart = millis();
-    const size_t written = state.file.write(state.buffer.data(), state.bufferPos);
+    const size_t written = state.file.write(state.buffer.data(), buffered);
     totalWriteTime += millis() - writeStart;
     writeCount++;
     HalSystem::feedWatchdog();  // Reset watchdog after SD write
+    state.buffer.clear();
 
-    if (written != state.bufferPos) {
-      LOG_DBG("WEB", "[UPLOAD] Buffer flush failed: expected %d, wrote %d", state.bufferPos, written);
-      state.bufferPos = 0;
+    if (written != buffered) {
+      LOG_DBG("WEB", "[UPLOAD] Buffer flush failed: expected %d, wrote %d", buffered, written);
       return false;
     }
-    state.bufferPos = 0;
   }
   return true;
 }
@@ -848,6 +854,7 @@ static void discardUploadFile(CrossPointWebServer::UploadState& state) {
 
 void CrossPointWebServer::handleUpload(UploadState& state) const {
   static size_t lastLoggedSize = 0;
+  static unsigned long lastLoggedAt = 0;
 
   // Reset watchdog at start of every upload callback - HTTP parsing can be slow
   HalSystem::feedWatchdog();
@@ -873,10 +880,9 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     state.error = "";
     uploadStartTime = millis();
     lastLoggedSize = 0;
-    state.bufferPos = 0;
+    lastLoggedAt = uploadStartTime;
     totalWriteTime = 0;
     writeCount = 0;
-    state.buffer.resize(UploadState::UPLOAD_BUFFER_SIZE);
 
     // The client controls this name outright, and it is concatenated onto the
     // target directory below. Without this it can carry its own separators and
@@ -913,6 +919,14 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       return;
     }
 
+    // The write buffer before the file: without it the upload is refused with nothing on the card.
+    if (!state.buffer.take()) {
+      state.error = "Not enough memory - try again";
+      state.lowMemory = true;
+      LOG_ERR("WEB", "OOM: no upload buffer for %s", filePath.c_str());
+      return;
+    }
+
     // Check if file already exists - SD operations can be slow. It stays until the upload has
     // all arrived (finishUploadPart()).
     HalSystem::feedWatchdog();
@@ -940,16 +954,12 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       size_t remaining = upload.currentSize;
 
       while (remaining > 0) {
-        const size_t space = UploadState::UPLOAD_BUFFER_SIZE - state.bufferPos;
-        const size_t toCopy = (remaining < space) ? remaining : space;
-
-        memcpy(state.buffer.data() + state.bufferPos, data, toCopy);
-        state.bufferPos += toCopy;
-        data += toCopy;
-        remaining -= toCopy;
+        const size_t copied = state.buffer.fill(data, remaining);
+        data += copied;
+        remaining -= copied;
 
         // Flush buffer when full
-        if (state.bufferPos >= UploadState::UPLOAD_BUFFER_SIZE) {
+        if (state.buffer.full()) {
           if (!flushUploadBuffer(state)) {
             state.error = "Failed to write to SD card - disk may be full";
             state.file.close();
@@ -1002,9 +1012,9 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         clearBookCacheIfNeeded(filePath);
       }
     }
-    state.buffer = {};
+    state.buffer.release();
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
-    state.bufferPos = 0;  // Discard buffered data
+    state.buffer.release();  // Discard buffered data
     if (state.file) {
       state.file.close();
       // Try to delete the incomplete file
@@ -1013,7 +1023,6 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       filePath += state.fileName;
       Storage.remove(filePath.c_str());
     }
-    state.buffer = {};
     state.error = "Upload aborted";
     LOG_DBG("WEB", "Upload aborted");
   }
@@ -1024,7 +1033,9 @@ void CrossPointWebServer::handleUploadPost(UploadState& state) const {
     server->send(200, "text/plain", "File uploaded successfully: " + state.fileName);
   } else {
     const String error = state.error.isEmpty() ? "Unknown error during upload" : state.error;
-    server->send(400, "text/plain", error);
+    // Refused for want of memory: 503 and when to ask again, as sendLowMemory() answers, but in this route's text.
+    if (state.lowMemory) server->sendHeader("Retry-After", "5");
+    server->send(state.lowMemory ? 503 : 400, "text/plain", error);
   }
 }
 
@@ -1590,7 +1601,13 @@ void CrossPointWebServer::handlePostSettings() {
     }
   }
 
-  SettingsByKey::commit();
+  // The page reports any answer but 200 as not saved and keeps the edits, so the user can retry.
+  if (!SettingsByKey::commit()) {
+    LOG_ERR("WEB", "Applied %d setting(s), but the settings file was not written", applied);
+    server->send(500, "text/plain",
+                 "the settings file could not be written to the SD card; the change lasts until the reader restarts");
+    return;
+  }
 
   LOG_DBG("WEB", "Applied %d setting(s)", applied);
   server->send(200, "text/plain", String("Applied ") + String(applied) + " setting(s)");
@@ -1645,6 +1662,13 @@ void CrossPointWebServer::handleFontList() {
 
 void CrossPointWebServer::handleFontUploadData() {
   HTTPUpload& up = server->upload();
+  // An upload that does not go in leaves no trace: its part goes, the font it was to replace
+  // stays. Closed only when open: a START refused before the open (the first upload since boot
+  // with a bad name) never opened the handle, and HalFile::close() asserts on that.
+  const auto discardFontUploadPart = [this] {
+    if (fontUpload.file) fontUpload.file.close();
+    if (!fontUpload.filePath.empty()) Storage.remove((fontUpload.filePath + UPLOAD_PART_SUFFIX).c_str());
+  };
 
   switch (up.status) {
     case UPLOAD_FILE_START: {
@@ -1655,11 +1679,9 @@ void CrossPointWebServer::handleFontUploadData() {
       fontUpload.magicChecked = false;
       fontUpload.headerBytesReceived = 0;
       fontUpload.bytesWritten = 0;
-      fontUpload.bufferPos = 0;
-      fontUpload.buffer.resize(FontUploadState::BUFFER_SIZE);
-      // The END and ABORTED cases delete filePath whenever the upload is not valid. Left
-      // over from the previous upload, it named that upload's INSTALLED font, so a START
-      // refused below (bad family or file name, no family dir) deleted it.
+      fontUpload.lowMemory = false;
+      // END and ABORTED delete filePath's part whenever the upload is not valid; a START refused
+      // below (bad family or file name, no family dir) leaves them none to delete.
       fontUpload.filePath.clear();
 
       if (!FontInstaller::isValidFamilyName(family.c_str())) {
@@ -1677,6 +1699,14 @@ void CrossPointWebServer::handleFontUploadData() {
         break;
       }
 
+      // The write buffer before anything on the card: without it the upload is refused, leaving neither a family
+      // folder nor a part behind.
+      if (!fontUpload.buffer.take()) {
+        LOG_ERR("WEB", "OOM: no upload buffer for %s", filename.c_str());
+        fontUpload.lowMemory = true;
+        break;
+      }
+
       fontUpload.familyName = family.c_str();
 
       FontInstaller installer(sdFontSystem.registry());
@@ -1689,8 +1719,13 @@ void CrossPointWebServer::handleFontUploadData() {
       FontInstaller::buildFontPath(family.c_str(), filename.c_str(), path, sizeof(path));
       fontUpload.filePath = path;
 
-      if (!Storage.openFileForWrite("WEB", path, fontUpload.file)) {
-        LOG_ERR("WEB", "Failed to open font file for write: %s", path);
+      // Staged in <font>.part, which the registry does not list, and moved in by
+      // finishUploadPart() once it has all arrived, as every other upload is. Written in place, an
+      // upload cut short left a truncated font for the registry to list and the reader to load,
+      // and an aborted one deleted the font it was to replace.
+      const std::string partPath = fontUpload.filePath + UPLOAD_PART_SUFFIX;
+      if (!Storage.openFileForWrite("WEB", partPath, fontUpload.file)) {
+        LOG_ERR("WEB", "Failed to open font file for write: %s", partPath.c_str());
         break;
       }
 
@@ -1700,8 +1735,6 @@ void CrossPointWebServer::handleFontUploadData() {
     }
 
     case UPLOAD_FILE_WRITE: {
-      // No END guard needed here, unlike /upload: this ABORTED branch deletes the file whether or
-      // not END already closed it.
       if (dropUploadIfCancelled() || !fontUpload.valid) break;
       HalSystem::feedWatchdog();
 
@@ -1726,15 +1759,12 @@ void CrossPointWebServer::handleFontUploadData() {
       size_t remaining = up.currentSize;
       const uint8_t* src = up.buf;
       while (remaining > 0) {
-        size_t space = FontUploadState::BUFFER_SIZE - fontUpload.bufferPos;
-        size_t chunk = (remaining < space) ? remaining : space;
-        memcpy(fontUpload.buffer.data() + fontUpload.bufferPos, src, chunk);
-        fontUpload.bufferPos += chunk;
+        const size_t chunk = fontUpload.buffer.fill(src, remaining);
         src += chunk;
         remaining -= chunk;
 
-        if (fontUpload.bufferPos >= FontUploadState::BUFFER_SIZE) {
-          const size_t expected = fontUpload.bufferPos;
+        if (fontUpload.buffer.full()) {
+          const size_t expected = fontUpload.buffer.size();
           const size_t written = fontUpload.file.write(fontUpload.buffer.data(), expected);
           fontUpload.bytesWritten += written;
           if (written != expected) {
@@ -1744,7 +1774,7 @@ void CrossPointWebServer::handleFontUploadData() {
             fontUpload.file.close();
             return;
           }
-          fontUpload.bufferPos = 0;
+          fontUpload.buffer.clear();
           HalSystem::feedWatchdog();
         }
       }
@@ -1752,12 +1782,15 @@ void CrossPointWebServer::handleFontUploadData() {
     }
 
     case UPLOAD_FILE_END: {
+      // As in handleUpload(): a cancel on the last chunk still reaches END, with ABORTED straight
+      // after, so installing the font here would keep the font of an aborted upload.
+      if (!server->client().connected()) break;
       if (fontUpload.valid && !fontUpload.magicChecked) {
         LOG_ERR("WEB", "Invalid .cpfont upload: header not fully received");
         fontUpload.valid = false;
       }
-      if (fontUpload.valid && fontUpload.bufferPos > 0) {
-        const size_t expected = fontUpload.bufferPos;
+      if (fontUpload.valid && fontUpload.buffer.size() > 0) {
+        const size_t expected = fontUpload.buffer.size();
         const size_t written = fontUpload.file.write(fontUpload.buffer.data(), expected);
         fontUpload.bytesWritten += written;
         if (written != expected) {
@@ -1765,26 +1798,23 @@ void CrossPointWebServer::handleFontUploadData() {
                   static_cast<unsigned>(expected));
           fontUpload.valid = false;
         }
-        fontUpload.bufferPos = 0;
+        fontUpload.buffer.clear();
       }
-      fontUpload.file.close();
-
-      if (!fontUpload.valid && !fontUpload.filePath.empty()) {
-        Storage.remove(fontUpload.filePath.c_str());
+      if (fontUpload.valid && !finishUploadPart(fontUpload.file, fontUpload.filePath.c_str())) {
+        LOG_ERR("WEB", "Failed to install uploaded font: %s", fontUpload.filePath.c_str());
+        fontUpload.valid = false;
       }
+      if (!fontUpload.valid) discardFontUploadPart();
 
-      fontUpload.buffer = {};
+      fontUpload.buffer.release();
       LOG_DBG("WEB", "Font upload end: valid=%d, %zu bytes", fontUpload.valid, fontUpload.bytesWritten);
       break;
     }
 
     case UPLOAD_FILE_ABORTED: {
-      fontUpload.file.close();
-      if (!fontUpload.filePath.empty()) {
-        Storage.remove(fontUpload.filePath.c_str());
-      }
+      discardFontUploadPart();
       fontUpload.valid = false;
-      fontUpload.buffer = {};
+      fontUpload.buffer.release();
       LOG_DBG("WEB", "Font upload aborted");
       break;
     }
@@ -1797,6 +1827,8 @@ void CrossPointWebServer::handleFontUpload() {
     installer.refreshRegistry();
     server->send(200, "application/json", "{\"ok\":true}");
     LOG_DBG("WEB", "Font upload complete: %s", fontUpload.filePath.c_str());
+  } else if (fontUpload.lowMemory) {
+    sendLowMemory(server.get());
   } else {
     server->send(400, "application/json", "{\"error\":\"Invalid .cpfont file\"}");
   }
@@ -1904,15 +1936,22 @@ void CrossPointWebServer::handlePostWifiNetwork() {
       ok = WIFI_STORE.addCredential(ssid, password);
     }
 
+    // The entry is there and an edit makes no new one, so a failure is a failed save.
     if (!ok) {
-      server->send(400, "text/plain", "Failed to update Wi-Fi network");
+      server->send(500, "text/plain", "Failed to update Wi-Fi network");
       return;
     }
 
     LOG_DBG("WEB", "Updated Wi-Fi network at index %d (SSID: %s)", idx, ssid.c_str());
   } else {
-    if (!WIFI_STORE.addCredential(ssid, password)) {
+    // A full list apart: addCredential() refusing a network with room is a failed save, which was
+    // reported as the limit.
+    if (!WIFI_STORE.hasRoomFor(ssid)) {
       server->send(400, "text/plain", "Cannot add network (limit reached)");
+      return;
+    }
+    if (!WIFI_STORE.addCredential(ssid, password)) {
+      server->send(500, "text/plain", "Failed to save Wi-Fi network");
       return;
     }
     LOG_DBG("WEB", "Added Wi-Fi network: %s", ssid.c_str());
@@ -1949,8 +1988,8 @@ void CrossPointWebServer::handleDeleteWifiNetwork() {
   }
 
   const std::string ssid = credentials[static_cast<size_t>(idx)].ssid;
-  if (!WIFI_STORE.removeCredential(ssid)) {
-    server->send(400, "text/plain", "Failed to delete Wi-Fi network");
+  if (!WIFI_STORE.removeCredential(ssid)) {  // found by index, so a failed save
+    server->send(500, "text/plain", "Failed to delete Wi-Fi network");
     return;
   }
 

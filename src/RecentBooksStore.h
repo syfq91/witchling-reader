@@ -36,9 +36,13 @@ struct RecentBook {
   bool operator==(const RecentBook& other) const { return path == other.path; }
 };
 
+// What JsonSettingsIO::loadRecentBooks made of the file's text: its list; a file it cannot read, which stands for an
+// empty list; or too little memory to read it with, which stands for nothing (RecentBooksStore::loadFromFile).
+enum class RecentBooksLoad : uint8_t { Loaded, Broken, ShortOfMemory };
+
 class RecentBooksStore;
 namespace JsonSettingsIO {
-bool loadRecentBooks(RecentBooksStore& store, const char* json);
+RecentBooksLoad loadRecentBooks(RecentBooksStore& store, const char* json);
 }  // namespace JsonSettingsIO
 
 // The list of books lately opened, newest first, with each book's per-book reader overrides.
@@ -55,9 +59,12 @@ class RecentBooksStore {
 
   mutable std::vector<RecentBook> recentBooks;
   mutable bool loaded = false;
+  // A load is under way (loadFromFile): whatever it calls that asks for the list gets the list as filled so far,
+  // never a second load.
+  mutable bool loading = false;
   uint8_t holds = 0;
 
-  friend bool JsonSettingsIO::loadRecentBooks(RecentBooksStore&, const char*);
+  friend RecentBooksLoad JsonSettingsIO::loadRecentBooks(RecentBooksStore&, const char*);
 
   void ensureLoaded() const;
 

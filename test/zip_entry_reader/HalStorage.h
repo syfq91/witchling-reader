@@ -73,6 +73,7 @@ class HalFile : public Print {
   bool openForRead(const std::string& path) {
     closeQuiet();
     hasImpl_ = true;
+    ++opens;
     fp_ = fopen(path.c_str(), "rb");
     applyStdioPolicy(fp_);
     return fp_ != nullptr;
@@ -89,6 +90,7 @@ class HalFile : public Print {
     }
     // Read/write, as on the device (SDCardManager::openFileForWrite: O_RDWR | O_CREAT | O_TRUNC):
     // a section build reads its anchor map back through the write handle.
+    ++opens;
     fp_ = fopen(path.c_str(), "w+b");
     applyStdioPolicy(fp_);
     return fp_ != nullptr;
@@ -98,6 +100,7 @@ class HalFile : public Print {
   bool openForUpdate(const std::string& path) {
     closeQuiet();
     hasImpl_ = true;
+    ++opens;
     fp_ = fopen(path.c_str(), "r+b");
     applyStdioPolicy(fp_);
     return fp_ != nullptr;
@@ -150,8 +153,16 @@ class HalFile : public Print {
   // Test instrumentation: bytes delivered by read(), across all files. Lets a test bound how much
   // a pass reads, where wall-clock time on a host says little about SD cost.
   static inline size_t bytesRead = 0;
+  // The same for the card's per-call cost: on the device every read, seek, available() and write
+  // is one call into SdFat under the storage lock, whatever its size. And file opens, each one a
+  // directory walk there.
+  static inline size_t calls = 0;
+  static inline size_t opens = 0;
+  // And flushes: on the device a sync writes the file's data and its directory entry out to the card.
+  static inline size_t flushes = 0;
 
   int read(void* buf, size_t n) {
+    ++calls;
     if (!fp_) return -1;
     if (failReadsFrom >= 0 && ftell(fp_) >= failReadsFrom) return -1;
     if (failReadAt >= 0 && ftell(fp_) == failReadAt) return -1;
@@ -165,21 +176,41 @@ class HalFile : public Print {
   }
   // Single-byte read, SdFat-style: returns the byte or -1 (used by Bitmap.cpp).
   int read() {
+    ++calls;
     if (!fp_) return -1;
     return fgetc(fp_);
   }
 
-  bool seek(size_t pos) { return fp_ && fseek(fp_, static_cast<long>(pos), SEEK_SET) == 0; }
+  // A folder's position is where its listing stands, counted in 32-byte directory entries as on
+  // FAT (one per name here; FAT spends more on a long one), so a walk can close a folder and seek
+  // back into its listing (FolderWalk).
+  static constexpr size_t kDirEntryBytes = 32;
+  bool seek(size_t pos) {
+    ++calls;
+    if (isDir_) {
+      if (pos % kDirEntryBytes != 0 || pos / kDirEntryBytes > entries_.size()) return false;
+      next_ = pos / kDirEntryBytes;
+      return true;
+    }
+    return fp_ && fseek(fp_, static_cast<long>(pos), SEEK_SET) == 0;
+  }
   bool seekSet(size_t pos) { return seek(pos); }
-  bool seekCur(int64_t offset) { return fp_ && fseek(fp_, static_cast<long>(offset), SEEK_CUR) == 0; }
+  bool seekCur(int64_t offset) {
+    ++calls;
+    return fp_ && fseek(fp_, static_cast<long>(offset), SEEK_CUR) == 0;
+  }
   bool seek64(uint64_t pos) { return fp_ && fseek(fp_, static_cast<long>(pos), SEEK_SET) == 0; }
   bool seekSet64(uint64_t pos) { return seek64(pos); }
 
-  size_t position() const { return fp_ ? static_cast<size_t>(ftell(fp_)) : 0; }
+  size_t position() const {
+    if (isDir_) return next_ * kDirEntryBytes;
+    return fp_ ? static_cast<size_t>(ftell(fp_)) : 0;
+  }
   uint64_t position64() const { return position(); }
   // Bytes left to read, as on device: EpubImageManifest::load() sizes its corruption guard from
   // this, so a constant here made every persisted manifest look corrupt on the host.
   int available() const {
+    ++calls;
     if (!fp_) return 0;
     const long cur = ftell(fp_);
     fseek(fp_, 0, SEEK_END);
@@ -201,19 +232,23 @@ class HalFile : public Print {
   uint64_t fileSize64() { return fileSize(); }
 
   size_t write(const uint8_t* data, size_t size) {
+    ++calls;
     if (!fp_) return 0;
     return fwrite(data, 1, size, fp_);
   }
   // Device SdFat accepts void*; Page.cpp writes char arrays through this.
   size_t write(const void* data, size_t size) {
+    ++calls;
     if (!fp_) return 0;
     return fwrite(data, 1, size, fp_);
   }
   size_t write(uint8_t c) override {
+    ++calls;
     if (!fp_) return 0;
     return fwrite(&c, 1, 1, fp_);
   }
   void flush() {
+    ++flushes;
     if (fp_) fflush(fp_);
   }
   size_t getName(char* out, size_t len) {
