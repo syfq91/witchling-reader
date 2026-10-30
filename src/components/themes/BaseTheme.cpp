@@ -26,6 +26,10 @@ namespace {
 constexpr int homeMenuMargin = 20;
 constexpr int homeMarginTop = 30;
 constexpr int subtitleY = 738;
+// The reader status bar has no battery slot by default, so show the battery glyph beside the
+// left book percentage once the charge is low. Ten percent matches Lyra's first battery segment:
+// at or below it that icon has no filled segment, and the reader otherwise gets no warning at all.
+constexpr uint16_t kLowBatteryPercent = 10;
 
 // Helper: draw battery icon at given position
 void drawBatteryIcon(const GfxRenderer& renderer, int x, int y, int battWidth, int rectHeight, uint16_t percentage) {
@@ -857,6 +861,13 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   const int leftEdge = metrics.statusBarHorizontalMargin + orientedMarginLeft;
   const int rightEdge = screenWidth - metrics.statusBarHorizontalMargin - orientedMarginRight;
 
+  // A legacy layout may still name a battery slot. In that case the battery is already drawn
+  // below, and the low-battery glyph beside the book percentage would be a duplicate.
+  const bool batterySlotShown =
+      SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+      SETTINGS.statusBarMiddle == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+      SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY;
+
   // 1. Left slot
   int leftClusterWidth = 0;
   if (SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY) {
@@ -866,8 +877,21 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   } else if (SETTINGS.statusBarLeft != CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_HIDE) {
     const std::string text = getSlotText(SETTINGS.statusBarLeft);
     if (!text.empty()) {
-      leftClusterWidth = renderer.getTextWidth(SMALL_FONT_ID, text.c_str());
+      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, text.c_str());
       renderer.drawText(SMALL_FONT_ID, leftEdge, textY, text.c_str());
+      leftClusterWidth = textWidth;
+
+      // Low charge: append the theme's battery glyph after the book percentage. The layout width
+      // grows with it so the middle title's reserve (below) still keeps clear of the cluster.
+      if (!batterySlotShown &&
+          SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BOOK_PERCENTAGE &&
+          powerManager.getBatteryPercentage() <= kLowBatteryPercent) {
+        const int glyphGap = batteryPercentSpacing;
+        GUI.drawBatteryLeft(renderer,
+                            Rect{leftEdge + textWidth + glyphGap, textY, metrics.batteryWidth, metrics.batteryHeight},
+                            /*showPercentage=*/false);
+        leftClusterWidth += glyphGap + metrics.batteryWidth;
+      }
     }
   }
 
