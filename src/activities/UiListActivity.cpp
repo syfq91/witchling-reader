@@ -145,9 +145,9 @@ void UiListActivity::layoutListArea(UiScreen& screen, const int16_t extraTop, co
   const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
   const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
   screen.setContentMarginFromScreen(
-      fui::Insets{static_cast<int16_t>(fullRect.y + metrics.topPadding + metrics.headerHeight + extraTop),
+      fui::Insets{static_cast<int16_t>(listRect.y + metrics.topPadding + metrics.headerHeight + extraTop),
                   sideInsetRight,
-                  static_cast<int16_t>(renderer.getScreenHeight() - (fullRect.y + fullRect.height) + extraBottom),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height) + extraBottom),
                   sideInsetLeft});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 }
@@ -203,9 +203,7 @@ void UiListActivity::drawListHints() { listController.drawHints(renderer, footer
 Rect UiListActivity::listContentRect() const { return UITheme::getContentRect(renderer, true, true); }
 
 Rect UiListActivity::listHeaderRect() const {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect full = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
-  return Rect{full.x, full.y + metrics.topPadding, full.width, metrics.headerHeight};
+  return UITheme::getHeaderRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/true);
 }
 
 int UiListActivity::selectedPosition() const {

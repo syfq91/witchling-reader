@@ -116,6 +116,11 @@ Rect UITheme::getContentRect(const GfxRenderer& renderer, bool hasBottomHints, b
   }
   left = HeaderLayout::columnReserve(left);
   right = HeaderLayout::columnReserve(right);
+  if (renderer.getOrientation() == GfxRenderer::LandscapeClockwise) {
+    bottom = HeaderLayout::columnReserve(bottom);
+  } else if (renderer.getOrientation() == GfxRenderer::LandscapeCounterClockwise) {
+    top = HeaderLayout::columnReserve(top);
+  }
 
   const int w = renderer.getScreenWidth();
   const int h = renderer.getScreenHeight();

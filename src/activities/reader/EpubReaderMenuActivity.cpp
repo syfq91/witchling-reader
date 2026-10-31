@@ -611,12 +611,12 @@ int16_t EpubReaderMenuActivity::tabBarHeight() const {
 void EpubReaderMenuActivity::buildScreen(UiScreen& screen) {
   const Rect fullRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
   const Rect listRect = listContentRect();
-  const int16_t top = static_cast<int16_t>(fullRect.y + 75);
+  const int16_t top = static_cast<int16_t>(listRect.y + 75);
 
   // Full-width margin from screen (no side gutter) so the tab bar spans the screen
   screen.setContentMarginFromScreen(
       fui::Insets{top, static_cast<int16_t>(renderer.getScreenWidth() - (fullRect.x + fullRect.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (fullRect.y + fullRect.height)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height)),
                   static_cast<int16_t>(fullRect.x)});
 
   buildTabBar(screen);
@@ -643,7 +643,7 @@ void EpubReaderMenuActivity::buildScreen(UiScreen& screen) {
 }
 
 void EpubReaderMenuActivity::drawChrome() {
-  const Rect contentRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
+  const Rect contentRect = UITheme::getHeaderRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/true);
   const std::string truncTitle =
       renderer.truncatedText(UI_12_FONT_ID, title.c_str(), contentRect.width - 40, EpdFontFamily::BOLD);
   const int titleX =

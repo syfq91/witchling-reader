@@ -656,8 +656,13 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
         constexpr int16_t kSideHintInset = 21;
         const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
         const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
-        if (sideInsetRight > 0 || sideInsetLeft > 0) {
-          screen.insetContent(freeink::ui::Insets{0, sideInsetRight, 0, sideInsetLeft});
+        const int16_t sideInsetBottom =
+            (fullRect.height > listRect.height)
+                ? static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height))
+                : 0;
+        const int16_t sideInsetTop = (listRect.y > fullRect.y) ? static_cast<int16_t>(listRect.y - fullRect.y) : 0;
+        if (sideInsetRight > 0 || sideInsetLeft > 0 || sideInsetBottom > 0 || sideInsetTop > 0) {
+          screen.insetContent(freeink::ui::Insets{sideInsetTop, sideInsetRight, sideInsetBottom, sideInsetLeft});
         }
         screen.takeBottom(screen.theme().footerHeight);
         screen.list(fItems, displayCount, formatSelectorIndex, ACTION_SELECT_FORMAT);
@@ -678,8 +683,13 @@ void OpdsBookBrowserActivity::buildScreen(UiScreen& screen) {
         constexpr int16_t kSideHintInset = 21;
         const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
         const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
-        if (sideInsetRight > 0 || sideInsetLeft > 0) {
-          screen.insetContent(freeink::ui::Insets{0, sideInsetRight, 0, sideInsetLeft});
+        const int16_t sideInsetBottom =
+            (fullRect.height > listRect.height)
+                ? static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height))
+                : 0;
+        const int16_t sideInsetTop = (listRect.y > fullRect.y) ? static_cast<int16_t>(listRect.y - fullRect.y) : 0;
+        if (sideInsetRight > 0 || sideInsetLeft > 0 || sideInsetBottom > 0 || sideInsetTop > 0) {
+          screen.insetContent(freeink::ui::Insets{sideInsetTop, sideInsetRight, sideInsetBottom, sideInsetLeft});
         }
         screen.takeBottom(screen.theme().footerHeight);
 
@@ -732,7 +742,7 @@ void OpdsBookBrowserActivity::afterUiRender() {
     if (selectorIndex < 0 || selectorIndex >= static_cast<int>(entryOffsets.size())) return;
     const auto entry = getEntry(selectorIndex);
     const auto& metrics = UITheme::getInstance().getMetrics();
-    const auto contentRect = UITheme::getContentRect(renderer, true, false);
+    const auto contentRect = UITheme::getContentRect(renderer, true, true);
     const int contentTop = contentRect.y + metrics.headerHeight + 6;
     const int contentBottom = contentRect.y + contentRect.height - app.theme().footerHeight - 6;
     const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
@@ -803,7 +813,7 @@ void OpdsBookBrowserActivity::afterUiRender() {
     // stacked from blockTop with an explicit gap, so nothing can land on
     // whatever drawProgressBar() puts under the bar.
     const auto& metrics = UITheme::getInstance().getMetrics();
-    const auto contentRect = UITheme::getContentRect(renderer, true, false);
+    const auto contentRect = UITheme::getContentRect(renderer, true, true);
     const int contentTop = contentRect.y + metrics.headerHeight;
     const int contentBottom = contentRect.y + contentRect.height;
     const int lineH = renderer.getLineHeight(UI_10_FONT_ID);

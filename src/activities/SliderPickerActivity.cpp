@@ -87,7 +87,7 @@ void SliderPickerActivity::onSliderEvent(const fui::ActionEvent& event, void* us
 
 void SliderPickerActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+  const Rect contentRect = UITheme::getContentRect(renderer, true, true);
 
   screen.setContentMarginFromScreen(
       fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
@@ -178,9 +178,7 @@ void SliderPickerActivity::loop() {
 void SliderPickerActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
-                 I18N.get(cfg.titleId));
+  GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer, true, true), I18N.get(cfg.titleId));
 
   renderUi();
 

@@ -31,7 +31,7 @@ int keyboardKeysHeight(const ThemeMetrics& metrics, const int rows, const bool h
 // (the top edge upside down, a side in landscape), so every edge below is taken
 // from here rather than from the screen.
 Rect keyboardContentRect(const GfxRenderer& renderer) {
-  return UITheme::getContentRect(renderer, true, gpio.deviceIsX3());
+  return UITheme::getContentRect(renderer, true, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -634,7 +634,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const Rect content = keyboardContentRect(renderer);
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  GUI.drawHeader(renderer, Rect{content.x, metrics.topPadding, content.width, metrics.headerHeight}, title.c_str());
+  GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer, true, true), title.c_str());
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
   const int inputStartY = content.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +

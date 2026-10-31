@@ -1191,9 +1191,9 @@ void FileBrowserActivity::buildScreen(UiScreen& screen) {
 
     // Full-width margin from screen (no side gutter) so the tab bar spans the screen
     screen.setContentMarginFromScreen(
-        fui::Insets{static_cast<int16_t>(fullRect.y + metrics.topPadding + metrics.headerHeight),
+        fui::Insets{static_cast<int16_t>(listRect.y + metrics.topPadding + metrics.headerHeight),
                     static_cast<int16_t>(renderer.getScreenWidth() - (fullRect.x + fullRect.width)),
-                    static_cast<int16_t>(renderer.getScreenHeight() - (fullRect.y + fullRect.height)),
+                    static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height)),
                     static_cast<int16_t>(fullRect.x)});
 
     buildTabBar(screen);
@@ -1260,7 +1260,8 @@ void FileBrowserActivity::drawChrome() {
   if (model.isFiltered()) {
     folderName += ": \"" + model.filter() + "\"";
   }
-  GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer), folderName.c_str());
+  GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/true),
+                 folderName.c_str());
 }
 
 void FileBrowserActivity::drawFooter() {

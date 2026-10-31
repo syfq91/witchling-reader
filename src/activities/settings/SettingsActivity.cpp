@@ -293,9 +293,9 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
 
   // Full-width margin from screen (no side gutter) so the tab bar spans the screen
   screen.setContentMarginFromScreen(
-      fui::Insets{static_cast<int16_t>(fullRect.y + metrics.topPadding + metrics.headerHeight),
+      fui::Insets{static_cast<int16_t>(listRect.y + metrics.topPadding + metrics.headerHeight),
                   static_cast<int16_t>(renderer.getScreenWidth() - (fullRect.x + fullRect.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (fullRect.y + fullRect.height)),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height)),
                   static_cast<int16_t>(fullRect.x)});
 
   buildTabBar(screen);
@@ -331,10 +331,7 @@ void SettingsActivity::onBackFromTabs() {
 }
 
 void SettingsActivity::drawChrome() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
-  GUI.drawHeader(renderer,
-                 Rect{contentRect.x, contentRect.y + metrics.topPadding, contentRect.width, metrics.headerHeight},
+  GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/true),
                  tr(STR_SETTINGS_TITLE), CROSSPOINT_VERSION);
 }
 

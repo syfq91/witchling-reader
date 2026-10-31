@@ -128,7 +128,7 @@ void EpubReaderPrintedPageInputActivity::onExit() {
 
 void EpubReaderPrintedPageInputActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+  const Rect contentRect = UITheme::getContentRect(renderer, true, true);
 
   screen.setContentMarginFromScreen(
       fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
@@ -165,7 +165,7 @@ void EpubReaderPrintedPageInputActivity::buildScreen(UiScreen& screen) {
 
 void EpubReaderPrintedPageInputActivity::afterUiRender() {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+  const Rect contentRect = UITheme::getContentRect(renderer, true, true);
 
   const std::string rawValueText = std::to_string(value);
   const int visibleDigits = std::max(digitCount(), cursorDigit + 1);
@@ -242,8 +242,7 @@ void EpubReaderPrintedPageInputActivity::loop() {
 void EpubReaderPrintedPageInputActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
+  GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer, true, true),
                  tr(STR_GO_TO_PRINTED_PAGE));
 
   renderUi();

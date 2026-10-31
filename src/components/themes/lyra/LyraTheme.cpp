@@ -302,23 +302,27 @@ void LyraTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
   constexpr int buttonHeight = 78;                                       // Height on screen (width when rotated)
   constexpr int sideMargin = 16;                                         // Gap from panel edge, matching bottom hints
 
-  const auto textCW = [&](const int x, const int y, const char* text) {
-    const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, text);
-    const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
-    renderer.drawTextRotated90CW(SMALL_FONT_ID, inverted ? screenWidth - x - textHeight : x,
+  const auto textCW = [&](const int fontId, const int x, const int y, const char* text) {
+    const int textWidth = renderer.getTextWidth(fontId, text);
+    const int textHeight = renderer.getTextHeight(fontId);
+    renderer.drawTextRotated90CW(fontId, inverted ? screenWidth - x - textHeight : x,
                                  inverted ? screenHeight - 1 - y + textWidth : y, text);
   };
 
   // X4 layout: Both buttons stacked on right side, sideMargin px from panel edge
   const char* labels[] = {upBtn, downBtn};
+  constexpr int maxTextWidth = buttonHeight - 6;
 
   for (int i = 0; i < 2; i++) {
     if (labels[i] != nullptr && labels[i][0] != '\0') {
+      const int fontId =
+          renderer.getTextWidth(SMALL_FONT_ID, labels[i]) > maxTextWidth ? FIT_SMALL_FONT_ID : SMALL_FONT_ID;
+      const std::string text = renderer.truncatedText(fontId, labels[i], maxTextWidth);
       const int y = topHintButtonY + (i * buttonHeight) + 5;
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
-      const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
+      const int textWidth = renderer.getTextWidth(fontId, text.c_str());
+      const int textHeight = renderer.getTextHeight(fontId);
       const int x = screenWidth - textHeight - sideMargin;
-      textCW(x, y + (buttonHeight + textWidth) / 2, labels[i]);
+      textCW(fontId, x, y + (buttonHeight + textWidth) / 2, text.c_str());
     }
   }
 

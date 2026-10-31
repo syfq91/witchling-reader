@@ -284,10 +284,10 @@ void BaseTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
   constexpr int buttonHeight = 80;                                       // Height on screen (width when rotated)
   constexpr int buttonMargin = 4;
 
-  const auto textCW = [&](const int x, const int y, const char* text) {
-    const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, text);
-    const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
-    renderer.drawTextRotated90CW(SMALL_FONT_ID, inverted ? screenWidth - x - textHeight : x,
+  const auto textCW = [&](const int fontId, const int x, const int y, const char* text) {
+    const int textWidth = renderer.getTextWidth(fontId, text);
+    const int textHeight = renderer.getTextHeight(fontId);
+    renderer.drawTextRotated90CW(fontId, inverted ? screenWidth - x - textHeight : x,
                                  inverted ? screenHeight - 1 - y + textWidth : y, text);
   };
 
@@ -295,13 +295,17 @@ void BaseTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
   constexpr int topButtonY = 345;
   const char* labels[] = {upBtn, downBtn};
   const int x = screenWidth - buttonMargin - buttonWidth;
+  constexpr int maxTextWidth = buttonHeight - 6;
 
   for (int i = 0; i < 2; i++) {
     if (labels[i] != nullptr && labels[i][0] != '\0') {
+      const int fontId =
+          renderer.getTextWidth(SMALL_FONT_ID, labels[i]) > maxTextWidth ? FIT_SMALL_FONT_ID : SMALL_FONT_ID;
+      const std::string text = renderer.truncatedText(fontId, labels[i], maxTextWidth);
       const int y = topButtonY + i * buttonHeight;
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
-      const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
-      textCW(x + (buttonWidth - textHeight) / 2, y + (buttonHeight + textWidth) / 2, labels[i]);
+      const int textWidth = renderer.getTextWidth(fontId, text.c_str());
+      const int textHeight = renderer.getTextHeight(fontId);
+      textCW(fontId, x + (buttonWidth - textHeight) / 2, y + (buttonHeight + textWidth) / 2, text.c_str());
     }
   }
 
