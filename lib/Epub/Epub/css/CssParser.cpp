@@ -1881,6 +1881,12 @@ void unpackFlow(const uint16_t flow, CssStyle& s) {
 }  // namespace
 
 bool CssParser::readCssStylePayload(FsFile& file, CssStyle& style) {
+  // Start from nothing: only the properties present in the payload are set below, and callers reuse
+  // the destination between records (lookupRules reads the whole rule chain into one OrderedStyle).
+  // Without this, a rule that does not set font-size inherits the previous rule's value -- which of
+  // the equal-hash records is read last depends on the standard library's sort, so the bug showed up
+  // as h1 headings losing their CSS size on libc++.
+  style = CssStyle{};
   // Read in one call and taken apart in RAM: a field at a time was ~30 SdFat calls a rule, paid for
   // every rule each time a section build loads the ruleset into its arena.
   std::array<uint8_t, CSS_FIXED_STYLE_BYTES> payload;
