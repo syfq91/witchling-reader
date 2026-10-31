@@ -838,12 +838,12 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
         if (!printedPageLabel.empty()) {
           return printedPageLabel + " " + buf;
         }
-        return buf;
+        return std::string(buf);
       }
       case CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BOOK_PERCENTAGE: {
         char buf[16];
         snprintf(buf, sizeof(buf), "%.0f%%", bookProgress);
-        return buf;
+        return std::string(buf);
       }
       case CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_PAGE_AND_PERCENTAGE: {
         char buf[48];
@@ -851,7 +851,7 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
         if (!printedPageLabel.empty()) {
           return printedPageLabel + " " + buf;
         }
-        return buf;
+        return std::string(buf);
       }
       case CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_CHAPTER_TITLE:
         return chapterTitle;
