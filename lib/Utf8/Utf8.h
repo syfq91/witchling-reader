@@ -4,6 +4,9 @@
 #include <string>
 #define REPLACEMENT_GLYPH 0xFFFD
 
+// Byte length of the UTF-8 sequence lead byte `c` starts; 1 for ASCII and for a byte that starts
+// none (a continuation byte, 0xF8-0xFF), which utf8NextCodepoint() also steps over by one.
+int utf8CodepointLen(unsigned char c);
 uint32_t utf8NextCodepoint(const unsigned char** string);
 // Append `cp` encoded as UTF-8 (one to four bytes).
 void utf8AppendCodepoint(std::string& out, uint32_t cp);
@@ -129,6 +132,15 @@ inline bool utf8IsHangul(const uint32_t cp) {
 // Han, kana, CJK punctuation and fullwidth forms: the CJK text written without spaces between
 // words. A source line break between two of these is not a word gap (CSS Text 3 segment-break rule).
 inline bool utf8IsUnspacedCjk(const uint32_t cp) { return utf8IsCjkBreakable(cp) && !utf8IsHangul(cp); }
+
+// Hiragana, katakana (with its phonetic extensions) and halfwidth katakana: with CJK punctuation, the characters a
+// ruby longer than its base may overhang.
+inline bool utf8IsKana(const uint32_t cp) {
+  return (cp >= 0x3040 && cp <= 0x309F)      // Hiragana
+         || (cp >= 0x30A0 && cp <= 0x30FF)   // Katakana
+         || (cp >= 0x31F0 && cp <= 0x31FF)   // Katakana Phonetic Extensions
+         || (cp >= 0xFF66 && cp <= 0xFF9F);  // Halfwidth Katakana
+}
 
 // Apply lightweight NFC-like normalization for Vietnamese precomposed characters and for
 // conjoining Hangul jamo (L+V -> LV, LV+T -> LVT).

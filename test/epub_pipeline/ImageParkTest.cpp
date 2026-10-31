@@ -212,11 +212,19 @@ TEST_P(ImageParkFixture, APassWithoutRoomToCacheLeavesTheParkedDecode) {
   EXPECT_EQ(read(c.companionCachePath), read(ref.companionCachePath));
 }
 
-// Without a checkpoint path a stopped decode is thrown away, as before, and leaves nothing.
-TEST_P(ImageParkFixture, WithoutACheckpointPathAStopIsDiscarded) {
+// Without a checkpoint path a stopped progressive decode is thrown away, as before, and leaves
+// nothing. TJpgDec polls only when it can park, so a baseline decode ignores the stop and runs to
+// the end, as it always did.
+TEST_P(ImageParkFixture, WithoutACheckpointPathADecodeDoesNotPark) {
   const RenderConfig c = config("nockpt", 150, 104, false);
   const bool stopped = decodeOnce(c, 2);
-  if (!stopped) GTEST_SKIP() << "this decoder only polls when it can park";
+  if (std::string(GetParam()).find("_base") != std::string::npos) {
+    EXPECT_FALSE(stopped) << "a baseline decode with nowhere to park must not stop";
+    EXPECT_TRUE(fs::exists(c.cachePath));
+    EXPECT_FALSE(fs::exists(PixelCache::partPathFor(c.cachePath)));
+    return;
+  }
+  ASSERT_TRUE(stopped);
   EXPECT_FALSE(fs::exists(c.cachePath));
   EXPECT_FALSE(fs::exists(PixelCache::partPathFor(c.cachePath)));
 }
@@ -259,10 +267,10 @@ TEST(ImageParkRestartFixture, RestartMarkersDecodeLikeTheirTwin) {
   fs::remove_all(work);
 }
 
-// A progressive JPEG whose full decode finds no room for its workspace is drawn from its DC preview: the cache is
-// stamped coarse, for a pass with room to decode again, and the decode counts as short of memory and says what a
+// A progressive JPEG with room for no finer workspace than the 1/8 one is drawn from its 1/8 decode, resized: the cache
+// is stamped coarse, for a pass with room to decode again, and the decode counts as short of memory and says what a
 // finer one needs, so the reader's memory ladder can tell whether making room is worth it. A full decode is neither.
-TEST(CoarseProgressiveJpeg, APreviewForLackOfRoomIsStampedCoarseAndShortOfMemory) {
+TEST(CoarseProgressiveJpeg, AnEighthForLackOfRoomIsStampedCoarseAndShortOfMemory) {
   const fs::path work = fs::temp_directory_path() / "img_coarse_preview";
   fs::remove_all(work);
   fs::create_directories(work);
@@ -290,19 +298,20 @@ TEST(CoarseProgressiveJpeg, APreviewForLackOfRoomIsStampedCoarseAndShortOfMemory
     return magic;
   };
   const uint32_t savedHeap = ESP.getFreeHeap();
-  // A byte short of the smallest workspace and the 20 KB it must leave (JPEG_CACHE_POST_GATE_BYTES +
-  // JPEG_CACHE_HEAP_FLOOR): room for the preview and its cache band still.
+  // A byte short of the 1/8 workspace and the 20 KB a finer one must leave (JPEG_CACHE_POST_GATE_BYTES +
+  // JPEG_CACHE_HEAP_FLOOR): the 1/8 one, a few KB, asks for no floor, and its cache band fits still.
   const auto coarsest = static_cast<uint32_t>(ProgressiveJpeg::workspaceBytes(info, 3));
+  const auto finer = static_cast<uint32_t>(ProgressiveJpeg::workspaceBytes(info, 2));
   ESP.setFreeHeap(coarsest + 20 * 1024 - 1);
   image_scratch::takeCoarseNeed();
   uint32_t shortBefore = image_scratch::heapShortCount();
-  EXPECT_EQ(PixelCache::PXC_MAGIC_COARSE, decodeMagic("preview"));
+  EXPECT_EQ(PixelCache::PXC_MAGIC_COARSE, decodeMagic("eighth"));
   EXPECT_NE(shortBefore, image_scratch::heapShortCount());
   const image_scratch::CoarseNeed need = image_scratch::takeCoarseNeed();
-  EXPECT_EQ(coarsest, need.bytes) << "none had room: the coarsest workspace is the next finer decode";
+  EXPECT_EQ(finer, need.bytes) << "the next finer decode is 1/4's";
   EXPECT_EQ(20u * 1024, need.heapFloor);
   EXPECT_FALSE(image_scratch::coarseNeedFits(need)) << "no more room than the decode had";
-  EXPECT_TRUE(image_scratch::coarseNeedFits(need, 1)) << "a byte freed first is room enough";
+  EXPECT_TRUE(image_scratch::coarseNeedFits(need, finer - coarsest + 1)) << "what is freed first counts toward it";
   ESP.setFreeHeap(savedHeap);
 
   shortBefore = image_scratch::heapShortCount();
@@ -343,12 +352,14 @@ TEST(CoarseProgressiveJpeg, WhereTheFinerWorkspaceFitsTheDecodeIsFiner) {
   };
   const uint32_t savedHeap = ESP.getFreeHeap();
   const auto coarsest = static_cast<uint32_t>(ProgressiveJpeg::workspaceBytes(info, 3));
-  const image_scratch::CoarseNeed need = decodeNeed(coarsest + 20 * 1024 - 1);  // the DC preview
-  ASSERT_EQ(coarsest, need.bytes);
+  const auto finer = static_cast<uint32_t>(ProgressiveJpeg::workspaceBytes(info, 2));
+  const image_scratch::CoarseNeed need = decodeNeed(coarsest + 20 * 1024 - 1);  // the 1/8 decode, resized
+  ESP.setFreeHeap(savedHeap);                                                   // restored before an ASSERT can return
+  ASSERT_EQ(finer, need.bytes);
 
   ESP.setFreeHeap(need.bytes + need.heapFloor - 1);
   EXPECT_FALSE(image_scratch::coarseNeedFits(need));
-  EXPECT_EQ(coarsest, decodeNeed(need.bytes + need.heapFloor - 1).bytes) << "a byte short: the preview again";
+  EXPECT_EQ(finer, decodeNeed(need.bytes + need.heapFloor - 1).bytes) << "a byte short: 1/8 again";
 
   ESP.setFreeHeap(need.bytes + need.heapFloor);
   EXPECT_TRUE(image_scratch::coarseNeedFits(need));
@@ -356,8 +367,8 @@ TEST(CoarseProgressiveJpeg, WhereTheFinerWorkspaceFitsTheDecodeIsFiner) {
     const HostLargestFreeBlock fragmented(need.bytes);
     EXPECT_FALSE(image_scratch::coarseNeedFits(need)) << "free in all, but in no one block";
   }
-  // The finer decode: the full decoder at its coarsest scale, not the DC preview, so the next finer is one up.
-  EXPECT_EQ(static_cast<uint32_t>(ProgressiveJpeg::workspaceBytes(info, 2)),
+  // The finer decode is 1/4's, so the next finer is one up again.
+  EXPECT_EQ(static_cast<uint32_t>(ProgressiveJpeg::workspaceBytes(info, 1)),
             decodeNeed(need.bytes + need.heapFloor).bytes);
   ESP.setFreeHeap(savedHeap);
   fs::remove_all(work);

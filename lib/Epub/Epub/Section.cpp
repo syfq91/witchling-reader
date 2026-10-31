@@ -33,105 +33,128 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 96;  // v96: CJK punctuation is narrowed by the book's
-                                              // table, a mark is a token of its own, CJK lines
-                                              // justify flush, zh/ja text sits on a whole-em grid
-                                              // v95: a paragraph whose size undoes the book's
-                                              // root size is body text (Calibre: body 1.125em,
-                                              // p 0.88889em); v94 laid it out at 0.889
-                                              // v94: a word in another of the book's families
-                                              // than its block's is laid out in that family's
-                                              // face (a line's word fonts, TextBlock::WordFont);
-                                              // v93 lines hold it in the block's font
-                                              // v93: 20 pt is the 18 pt faces scaled, so the
-                                              // 20-26 pt font IDs changed; a v92 heading still
-                                              // names the old ones and would draw nothing
-                                              // v92: CJK text breaks between characters, with kinsoku
-                                              // v91: rem/px/pt font sizes are relative to the
-                                              // body (v90 compounded nested ones), and CSS
-                                              // specificity, compound, descendant/child
-                                              // selectors and `inherit` apply
-                                              // v90: small caps shrink ł ń ž ÿ, Greek and
-                                              // Cyrillic, and no longer Ł Ń Ž, and set fi/fl
-                                              // as two letters; v89 pages measured such words
-                                              // the old way
-                                              // v89: widow/orphan control, and a heading
-                                              // keeps room for two lines below it, so pages
-                                              // end earlier than in v88
-                                              // v88: page-break-after breaks, and a
-                                              // page-break-before keeps the paragraph before
-                                              // it on the old page
-                                              // v87: a block's bold/italic reaches the blocks
-                                              // nested inside it; v86 pages set them upright
-                                              // v86: a <span id> is in the anchor map
-                                              // v85: an <img> whose href has no extension is
-                                              // laid out as the image its bytes are; v84 pages
-                                              // hold its alt text
-                                              // v84: text declared at font-size 2px or less (a
-                                              // watermark span) is dropped; v83 pages show it
-                                              // v83: a TTF family kerns and draws fi/fl ligatures
-                                              // v82: a TTF family draws every size with a face of its own
-                                              // v81: a paragraph over 96 words gets its top margin and padding
-                                              // v79: a <span> styled display:block is a block,
-                                              // and every block in a heading keeps its centring
-                                              // and size (#388); v78 pages run them together
-                                              // v78: a span indent (poem line shape) gives way
-                                              // before its line wraps; v77 pages of such poems
-                                              // carry the wrapped lines
-                                              // v77: the status byte records a heap-degraded
-                                              // image build (kStatusImageHeaderDegraded); a v76
-                                              // cache may be image-less without saying so
-                                              // v76: a percentage wrapper (<div
-                                              // style="width:60%">) no longer shrinks a block
-                                              // image below min(native, column), so image
-                                              // sizes baked into v75 pages are stale
-                                              // v75: the reader ladder gained rungs above
-                                              // 18 pt (20/22/24/26), so a heading snaps to a
-                                              // different face and residual than it did under
-                                              // v74 and breaks across lines differently. The
-                                              // ladder is derived from the body fontId and so is
-                                              // deliberately absent from the property hash; the
-                                              // hash therefore still MATCHES, and this version
-                                              // is the only thing that rejects a v74 cache
-                                              // v74: the HTML `hidden` attribute now
-                                              // suppresses an element, so a v73 cache still
-                                              // holds the laid-out text it should have hidden
-                                              // v73: an internal link honours CSS
-                                              // vertical-align, so footnote references marked
-                                              // `a { vertical-align: super }` are raised and
-                                              // shrunk. Word size/position are baked into layout
-                                              // v72: `!important` is now stripped from every
-                                              // CSS declaration value, so margins, text-align and
-                                              // text-indent that carry the marker take effect. Those
-                                              // feed layout, so a v71 cache holds the old geometry
-                                              // v71: the packed word style byte now carries a
-                                              // per-word "continues the previous word" bit, so the
-                                              // dictionary overlay can select a hyphenated word
-                                              // as one word. A v70 cache reads the
-                                              // bit as clear everywhere, i.e. keeps the old split
-                                              // selection, so it has to be rebuilt
-                                              // v70: a wrapper's horizontal inset reaches every
-                                              // child block, and insets/hanging indents are clamped to
-                                              // the panel. Layout bakes insets into word xpos (see v61),
-                                              // so a v69 cache keeps the off-panel lines this fixes
-                                              // v69: table cells carry a colSpan
-                                              // v68: near-body font-size snapping now also covers block-level
-                                              // CSS (p.body { font-size: 1.1em }), not just inline wrappers
-                                              // v67: img boxes honour `auto` and keep the source aspect ratio
-                                              // v64: main-text font-size normalization
-                                              // v63: drop-cap float zones + ink-metric cap placement
-                                              // (62 was consumed by an earlier iteration of this feature)
-                                              // v61: TextBlock no longer serializes the block-spacing
-                                              // fields (margins/padding/indent + their defined flags);
-                                              // layout bakes them into word xpos/line y and nothing read
-                                              // them back — 19 bytes/line saved
-                                              // v60: TextBlock word data serialized as one flat arena
-                                              // (offset table + NUL-terminated text blob) instead of
-                                              // length-prefixed strings and per-field arrays
-                                              // v59: FontSizeLadder residual dead zone (±3% renders native) changes
-                                              // near-rung block metrics from v58
-                                              // (v58: block sizes snap to the FontSizeLadder, uniform spans fold;
-                                              //  v57: sup/sub scaling moved into the per-word size channel)
+constexpr uint8_t SECTION_FILE_VERSION = 104;  // v104: a section may be set vertical-rl: the header keeps the
+                                               // vertical-text request and a status bit the outcome; a page
+                                               // keeps its block extent (after its element count), a line
+                                               // its column bit; an image a flags byte (bit 0 turned)
+                                               // v103: a quarter em between Han or kana and Latin in zh/ja
+                                               // books; lines push CJK punctuation in before breaking
+                                               // earlier
+                                               // v102: CSS text-emphasis marks (傍点) are drawn above each
+                                               // character of their span
+                                               // v101: margins, paddings and image sizes along the
+                                               // CSS writing mode, text-align start/end along the
+                                               // direction
+                                               // v100: the optimal line breaker indents only a
+                                               // paragraph's first line
+                                               // v99: ruby (furigana) is laid out above its base: a line with
+                                               // ruby keeps its groups (TextBlock annotations) and is taller
+                                               // by half an ascender; <rp> is not laid out.
+                                               // v98: synthetic italic slants an outline family
+                                               // without an italic file; an italic drop cap's
+                                               // width and a narrowed CJK mark's place come from
+                                               // the ink box, an accent font's too
+                                               // v97: bold in an outline family without a bold
+                                               // file is synthetic, wider than the regular
+                                               // v96: CJK punctuation is narrowed by the book's
+                                               // table, a mark is a token of its own, CJK lines
+                                               // justify flush, zh/ja text sits on a whole-em grid
+                                               // v95: a paragraph whose size undoes the book's
+                                               // root size is body text (Calibre: body 1.125em,
+                                               // p 0.88889em); v94 laid it out at 0.889
+                                               // v94: a word in another of the book's families
+                                               // than its block's is laid out in that family's
+                                               // face (a line's word fonts, TextBlock::WordFont);
+                                               // v93 lines hold it in the block's font
+                                               // v93: 20 pt is the 18 pt faces scaled, so the
+                                               // 20-26 pt font IDs changed; a v92 heading still
+                                               // names the old ones and would draw nothing
+                                               // v92: CJK text breaks between characters, with kinsoku
+                                               // v91: rem/px/pt font sizes are relative to the
+                                               // body (v90 compounded nested ones), and CSS
+                                               // specificity, compound, descendant/child
+                                               // selectors and `inherit` apply
+                                               // v90: small caps shrink ł ń ž ÿ, Greek and
+                                               // Cyrillic, and no longer Ł Ń Ž, and set fi/fl
+                                               // as two letters; v89 pages measured such words
+                                               // the old way
+                                               // v89: widow/orphan control, and a heading
+                                               // keeps room for two lines below it, so pages
+                                               // end earlier than in v88
+                                               // v88: page-break-after breaks, and a
+                                               // page-break-before keeps the paragraph before
+                                               // it on the old page
+                                               // v87: a block's bold/italic reaches the blocks
+                                               // nested inside it; v86 pages set them upright
+                                               // v86: a <span id> is in the anchor map
+                                               // v85: an <img> whose href has no extension is
+                                               // laid out as the image its bytes are; v84 pages
+                                               // hold its alt text
+                                               // v84: text declared at font-size 2px or less (a
+                                               // watermark span) is dropped; v83 pages show it
+                                               // v83: a TTF family kerns and draws fi/fl ligatures
+                                               // v82: a TTF family draws every size with a face of its own
+                                               // v81: a paragraph over 96 words gets its top margin and padding
+                                               // v79: a <span> styled display:block is a block,
+                                               // and every block in a heading keeps its centring
+                                               // and size (#388); v78 pages run them together
+                                               // v78: a span indent (poem line shape) gives way
+                                               // before its line wraps; v77 pages of such poems
+                                               // carry the wrapped lines
+                                               // v77: the status byte records a heap-degraded
+                                               // image build (kStatusImageHeaderDegraded); a v76
+                                               // cache may be image-less without saying so
+                                               // v76: a percentage wrapper (<div
+                                               // style="width:60%">) no longer shrinks a block
+                                               // image below min(native, column), so image
+                                               // sizes baked into v75 pages are stale
+                                               // v75: the reader ladder gained rungs above
+                                               // 18 pt (20/22/24/26), so a heading snaps to a
+                                               // different face and residual than it did under
+                                               // v74 and breaks across lines differently. The
+                                               // ladder is derived from the body fontId and so is
+                                               // deliberately absent from the property hash; the
+                                               // hash therefore still MATCHES, and this version
+                                               // is the only thing that rejects a v74 cache
+                                               // v74: the HTML `hidden` attribute now
+                                               // suppresses an element, so a v73 cache still
+                                               // holds the laid-out text it should have hidden
+                                               // v73: an internal link honours CSS
+                                               // vertical-align, so footnote references marked
+                                               // `a { vertical-align: super }` are raised and
+                                               // shrunk. Word size/position are baked into layout
+                                               // v72: `!important` is now stripped from every
+                                               // CSS declaration value, so margins, text-align and
+                                               // text-indent that carry the marker take effect. Those
+                                               // feed layout, so a v71 cache holds the old geometry
+                                               // v71: the packed word style byte now carries a
+                                               // per-word "continues the previous word" bit, so the
+                                               // dictionary overlay can select a bionic-split or
+                                               // hyphenated word as one word. A v70 cache reads the
+                                               // bit as clear everywhere, i.e. keeps the old split
+                                               // selection, so it has to be rebuilt
+                                               // v70: a wrapper's horizontal inset reaches every
+                                               // child block, and insets/hanging indents are clamped to
+                                               // the panel. Layout bakes insets into word xpos (see v61),
+                                               // so a v69 cache keeps the off-panel lines this fixes
+                                               // v69: table cells carry a colSpan
+                                               // v68: near-body font-size snapping now also covers block-level
+                                               // CSS (p.body { font-size: 1.1em }), not just inline wrappers
+                                               // v67: img boxes honour `auto` and keep the source aspect ratio
+                                               // v64: main-text font-size normalization
+                                               // v63: drop-cap float zones + ink-metric cap placement
+                                               // (62 was consumed by an earlier iteration of this feature)
+                                               // v61: TextBlock no longer serializes the block-spacing
+                                               // fields (margins/padding/indent + their defined flags);
+                                               // layout bakes them into word xpos/line y and nothing read
+                                               // them back — 19 bytes/line saved
+                                               // v60: TextBlock word data serialized as one flat arena
+                                               // (offset table + NUL-terminated text blob) instead of
+                                               // length-prefixed strings and per-field arrays
+                                               // v59: FontSizeLadder residual dead zone (±3% renders native) changes
+                                               // near-rung block metrics from v58
+                                               // (v58: block sizes snap to the FontSizeLadder, uniform spans fold;
+                                               //  v57: sup/sub scaling moved into the per-word size channel)
 
 namespace header {
 constexpr uint32_t kVersion = 0;
@@ -143,8 +166,10 @@ constexpr uint32_t kViewportWidth = kParagraphAlignment + sizeof(uint8_t);
 constexpr uint32_t kViewportHeight = kViewportWidth + sizeof(uint16_t);
 constexpr uint32_t kHyphenationEnabled = kViewportHeight + sizeof(uint16_t);
 constexpr uint32_t kEmbeddedStyle = kHyphenationEnabled + sizeof(bool);
-constexpr uint32_t kImageRendering = kEmbeddedStyle + sizeof(bool);
-constexpr uint32_t kParseComplete = kImageRendering + sizeof(uint8_t);
+constexpr uint32_t kBionicReadingEnabled = kEmbeddedStyle + sizeof(bool);
+constexpr uint32_t kImageRendering = kBionicReadingEnabled + sizeof(bool);
+constexpr uint32_t kVerticalText = kImageRendering + sizeof(uint8_t);
+constexpr uint32_t kParseComplete = kVerticalText + sizeof(uint8_t);
 constexpr uint32_t kPageCount = kParseComplete + sizeof(bool);
 constexpr uint32_t kPageLut = kPageCount + sizeof(uint16_t);
 constexpr uint32_t kAnchorMap = kPageLut + sizeof(uint32_t);
@@ -171,6 +196,10 @@ constexpr uint8_t kStatusCssDegraded = 1 << 3;
 //   chapter, page elements, nesting depth, ...; see ChapterHtmlSlimParser::CapOverflow). Not a
 //   heap condition: deterministic, so nothing rebuilds on it (audit R4).
 constexpr uint8_t kStatusSimplified = 1 << 4;
+//   kStatusVertical: the build set the section vertical-rl (ChapterHtmlSlimParser decides at <body>, from the request
+//   in the header, the book's CSS and its page progression). The request alone does not say: under Automatic it
+//   depends on the chapter.
+constexpr uint8_t kStatusVertical = 1 << 5;
 
 // On-disk paragraph LUT entry: u32 visibleTextOffset + u16 paragraphIndex + u16 listItemIndex.
 // visibleTextOffset is the number of visible bytes (VisibleText.h) of the chapter's source text
@@ -345,8 +374,9 @@ uint32_t fnv1a(const uint8_t* data, size_t length) {
 
 uint32_t Section::calculatePropertyHash(const BuildParams& p) {
   uint8_t buffer[96];
-  static_assert(sizeof(buffer) >= 21 + sizeof(uint32_t) + BlockFontFamilies::kMaxFamilies * 3 * sizeof(int32_t),
-                "the settings (21 B) and every family fit");
+  static_assert(sizeof(buffer) >= 22 + sizeof(uint32_t) + sizeof(float) + sizeof(uint16_t) +
+                                      BlockFontFamilies::kMaxFamilies * 3 * sizeof(int32_t),
+                "the settings (22 B), Book's style line spacing and every family fit");
   size_t offset = 0;
 
   auto append = [&](const void* ptr, size_t size) {
@@ -363,11 +393,16 @@ uint32_t Section::calculatePropertyHash(const BuildParams& p) {
   append(&p.hyphenationEnabled, sizeof(p.hyphenationEnabled));
   append(&p.fontSizeNormalization, sizeof(p.fontSizeNormalization));
   append(&p.embeddedStyle, sizeof(p.embeddedStyle));
+  append(&p.bionicReadingEnabled, sizeof(p.bionicReadingEnabled));
   append(&p.inlineFootnotePreviews, sizeof(p.inlineFootnotePreviews));
   if (p.inlineFootnotePreviews) {
     append(&INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION, sizeof(INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION));
   }
   append(&p.imageRendering, sizeof(p.imageRendering));
+  if (p.bookLineHeightFloor > 0.0f) {
+    append(&p.bookLineHeightFloor, sizeof(p.bookLineHeightFloor));
+    append(&p.lineHeightEmPx, sizeof(p.lineHeightEmPx));
+  }
   // Only what the book's CSS can reach, and only when there is any: a variant without families keeps its old key.
   if (p.embeddedStyle && p.fontFamilies && p.fontFamilies->count != 0) {
     append(&p.fontFamilies->body, sizeof(p.fontFamilies->body));
@@ -377,6 +412,11 @@ uint32_t Section::calculatePropertyHash(const BuildParams& p) {
       append(&family.bodyFontId, sizeof(family.bodyFontId));
       append(&family.ladder.nativeBase, sizeof(family.ladder.nativeBase));
     }
+  }
+  // Only when the reader may set the book vertically: Off, every Latin book's request, keeps the key it had.
+  if (p.verticalText != VerticalText::Off) {
+    const auto request = static_cast<uint8_t>(p.verticalText);
+    append(&request, sizeof(request));
   }
 
   return fnv1a(buffer, offset);
@@ -601,16 +641,19 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
 void Section::writeSectionFileHeader(const int fontId, const float lineCompression, const bool extraParagraphSpacing,
                                      const uint8_t paragraphAlignment, const uint16_t viewportWidth,
                                      const uint16_t viewportHeight, const bool hyphenationEnabled,
-                                     const bool embeddedStyle, const uint8_t imageRendering) {
+                                     const bool embeddedStyle, const bool bionicReadingEnabled,
+                                     const uint8_t imageRendering, const VerticalText verticalText) {
   if (!file) {
     LOG_DBG("SCT", "File not open for writing header");
     return;
   }
+  const auto verticalTextByte = static_cast<uint8_t>(verticalText);
   static_assert(header::kSize == sizeof(SECTION_FILE_VERSION) + sizeof(fontId) + sizeof(lineCompression) +
                                      sizeof(extraParagraphSpacing) + sizeof(paragraphAlignment) +
                                      sizeof(viewportWidth) + sizeof(viewportHeight) + sizeof(hyphenationEnabled) +
-                                     sizeof(embeddedStyle) + sizeof(imageRendering) + sizeof(bool) + sizeof(pageCount) +
-                                     sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
+                                     sizeof(embeddedStyle) + sizeof(bionicReadingEnabled) + sizeof(imageRendering) +
+                                     sizeof(verticalTextByte) + sizeof(bool) + sizeof(pageCount) + sizeof(uint32_t) +
+                                     sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   serialization::writePod(file, SECTION_FILE_VERSION);
   serialization::writePod(file, fontId);
@@ -621,7 +664,9 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
   serialization::writePod(file, viewportHeight);
   serialization::writePod(file, hyphenationEnabled);
   serialization::writePod(file, embeddedStyle);
+  serialization::writePod(file, bionicReadingEnabled);
   serialization::writePod(file, imageRendering);
+  serialization::writePod(file, verticalTextByte);
   serialization::writePod(file, false);      // Placeholder for the status byte (patched later)
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for LUT offset (patched later)
@@ -637,9 +682,19 @@ bool Section::loadSectionFile(const BuildParams& p) {
   tableRowDegraded_ = false;
   cssLowHeapDegraded_ = false;
   simplified_ = false;
+  // Loaded or not, the section is now held to this request: horizontal under it until a cache or a build says
+  // otherwise, so flowContext() never pairs another request with this outcome.
+  request_ = p.verticalText;
+  vertical_ = false;
   embeddedStyleFallback = false;
   uint32_t propertyHash = calculatePropertyHash(p);
   filePath = getSectionFilePath(propertyHash);
+  // A cache that does not load is removed; clearCache() leaves a fresh section's request, so this one's is put back.
+  const auto refuse = [this, &p] {
+    clearCache();  // closes file before removal
+    request_ = p.verticalText;
+    return false;
+  };
 
   bool usingEmbeddedStyleFallback = false;
   if (!Storage.openFileForRead("SCT", filePath, file)) {
@@ -668,8 +723,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
     serialization::readPod(file, version);
     if (version != SECTION_FILE_VERSION) {
       LOG_ERR("SCT", "Deserialization failed: Unknown version %u", version);
-      clearCache();  // closes file before removal
-      return false;
+      return refuse();
     }
 
     int fileFontId;
@@ -679,7 +733,9 @@ bool Section::loadSectionFile(const BuildParams& p) {
     uint8_t fileParagraphAlignment;
     bool fileHyphenationEnabled;
     bool fileEmbeddedStyle;
+    bool fileBionicReadingEnabled;
     uint8_t fileImageRendering;
+    uint8_t fileVerticalText;
     uint8_t fileStatus;
     serialization::readPod(file, fileFontId);
     serialization::readPod(file, fileLineCompression);
@@ -689,7 +745,9 @@ bool Section::loadSectionFile(const BuildParams& p) {
     serialization::readPod(file, fileViewportHeight);
     serialization::readPod(file, fileHyphenationEnabled);
     serialization::readPod(file, fileEmbeddedStyle);
+    serialization::readPod(file, fileBionicReadingEnabled);
     serialization::readPod(file, fileImageRendering);
+    serialization::readPod(file, fileVerticalText);
     serialization::readPod(file, fileStatus);
 
     const bool embeddedStyleMatches =
@@ -698,10 +756,10 @@ bool Section::loadSectionFile(const BuildParams& p) {
         p.extraParagraphSpacing != fileExtraParagraphSpacing || p.paragraphAlignment != fileParagraphAlignment ||
         p.viewportWidth != fileViewportWidth || p.viewportHeight != fileViewportHeight ||
         p.hyphenationEnabled != fileHyphenationEnabled || !embeddedStyleMatches ||
-        p.imageRendering != fileImageRendering) {
+        p.bionicReadingEnabled != fileBionicReadingEnabled || p.imageRendering != fileImageRendering ||
+        static_cast<uint8_t>(p.verticalText) != fileVerticalText) {
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
-      clearCache();  // closes file before removal
-      return false;
+      return refuse();
     }
 
     truncatedCache = (fileStatus & kStatusParseComplete) == 0;
@@ -709,6 +767,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
     tableRowDegraded_ = (fileStatus & kStatusTableRowDegraded) != 0;
     cssLowHeapDegraded_ = (fileStatus & kStatusCssDegraded) != 0;
     simplified_ = (fileStatus & kStatusSimplified) != 0;
+    vertical_ = (fileStatus & kStatusVertical) != 0;
   }
 
   serialization::readPod(file, pageCount);
@@ -716,8 +775,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
   // Sanity check: same upper bound used by TextBlock::deserialize for word count
   if (pageCount > 10000) {
     LOG_ERR("SCT", "Deserialization failed: page count %u exceeds maximum", pageCount);
-    clearCache();
-    return false;
+    return refuse();
   }
 
   // Load LUT into memory (file is now positioned at the lutOffset field)
@@ -726,8 +784,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
   lutFileOffset_ = 0;
   if (!file.seek(lutOffset)) {
     LOG_ERR("SCT", "Deserialization failed: seek to LUT offset %u failed", lutOffset);
-    clearCache();
-    return false;
+    return refuse();
   }
   // 4 bytes a page: a chapter is a few hundred bytes, a book that is one XHTML file several KB in
   // one block, taken as the table's first chunk. Without that block the pages read their offsets
@@ -744,8 +801,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
       serialization::readPod(file, pos);
       if (pos < header::kSize || pos >= lutOffset) {
         LOG_ERR("SCT", "Deserialization failed: LUT entry %u out of range [%u, %u)", pos, header::kSize, lutOffset);
-        clearCache();
-        return false;
+        return refuse();
       }
       if (!lut.push_back(pos)) {
         // Inside the reserved chunk this cannot be refused; if it ever is, read from the file
@@ -787,6 +843,8 @@ bool Section::clearCache() {
   tableRowDegraded_ = false;
   cssLowHeapDegraded_ = false;
   simplified_ = false;
+  request_ = VerticalText::Off;  // a fresh section's, until a load or a build names one
+  vertical_ = false;
 
   if (!Storage.exists(filePath.c_str())) {
     LOG_DBG("SCT", "Cache does not exist, no action needed");
@@ -1109,12 +1167,15 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   imageHeaderDegraded_ = false;
   tableRowDegraded_ = false;
   simplified_ = false;
+  request_ = p.verticalText;
+  vertical_ = false;
 
   if (!Storage.openFileForWrite("SCT", filePath, file)) {
     return BuildPhaseResult::Failed;
   }
   writeSectionFileHeader(p.fontId, p.lineCompression, p.extraParagraphSpacing, p.paragraphAlignment, p.viewportWidth,
-                         p.viewportHeight, p.hyphenationEnabled, p.embeddedStyle, p.imageRendering);
+                         p.viewportHeight, p.hyphenationEnabled, p.embeddedStyle, p.bionicReadingEnabled,
+                         p.imageRendering, p.verticalText);
   st.lut.clear();
   // One u32 per page, appended by the completePageFn below across the whole parse. Pre-sized for
   // the same reason as the parser's paragraph LUT — see estimatePagesForSpine and
@@ -1179,7 +1240,7 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   // so this reference is valid for the visitor's whole lifetime, including across slices.
   st.visitor = std::make_unique<ChapterHtmlSlimParser>(
       epub, renderer, p.fontId, p.lineCompression, p.extraParagraphSpacing, p.paragraphAlignment, p.viewportWidth,
-      p.viewportHeight, p.hyphenationEnabled, p.fontSizeNormalization,
+      p.viewportHeight, p.hyphenationEnabled, p.fontSizeNormalization, p.bionicReadingEnabled,
       [this, &st](std::unique_ptr<Page> page) {
         // The page's LUT entry first: a page written without one could never be loaded, and
         // pageCount would run ahead of the table. Refused (no chunk for it), the page is not
@@ -1218,6 +1279,7 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   }
   st.visitor->endExternalPageBreakAnchors();
   st.visitor->setFontSizeLadder(p.fontSizeLadder);
+  st.visitor->setBookLineHeight(p.bookLineHeightFloor, p.lineHeightEmPx);
   if (p.embeddedStyle && p.fontFamilies) st.visitor->setFontFamilies(*p.fontFamilies);
   // Anchors stream to SD as they are found rather than accumulating in the parser; the
   // finalizer below copies the spill into the section file's anchor map. Set before setup(),
@@ -1231,6 +1293,8 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   const TypographyProfile typography = TypographyProfile::forLanguage(epub->getLanguage());
   Hyphenator::setLanguageHyphenator(typography.hyphenator);
   st.visitor->setTypography(typography);
+  // The section decides its writing mode at <body>, before any block is laid out (ChapterHtmlSlimParser::decideFrame).
+  st.visitor->setVerticalText(p.verticalText, epub->pageProgression());
 
   // Inline footnote previews are NOT wired up here: the note text this spine needs may not be
   // in the store yet, and resolving it needs the spine's inflated XHTML — which phase (a) is
@@ -1618,6 +1682,7 @@ Section::BuildPhaseResult Section::runBuildParse(BuildState& st, const uint32_t 
   if (st.visitor->capOverflowFlags() != 0) {
     simplified_ = true;
   }
+  vertical_ = st.visitor->isVertical();
   if (st.cssParser) {
     st.cssParser->logResolveStats(st.localPath.c_str());
     // Latch before Finalize clears the parser (which resets its stats): lowHeapSkips
@@ -1784,10 +1849,10 @@ Section::BuildPhaseResult Section::runBuildFinalize(BuildState& st) {
     Storage.remove(filePath.c_str());
     return BuildPhaseResult::Failed;
   }
-  const uint8_t status = (parseComplete ? kStatusParseComplete : 0) |
-                         (imageHeaderDegraded_ ? kStatusImageHeaderDegraded : 0) |
-                         (tableRowDegraded_ ? kStatusTableRowDegraded : 0) |
-                         (cssLowHeapDegraded_ ? kStatusCssDegraded : 0) | (simplified_ ? kStatusSimplified : 0);
+  const uint8_t status =
+      (parseComplete ? kStatusParseComplete : 0) | (imageHeaderDegraded_ ? kStatusImageHeaderDegraded : 0) |
+      (tableRowDegraded_ ? kStatusTableRowDegraded : 0) | (cssLowHeapDegraded_ ? kStatusCssDegraded : 0) |
+      (simplified_ ? kStatusSimplified : 0) | (vertical_ ? kStatusVertical : 0);
   serialization::writePod(file, status);
   serialization::writePod(file, pageCount);
   serialization::writePod(file, lutOffset);
@@ -2207,6 +2272,13 @@ uint16_t Section::estimatedTotalPages() const {
   const uint32_t projected = static_cast<uint32_t>(pageCount) * 100u / static_cast<uint32_t>(pct);
   return projected > pageCount ? static_cast<uint16_t>(projected) : pageCount;
 }
+
+bool Section::isVertical() const {
+  if (buildState_ && buildState_->visitor) return buildState_->visitor->isVertical();
+  return vertical_;
+}
+
+FlowContext Section::flowContext() const { return FlowContext::of(request_, isVertical(), epub->pageProgression()); }
 
 bool Section::activeBuildCssDegraded() const {
   // Read the live CSS resolver's running stats: lowHeapSkips is incremented the moment the

@@ -19,7 +19,7 @@ namespace {
 
 int probe(const Bytes& bytes) {
   MemoryFile file{bytes};
-  return ttf::probeStyle(file.source());
+  return ttf::probeFile(file.source()).style;
 }
 
 Bytes builtFont(const uint16_t macStyle = 0) {
@@ -33,6 +33,29 @@ Bytes builtFont(const uint16_t macStyle = 0) {
 std::array<uint8_t, glyphstore::kIdentityBytes> identityOf(const ttf::FileStamp (&styles)[4]) {
   std::array<uint8_t, glyphstore::kIdentityBytes> out{};
   ttf::familyIdentity(styles, out.data());
+  return out;
+}
+
+// The identity as docs/file-formats.md describes it, with the render version a parameter.
+std::array<uint8_t, glyphstore::kIdentityBytes> identityAt(const ttf::FileStamp (&styles)[4], const uint8_t version) {
+  std::array<uint8_t, glyphstore::kIdentityBytes> out{};
+  for (uint32_t lane = 0; lane < glyphstore::kIdentityBytes / 4; ++lane) {
+    uint32_t hash = 2166136261u ^ (lane * 0x9E3779B9u);
+    for (uint8_t style = 0; style < 4; ++style) {
+      const ttf::FileStamp& file = styles[style];
+      const uint8_t marker = file.name ? style : static_cast<uint8_t>(0x80 | style);
+      hash = glyphstore::fnv1a(&marker, 1, hash);
+      if (!file.name) continue;
+      hash = glyphstore::fnv1a(file.name, std::strlen(file.name) + 1, hash);
+      const uint8_t fields[8] = {static_cast<uint8_t>(file.size),       static_cast<uint8_t>(file.size >> 8),
+                                 static_cast<uint8_t>(file.size >> 16), static_cast<uint8_t>(file.size >> 24),
+                                 static_cast<uint8_t>(file.date),       static_cast<uint8_t>(file.date >> 8),
+                                 static_cast<uint8_t>(file.time),       static_cast<uint8_t>(file.time >> 8)};
+      hash = glyphstore::fnv1a(fields, sizeof fields, hash);
+    }
+    hash = glyphstore::fnv1a(&version, 1, hash);
+    for (int byte = 0; byte < 4; ++byte) out[4 * lane + byte] = static_cast<uint8_t>(hash >> (8 * byte));
+  }
   return out;
 }
 
@@ -52,11 +75,130 @@ TEST(TtfFamily, TheStyleIsTheLowTwoBitsOfMacStyle) {
   EXPECT_EQ(3, probe(builtFont(3 | 0x40)));  // other macStyle bits (condensed, ...) do not matter
 }
 
-TEST(TtfFamily, CffFontsAndCollectionsAreNotTtfFamilies) {
-  EXPECT_EQ(-1, probe(readFont("OpenDyslexic/OpenDyslexic-Regular.otf")));
+TEST(TtfFamily, ACffFontIsAFamilyAndACollectionIsNot) {
+  // The style is head.macStyle's; OpenDyslexic's Italic leaves it clear.
+  const char* const names[] = {"Regular", "Bold", "Italic", "BoldItalic"};
+  const int styles[] = {0, 1, 0, 3};
+  for (int i = 0; i < 4; ++i) {
+    MemoryFile file{readFont(std::string("OpenDyslexic/OpenDyslexic-") + names[i] + ".otf")};
+    const ttf::FileProbe probed = ttf::probeFile(file.source());
+    EXPECT_EQ(styles[i], probed.style) << names[i];
+    // Its SD-mode block, the CFF table rebuilt in it, as an install plans it.
+    ttf::SdBlock block;
+    ASSERT_EQ(ttf::SdPlan::Ok, block.plan(file.source())) << names[i];
+    EXPECT_EQ(block.bytes(), probed.sdBytes) << names[i];
+    EXPECT_LT(probed.sdBytes, file.bytes.size()) << names[i];
+  }
+  // A CFF table the engine cannot read (major version 2) leaves the font no SD-mode block: flash mode only.
+  Bytes unread = readFont("OpenDyslexic/OpenDyslexic-Regular.otf");
+  const size_t record = findRecord(unread, "CFF ") + 8;  // its offset
+  unread[static_cast<size_t>(unread[record]) << 24 | unread[record + 1] << 16 | unread[record + 2] << 8 |
+         unread[record + 3]] = 2;
+  MemoryFile broken{unread};
+  EXPECT_EQ(0, ttf::probeFile(broken.source()).style);
+  EXPECT_EQ(UINT32_MAX, ttf::probeFile(broken.source()).sdBytes);
   Bytes collection = builtFont();
   set32(collection, 0, 0x74746366);  // 'ttcf'
   EXPECT_EQ(-1, probe(collection));
+}
+
+TEST(TtfFamily, ACffFontMissingATableTheEngineNeedsIsRefused) {
+  for (const char* table : {"CFF ", "cmap", "head", "hhea", "hmtx", "maxp"}) {
+    Bytes font = readFont("OpenDyslexic/OpenDyslexic-Regular.otf");
+    const size_t record = findRecord(font, table);
+    ASSERT_NE(0u, record) << table;
+    font[record] = 'X';
+    EXPECT_EQ(-1, probe(font)) << table;
+  }
+  // glyf and loca are TrueType's; a CFF font does not need them, and lists with them too.
+  EXPECT_EQ(0, probe(readFont("OpenDyslexic/OpenDyslexic-Regular.otf")));
+}
+
+namespace {
+
+// A copy of the OpenDyslexic font whose GDEF and GPOS records are renamed `first` and `second`.
+Bytes cffFontWithRecords(const char* first, const char* second) {
+  Bytes font = readFont("OpenDyslexic/OpenDyslexic-Regular.otf");
+  std::memcpy(font.data() + findRecord(font, "GDEF"), first, 4);
+  std::memcpy(font.data() + findRecord(font, "GPOS"), second, 4);
+  return font;
+}
+
+// A TrueType font with a "CFF " record of `length` bytes at `offset`.
+Bytes trueTypeFontWithCffRecord(const uint32_t offset, const uint32_t length) {
+  Font font;
+  font.glyphs.resize(1);
+  font.glyphs[0].contours = {rect(0, 0, 64, 64)};
+  font.extraTables = {{"CFF ", Bytes(16, 0)}};
+  Bytes bytes = buildFont(font);
+  set32(bytes, findRecord(bytes, "CFF ") + 8, offset);
+  set32(bytes, findRecord(bytes, "CFF ") + 12, length);
+  return bytes;
+}
+
+}  // namespace
+
+TEST(TtfFamily, ATrueTypeFontWithACffRecordIsStillListed) {
+  // parseFace() reads a TrueType font's glyf and loca whatever else the directory holds.
+  Font font;
+  font.glyphs.resize(1);
+  font.glyphs[0].contours = {rect(0, 0, 64, 64)};
+  font.extraTables = {{"CFF ", Bytes(16, 0)}};
+  EXPECT_EQ(0, probe(buildFont(font)));
+}
+
+TEST(TtfFamily, ACffFontWithGlyfAndLocaRecordsIsListed) {
+  const Bytes font = cffFontWithRecords("glyf", "loca");
+  EXPECT_NE(0u, findRecord(font, "glyf"));
+  EXPECT_NE(0u, findRecord(font, "loca"));
+  EXPECT_EQ(0, probe(font));
+  MemoryFile file{font};
+  EXPECT_NE(UINT32_MAX, ttf::probeFile(file.source()).sdBytes) << "its SD-mode block is still planned";
+}
+
+TEST(TtfFamily, AnOutOfFileRecordTheKindDoesNotNeedDoesNotRefuse) {
+  const uint32_t past = 1u << 30;
+  // TrueType with a CFF record outside the file: the CFF table is not read.
+  EXPECT_EQ(0, probe(trueTypeFontWithCffRecord(past, 16)));
+  EXPECT_EQ(0, probe(trueTypeFontWithCffRecord(0, past)));
+  // CFF with glyf and loca records outside the file.
+  Bytes font = cffFontWithRecords("glyf", "loca");
+  set32(font, findRecord(font, "glyf") + 8, past);
+  set32(font, findRecord(font, "loca") + 12, past);
+  EXPECT_EQ(0, probe(font));
+  // What the kind does need still refuses.
+  Bytes noGlyf = builtFont();
+  set32(noGlyf, findRecord(noGlyf, "glyf") + 8, past);
+  EXPECT_EQ(-1, probe(noGlyf));
+}
+
+TEST(TtfFamily, ACffTableOutsideTheFileIsRefused) {
+  Bytes font = readFont("OpenDyslexic/OpenDyslexic-Regular.otf");
+  set32(font, findRecord(font, "CFF ") + 12, static_cast<uint32_t>(font.size()));
+  EXPECT_EQ(-1, probe(font));
+}
+
+TEST(TtfFamily, ATrueTypeFontWithoutGlyfIsRefusedWhateverElseItHas) {
+  Bytes font = readFont("OpenDyslexic/OpenDyslexic-Regular.otf");
+  set32(font, 0, 0x00010000);  // sfnt 1.0 over CFF tables: glyf and loca are what it needs
+  EXPECT_EQ(-1, probe(font));
+}
+
+TEST(TtfFamily, ACff2RecordIsReadAsTheFaceReadsIt) {
+  // Any table slot, renamed CFF2: a real one makes the face Unsupported (so the probe says -1), an empty one or one
+  // outside the file is skipped and the CFF table draws.
+  const Bytes original = readFont("OpenDyslexic/OpenDyslexic-Regular.otf");
+  const size_t record = findRecord(original, "OS/2");
+  ASSERT_NE(0u, record);
+  Bytes real = original;
+  std::memcpy(real.data() + record, "CFF2", 4);
+  EXPECT_EQ(-1, probe(real));
+  Bytes empty = real;
+  set32(empty, record + 12, 0);
+  EXPECT_EQ(0, probe(empty));
+  Bytes outside = real;
+  set32(outside, record + 8, static_cast<uint32_t>(outside.size()) + 4);
+  EXPECT_EQ(0, probe(outside));
 }
 
 TEST(TtfFamily, AFontMissingATableTheEngineNeedsIsRefused) {
@@ -95,12 +237,12 @@ TEST(TtfFamily, AHeadWithoutItsMagicIsRefused) {
 TEST(TtfFamily, AReadErrorIsRefused) {
   MemoryFile file{readFont("Bookerly/Bookerly-Bold.ttf")};
   file.failReads = true;
-  EXPECT_EQ(-1, ttf::probeStyle(file.source()));
+  EXPECT_EQ(-1, ttf::probeFile(file.source()).style);
 }
 
 TEST(TtfFamily, TheProbeReadsOnlyTheDirectoryAndHead) {
   MemoryFile file{readFont("NotoSans/NotoSans-Regular.ttf")};
-  ASSERT_EQ(0, ttf::probeStyle(file.source()));
+  ASSERT_EQ(0, ttf::probeFile(file.source()).style);
   EXPECT_LE(file.reads, 6u);  // the header, the directory 8 records at a time, head: cheap at discovery
 }
 
@@ -121,10 +263,10 @@ TEST(TtfFamily, AFileSourceReadsThroughSeekAndRead) {
     }
   };
   SeekReadFile file{readFont("Bookerly/Bookerly-Italic.ttf")};
-  EXPECT_EQ(2, ttf::probeStyle(ttf::fileSource(file, static_cast<uint32_t>(file.bytes.size()))));
+  EXPECT_EQ(2, ttf::probeFile(ttf::fileSource(file, static_cast<uint32_t>(file.bytes.size()))).style);
   const auto size = static_cast<uint32_t>(file.bytes.size());
   file.bytes.resize(100);  // the file shrank under the source: short reads fail
-  EXPECT_EQ(-1, ttf::probeStyle(ttf::fileSource(file, size)));
+  EXPECT_EQ(-1, ttf::probeFile(ttf::fileSource(file, size)).style);
 }
 
 TEST(TtfFamily, TheIdentityChangesWithAnyFileDetail) {
@@ -146,6 +288,14 @@ TEST(TtfFamily, TheIdentityChangesWithAnyFileDetail) {
   for (const auto* other : {&renamed, &resized, &redated, &retimed, &moved, &fewer}) {
     EXPECT_NE(identity, identityOf(*other));
   }
+}
+
+TEST(TtfFamily, TheIdentityChangesWithTheRenderVersion) {
+  // Spec 7.4: a store #548 wrote holds a regular-only family's bold italic upright; at version 3 it is installed again.
+  const ttf::FileStamp styles[4] = {{"Lit-Regular.ttf", 450048, 0x5A21, 0x6400}};
+  EXPECT_EQ(3, ttf::kRenderVersion);
+  EXPECT_EQ(identityAt(styles, 3), identityOf(styles));
+  EXPECT_NE(identityAt(styles, 2), identityOf(styles));
 }
 
 TEST(TtfFamily, TheIdentityIsSixteenIndependentBytes) {
@@ -176,15 +326,21 @@ TEST(TtfFamily, ASetsIdentityChangesWithItsFamiliesAndTheirOrder) {
   EXPECT_NE(identityOfSet(families, 1), identityOfSet(families + 1, 1));
 }
 
-TEST(TtfFamily, TtfFileNamesAreRecognisedInAnyCase) {
-  EXPECT_TRUE(ttf::isTtfFileName("Literata-Regular.ttf"));
-  EXPECT_TRUE(ttf::isTtfFileName("LITERATA.TTF"));
-  EXPECT_TRUE(ttf::isTtfFileName("x.TtF"));
-  EXPECT_FALSE(ttf::isTtfFileName(".ttf"));              // no name
-  EXPECT_FALSE(ttf::isTtfFileName("Literata.ttf.tmp"));  // an upload in progress
-  EXPECT_FALSE(ttf::isTtfFileName("Literata.otf"));      // CFF: not drawn
-  EXPECT_FALSE(ttf::isTtfFileName("Literata_14.cpfont"));
-  EXPECT_FALSE(ttf::isTtfFileName("Literatattf"));
+TEST(TtfFamily, OutlineFontFileNamesAreRecognisedInAnyCase) {
+  EXPECT_TRUE(ttf::isOutlineFontFileName("Literata-Regular.ttf"));
+  EXPECT_TRUE(ttf::isOutlineFontFileName("LITERATA.TTF"));
+  EXPECT_TRUE(ttf::isOutlineFontFileName("x.TtF"));
+  EXPECT_TRUE(ttf::isOutlineFontFileName("Literata.otf"));
+  EXPECT_TRUE(ttf::isOutlineFontFileName("LITERATA.OTF"));
+  EXPECT_TRUE(ttf::isOutlineFontFileName("x.OtF"));
+  EXPECT_FALSE(ttf::isOutlineFontFileName(".ttf"));  // no name
+  EXPECT_FALSE(ttf::isOutlineFontFileName(".otf"));
+  EXPECT_FALSE(ttf::isOutlineFontFileName("Literata.ttf.tmp"));  // an upload in progress
+  EXPECT_FALSE(ttf::isOutlineFontFileName("Literata.otf.tmp"));
+  EXPECT_FALSE(ttf::isOutlineFontFileName("Literata_14.cpfont"));
+  EXPECT_FALSE(ttf::isOutlineFontFileName("Literatattf"));
+  EXPECT_FALSE(ttf::isOutlineFontFileName("Literataotf"));
+  EXPECT_FALSE(ttf::isOutlineFontFileName("Literata.ttc"));
 }
 
 TEST(TtfFamily, AmongEqualWeightsTheFirstFileServes) {
@@ -363,12 +519,26 @@ TEST(TtfFamily, AFamilyFitsTheStoreInFlashModeElseInSdMode) {
   EXPECT_FALSE(ttf::fitsStore(bookerly, bookerlyTables, 0, kX3FontArea, 32));
 }
 
+TEST(TtfFamily, AStyleWithoutAnSdBlockFitsOnlyInFlashMode) {
+  constexpr uint32_t kX3FontArea = 3538944 - 65536;
+  const uint32_t none[1] = {UINT32_MAX};  // a CFF file: no SD-mode block yet
+  const uint32_t small[1] = {1000000};
+  EXPECT_TRUE(ttf::fitsStore(small, none, 1, kX3FontArea, 32));
+  const uint32_t big[1] = {10u * 1024 * 1024};
+  EXPECT_FALSE(ttf::fitsStore(big, none, 1, kX3FontArea, 32));  // not past a wrapped page count
+  const uint32_t mixed[2] = {450000, 1000000};
+  const uint32_t mixedTables[2] = {176356, UINT32_MAX};
+  EXPECT_TRUE(ttf::fitsStore(mixed, mixedTables, 2, kX3FontArea, 32));
+  const uint32_t mixedBig[2] = {450000, 10u * 1024 * 1024};
+  EXPECT_FALSE(ttf::fitsStore(mixedBig, mixedTables, 2, kX3FontArea, 32));
+}
+
 TEST(TtfFamily, TheProbeSaysWhatTheSdModeBlockTakes) {
   for (const char* name : {"Bookerly/Bookerly-Regular.ttf", "Inter/Inter-Bold.ttf", "NotoSans/NotoSans-Italic.ttf",
                            "Ubuntu/Ubuntu-Regular.ttf"}) {
     MemoryFile file{readFont(name)};
     ttf::SdBlock block;
-    ASSERT_TRUE(block.plan(file.source())) << name;
+    ASSERT_EQ(ttf::SdPlan::Ok, block.plan(file.source())) << name;
     EXPECT_EQ(block.bytes(), ttf::probeFile(file.source()).sdBytes) << name;
   }
 }
@@ -390,10 +560,10 @@ std::vector<uint8_t> blockImage(ttf::SdBlock& block) {
 TEST(TtfSdBlock, IsTheFontButForItsOutlines) {
   MemoryFile file{readFont("Bookerly/Bookerly-Regular.ttf")};
   ttf::SdBlock block;
-  ASSERT_TRUE(block.plan(file.source()));
-  // Its ten tables the engine reads, 4-byte aligned behind an 11-record directory (fontTools agrees); glyf is
+  ASSERT_EQ(ttf::SdPlan::Ok, block.plan(file.source()));
+  // Its eleven tables the engine reads, post's header among them, 4-byte aligned behind a 12-record directory; glyf is
   // 208,484 bytes at 58,840 in the file.
-  EXPECT_EQ(176356u, block.bytes());
+  EXPECT_EQ(176404u, block.bytes());
   const glyphstore::SdOutlines outlines = block.outlines();
   EXPECT_EQ(block.bytes(), outlines.fontOffset);
   EXPECT_EQ(58840u, outlines.fileOffset);
@@ -434,10 +604,39 @@ TEST(TtfSdBlock, IsTheFontButForItsOutlines) {
   EXPECT_EQ(0u, cache.misses());  // nothing of the outlines read yet
 }
 
+TEST(TtfSdBlock, KeepsThePostHeaderSoTheFaceReadsItalicAsTheFileDoes) {
+  // Spec 7.4: a style block keeps post's first 32 bytes, italicAngle among them. A TrueType file's glyph names after
+  // them (NotoSans-Italic: 52,692 bytes of post) stay out.
+  for (const char* name :
+       {"NotoSans/NotoSans-Italic.ttf", "OpenDyslexic/OpenDyslexic-Italic.otf", "Bookerly/Bookerly-Regular.ttf"}) {
+    MemoryFile file{readFont(name)};
+    ttf::SdBlock block;
+    ASSERT_EQ(ttf::SdPlan::Ok, block.plan(file.source())) << name;
+    const std::vector<uint8_t> image = blockImage(block);
+    ttf::SdPageCache cache;
+    const glyphstore::SdOutlines outlines = block.outlines();
+    const ttf::SdRange sd{file.source(), outlines.fontOffset, outlines.fileOffset, outlines.length, &cache};
+    FontBytes card(image.data(), static_cast<uint32_t>(image.size()), &sd);
+    FontBytes whole(file.bytes.data(), static_cast<uint32_t>(file.bytes.size()));
+    ttf::Face face;
+    ttf::Face wholeFace;
+    ASSERT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(card, &face)) << name;
+    ASSERT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(whole, &wholeFace)) << name;
+    EXPECT_EQ(wholeFace.italic, face.italic) << name;
+    EXPECT_EQ(std::string(name) != "Bookerly/Bookerly-Regular.ttf", face.italic) << name;
+    const size_t record = findRecord(image, "post");
+    ASSERT_NE(0u, record) << name;
+    const uint32_t length = static_cast<uint32_t>(image[record + 12] << 24 | image[record + 13] << 16 |
+                                                  image[record + 14] << 8 | image[record + 15]);
+    EXPECT_EQ(32u, length) << name;
+    EXPECT_EQ(block.bytes(), ttf::probeFile(file.source()).sdBytes) << name;
+  }
+}
+
 TEST(TtfSdBlock, AnyRangeReadsAsTheWholeBlockDoes) {
   MemoryFile file{readFont("Inter/Inter-Regular.ttf")};
   ttf::SdBlock block;
-  ASSERT_TRUE(block.plan(file.source()));
+  ASSERT_EQ(ttf::SdPlan::Ok, block.plan(file.source()));
   const std::vector<uint8_t> image = blockImage(block);
   const ttf::FileSource source = block.source();
   // Pieces of every size: the directory a byte at a time, across a table's end and its padding, a copy chunk.
@@ -464,7 +663,7 @@ TEST(TtfSdBlock, AnOptionalTableOutsideTheFileIsLeftOutAsTheFaceLeavesItOut) {
   set32(bytes, findRecord(bytes, "GPOS") + 12, static_cast<uint32_t>(bytes.size()));
   MemoryFile file{bytes};
   ttf::SdBlock block;
-  ASSERT_TRUE(block.plan(file.source()));
+  ASSERT_EQ(ttf::SdPlan::Ok, block.plan(file.source()));
   EXPECT_EQ(block.bytes(), ttf::probeFile(file.source()).sdBytes);
   const std::vector<uint8_t> image = blockImage(block);
   const glyphstore::SdOutlines outlines = block.outlines();
@@ -477,22 +676,27 @@ TEST(TtfSdBlock, AnOptionalTableOutsideTheFileIsLeftOutAsTheFaceLeavesItOut) {
   EXPECT_TRUE(block.sameAs(image.data(), static_cast<uint32_t>(image.size())));
 }
 
-TEST(TtfSdBlock, AFileWithoutOutlinesOrNotTrueTypeHasNone) {
+TEST(TtfSdBlock, AFileWithoutTheOutlinesOfItsKindHasNone) {
   ttf::SdBlock block;
   Bytes noGlyf = builtFont();
   noGlyf[findRecord(noGlyf, "glyf") + 3] = 'X';  // 'glyX'
   MemoryFile withoutOutlines{noGlyf};
-  EXPECT_FALSE(block.plan(withoutOutlines.source()));
+  EXPECT_EQ(ttf::SdPlan::NoBlock, block.plan(withoutOutlines.source()));
   Bytes cff = builtFont();
   std::memcpy(cff.data(), "OTTO", 4);
-  MemoryFile notTrueType{cff};
-  EXPECT_FALSE(block.plan(notTrueType.source()));
+  MemoryFile noCffTable{cff};
+  EXPECT_EQ(ttf::SdPlan::NoBlock, block.plan(noCffTable.source()));  // OTTO: a glyf it carries is not its outlines
   Bytes broken = builtFont();
   set32(broken, findRecord(broken, "hmtx") + 12, static_cast<uint32_t>(broken.size()));  // runs past the end
   MemoryFile outside{broken};
-  EXPECT_FALSE(block.plan(outside.source()));
+  EXPECT_EQ(ttf::SdPlan::NoBlock, block.plan(outside.source()));
   MemoryFile fine{builtFont()};
-  EXPECT_TRUE(block.plan(fine.source()));
+  EXPECT_EQ(ttf::SdPlan::Ok, block.plan(fine.source()));
+  // A read that fails says nothing of the file: for now only.
+  fine.failReads = true;
+  EXPECT_EQ(ttf::SdPlan::Transient, block.plan(fine.source()));
+  MemoryFile openType{readFont("OpenDyslexic/OpenDyslexic-Regular.otf")};
+  EXPECT_EQ(ttf::SdPlan::Ok, block.plan(openType.source()));
 }
 
 // --- Native size font IDs ---

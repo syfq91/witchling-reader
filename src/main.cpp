@@ -3,6 +3,7 @@
 #include <CooperativeAbort.h>
 #include <Epub.h>
 #include <Epub/BookFonts.h>
+#include <Epub/BookMetadataCache.h>
 #include <Epub/CjkLineBreak.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
@@ -225,12 +226,17 @@ void silentRestartToSettings() {
   delay(50);
   ESP.restart();
 }
-bool trySilentRestartToReaderForHeapRecovery() {
+bool heapRecoveryRestartAvailable() {
   if (deepSleepInProgress) return false;  // sleeping supersedes the heap-defrag reboot
   if (heapRecoveryRestartLatch == HEAP_RECOVERY_RESTART_LATCH_MAGIC) {
     LOG_ERR("MAIN", "Heap-recovery restart suppressed by safety latch");
     return false;
   }
+  return true;
+}
+
+bool trySilentRestartToReaderForHeapRecovery() {
+  if (!heapRecoveryRestartAvailable()) return false;
   heapRecoveryRestartLatch = HEAP_RECOVERY_RESTART_LATCH_MAGIC;
   armSilentReboot(SILENT_REBOOT_TARGET_READER);
   LOG_ERR("MAIN", "Silent restart (target=reader, heap recovery)");
@@ -382,8 +388,9 @@ void enterDeepSleep(bool fromTimeout = false, BootDiag::SleepTrigger trigger = B
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
   // If sleeping from a running reader the book loaded successfully, so the boot-loop
-  // guard count is no longer needed. Reset it now because onExit() is never called
-  // on the reader activity during a sleep transition (only queued as a pending action).
+  // guard count is no longer needed. Reset here, before the state is saved below; the
+  // reader's onExit() resets it again when goToSleep() replaces the activity (its
+  // ActivityManager::loop() runs onExit() for the replace).
   if (APP_STATE.lastSleepFromReader) {
     APP_STATE.readerActivityLoadCount = 0;
   }
@@ -468,6 +475,10 @@ void applyUiFontScale() {
   }
 }
 
+namespace {
+void openUiBookFonts();  // syncUiBookFonts' opener, below
+}  // namespace
+
 void setupDisplayAndFonts(bool seamless = false, bool skipSdFontDiscovery = false) {
   display.begin(seamless);
   // Carry the panel's measured FAST cost across the reboot. Without this the first decision that
@@ -521,6 +532,7 @@ void setupDisplayAndFonts(bool seamless = false, bool skipSdFontDiscovery = fals
   CjkUiFonts::attach(ui10BoldFont, 10);
   CjkUiFonts::attach(ui12RegularFont, 12);
   CjkUiFonts::attach(ui12BoldFont, 12);
+  CjkUiFonts::setReaderFontOpener(&openUiBookFonts);
   // The faces ship compressed; those the language pack does not hold decode through the same
   // decompressor as the reader faces, glyph by glyph.
   CjkUiFonts::setDecompressor(&fontDecompressor);
@@ -562,6 +574,50 @@ std::string publisherFontsCache(const char* path, const RecentBook& book) {
   }
   return Epub::cachePathFor(path, "/.crosspoint");
 }
+
+// The SD families the EPUB at `path` is drawn in, the body's first, and their size: what its open loads. `body` holds
+// the body's name, which families[0] points into, or the book's own family's. False, choosing nothing, while they wait
+// (`wait`): Publisher Fonts have not examined the book, or a first open does not know its language yet. `opening`: a
+// book open, which also tries the accent families again that the memory ladder left out (BookFonts::accentLimit).
+bool chooseEpubFonts(const char* path, const bool wait, const bool opening,
+                     const char* (&families)[1 + BookFonts::kMaxAccents], std::string& body, uint8_t& size) {
+  // For EPUB: honour per-book SD font and/or size overrides. The book record
+  // is available here — the reader activity hasn't started yet, but
+  // RecentBooksStore already has the persisted overrides for this path.
+  const RecentBook book = RECENT_BOOKS.getBookByPath(path);
+  size = (book.fontSizeOverride >= 0) ? static_cast<uint8_t>(book.fontSizeOverride) : SETTINGS.fontPointSize;
+
+  // Publisher Fonts: not examined yet, what is loaded stays, until the reader has examined the book and asks again.
+  const std::string cachePath = publisherFontsCache(path, book);
+  if (wait && !cachePath.empty() && BookFonts::read(cachePath) == BookFonts::State::Pending) return false;
+  // They do not apply to the book now (off, the book's own style off, a font chosen for it): the accent families the
+  // memory ladder left out of it are tried again once they do (BookFonts::accentLimit).
+  if (opening && cachePath.empty()) {
+    BookFonts::setAccentLimit(Epub::cachePathFor(path, "/.crosspoint"), 0, BookFonts::kMaxAccents);
+  }
+
+  // The book's language picks the font below (SdCardFontSystem): a first open waits for it.
+  if (wait && sdFontSystem.waitsForReaderLanguage()) return false;
+  // No family override: the global SD font (if any), at the effective size.
+  const char* family = SETTINGS.sdFontFamilyName;
+  const bool ownFont = !book.sdFontFamilyOverride.empty() || book.fontFamilyOverride >= 0;
+  if (!book.sdFontFamilyOverride.empty()) {
+    family = book.sdFontFamilyOverride.c_str();  // per-book SD font override
+  } else if (book.fontFamilyOverride >= 0) {
+    family = "";  // per-book built-in font override: no SD font needed; unload if one was active
+  }
+  // A CJK book whose font has none of its script takes a Noto CJK family of its region; a Noto CJK family loads as
+  // its sibling for the book's language. Both are the face the reader's resolvers hand out for it.
+  sdFontSystem.selectLanguageFamily(ownFont ? nullptr : family);
+  if (sdFontSystem.languageFamily()[0] != '\0') family = sdFontSystem.languageFamily();
+  body = sdFontSystem.effectiveReaderFamily(family);
+  // The families BookFonts copied out of the book: its body family in place of the reader's font, and its accent
+  // families beside whichever draws the body. They load together, the body's first and the most used accent next.
+  sdFontSystem.selectBookFamilies(cachePath, SETTINGS.publisherFonts, body.c_str());
+  families[0] = sdFontSystem.bookFamilyName()[0] != '\0' ? sdFontSystem.bookFamilyName() : body.c_str();
+  for (uint8_t n = 0; n < BookFonts::kMaxAccents; ++n) families[1 + n] = sdFontSystem.accentFamilyName(n);
+  return true;
+}
 }  // namespace
 
 bool bookFontsPendingForPath(const char* path) {
@@ -582,36 +638,55 @@ void ensureSdFontLoadedForPath(const char* path, const bool waitForBookFonts) {
   const auto onColdFontLoad = [] { GUI.drawPopup(renderer, tr(STR_LOADING_FONT)); };
 
 
-  // For EPUB: honour per-book SD font and/or size overrides. The book record
-  // is available here — the reader activity hasn't started yet, but
-  // RecentBooksStore already has the persisted overrides for this path.
-  const RecentBook book = RECENT_BOOKS.getBookByPath(path);
-  const uint8_t effectiveSize =
-      (book.fontSizeOverride >= 0) ? static_cast<uint8_t>(book.fontSizeOverride) : SETTINGS.fontPointSize;
+  const char* families[1 + BookFonts::kMaxAccents] = {};
+  std::string readerFamily;
+  uint8_t size = 0;
+  if (!chooseEpubFonts(path, waitForBookFonts, /*opening=*/true, families, readerFamily, size)) return;
+  sdFontSystem.ensureLoaded(renderer, families, 1 + BookFonts::kMaxAccents, size, onColdFontLoad);
+}
 
-  // Publisher Fonts: not examined yet, what is loaded stays, until the reader has examined the book and asks again.
-  const std::string cachePath = publisherFontsCache(path, book);
-  if (waitForBookFonts && !cachePath.empty() && BookFonts::read(cachePath) == BookFonts::State::Pending) return;
-  // They do not apply to the book now (off, the book's own style off, a font chosen for it): the accent families the
-  // memory ladder left out of it are tried again once they do (BookFonts::accentLimit).
-  if (cachePath.empty()) {
-    BookFonts::setAccentLimit(Epub::cachePathFor(path, "/.crosspoint"), 0, BookFonts::kMaxAccents);
-  }
+namespace {
+// The UI's book-text fonts outside the reader (syncUiBookFonts): wanted while a screen that draws book text is current,
+// opened by the first string that needs a glyph from them (openUiBookFonts), at most once per screen, and closed by
+// whatever opened them only.
+bool uiBookFontsWanted = false;
+bool uiBookFontsTried = false;
+bool uiBookFontsOpen = false;
 
-  // No family override: the global SD font (if any), at the effective size.
-  const char* family = SETTINGS.sdFontFamilyName;
-  if (!book.sdFontFamilyOverride.empty()) {
-    family = book.sdFontFamilyOverride.c_str();  // per-book SD font override
-  } else if (book.fontFamilyOverride >= 0) {
-    family = "";  // per-book built-in font override: no SD font needed; unload if one was active
+// The last book's fonts as its open chose them, in the language it was read in, read-only: when the glyph store holds
+// them and the body family has CJK. Inside a render pass, under the RenderLock (CjkUiFonts::readerFaceAt): a screen's
+// cover work, done before it draws (BookInfoActivity::onEnter) or while it does not, never has them on the heap.
+void openUiBookFonts() {
+  if (!uiBookFontsWanted || uiBookFontsTried || uiBookFontsOpen || !sdFontSystem.loadedFamily().empty()) return;
+  uiBookFontsTried = true;
+  if (!FsHelpers::hasEpubExtension(APP_STATE.openEpubPath)) return;
+  const char* path = APP_STATE.openEpubPath.c_str();
+  std::string language;
+  if (BookMetadataCache::readLanguage(Epub::cachePathFor(path, "/.crosspoint"), language)) {
+    sdFontSystem.setReaderLanguage(language);
   }
-  // The families BookFonts copied out of the book: its body family in place of the reader's font, and its accent
-  // families beside whichever draws the body. They load together, the body's first and the most used accent next.
-  sdFontSystem.selectBookFamilies(cachePath, SETTINGS.publisherFonts, family);
-  if (sdFontSystem.bookFamilyName()[0] != '\0') family = sdFontSystem.bookFamilyName();
-  const char* families[1 + BookFonts::kMaxAccents] = {family};
-  for (uint8_t n = 0; n < BookFonts::kMaxAccents; ++n) families[1 + n] = sdFontSystem.accentFamilyName(n);
-  sdFontSystem.ensureLoaded(renderer, families, 1 + BookFonts::kMaxAccents, effectiveSize, onColdFontLoad);
+  const char* families[1 + BookFonts::kMaxAccents] = {};
+  std::string body;
+  uint8_t size = 0;
+  if (!chooseEpubFonts(path, /*wait=*/false, /*opening=*/false, families, body, size)) return;
+  // A font without CJK is not worth its 2-3 KB here: the UI faces have the rest.
+  if (!sdFontSystem.coversCjk(families[0])) return;
+  uiBookFontsOpen = sdFontSystem.openReadOnly(renderer, families, 1 + BookFonts::kMaxAccents, size);
+  LOG_INF("MAIN", "Book text fonts for the UI: %s %s (free=%lu)", families[0],
+          uiBookFontsOpen ? "open" : "not in the store", static_cast<unsigned long>(esp_get_free_heap_size()));
+}
+}  // namespace
+
+void syncUiBookFonts(const bool bookText, const bool reader) {
+  std::optional<RenderLock> lock;  // an unload: the TTF engine works under the RenderLock (spec 3.4)
+  if (!RenderLock::heldByCurrentTask()) lock.emplace();
+  // Kept from one book-text screen to the next: opening it again costs 35-100 ms a visit (X3, more as the glyph store
+  // fills), which the user weighs above the ~4 KB it holds on Home after the Library. Any other screen closes it; a
+  // reader owns the fonts, and takes over what the UI opened.
+  if (uiBookFontsOpen && !bookText && !reader) sdFontSystem.unload(renderer);
+  if (!bookText || reader) uiBookFontsOpen = false;
+  uiBookFontsWanted = bookText && !reader;
+  uiBookFontsTried = false;  // each screen tries once
 }
 
 // --- Temporary boot-phase heap-corruption bisect probes -------------------------------
@@ -909,6 +984,9 @@ void setup() {
   SETTINGS.loadFromFile();
   // APP_STATE is needed before display init to resolve whether to show the boot screen.
   APP_STATE.loadFromFile();
+  LOG_INF("MAIN", "Loaded state: book='%s' lastSleepFromReader=%d readerLoadCount=%u showBootScreen=%d",
+          APP_STATE.openEpubPath.c_str(), APP_STATE.lastSleepFromReader ? 1 : 0, APP_STATE.readerActivityLoadCount,
+          APP_STATE.showBootScreen ? 1 : 0);
 
   HalSystem::checkPanic();
   HalSystem::clearPanic();  // TODO: move this to an activity when we have one to display the panic info
@@ -1185,7 +1263,14 @@ void loop() {
     // usable range sits in the bottom third and a 10-point step there is a large
     // visible jump. The brightness slider remains the way to set an exact level.
     constexpr int LIGHT_STEP_PERCENT = 5;
+    // Left and Right on a page that reverses them (activity on top: a right-to-left book under Follow Book) run the
+    // opposite directional action; BTN_DEFAULT is not directional, so the reader's own built-in swap handles it and
+    // nothing swaps twice.
+    const bool mirrorLeftRight = activityManager.currentMirrorsLeftRight();
     auto actionFor = [&](const ButtonEventManager::ButtonEvent& ev) -> uint8_t {
+      const auto mirrored = [&](const uint8_t a) {
+        return mirrorLeftRight ? CrossPointSettings::mirroredDirection(a) : a;
+      };
       switch (ev.button) {
         case B::Back:
           switch (ev.type) {
@@ -1210,21 +1295,21 @@ void loop() {
         case B::Left:
           switch (ev.type) {
             case ButtonEventManager::PressType::Short:
-              return SETTINGS.btnShortLeft;
+              return mirrored(SETTINGS.btnShortLeft);
             case ButtonEventManager::PressType::Double:
-              return SETTINGS.btnDoubleLeft;
+              return mirrored(SETTINGS.btnDoubleLeft);
             case ButtonEventManager::PressType::Long:
-              return SETTINGS.btnLongLeft;
+              return mirrored(SETTINGS.btnLongLeft);
           }
           break;
         case B::Right:
           switch (ev.type) {
             case ButtonEventManager::PressType::Short:
-              return SETTINGS.btnShortRight;
+              return mirrored(SETTINGS.btnShortRight);
             case ButtonEventManager::PressType::Double:
-              return SETTINGS.btnDoubleRight;
+              return mirrored(SETTINGS.btnDoubleRight);
             case ButtonEventManager::PressType::Long:
-              return SETTINGS.btnLongRight;
+              return mirrored(SETTINGS.btnLongRight);
           }
           break;
         case B::PageBack:

@@ -1,6 +1,7 @@
 #include "Epub.h"
 
 #include <Bitmap.h>
+#include <BookCache.h>
 #include <BufferedFileIO.h>
 #include <CooperativeAbort.h>
 #include <FsHelpers.h>
@@ -206,6 +207,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, OpfCac
   bookMetadata.title = opfParser.title;
   bookMetadata.author = opfParser.author;
   bookMetadata.language = opfParser.language;
+  bookMetadata.pageProgression = opfParser.pageProgression;
   bookMetadata.coverItemHref = opfParser.coverItemHref;
   bookMetadata.series = opfParser.series;
   bookMetadata.seriesIndex = opfParser.seriesIndex;
@@ -519,6 +521,7 @@ bool Epub::parsePageMapFile() const {
 
 void Epub::primeZip(ZipFile& zip) const {
   zip.seedLookupCursor(zipLookupCursor_);
+  zip.seedKnownEntries(packageEntries_.get());
   // A lookup's read window comes out of the region lent to load() while it runs (released before
   // the lookup returns), else from the heap.
   zip.setLookupScratch(loadScratch_);
@@ -551,11 +554,27 @@ bool Epub::lookupItemStat(ZipFile& zip, const std::string& path, ZipFile::FileSt
   return true;
 }
 
+namespace {
+// What a first open reads by name before it knows the names: container.xml names the OPF, the
+// OPF the NCX and the stylesheets. Told apart by name and extension as the fingerprint walk meets
+// them.
+void notePackageDocument(void* const ctx, const std::string_view name, const ZipFile::FileStatSlim& stat) {
+  if (name == "META-INF/container.xml" || FsHelpers::checkFileExtension(name, ".opf") ||
+      FsHelpers::checkFileExtension(name, ".ncx") || FsHelpers::hasCssExtension(name)) {
+    static_cast<ZipFile::KnownEntries*>(ctx)->add(name, stat);
+  }
+}
+}  // namespace
+
 bool Epub::computeZipFingerprint(uint64_t* out) const {
   if (!zipFingerprintComputed_) {
     ZipFile zip(filepath);
     primeZip(zip);
-    zipFingerprintValid_ = zip.contentFingerprint(&zipFingerprint_);
+    // Noted for this instance's load() (see packageEntries_); none if the heap has no room.
+    packageEntries_ = makeUniqueNoThrow<ZipFile::KnownEntries>();
+    zipFingerprintValid_ = zip.contentFingerprint(&zipFingerprint_, packageEntries_ ? notePackageDocument : nullptr,
+                                                  packageEntries_.get());
+    if (!zipFingerprintValid_) packageEntries_.reset();
     zipFingerprintComputed_ = true;
     adoptZipDetails(zip);
   }
@@ -636,15 +655,24 @@ bool Epub::clearCacheIfContentChanged() const {
   }
   if (storedFp == zipFp) return false;
   LOG_INF("EBP", "Book content changed at same path, rebuilding cache");
-  clearCache(false);
+  clearCache();
   return true;
 }
 
+bool Epub::indexCachesCurrent() const {
+  // The caches a first open builds, which load() builds again when one is missing or of another
+  // version: the spine and TOC with each spine item's ZIP stat (book.bin, content.opf + TOC/NCX),
+  // and the compiled stylesheets (css_rules.cache; css_bg.bin and css_fonts.bin are written with
+  // it). A stale one used to count as built, and was rebuilt without the popup and the lent
+  // framebuffer: the first open of every book after an update that bumped either version.
+  // fingerprint.bin and toc.retry are needsFirstOpenIndexing()'s own; the book's embedded fonts
+  // are examined apart (BookFonts::read() takes a stale fonts.bin for unexamined).
+  return BookMetadataCache::cacheIsCurrent(cachePath) && CssParser(cachePath).cacheIsCurrent();
+}
+
 bool Epub::needsFirstOpenIndexing() const {
-  // Spine/TOC cache missing -> load() rebuilds it (content.opf + TOC/NCX + book.bin).
-  if (!BookMetadataCache::cacheExists(cachePath)) return true;
-  // Compiled CSS rules cache missing -> load() runs the (slow) CSS compile.
-  if (!CssParser(cachePath).hasCache()) return true;
+  // A cache missing or stale -> load() rebuilds it.
+  if (!indexCachesCurrent()) return true;
   // Book content changed at the same path -> load() wipes the cache and rebuilds.
   uint64_t zipFp = 0, storedFp = 0;
   if (computeZipFingerprint(&zipFp) && readStoredFingerprint(&storedFp) && storedFp != zipFp) return true;
@@ -683,15 +711,21 @@ void Epub::discoverCssFilesFromZip() {
   const size_t lastSlash = contentBasePath.find_last_of('/');
   const std::string opfDir = (lastSlash != std::string::npos) ? contentBasePath.substr(0, lastSlash + 1) : "";
 
-  if (!zf.streamCentralDirectoryNames([&](std::string_view filePath) {
-        if (!opfDir.empty() && filePath.find(opfDir) != 0) return;
-        if (FsHelpers::hasCssExtension(filePath)) {
-          if (std::find(cssFiles.begin(), cssFiles.end(), filePath) == cssFiles.end()) {
-            LOG_DBG("EBP", "Discovered CSS file via ZIP enumeration: %.*s", (int)filePath.size(), filePath.data());
-            cssFiles.push_back(std::string{filePath});
-          }
-        }
-      })) {
+  const auto consider = [&](const std::string_view filePath) {
+    if (!opfDir.empty() && filePath.find(opfDir) != 0) return;
+    if (FsHelpers::hasCssExtension(filePath)) {
+      if (std::find(cssFiles.begin(), cssFiles.end(), filePath) == cssFiles.end()) {
+        LOG_DBG("EBP", "Discovered CSS file via ZIP enumeration: %.*s", (int)filePath.size(), filePath.data());
+        cssFiles.push_back(std::string{filePath});
+      }
+    }
+  };
+  // The fingerprint walk noted every stylesheet unless it ran out of room: no walk of our own.
+  if (packageEntries_ && !packageEntries_->overflowed()) {
+    for (size_t i = 0; i < packageEntries_->size(); i++) consider(packageEntries_->name(i));
+    return;
+  }
+  if (!zf.streamCentralDirectoryNames(consider)) {
     LOG_ERR("EBP", "Failed to stream ZIP central directory for CSS discovery");
   }
 }
@@ -713,10 +747,11 @@ void Epub::parseCssFiles() const {
   LOG_DBG("EBP", "CSS files to parse: %zu", cssFiles.size());
 
   // See if we have a cached version of the CSS rules
-  if (cssParser->hasCache()) {
+  if (cssParser->cacheIsCurrent()) {
     LOG_DBG("EBP", "CSS cache exists, skipping parseCssFiles");
     return;
   }
+  cssParser->deleteCache();  // one of another version: the rules, backgrounds and font faces compile again
 
   // No cache yet - parse CSS files
   if (!cssParser->beginCacheCompile()) {
@@ -800,7 +835,7 @@ void Epub::parseCssFiles() const {
   }
 
   // Finalize compact cache for next time.
-  if (!cssParser->endCacheCompile()) {
+  if (!cssParser->endCacheCompile(loadScratch_)) {
     LOG_ERR("EBP", "Failed to finalize CSS rules cache");
   }
 
@@ -817,6 +852,11 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, BuildArena
     ~ScratchScope() { slot = nullptr; }
   } scratchScope{loadScratch_};
   loadScratch_ = (scratch != nullptr && scratch->valid()) ? scratch : nullptr;
+  // The package documents the fingerprint walk noted serve this load only.
+  struct PackageEntriesScope {
+    std::unique_ptr<ZipFile::KnownEntries>& entries;
+    ~PackageEntriesScope() { entries.reset(); }
+  } packageEntriesScope{packageEntries_};
   tocReliability = TocReliability::Unknown;
   chapterProgressMarkersLoaded = false;
   chapterProgressMarkers.clear();
@@ -906,7 +946,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, BuildArena
 
   // TOC Pass - try EPUB 3 nav first, fall back to NCX
   const uint32_t tocStart = millis();
-  if (!bookMetadataCache->beginTocPass()) {
+  if (!bookMetadataCache->beginTocPass(loadScratch_)) {
     LOG_ERR("EBP", "Could not begin writing toc pass");
     return false;
   }
@@ -1229,66 +1269,18 @@ bool Epub::loadForMetadata(BuildArena* scratch) {
   return true;
 }
 
-bool Epub::clearCache(const bool preserveThumbs) const {
+bool Epub::clearCache(const BookCache::Keep keep, const bool preserveThumbs) const {
   chapterProgressMarkersLoaded = false;
   chapterProgressMarkers.clear();
 
-  if (!Storage.exists(cachePath.c_str())) {
-    LOG_DBG("EPB", "Cache does not exist, no action needed");
-    return true;
-  }
-
-  if (!preserveThumbs) {
-    // kBookCacheStateFile rides along: the OPDS Progression endpoint in it cannot be rebuilt from
-    // the book, so it outlives the wipe that drops everything else.
-    if (!Storage.removeDir(cachePath.c_str(), kBookCacheStateFile)) {
-      LOG_ERR("EPB", "Failed to clear cache");
-      return false;
-    }
-    LOG_DBG("EPB", "Cache cleared successfully");
-    return true;
-  }
-
-  // Delete the per-spine caches (bulk removal).
-  removeSpineCaches();
-
-  // Iterate the cache root and remove parsing artifacts, but preserve thumbnail
-  // and cover BMPs so the home screen doesn't have to regenerate them (slow).
-  FsFile dir = Storage.open(cachePath.c_str());
-  if (!dir || !dir.isDirectory()) {
-    LOG_ERR("EPB", "Failed to open cache dir for selective clear");
-    if (dir) dir.close();
+  // preserveThumbs keeps the thumbnail and cover BMPs and the cached raw cover image, so that Home
+  // does not have to make them again (a ZIP inflate and an image conversion).
+  if (!BookCache::clear(cachePath, keep, preserveThumbs)) {
+    LOG_ERR("EPB", "Failed to clear cache");
     return false;
   }
-
-  char nameBuf[128];
-  bool anyFailed = false;
-  for (FsFile f = dir.openNextFile(); f; f = dir.openNextFile()) {
-    f.getName(nameBuf, sizeof(nameBuf));
-    const bool isDir = f.isDirectory();
-    f.close();
-
-    const std::string name(nameBuf);
-    // User state, not a cache artifact — kept on every wipe, as removeDir's keepFile does for the
-    // full clear above.
-    if (!isDir && name == kBookCacheStateFile) continue;
-    // Keep thumbnail and cover BMPs, and the cached raw cover image — all are
-    // expensive to regenerate (require ZIP decompression or format conversion).
-    if (FsHelpers::hasBmpExtension(name) || name == "cover.img") continue;
-
-    // A subdirectory (the image manifest's img/) goes as a whole, like sections/ above: a plain
-    // file remove refuses a directory, which logged "Failed to remove cache file" on every clear
-    // and left the directory behind.
-    const std::string fullPath = cachePath + "/" + name;
-    if (!(isDir ? Storage.removeDir(fullPath.c_str()) : Storage.remove(fullPath.c_str()))) {
-      LOG_ERR("EPB", "Failed to remove cache %s: %s", isDir ? "directory" : "file", fullPath.c_str());
-      anyFailed = true;
-    }
-  }
-  dir.close();
-
   LOG_DBG("EPB", "Cache cleared successfully");
-  return !anyFailed;
+  return true;
 }
 
 void Epub::setupCacheDir() const {
@@ -1338,6 +1330,10 @@ const std::string& Epub::getAuthor() const {
   return bookMetadataCache->coreMetadata.author;
 }
 
+bool Epub::readCachedLanguage(std::string& language) const {
+  return BookMetadataCache::readLanguage(cachePath, language);
+}
+
 const std::string& Epub::getLanguage() const {
   static std::string blank;
   if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
@@ -1345,6 +1341,11 @@ const std::string& Epub::getLanguage() const {
   }
 
   return bookMetadataCache->coreMetadata.language;
+}
+
+PageProgression Epub::pageProgression() const {
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) return PageProgression::Default;
+  return bookMetadataCache->coreMetadata.pageProgression;
 }
 
 const std::string& Epub::getSeries() const {
@@ -2145,14 +2146,21 @@ class BufferedExtractSink : public Print {
       : writer_(file, buffer, buffer ? capacity : 0) {}
 
   size_t write(const uint8_t byte) override { return write(&byte, 1); }
-  size_t write(const uint8_t* data, const size_t size) override { return writer_.write(data, size) ? size : 0; }
+  size_t write(const uint8_t* data, const size_t size) override {
+    if (!writer_.write(data, size)) return 0;
+    accepted_ += size;
+    return size;
+  }
 
   // Named drain() rather than flush(): Print::flush() is virtual with a void return, and this
   // one's result decides whether the extract succeeded.
   bool drain() { return writer_.flush(); }
+  // Bytes taken for the file: the extract's size once drain() succeeded.
+  size_t accepted() const { return accepted_; }
 
  private:
   serialization::BufferedFileWriter writer_;
+  size_t accepted_ = 0;
 };
 
 }  // namespace
@@ -2163,6 +2171,14 @@ bool Epub::extractItemToFileOnce(const std::string& itemHref, const std::string&
   // (ImageBlock::ensureExtracted), and a truncated JPEG read as "no SOF marker" on every visit
   // of its page -- an image lost until someone deleted the file by hand (X3 2026-09-25).
   const std::string partPath = destPath + ".part";
+  // The size the extract must reach. The stream paths do not guarantee it: the arena path's
+  // inflate stops where the DEFLATE stream ends, whatever the entry's size says. A short file
+  // would be trusted as the entry on every later visit, like the truncated one above.
+  size_t entrySize = 0;
+  if (!getItemSize(itemHref, &entrySize)) {
+    LOG_ERR("EBP", "No entry to extract: %s", itemHref.c_str());
+    return false;
+  }
   FsFile destFile;
   if (!Storage.openFileForWrite("EBP", partPath, destFile)) {
     LOG_ERR("EBP", "Failed to open dest for extract: %s", partPath.c_str());
@@ -2191,11 +2207,17 @@ bool Epub::extractItemToFileOnce(const std::string& itemHref, const std::string&
     // Drain before the file is flushed/closed, and let a failed final write fail the extract:
     // a short file would otherwise pass as a complete one and be decoded as garbage.
     if (!sink.drain()) ok = false;
+    if (ok && sink.accepted() != entrySize) {
+      LOG_ERR("EBP", "Extract is %u bytes, entry is %u: %s", static_cast<unsigned>(sink.accepted()),
+              static_cast<unsigned>(entrySize), itemHref.c_str());
+      ok = false;
+    }
   }
   if (writeBlock.valid()) arena->release(writeBlock);
 
   destFile.flush();
-  destFile.close();
+  // A close that fails left the file's size on the card unwritten: as short as a failed write.
+  if (!destFile.close()) ok = false;
   if (!ok) {
     Storage.remove(partPath.c_str());
     return false;
@@ -2243,80 +2265,22 @@ bool Epub::getStoredItemRange(const std::string& itemHref, uint32_t* offset, uin
   return ok;
 }
 
-void Epub::ensureSpineStats() const {
-  if (spineStatsResolved_) return;
-  spineStatsResolved_ = true;  // one attempt per book instance; on failure fall back to scans
-
-  const int spineCount = getSpineItemsCount();
-  if (spineCount <= 0) return;
-
-  // Heap gate: the deque needs ~sizeof(FileStatSlim) per spine plus a transient targets deque
-  // of the same order during the walk. Require comfortable headroom so a genuinely low heap
-  // falls back to per-spine scans (correct, slower) instead of aborting under -fno-exceptions.
-  const size_t perSpine = sizeof(ZipFile::FileStatSlim) + sizeof(ZipFile::SizeTarget);
-  const size_t needed = static_cast<size_t>(spineCount) * perSpine + 32u * 1024u;
-  if (esp_get_free_heap_size() < needed) {
-    LOG_INF("EBP", "spine-stat cache skipped (need %lu, free %lu) — falling back to per-spine scans",
-            static_cast<unsigned long>(needed), static_cast<unsigned long>(esp_get_free_heap_size()));
-    return;
-  }
-
-  ZipFile zip(filepath);
-  primeZip(zip);
-
-  // Build sorted (hash,len)->spineIndex targets, one central-directory walk resolves all stats.
-  std::deque<ZipFile::SizeTarget> targets;
-  targets.resize(spineCount);
-  std::string pathScratch;
-  for (int i = 0; i < spineCount; i++) {
-    // Hrefs are already URI-decoded in the metadata cache; normalise to match the raw
-    // central-directory names fillFileStats hashes (same keying fillUncompressedSizes uses).
-    FsHelpers::normalisePath(getSpineItem(i).href, pathScratch);
-    ZipFile::SizeTarget t;
-    t.hash = HashUtils::fnvHash64(pathScratch.c_str(), pathScratch.size());
-    t.len = static_cast<uint16_t>(pathScratch.size());
-    t.index = static_cast<uint16_t>(i);
-    targets[i] = t;
-  }
-  std::sort(targets.begin(), targets.end(), [](const ZipFile::SizeTarget& a, const ZipFile::SizeTarget& b) {
-    return a.hash < b.hash || (a.hash == b.hash && a.len < b.len);
-  });
-
-  spineStats_.assign(spineCount, ZipFile::FileStatSlim{});
-  const int matched = zip.fillFileStats(targets, spineStats_);
-  adoptZipDetails(zip);
-  targets.clear();
-  targets.shrink_to_fit();
-
-  if (matched != spineCount) {
-    // Some spines didn't match the batch walk (hash mismatch / odd names). Keep the cache — the
-    // matched entries still short-circuit; unmatched ones (localHeaderOffset==0) fall back per-call.
-    LOG_INF("EBP", "spine-stat cache matched %d/%d — unmatched spines fall back to per-spine scans", matched,
-            spineCount);
-  }
-  spineStatsUsable_ = matched > 0;
-}
-
 bool Epub::getSpineItemStat(const int spineIndex, ZipFile::FileStatSlim* out) const {
   if (!out || spineIndex < 0) return false;
-  ensureSpineStats();
-
-  if (spineStatsUsable_ && spineIndex < static_cast<int>(spineStats_.size())) {
-    const ZipFile::FileStatSlim& s = spineStats_[spineIndex];
-    // A matched entry has a non-zero local-header offset. Offset 0 is the archive's FIRST local
-    // header — in an EPUB that is always the uncompressed `mimetype` entry (spec-mandated first,
-    // STORED), never a spine XHTML, so 0 unambiguously means "unmatched in the batch walk" here.
-    // A false 0 would only cost this one spine a fallback scan (still correct), not a wrong result.
-    if (s.localHeaderOffset != 0) {
-      *out = s;
-      return true;
-    }
+  const BookMetadataCache::SpineEntry spine = getSpineItem(spineIndex);
+  // A found entry has a non-zero local-header offset. Offset 0 is the archive's FIRST local
+  // header — in an EPUB that is always the uncompressed `mimetype` entry (spec-mandated first,
+  // STORED), never a spine XHTML, so 0 means "not found by buildBookBin's walk" here. A false 0
+  // would only cost this one spine a lookup (still correct), not a wrong result.
+  if (spine.zipLocalHeaderOffset != 0) {
+    *out = {spine.zipMethod, spine.zipCompressedSize, spine.zipUncompressedSize, spine.zipLocalHeaderOffset};
+    return true;
   }
 
-  // Fallback: single linear scan for this spine (cache disabled or this spine unmatched).
+  // Not found by the walk (an entry stored in another case, say): looked up by name.
   ZipFile zip(filepath);
   primeZip(zip);
-  const std::string entryPath = FsHelpers::normalisePath(getSpineItem(spineIndex).href);
+  const std::string entryPath = FsHelpers::normalisePath(spine.href);
   const bool ok = zip.loadFileStatSlim(entryPath.c_str(), out);
   adoptZipDetails(zip);
   return ok;
@@ -2483,18 +2447,18 @@ int Epub::getSpineIndexForTextReference() const {
     return 0;
   }
 
-  // loop through spine items to get the correct index matching the text href
-  const int spineCount = getSpineItemsCount();
-  for (int i = 0; i < spineCount; i++) {
-    if (getSpineItem(i).href == bookMetadataCache->coreMetadata.textReferenceHref) {
+  // Asked for by the first open's font examination and again by the reader: looked up once.
+  if (textReferenceSpine_ < 0) {
+    const int found = bookMetadataCache->findSpineIndexByHref(bookMetadataCache->coreMetadata.textReferenceHref, false);
+    if (found >= 0) {
       LOG_DBG("EBP", "Text reference %s found at index %d", bookMetadataCache->coreMetadata.textReferenceHref.c_str(),
-              i);
-      return i;
+              found);
+    } else {
+      LOG_DBG("EBP", "Section not found for text reference");
     }
+    textReferenceSpine_ = found >= 0 ? found : 0;
   }
-  // This should not happen, as we checked for empty textReferenceHref earlier
-  LOG_DBG("EBP", "Section not found for text reference");
-  return 0;
+  return textReferenceSpine_;
 }
 
 // Calculate progress in book (returns 0.0-1.0)
@@ -2656,8 +2620,5 @@ int Epub::resolveHrefToSpineIndex(const std::string& href) const {
 
   // The first spine item that matches exactly or by filename alone: in-book links are kept as
   // written, relative to their own document.
-  for (int i = 0; i < getSpineItemsCount(); i++) {
-    if (spine_href::match(target, getSpineItem(i).href) != SpineHrefMatch::None) return i;
-  }
-  return -1;
+  return bookMetadataCache->findSpineIndexByHref(target, true);
 }

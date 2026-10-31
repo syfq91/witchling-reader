@@ -27,13 +27,10 @@
 
 namespace {
 
-std::string extractHostFromUrl(const std::string& url) {
-  size_t schemeEnd = url.find("://");
-  size_t hostStart = schemeEnd == std::string::npos ? 0 : schemeEnd + 3;
-  size_t hostEnd = url.find('/', hostStart);
-  if (hostEnd == std::string::npos) hostEnd = url.size();
-  return url.substr(hostStart, hostEnd - hostStart);
-}
+// This fork has no clock: the system time is never plausible for TLS certificate dates, so every
+// request tolerates date errors (and only date errors). Certificate chains and host names are still
+// verified as TlsPolicy says.
+bool ensureClockForTls() { return false; }
 
 // Per-request timeout handed to SecureHttpClient::setTimeout(). 60s gives slow
 // servers room to send their first headers; SecureHttpClient reuses it as the
@@ -49,27 +46,38 @@ bool isRedirect(int status) {
   return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
+// A server that turns the credentials down (or asks for some) answers 401, or 403 for an account
+// that may not see the resource. Reported apart from other HTTP failures so the user is told to
+// check the password rather than the network. From witchling-reader commit 111f6ecc (syfq91).
+bool isAuthRefusal(int status) { return status == 401 || status == 403; }
+
 // Runs once per http call (or once per session for reused sessions): logs
-// heap stats.
-void logPreCallContext() {
+// heap stats and ensures the wall clock is set so TLS cert-date validation
+// can succeed. Shared by both TLS backends. Returns false when https was requested and the
+// clock could not be established — the caller then permits date errors alone.
+bool logPreCallContext(const std::string& url) {
   LOG_DBG("HTTP", "Heap free: %u, largest block: %u", esp_get_free_heap_size(),
           heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
-}
-
-// Does this transfer verify the peer? Resolves the caller's policy against the
-// user's "skip HTTPS validation" setting — the escape hatch for self-hosted
-// servers with a private CA or a self-signed certificate, which the device
-// otherwise cannot reach at all. Strict ignores it by design.
-bool verificationRequested(HttpDownloader::TlsPolicy tls) {
-  switch (tls) {
-    case HttpDownloader::TlsPolicy::Strict:
-      return true;
-    case HttpDownloader::TlsPolicy::Verified:
-      return !SETTINGS.skipHttpsValidation;
-    case HttpDownloader::TlsPolicy::Unverified:
-      return false;
+  if (url.compare(0, 8, "https://") == 0) {
+    return ensureClockForTls();
   }
   return true;
+}
+
+// The servers whose certificate could not be verified this session (VerifiedThenUnverified): a later
+// connect to one goes straight to the unverified connection instead of a verify that would fail.
+// Handed to every client; SecureHttpClient checks and fills it at each https connect, for the
+// server that connect reaches (crosspoint::planHop()).
+crosspoint::UnverifiableHosts g_unverifiableHosts;
+
+// What a transfer does about verification (crosspoint::planTls()): the caller's policy against the
+// user's "skip HTTPS validation" setting -- the escape hatch for self-hosted servers with a private
+// CA or a self-signed certificate, which Strict ignores by design -- and, for
+// VerifiedThenUnverified, whether the request carries credentials (a username or a password,
+// whether or not Basic auth would send them).
+crosspoint::TlsPlan tlsPlanFor(const HttpDownloader::TlsPolicy tls, const std::string& username,
+                               const std::string& password) {
+  return crosspoint::planTls(tls, SETTINGS.skipHttpsValidation, !username.empty() || !password.empty());
 }
 
 // Modem sleep parks the radio between DTIM beacons, which costs packets on a transfer long
@@ -104,18 +112,20 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
                                            const std::string& password, Sink& sink, HttpDownloader::TlsPolicy tls,
                                            const HttpDownloader::RedirectFilter& redirectAllowed) {
   const WifiPowerSaveGuard psGuard;
-  logPreCallContext();
+  const bool clockReady = logPreCallContext(url);
   const unsigned long startMs = millis();
   LOG_DBG("HTTP", "Phase start @%lums heap=%u largest=%u", millis() - startMs, esp_get_free_heap_size(),
           heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 
   crosspoint::SecureHttpClient http;
+  const crosspoint::TlsPlan plan = tlsPlanFor(tls, username, password);
   // No roots => SecureClient sets WOLFSSL_VERIFY_NONE and skips the hostname
   // check: one handshake, no chain work.
-  http.setCACert(verificationRequested(tls) ? CROSSPOINT_ROOTS_PEM : nullptr);
-  // Never retry unverified behind the caller's back; see TlsPolicy.
-  http.setAllowInsecureFallback(false);
-  http.setAllowCertificateDateErrors(true);
+  http.setCACert(plan.verify ? CROSSPOINT_ROOTS_PEM : nullptr);
+  // Never retry unverified behind the caller's back: only the policy that says so does.
+  http.setAllowInsecureFallback(plan.fallbackOnVerifyError);
+  http.setUnverifiableHosts(&g_unverifiableHosts);
+  http.setAllowCertificateDateErrors(!clockReady);
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.setUserAgent("WitchReader-ESP32-" CROSSPOINT_VERSION);
   if (!username.empty() && !password.empty()) {
@@ -151,13 +161,11 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
     LOG_ERR("HTTP", "SecureNet GET failed: rc=%d url=%s", rc, url.c_str());
     return HttpDownloader::HTTP_ERROR;
   }
+  if (isAuthRefusal(rc)) {
+    LOG_ERR("HTTP", "SecureNet GET refused the credentials: %d", rc);
+    return HttpDownloader::AUTH_ERROR;
+  }
   if (rc != 200) {
-    // Distinguish bad credentials so callers can say "check the password"
-    // instead of a generic network failure.
-    if (rc == 401 || rc == 403) {
-      LOG_ERR("HTTP", "SecureNet GET unauthorized: %d", rc);
-      return HttpDownloader::AUTH_ERROR;
-    }
     LOG_ERR("HTTP", "SecureNet unexpected status: %d", rc);
     return HttpDownloader::HTTP_ERROR;
   }
@@ -199,10 +207,11 @@ namespace {
 HttpDownloader::DownloadError runGetSecureOnSession(HttpDownloader::Session& session, const std::string& url,
                                                     const std::string& username, const std::string& password,
                                                     Sink& sink, HttpDownloader::TlsPolicy tls) {
-  (void)url;
   const WifiPowerSaveGuard psGuard;
   auto* impl = session.impl();
-  logPreCallContext();
+  // Evaluated on every call, not just when the session is created: a session opened before the
+  // clock was set must not keep that verdict for the rest of its life (nor the reverse).
+  const bool clockReady = logPreCallContext(url);
   if (!impl->http) {
     impl->http = std::make_unique<crosspoint::SecureHttpClient>();
     impl->http->setTimeout(HTTP_TIMEOUT_MS);
@@ -210,9 +219,11 @@ HttpDownloader::DownloadError runGetSecureOnSession(HttpDownloader::Session& ses
   }
   // Re-applied per call, like the clock verdict below: a session outlives a
   // single request and must not carry a previous caller's policy.
-  impl->http->setCACert(verificationRequested(tls) ? CROSSPOINT_ROOTS_PEM : nullptr);
-  impl->http->setAllowInsecureFallback(false);
-  impl->http->setAllowCertificateDateErrors(true);
+  const crosspoint::TlsPlan plan = tlsPlanFor(tls, username, password);
+  impl->http->setCACert(plan.verify ? CROSSPOINT_ROOTS_PEM : nullptr);
+  impl->http->setAllowInsecureFallback(plan.fallbackOnVerifyError);
+  impl->http->setUnverifiableHosts(&g_unverifiableHosts);
+  impl->http->setAllowCertificateDateErrors(!clockReady);
   impl->http->clearHeaders();
   // Unconditionally, so a file without credentials does not inherit the previous one's
   // (sendRequest() leaves basic auth out unless both are set).
@@ -221,8 +232,8 @@ HttpDownloader::DownloadError runGetSecureOnSession(HttpDownloader::Session& ses
   const int rc = crosspoint::downloadToSink(*impl->http, url, sink, impl->chunking, &largestFreeBlock);
   if (rc == crosspoint::SecureHttpClient::ERR_ABORTED) return HttpDownloader::ABORTED;
   if (rc == crosspoint::ERR_REWIND) return HttpDownloader::FILE_ERROR;
-  if (rc == 401 || rc == 403) {
-    LOG_ERR("HTTP", "SecureNet session GET unauthorized: rc=%d url=%s", rc, url.c_str());
+  if (isAuthRefusal(rc)) {
+    LOG_ERR("HTTP", "SecureNet session GET refused the credentials: rc=%d url=%s", rc, url.c_str());
     return HttpDownloader::AUTH_ERROR;
   }
   if (rc != 200) {

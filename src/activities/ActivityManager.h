@@ -105,6 +105,8 @@ class ActivityManager {
   // on one screen is never reported for the next. Written on the loop task, read from any.
   std::atomic<uint32_t> activityChanges{0};
   void noteActivityChanged() { activityChanges.fetch_add(1, std::memory_order_relaxed); }
+  // The last book's fonts open behind the UI faces while the current activity draws book text (syncUiBookFonts).
+  void syncBookFonts();
   // Counts render passes as they start. A popup drawn in one pass (or between two) is gone once the
   // next pass has redrawn the screen, which is how the serial CMD:STATE tells a popup on screen
   // from one that was.
@@ -155,6 +157,8 @@ class ActivityManager {
   void goToBrowser();
   // The same, searching `query` on arrival: a finished book's "more by this author". Back goes Home.
   void goToBrowserWithSearch(std::string query);
+  // Opens a book the user picked, painting its first page with a HALF refresh (see openBook()).
+  void openBook(std::string path);
   void goToReader(std::string path);
   // fromTimeout=true marks this as an auto-sleep.
   void goToSleep(bool fromTimeout = false);
@@ -218,6 +222,8 @@ class ActivityManager {
   // delivered (see currentTakesButtonAction()). A list opened from the reader answers false here
   // but true above.
   bool currentIsReaderActivity() const;
+  // The activity on top reverses Left/Right (Activity::mirrorsLeftRight()).
+  bool currentMirrorsLeftRight() const;
   bool skipLoopDelay() const;
 
   // "activity=<name> stack=<bottom>,...,<top>" plus the current activity's own
@@ -250,6 +256,9 @@ class ActivityManager {
   // Offer a manual force refresh to the activity on top. False when it leaves the refresh to the
   // caller -- see Activity::handleForcedRefresh().
   bool handleForcedRefresh(HalDisplay::RefreshMode mode);
+  // The clean first page a book the user opens starts on. See openBook().
+  void armBookOpenRefresh(const std::string& path) const;
+
   // If immediate is true, the update will be triggered immediately.
   // Otherwise, it will be deferred until the end of the current loop iteration.
   void requestUpdate(bool immediate = false);

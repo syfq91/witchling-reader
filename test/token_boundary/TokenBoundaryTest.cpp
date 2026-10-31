@@ -5,33 +5,11 @@
 
 #include "lib/Epub/Epub/TokenBoundary.h"
 
-TEST(TokenBoundary, OrdinaryWordGapIsBreakableAndJustifiable) {
-  EXPECT_TRUE(TokenBoundary::allowsBreak(/*continues=*/false, /*noSpaceBefore=*/false));
-  EXPECT_TRUE(TokenBoundary::isJustifiableGap(/*continues=*/false, /*noSpaceBefore=*/false,
-                                              /*isSpaceToken=*/false));
-}
-
-TEST(TokenBoundary, CjkZeroWidthGapIsBreakableAndJustifiable) {
-  EXPECT_TRUE(TokenBoundary::allowsBreak(/*continues=*/false, /*noSpaceBefore=*/true));
-  EXPECT_TRUE(TokenBoundary::isJustifiableGap(/*continues=*/false, /*noSpaceBefore=*/true,
-                                              /*isSpaceToken=*/false));
-}
-
-TEST(TokenBoundary, AttachedTextIsNeitherBreakableNorJustifiable) {
-  EXPECT_FALSE(TokenBoundary::allowsBreak(/*continues=*/true, /*noSpaceBefore=*/false));
-  EXPECT_FALSE(TokenBoundary::isJustifiableGap(/*continues=*/true, /*noSpaceBefore=*/false,
-                                               /*isSpaceToken=*/false));
-}
-
-TEST(TokenBoundary, ExplicitHyphenBoundaryIsBreakableButNotJustifiable) {
-  EXPECT_TRUE(TokenBoundary::allowsBreak(/*continues=*/true, /*noSpaceBefore=*/true));
-  EXPECT_FALSE(TokenBoundary::isJustifiableGap(/*continues=*/true, /*noSpaceBefore=*/true,
-                                               /*isSpaceToken=*/false));
-}
-
-TEST(TokenBoundary, LiteralAttachedSpaceRemainsJustifiable) {
-  EXPECT_TRUE(TokenBoundary::isJustifiableGap(/*continues=*/true, /*noSpaceBefore=*/false,
-                                              /*isSpaceToken=*/true));
+TEST(TokenBoundary, AllowsBreakFollowsTheTwoFlags) {
+  EXPECT_TRUE(TokenBoundary::allowsBreak(/*continues=*/false, /*noSpaceBefore=*/false));  // ordinary word gap
+  EXPECT_TRUE(TokenBoundary::allowsBreak(/*continues=*/false, /*noSpaceBefore=*/true));   // CJK zero-width gap
+  EXPECT_FALSE(TokenBoundary::allowsBreak(/*continues=*/true, /*noSpaceBefore=*/false));  // attached text
+  EXPECT_TRUE(TokenBoundary::allowsBreak(/*continues=*/true, /*noSpaceBefore=*/true));    // after a visible hyphen
 }
 
 TEST(TokenBoundary, VisibleExplicitHyphensAllowBreaks) {
@@ -64,4 +42,17 @@ TEST(TokenBoundary, BoundaryKindsMatchTheTwoFlagPredicates) {
   EXPECT_FALSE(TokenBoundary::allowsBreak(glued));
   EXPECT_FALSE(TokenBoundary::hasSpace(cjkGap));
   EXPECT_TRUE(TokenBoundary::allowsBreak(cjkGap));
+}
+
+TEST(TokenBoundaryRuby, ARoleChangesNeitherBreakNorSpace) {
+  for (const TokenBoundary::Boundary b :
+       {TokenBoundary::Boundary{}, TokenBoundary::Boundary{false, true}, TokenBoundary::Boundary{true, false}}) {
+    for (const TokenBoundary::RubyRole role : {TokenBoundary::RubyRole::Leader, TokenBoundary::RubyRole::Follower}) {
+      const TokenBoundary::Boundary withRole = TokenBoundary::withRubyRole(b, role);
+      EXPECT_EQ(TokenBoundary::allowsBreak(b), TokenBoundary::allowsBreak(withRole));
+      EXPECT_EQ(TokenBoundary::hasSpace(b), TokenBoundary::hasSpace(withRole));
+      EXPECT_EQ(TokenBoundary::rubyRole(withRole), role);
+    }
+    EXPECT_EQ(TokenBoundary::rubyRole(b), TokenBoundary::RubyRole::None);
+  }
 }

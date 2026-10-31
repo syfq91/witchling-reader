@@ -47,14 +47,13 @@ target_compile_options(crosspoint_test_common INTERFACE
   -pedantic
 )
 
-# On MinGW/MSYS2, statically link the C++/GCC runtimes into each test exe.
-# Otherwise the binary resolves libstdc++-6.dll / libgcc_s_seh-1.dll from PATH
-# at runtime, and an unrelated copy (e.g. Git-for-Windows' mingw64, or the
-# MINGW64/MSVCRT build when the exe was compiled with the UCRT64 toolchain)
-# gets loaded. The std::string / iostream ABI mismatch then corrupts memory
-# and segfaults deep inside libstdc++ on the file/string-heavy tests
-# (hyphenation_eval, epub_benchmark). Static linkage removes the ambiguity.
-if(MINGW)
+# On Windows GNU/LLVM toolchains, statically link the C/C++ runtimes into each
+# test exe. CMake does not define MINGW when this project is configured from a
+# Ninja/MSYS shell with a UCRT64 compiler, so identify the compiler directly.
+# Without static linkage, DLLs resolve from PATH and can come from an unrelated
+# MSYS2 environment (UCRT64 versus MINGW64/MSVCRT), corrupting file/string-heavy
+# tests with ABI mismatches.
+if(WIN32 AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
   target_link_options(crosspoint_test_common INTERFACE
     -static-libstdc++
     -static-libgcc
@@ -120,6 +119,7 @@ add_subdirectory(${REPO_ROOT}/lib/SaxParser ${CMAKE_CURRENT_BINARY_DIR}/SaxParse
 add_subdirectory(buffered_io)
 add_subdirectory(natural_sort)
 add_subdirectory(sidecar_files)
+add_subdirectory(book_cache)
 add_subdirectory(file_replace)
 add_subdirectory(book_details_cache)
 add_subdirectory(path_containment)
@@ -140,6 +140,8 @@ add_subdirectory(range_download)
 add_subdirectory(release_json_parser)
 add_subdirectory(sax_parser)
 add_subdirectory(opds_parser)
+add_subdirectory(obfuscation)
+add_subdirectory(tls_policy)
 add_subdirectory(opds_format_label)
 add_subdirectory(epub_benchmark)
 add_subdirectory(footnote_shape)
@@ -176,6 +178,9 @@ add_subdirectory(chunked_vector)
 add_subdirectory(sd_font_intervals)
 add_subdirectory(sd_font_arena)
 add_subdirectory(sd_font_kern)
+add_subdirectory(touch_transform)
+add_subdirectory(header_layout)
+add_subdirectory(button_action_mirror)
 add_subdirectory(font_size_ladder)
 add_subdirectory(scaled_glyph)
 add_subdirectory(font_lookup)
@@ -185,7 +190,9 @@ add_subdirectory(list_row_cache)
 add_subdirectory(chapter_page_span)
 add_subdirectory(image_memory_ladder)
 add_subdirectory(pre_render_gate)
+add_subdirectory(in_place_build_gate)
 add_subdirectory(lane_before_build)
+add_subdirectory(on_off_override)
 add_subdirectory(displayed_page)
 add_subdirectory(settings_grouping)
 add_subdirectory(status_bar_settings)
@@ -216,3 +223,4 @@ add_subdirectory(folder_walk)
 add_subdirectory(bitmap_rows)
 add_subdirectory(xtc_parser)
 add_subdirectory(usb_link_debounce)
+add_subdirectory(vertical_text)

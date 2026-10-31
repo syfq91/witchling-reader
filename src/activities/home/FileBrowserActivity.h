@@ -1,5 +1,6 @@
 #pragma once
 
+#include <BookCache.h>
 #include <BuildArena.h>
 #include <FileIndex.h>
 
@@ -22,13 +23,14 @@ class CoverThumbLoader;
 
 class FileBrowserActivity final : public UiListActivity {
  public:
+  bool drawsBookText() const override { return true; }
   // Books = the book browser opened from Home; AllFiles = every file, opened from Settings;
   // PickFirmware / PickFolder = pickers that return a path via ActivityResult. Owned by the model,
   // which needs it to filter; aliased here so callers keep naming it FileBrowserActivity::Mode.
   using Mode = FileBrowserModel::Mode;
 
  private:
-  void clearFileMetadata(const std::string& fullPath);
+  void clearFileMetadata(const std::string& fullPath, BookCache::Keep keep = BookCache::Keep::Nothing);
   bool removeDirRecursive(const std::string& fullPath);
   void openContextMenu();
   void handleContextMenuAction(int action, const std::string& fullPath, const std::string& entry,
@@ -71,6 +73,9 @@ class FileBrowserActivity final : public UiListActivity {
     int perPage = 1;
   };
   CoverGrid coverGrid() const;
+  // The header's subtitle while New or Authors is being indexed ("Indexing 12/340"), null otherwise.
+  // The layout only needs to know there is one, so this is its first word, without the counts.
+  const char* indexingSubtitle() const;
   void afterUiRender() override;
   void drawCoverGrid();
   void drawCoverCell(int index, int x, int y, const CoverGridLayout::Layout& cells, bool selected);

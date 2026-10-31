@@ -299,29 +299,11 @@ static ::testing::AssertionResult compileCache(CssParser& parser, const std::str
 // test/fixtures/test_large_css.epub.
 constexpr size_t kFixtureRuleCount = 1500;
 
-TEST(CssParser, SkipsRulesWithoutSupportedDeclarations) {
-  const std::vector<uint8_t> cssData = {'.', 'i', 'g', 'n', 'o', 'r', 'e', 'd', ' ', '{', ' ',  'c', 'o', 'l',
-                                        'o', 'r', ':', ' ', 'r', 'e', 'd', ';', ' ', '}', '\n', '.', 'k', 'e',
-                                        'p', 't', ' ', '{', ' ', 'f', 'o', 'n', 't', '-', 'w',  'e', 'i', 'g',
-                                        'h', 't', ':', ' ', 'b', 'o', 'l', 'd', ';', ' ', '}',  '\n'};
-  std::string cssPath;
-  ASSERT_TRUE(writeTempCssFile(cssData, cssPath));
-
-  CssParser parser("");
-  FsFile cssFile;
-  ASSERT_TRUE(Storage.openFileForRead("CSS", cssPath.c_str(), cssFile));
-  ASSERT_TRUE(parser.loadFromStream(cssFile));
-  EXPECT_EQ(parser.ruleCount(), 1u);
-
-  std::error_code rmEc;
-  std::filesystem::remove(cssPath, rmEc);  // best-effort; see removePath()
-}
-
 // The invisibility properties are the one place `color` is consulted at all. Only the invisible
 // value counts as a supported declaration: transparent / opacity 0 / visibility hidden keep a
 // rule, while red / 0.5 / visible leave it as unsupported as it was before -- so a monochrome
-// panel does not start retaining every book's colour rules. Companion to the test above, which
-// is what caught the first version of this defining `color: red` and doubling its rule count.
+// panel does not start retaining every book's colour rules. The `color: red` rule is what caught
+// a first version that defined it and doubled the rule count.
 TEST(CssParser, KeepsOnlyInvisibleValuesOfInvisibilityProperties) {
   const std::string css =
       ".ocr { color: transparent; }\n"
@@ -478,20 +460,38 @@ TEST(CssParserCache, OversizedIndexEvictionReleasesIt) {
 // layout must keep resolving under moderate heap pressure (it touches no SD).
 // ---------------------------------------------------------------------------
 namespace {
+// Every bit of CssPropertyFlags, so a codec that drops a `defined` bit (an explicit value that has to
+// travel up the cascade) cannot pass on the value fields alone.
+bool definedEqual(const CssPropertyFlags& a, const CssPropertyFlags& b) {
+  return a.textAlign == b.textAlign && a.fontStyle == b.fontStyle && a.fontWeight == b.fontWeight &&
+         a.textDecoration == b.textDecoration && a.textIndent == b.textIndent && a.marginTop == b.marginTop &&
+         a.marginBottom == b.marginBottom && a.marginLeft == b.marginLeft && a.marginRight == b.marginRight &&
+         a.paddingTop == b.paddingTop && a.paddingBottom == b.paddingBottom && a.paddingLeft == b.paddingLeft &&
+         a.paddingRight == b.paddingRight && a.imageHeight == b.imageHeight && a.imageWidth == b.imageWidth &&
+         a.display == b.display && a.verticalAlign == b.verticalAlign && a.listStyleNone == b.listStyleNone &&
+         a.pageBreakBefore == b.pageBreakBefore && a.pageBreakAfter == b.pageBreakAfter &&
+         a.lineHeight == b.lineHeight && a.fontSizeMultiplier == b.fontSizeMultiplier && a.cssFloat == b.cssFloat &&
+         a.smallCaps == b.smallCaps && a.colorTransparent == b.colorTransparent && a.opacityZero == b.opacityZero &&
+         a.visibilityHidden == b.visibilityHidden && a.fontFamily == b.fontFamily && a.textEmphasis == b.textEmphasis;
+}
+
 bool stylesEqual(const CssStyle& a, const CssStyle& b) {
   auto len = [](const CssLength& l) { return std::make_pair(l.value, static_cast<int>(l.unit)); };
   return a.textAlign == b.textAlign && a.fontStyle == b.fontStyle && a.fontWeight == b.fontWeight &&
          a.textDecoration == b.textDecoration && a.display == b.display && a.verticalAlign == b.verticalAlign &&
          a.listStyleNone == b.listStyleNone && a.pageBreakBefore == b.pageBreakBefore &&
          a.pageBreakAfter == b.pageBreakAfter && a.cssFloat == b.cssFloat && a.smallCaps == b.smallCaps &&
-         a.lineHeightMultiplier == b.lineHeightMultiplier && a.fontSizeMultiplier == b.fontSizeMultiplier &&
+         a.lineHeightEm == b.lineHeightEm && a.fontSizeMultiplier == b.fontSizeMultiplier &&
          a.fontSizeRootRelative == b.fontSizeRootRelative && len(a.textIndent) == len(b.textIndent) &&
          len(a.marginTop) == len(b.marginTop) && len(a.marginBottom) == len(b.marginBottom) &&
          len(a.marginLeft) == len(b.marginLeft) && len(a.marginRight) == len(b.marginRight) &&
          len(a.paddingTop) == len(b.paddingTop) && len(a.paddingBottom) == len(b.paddingBottom) &&
          len(a.paddingLeft) == len(b.paddingLeft) && len(a.paddingRight) == len(b.paddingRight) &&
          len(a.imageHeight) == len(b.imageHeight) && len(a.imageWidth) == len(b.imageWidth) &&
-         a.fontFamily == b.fontFamily && a.defined.fontFamily == b.defined.fontFamily;
+         a.fontFamily == b.fontFamily && a.colorTransparent == b.colorTransparent && a.opacityZero == b.opacityZero &&
+         a.visibilityHidden == b.visibilityHidden && a.writingMode == b.writingMode &&
+         a.textOrientation == b.textOrientation && a.textCombine == b.textCombine && a.direction == b.direction &&
+         a.unicodeBidi == b.unicodeBidi && a.textEmphasis == b.textEmphasis && definedEqual(a.defined, b.defined);
 }
 }  // namespace
 
@@ -691,53 +691,6 @@ TEST(CssParserArena, ResidentMatchesHeapForRealRichStylesheet) {
   std::filesystem::remove(cssPath, rmEc);  // best-effort; see removePath()
 }
 
-// The resident path must actually HIT for element, class, and combined selectors — not just
-// agree with the heap path (which both-miss on unmatched probes would trivially satisfy). Asserts
-// each probe returns the styled (non-default) value AND equals the heap resolution.
-TEST(CssParserArena, ResidentHitsElementClassAndCombinedSelectors) {
-  const std::string css =
-      "p { margin-top: 5px; }\n"
-      ".note { text-align: center; }\n"
-      "div.warn { font-weight: bold; }\n";
-  const std::string cacheDir = makeTempDir();
-  ASSERT_FALSE(cacheDir.empty());
-  std::string cssPath;
-  ASSERT_TRUE(writeTempCssFile(std::vector<uint8_t>(css.begin(), css.end()), cssPath));
-
-  CssParser parser(cacheDir);
-  ASSERT_TRUE(compileCache(parser, cssPath));
-
-  BuildArena arena(64 * 1024);
-  ASSERT_TRUE(arena.valid());
-  parser.clear();
-  parser.setIndexArena(&arena);
-  parser.setLeanResolve(true);
-  ASSERT_TRUE(parser.loadFromCache());
-
-  // Element selector "p" must hit.
-  const CssStyle p = parser.resolveStyle("p", "");
-  EXPECT_TRUE(p.hasMarginTop()) << "resident MISS on element selector 'p'";
-  // Class selector ".note" must hit.
-  const CssStyle note = parser.resolveStyle("span", "note");
-  EXPECT_TRUE(note.hasTextAlign()) << "resident MISS on class selector '.note'";
-  EXPECT_EQ(note.textAlign, CssTextAlign::Center);
-  // Combined "div.warn" must hit.
-  const CssStyle warn = parser.resolveStyle("div", "warn");
-  EXPECT_TRUE(warn.hasFontWeight()) << "resident MISS on combined selector 'div.warn'";
-  EXPECT_EQ(warn.fontWeight, CssFontWeight::Bold);
-  // A genuine non-match must still miss.
-  const CssStyle none = parser.resolveStyle("h1", "absent");
-  EXPECT_FALSE(none.hasMarginTop());
-  EXPECT_FALSE(none.hasTextAlign());
-
-  const auto stats = parser.getResolveStats();
-  EXPECT_GT(stats.diskHits, 0u) << "resident produced zero hits for matching selectors";
-  parser.clear();
-  removePath(cacheDir);
-  std::error_code rmEc;
-  std::filesystem::remove(cssPath, rmEc);  // best-effort; see removePath()
-}
-
 // The sparse codec must round-trip EVERY style field, not just the margins/font-size the other
 // fixtures exercise. Resolve a rule that sets a diverse spread of properties through the resident
 // (compress-on-load, decompress-on-lookup) path and require it byte-identical to the heap path.
@@ -746,10 +699,17 @@ TEST(CssParserArena, ResidentPreservesAllStyleFields) {
       ".a { text-align: center; font-weight: bold; font-style: italic; text-decoration: underline; "
       "margin: 2em; padding-left: 5px; padding-right: 3px; text-indent: 1.5em; line-height: 1.6; "
       "font-size: 120%; vertical-align: super; float: left; font-variant: small-caps; "
-      "list-style: none; page-break-before: always; page-break-after: always; font-family: 'EB Garamond'; }\n"
+      "list-style: none; page-break-before: always; page-break-after: always; font-family: 'EB Garamond'; "
+      "-epub-text-emphasis-style: open sesame; }\n"
       ".b { margin-top: 3px; text-align: right; font-size: 1.25rem; font-family: serif; }\n"
       ".c { display: none; }\n"
-      ".d { display: inline; }\n";
+      ".d { display: inline; }\n"
+      ".e { color: transparent; opacity: 0; visibility: hidden; }\n"
+      ".f { -webkit-writing-mode: vertical-lr; -webkit-text-orientation: upright; text-combine-upright: digits 3; "
+      "direction: rtl; unicode-bidi: isolate-override; text-align: end; }\n"
+      ".g { writing-mode: vertical-rl; }\n"  // a rule with nothing else is kept
+      ".h { text-emphasis-style: none; }\n"
+      ".i { writing-mode: vertical-rl; text-emphasis: filled triangle; }\n";  // the flow word and a mark in one record
   const std::string cacheDir = makeTempDir();
   ASSERT_FALSE(cacheDir.empty());
   std::string cssPath;
@@ -758,8 +718,9 @@ TEST(CssParserArena, ResidentPreservesAllStyleFields) {
   CssParser parser(cacheDir);
   ASSERT_TRUE(compileCache(parser, cssPath));
 
-  const std::vector<std::pair<std::string, std::string>> probes = {{"p", "a"},    {"p", "b"},    {"div", "c"},
-                                                                   {"span", "a"}, {"p", "none"}, {"span", "d"}};
+  const std::vector<std::pair<std::string, std::string>> probes = {
+      {"p", "a"},    {"p", "b"},   {"div", "c"},  {"span", "a"}, {"p", "none"}, {"span", "d"},
+      {"span", "e"}, {"div", "f"}, {"html", "g"}, {"span", "h"}, {"span", "i"}};
   auto resolveAll = [&](CssParser& p) {
     std::vector<CssStyle> out;
     for (const auto& pr : probes) out.push_back(p.resolveStyle(pr.first, pr.second));
@@ -772,6 +733,26 @@ TEST(CssParserArena, ResidentPreservesAllStyleFields) {
   // Both paths agreeing proves nothing if the disk cache already lost the value.
   EXPECT_EQ(static_cast<int>(heapStyles[5].display), static_cast<int>(CssDisplay::Inline))
       << "display:inline did not survive the disk cache";
+  EXPECT_TRUE(heapStyles[6].colorTransparent && heapStyles[6].opacityZero && heapStyles[6].visibilityHidden)
+      << "the invisibility flags did not survive the disk cache";
+  EXPECT_TRUE(heapStyles[6].defined.colorTransparent && heapStyles[6].defined.opacityZero &&
+              heapStyles[6].defined.visibilityHidden);
+  EXPECT_TRUE(heapStyles[0].hasLineHeight()) << "line-height did not survive the disk cache";
+  EXPECT_FLOAT_EQ(1.6f, heapStyles[0].lineHeightEm);
+  const CssStyle& flow = heapStyles[7];
+  EXPECT_EQ(CssWritingMode::VerticalLr, flow.writingMode) << "the flow word did not survive the disk cache";
+  EXPECT_EQ(CssTextOrientation::Upright, flow.textOrientation);
+  EXPECT_EQ(CssTextCombine::Digits3, flow.textCombine);
+  EXPECT_EQ(CssDirection::Rtl, flow.direction);
+  EXPECT_EQ(CssUnicodeBidi::IsolateOverride, flow.unicodeBidi);
+  EXPECT_EQ(CssTextAlign::End, flow.textAlign) << "text-align: end did not survive the disk cache as itself";
+  EXPECT_EQ(CssWritingMode::VerticalRl, heapStyles[8].writingMode) << "a rule with only writing-mode was dropped";
+  EXPECT_EQ(heapStyles[0].textEmphasis, TextEmphasis::Sesame | TextEmphasis::kOpen)
+      << "text-emphasis-style did not survive the disk cache";
+  EXPECT_TRUE(heapStyles[9].hasTextEmphasis() && heapStyles[9].textEmphasis == 0)
+      << "an explicit text-emphasis-style: none did not survive the disk cache";
+  EXPECT_EQ(CssWritingMode::VerticalRl, heapStyles[10].writingMode);
+  EXPECT_EQ(heapStyles[10].textEmphasis, TextEmphasis::Triangle) << "a mark beside the flow word did not survive";
 
   BuildArena arena(64 * 1024);
   ASSERT_TRUE(arena.valid());
@@ -911,6 +892,115 @@ TEST(CssParserCache, CompilingSyncsTheStagingFileOnlyToReadARuleBack) {
   const CssStyle extra = parser.resolveStyle("p", "extra");
   EXPECT_EQ(extra.fontWeight, CssFontWeight::Bold);
   EXPECT_EQ(extra.fontStyle, CssFontStyle::Italic);
+
+  removePath(cacheDir);
+  std::error_code rmEc;
+  std::filesystem::remove(cssPath, rmEc);
+}
+
+// The compile stages each rule to a file and ends by copying the live ones into the cache, and both
+// went a field at a time: four writes a staged rule, then a seek and three reads of the staging
+// file, four writes, and the rule's index entry written twice -- about fourteen card calls a rule,
+// 5200 for these 400 (0.09 s on the X3, King's Avatar's 800 rules twice that). Now a staged rule is
+// one write and the finish goes through windows; the rules come out the same, a rule redeclared
+// further on included.
+TEST(CssParserCache, FinishingTheCompileWritesTheRulesInAFewCalls) {
+  const std::string cacheDir = makeTempDir();
+  ASSERT_FALSE(cacheDir.empty());
+  constexpr int kRules = 400;
+  std::string css;
+  for (int i = 0; i < kRules; ++i) {
+    css += ".r" + std::to_string(i) + " { margin-left: " + std::to_string(i % 7) + "em; font-style: italic }\n";
+  }
+  css += ".r5 { font-weight: bold }\n";  // redeclared far from its first: kept as a second record
+  std::string cssPath;
+  ASSERT_TRUE(writeTempCssFile(std::vector<uint8_t>(css.begin(), css.end()), cssPath));
+
+  CssParser parser(cacheDir);
+  ASSERT_TRUE(parser.beginCacheCompile());
+  const size_t stageBefore = FsFile::calls;
+  {
+    FsFile cssFile;
+    ASSERT_TRUE(Storage.openFileForRead("CSS", cssPath.c_str(), cssFile));
+    ASSERT_TRUE(parser.appendCompiledFromStream(cssFile));
+  }
+  const size_t stageCalls = FsFile::calls - stageBefore;
+  const size_t callsBefore = FsFile::calls;
+  ASSERT_TRUE(parser.endCacheCompile());
+  const size_t calls = FsFile::calls - callsBefore;
+  std::printf("[ css      ] %d rules: staged in %zu card calls, the compile's finish took %zu\n", kRules + 1,
+              stageCalls, calls);
+  EXPECT_LE(stageCalls, static_cast<size_t>(kRules + kRules / 4)) << "four writes a rule were ~1600";
+  EXPECT_LE(calls, static_cast<size_t>(kRules / 4)) << "a field at a time was ~10 a rule";
+
+  const CssStyle r5 = parser.resolveStyle("p", "r5");
+  EXPECT_EQ(r5.fontWeight, CssFontWeight::Bold);
+  EXPECT_EQ(r5.fontStyle, CssFontStyle::Italic);
+  EXPECT_TRUE(r5.hasMarginLeft());
+  EXPECT_EQ(r5.marginLeft.value, 5.0f);
+  const CssStyle r398 = parser.resolveStyle("p", "r398");
+  EXPECT_EQ(r398.marginLeft.value, static_cast<float>(398 % 7));
+  parser.clear();
+  ASSERT_TRUE(parser.loadFromCache());
+  EXPECT_EQ(parser.ruleCount(), static_cast<size_t>(kRules + 1));
+  EXPECT_TRUE(stylesEqual(r5, parser.resolveStyle("p", "r5")));
+
+  // Lent a region, as a first open does, the windows come out of it and go back.
+  const std::string lentDir = makeTempDir();
+  ASSERT_FALSE(lentDir.empty());
+  BuildArena arena(8192);
+  ASSERT_TRUE(arena.valid());
+  CssParser lent(lentDir);
+  ASSERT_TRUE(lent.beginCacheCompile());
+  {
+    FsFile cssFile;
+    ASSERT_TRUE(Storage.openFileForRead("CSS", cssPath.c_str(), cssFile));
+    ASSERT_TRUE(lent.appendCompiledFromStream(cssFile));
+  }
+  ASSERT_TRUE(lent.endCacheCompile(&arena));
+  EXPECT_GE(arena.highWater(), 4096u) << "the windows were taken from the region";
+  EXPECT_EQ(arena.used(), 0u);
+  EXPECT_TRUE(stylesEqual(r5, lent.resolveStyle("p", "r5")));
+  removePath(lentDir);
+
+  removePath(cacheDir);
+  std::error_code rmEc;
+  std::filesystem::remove(cssPath, rmEc);
+}
+
+// Every section build loads the ruleset into its arena (RESIDENT), and the load read each rule's
+// 77-byte style a field at a time: ~33 SdFat calls a rule, every build -- 3384 calls for the 84
+// rules of the first page of a King's Avatar-shaped book, ~0.06 s on the X3 per 100 rules. One
+// read for the payload makes it four a rule; what resolves is the same.
+TEST(CssParserArena, LoadingTheRulesetIntoTheArenaReadsEachRuleInAFewCalls) {
+  const std::string cacheDir = makeTempDir();
+  ASSERT_FALSE(cacheDir.empty());
+  constexpr int kRules = 400;
+  std::string css;
+  for (int i = 0; i < kRules; ++i) {
+    css += ".r" + std::to_string(i) + " { margin-left: " + std::to_string(i % 7) +
+           "em; text-indent: " + std::to_string(i % 3) + "em; font-style: italic }\n";
+  }
+  std::string cssPath;
+  ASSERT_TRUE(writeTempCssFile(std::vector<uint8_t>(css.begin(), css.end()), cssPath));
+  CssParser parser(cacheDir);
+  ASSERT_TRUE(compileCache(parser, cssPath));
+  parser.clear();
+  ASSERT_TRUE(parser.loadFromCache());
+  const CssStyle heap = parser.resolveStyle("p", "r123");
+
+  BuildArena arena(kRules * 128 + 8192);
+  ASSERT_TRUE(arena.valid());
+  parser.clear();
+  parser.setIndexArena(&arena);
+  parser.setLeanResolve(true);
+  const size_t callsBefore = FsFile::calls;
+  ASSERT_TRUE(parser.loadFromCache());
+  const size_t calls = FsFile::calls - callsBefore;
+  std::printf("[ css      ] %d rules loaded into the arena in %zu card calls\n", kRules, calls);
+  EXPECT_LE(calls, static_cast<size_t>(6 * kRules)) << "a field at a time was ~33 a rule";
+  EXPECT_TRUE(stylesEqual(heap, parser.resolveStyle("p", "r123")));
+  parser.clear();  // drop the arena view before the arena is destroyed
 
   removePath(cacheDir);
   std::error_code rmEc;

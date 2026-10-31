@@ -14,3 +14,7 @@ void silentRestartToSettings();       // Settings screen
 // restart attempt across consecutive silent boots until a non-silent boot
 // clears the latch.
 bool trySilentRestartToReaderForHeapRecovery();
+// Whether trySilentRestartToReaderForHeapRecovery() would restart now. Changes nothing, so a
+// caller asks it BEFORE giving up what only the restart gives back (the framebuffers): a refusal
+// found after that left the reader with no display buffers for the rest of the session.
+bool heapRecoveryRestartAvailable();

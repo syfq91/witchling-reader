@@ -24,12 +24,16 @@
 #include "TtfFontTestUtil.h"
 #include "TtfLayoutBuilder.h"
 #include "TtfTestUtil.h"
+#include "Utf8.h"
 
 using namespace ttf_test;
 
 namespace {
 // A nothrow array new of exactly this many bytes fails, as the scratch block's does on a heap without room for it.
 size_t refuseArrayBytes = 0;
+// The next nothrow new of one object of exactly this many bytes fails, once: an SD-mode plan's or read's page cache
+// (ttf::CffBlock::planBytes(), readBytes()) on a heap without room for it at that moment.
+size_t refuseNextObjectBytes = 0;
 // The bytes the program's news hold now: what a loaded family keeps is the difference across its load.
 size_t heapBytesHeld = 0;
 
@@ -57,7 +61,13 @@ void* operator new(const size_t size) {
   if (void* p = holdBytes(size)) return p;
   throw std::bad_alloc();
 }
-void* operator new(const size_t size, const std::nothrow_t&) noexcept { return holdBytes(size); }
+void* operator new(const size_t size, const std::nothrow_t&) noexcept {
+  if (refuseNextObjectBytes != 0 && size == refuseNextObjectBytes) {
+    refuseNextObjectBytes = 0;
+    return nullptr;
+  }
+  return holdBytes(size);
+}
 void* operator new[](const size_t size) {
   if (void* p = holdBytes(size)) return p;
   throw std::bad_alloc();
@@ -79,6 +89,7 @@ constexpr uint32_t kFlashBytes = 3538944 - 65536;  // the X3's font area: spiffs
 constexpr uint8_t kRegular = 0;
 constexpr uint8_t kBold = 1;
 constexpr uint8_t kItalic = 2;
+constexpr uint8_t kBoldItalic = 3;
 constexpr uint8_t kIdentityA[glyphstore::kIdentityBytes] = {'f', 'a', 'm', 'i', 'l', 'y', '-', 'A'};
 constexpr uint8_t kIdentityB[glyphstore::kIdentityBytes] = {'f', 'a', 'm', 'i', 'l', 'y', '-', 'B'};
 
@@ -104,6 +115,82 @@ Reference referenceAt(const std::vector<uint8_t>& file, const uint32_t cp, const
 
 Reference reference(const std::vector<uint8_t>& file, const uint32_t cp, const uint8_t points) {
   return referenceAt(file, cp, ttf::ppemFromPoints(points));
+}
+
+/// What the rasterizer draws for `cp` at a pixels-per-em (26.6), emboldened at the engine's strength: what a glyph of
+/// a synthetic bold style must equal.
+Reference emboldenedAt(const std::vector<uint8_t>& file, const uint32_t cp, const uint32_t ppem) {
+  FontBytes bytes(file.data(), static_cast<uint32_t>(file.size()));
+  ttf::Face face;
+  EXPECT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(bytes, &face));
+  ttf::Rasterizer rasterizer;
+  EXPECT_TRUE(rasterizer.allocate(
+      ttf::planScratch(face, static_cast<uint32_t>(TtfFont::kMaxNativePx) << 6, ttf::kPoolBytesFlash, true)));
+  Reference ref;
+  EXPECT_EQ(ttf::Status::Ok, rasterizer.load(bytes, face, ttf::glyphIndex(bytes, face, cp), ppem, &ref.metrics));
+  EXPECT_EQ(ttf::Status::Ok, rasterizer.embolden(ttf::emboldenStrength(ppem), &ref.metrics));
+  EXPECT_EQ(ttf::Status::Ok, rasterizer.rasterize(rasterizer.output()));
+  ref.bitmap.assign(rasterizer.output(), rasterizer.output() + ref.metrics.dataLength);
+  return ref;
+}
+
+Reference emboldened(const std::vector<uint8_t>& file, const uint32_t cp, const uint8_t points) {
+  return emboldenedAt(file, cp, ttf::ppemFromPoints(points));
+}
+
+/// The same, slanted at the engine's shear, emboldened first when `bold`: what a glyph of a synthetic italic style must
+/// equal. The plan is the one a regular-only family merges.
+Reference slantedAt(const std::vector<uint8_t>& file, const uint32_t cp, const uint32_t ppem, const bool bold = false) {
+  FontBytes bytes(file.data(), static_cast<uint32_t>(file.size()));
+  ttf::Face face;
+  EXPECT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(bytes, &face));
+  ttf::Rasterizer rasterizer;
+  EXPECT_TRUE(rasterizer.allocate(
+      ttf::planScratch(face, static_cast<uint32_t>(TtfFont::kMaxNativePx) << 6, ttf::kPoolBytesFlash, true, true)));
+  Reference ref;
+  EXPECT_EQ(ttf::Status::Ok, rasterizer.load(bytes, face, ttf::glyphIndex(bytes, face, cp), ppem, &ref.metrics));
+  if (bold) EXPECT_EQ(ttf::Status::Ok, rasterizer.embolden(ttf::emboldenStrength(ppem), &ref.metrics));
+  EXPECT_EQ(ttf::Status::Ok, rasterizer.slant(&ref.metrics));
+  EXPECT_EQ(ttf::Status::Ok, rasterizer.rasterize(rasterizer.output()));
+  ref.bitmap.assign(rasterizer.output(), rasterizer.output() + ref.metrics.dataLength);
+  return ref;
+}
+
+Reference slanted(const std::vector<uint8_t>& file, const uint32_t cp, const uint8_t points, const bool bold = false) {
+  return slantedAt(file, cp, ttf::ppemFromPoints(points), bold);
+}
+
+/// What an italic style must draw for `cp`, where the slant may not fit: the first of the slanted glyph (emboldened
+/// first when `bold`), the same without the slant, and the plain one, that the rasterizer draws with left and top
+/// inside int8. `*leaning` says whether the slant stayed.
+Reference drawnAt(const std::vector<uint8_t>& file, const uint32_t cp, const uint32_t ppem, const bool bold,
+                  bool* leaning) {
+  FontBytes bytes(file.data(), static_cast<uint32_t>(file.size()));
+  ttf::Face face;
+  EXPECT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(bytes, &face));
+  ttf::Rasterizer rasterizer;
+  EXPECT_TRUE(rasterizer.allocate(
+      ttf::planScratch(face, static_cast<uint32_t>(TtfFont::kMaxNativePx) << 6, ttf::kPoolBytesFlash, true, true)));
+  const uint16_t index = ttf::glyphIndex(bytes, face, cp);
+  Reference ref;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    const bool slant = attempt == 0;
+    const bool embolden = bold && attempt < 2;
+    ttf::Status status = rasterizer.load(bytes, face, index, ppem, &ref.metrics);
+    if (status == ttf::Status::Ok && embolden) {
+      status = rasterizer.embolden(ttf::emboldenStrength(ppem), &ref.metrics);
+    }
+    if (status == ttf::Status::Ok && slant) status = rasterizer.slant(&ref.metrics);
+    const bool fits = ref.metrics.left >= INT8_MIN && ref.metrics.left <= INT8_MAX && ref.metrics.top >= INT8_MIN &&
+                      ref.metrics.top <= INT8_MAX;
+    if (status != ttf::Status::Ok || !fits) continue;
+    EXPECT_EQ(ttf::Status::Ok, rasterizer.rasterize(rasterizer.output()));
+    ref.bitmap.assign(rasterizer.output(), rasterizer.output() + ref.metrics.dataLength);
+    *leaning = slant;
+    return ref;
+  }
+  ADD_FAILURE() << "U+" << std::hex << cp << " draws in no form";
+  return ref;
 }
 
 constexpr uint32_t px(const uint32_t pixels) { return pixels << 6; }
@@ -148,6 +235,7 @@ class TtfFontTest : public ::testing::Test {
   void TearDown() override {
     TtfFont::setHooks({});
     refuseArrayBytes = 0;
+    refuseNextObjectBytes = 0;
     EXPECT_EQ(0u, flash.violations());
     EXPECT_EQ(0u, flash.reprograms());
   }
@@ -162,6 +250,17 @@ class TtfFontTest : public ::testing::Test {
     if (!font.set->load(&sources, 1, identity, [this] { ++busy; })) return {};
     if (points != 0 && !font->setBodySize(points)) return {};
     return font;
+  }
+
+  /// Draws new glyphs from `cp` on until two segments of the log are live, so a reclaim has a tail to take.
+  void fillToTwoSegments(const Loaded& font, uint32_t& cp) {
+    for (; cp < 0x3000 && !font->ringMode(); ++cp) {
+      font->glyph(kRegular, cp);
+      const TtfFontSet::Stats stats = font.set->stats();
+      if (stats.segments - stats.freeSegments >= 2) break;
+    }
+    ASSERT_FALSE(font->ringMode());
+    ASSERT_GE(font.set->stats().segments - font.set->stats().freeSegments, 2u);
   }
 
   /// A one-style family built in memory, so a test can give a glyph any outline.
@@ -282,6 +381,19 @@ TEST_F(TtfFontTest, ACodepointTheFontLacksIsAskedOnlyOnce) {
   const uint32_t writes = flash.programCalls();
   EXPECT_EQ(nullptr, font->glyph(kRegular, 0x4E2D));
   EXPECT_EQ(writes, flash.programCalls());  // the "missing" slot answered
+}
+
+TEST_F(TtfFontTest, ItsMapAnswersWhatItCoversWithoutRenderingOrWriting) {
+  // What the UI asks of a loaded set's families to pick the one with CJK (SdCardFontManager::lendUiFont).
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  const uint32_t writes = flash.programCalls();
+  const uint32_t renders = font->renders();
+  EXPECT_TRUE(font->mapsCodepoint('A'));
+  EXPECT_FALSE(font->mapsCodepoint(0x4E00));
+  EXPECT_FALSE(font->mapsCodepoint(0x3042));
+  EXPECT_EQ(writes, flash.programCalls());
+  EXPECT_EQ(renders, font->renders());
 }
 
 TEST_F(TtfFontTest, DefaultIgnorableCodepointsHaveNoAdvanceAndNoInk) {
@@ -409,51 +521,234 @@ TEST_F(TtfFontTest, AWipeAtTheNextBookOpenEndsTheRing) {
 }
 
 TEST_F(TtfFontTest, AStoreMarkedFullActsAsAFullOneAndIsCounted) {
-  // CMD:TTF:FULL: what a filled store does, at any size, without filling it.
+  // CMD:TTF:FULL: what a filled store does, at any size, without filling it. It stops writes and asks for room; nothing
+  // is wiped.
+  flash.setFreePages(16);  // the smallest log the planner makes: 4 pages
   const TtfFontSet::StoreEvents before = TtfFontSet::storeEvents();
-  {
-    const auto font = open();
-    ASSERT_NE(nullptr, font);
-    ASSERT_NE(nullptr, font->glyph(kRegular, 'A'));
-    TtfFontSet::Stats stats = font.set->stats();
-    EXPECT_EQ(1, stats.families);
-    EXPECT_FALSE(stats.ringMode);
-    EXPECT_FALSE(stats.wipePending);
-    EXPECT_GT(stats.logUsed, 0u);
-    EXPECT_GT(stats.logSize, stats.logUsed);
-    EXPECT_EQ(1u, stats.renders);
-    ASSERT_TRUE(font.set->markFull());
-    stats = font.set->stats();
-    EXPECT_TRUE(stats.ringMode);
-    EXPECT_TRUE(stats.wipePending);
-    EXPECT_EQ(before.fills + 1, TtfFontSet::storeEvents().fills);
-    expectDrawnAs(reference(files[kRegular].bytes, 'B', 14), *font, kRegular, font->glyph(kRegular, 'B'));
-    EXPECT_TRUE(font->ringMode());  // drawn, not stored
-  }
-  const auto font = open();  // the next boot finishes the pending wipe
+  const auto font = open(kIdentityA, TtfFont::kMaxPointSize);
   ASSERT_NE(nullptr, font);
-  EXPECT_FALSE(font.set->stats().wipePending);
-  EXPECT_EQ(before.wipes + 1, TtfFontSet::storeEvents().wipes);
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'A'));
+  TtfFontSet::Stats stats = font.set->stats();
+  EXPECT_EQ(1, stats.families);
+  EXPECT_FALSE(stats.ringMode);
+  EXPECT_FALSE(stats.wipePending);
+  EXPECT_GT(stats.logUsed, 0u);
+  EXPECT_GT(stats.logSize, stats.logUsed);
+  EXPECT_EQ(1u, stats.renders);
+  uint32_t cp = 0x21;
+  fillToTwoSegments(font, cp);
+  ASSERT_TRUE(font.set->markFull());
+  stats = font.set->stats();
+  EXPECT_TRUE(stats.ringMode);
+  EXPECT_FALSE(stats.wipePending);  // a full store is not wiped: it makes room
+  EXPECT_EQ(before.fills + 1, TtfFontSet::storeEvents().fills);
+  expectDrawnAs(reference(files[kRegular].bytes, 'B', TtfFont::kMaxPointSize), *font, kRegular,
+                font->glyph(kRegular, 'B'));
+  EXPECT_TRUE(font->ringMode());  // drawn, not stored
+  ASSERT_TRUE(font.set->makeRoom(FlashGlyphStore::Budget::Open));
+  EXPECT_FALSE(font->ringMode());
+  EXPECT_EQ(before.rooms + 1, TtfFontSet::storeEvents().rooms);
+  EXPECT_EQ(before.wipes, TtfFontSet::storeEvents().wipes);
 }
 
-TEST_F(TtfFontTest, AFullStoreSwitchesToTheRingAndTheLoadAfterItWipes) {
+TEST_F(TtfFontTest, AFullStoreSwitchesToTheRingAndMakingRoomEndsIt) {
   flash.setFreePages(16);  // the smallest log the planner makes: 4 pages
-  {
-    const auto font = open(kIdentityA, TtfFont::kMaxPointSize);
-    ASSERT_NE(nullptr, font);
-    for (uint32_t cp = 0x21; cp < 0x3000 && !font->ringMode(); ++cp) font->glyph(kRegular, cp);
-    ASSERT_TRUE(font->ringMode());
-    expectDrawnAs(reference(files[kRegular].bytes, 0x2026, TtfFont::kMaxPointSize), *font, kRegular,
-                  font->glyph(kRegular, 0x2026));
-  }
-  busy = 0;
-  const auto font = open(kIdentityA, TtfFont::kMaxPointSize);  // the next boot finishes the pending wipe
+  const auto font = open(kIdentityA, TtfFont::kMaxPointSize);
   ASSERT_NE(nullptr, font);
+  uint32_t cp = 0x21;
+  for (; cp < 0x3000 && !font->ringMode(); ++cp) font->glyph(kRegular, cp);
+  ASSERT_TRUE(font->ringMode());
+  expectDrawnAs(reference(files[kRegular].bytes, 0x2026, TtfFont::kMaxPointSize), *font, kRegular,
+                font->glyph(kRegular, 0x2026));
+  EXPECT_FALSE(font.set->stats().wipePending);
+  busy = 0;
+  ASSERT_TRUE(font.set->makeRoom(FlashGlyphStore::Budget::Open, [this] { ++busy; }));
   EXPECT_EQ(1, busy);
   EXPECT_FALSE(font->ringMode());
+  // Stored again from here on: the second lookup of a new glyph is a hit.
+  const uint32_t renders = font->renders();
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'A'));
+  const uint32_t rendersAfterFirst = font->renders();
+  EXPECT_GE(rendersAfterFirst, renders);
+  font->glyph(kRegular, 'A');
+  EXPECT_EQ(rendersAfterFirst, font->renders());
+}
+
+TEST_F(TtfFontTest, MakingRoomEndsTheRing) {
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'A'));
+  ASSERT_TRUE(font.set->markFull());
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'B'));
+  ASSERT_TRUE(font->ringMode());
+  font.set->makeRoom(FlashGlyphStore::Budget::Idle);
+  EXPECT_FALSE(font->ringMode());
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'C'));
+  const uint32_t renders = font->renders();
+  const uint32_t hits = font->storeHits();
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'C'));
+  EXPECT_EQ(renders, font->renders());
+  EXPECT_EQ(hits + 1, font->storeHits());
+}
+
+TEST_F(TtfFontTest, AWipeWaitsForRenderLock) {
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'A'));
+  flash.failNextProgram();
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'B'));
+  ASSERT_TRUE(font->ringMode());
+  static bool held = false;
+  held = false;
+  TtfFont::setHooks({[] { return held; }});
+  busy = 0;
+  EXPECT_FALSE(font.set->wipeIfPending([this] { ++busy; }));
+  EXPECT_EQ(0, busy);
+  EXPECT_TRUE(font->ringMode());  // still pending
+  held = true;
+  EXPECT_TRUE(font.set->wipeIfPending([this] { ++busy; }));
+  EXPECT_EQ(1, busy);
+  EXPECT_FALSE(font->ringMode());
+}
+
+TEST_F(TtfFontTest, MakingRoomWaitsForRenderLock) {
+  flash.setFreePages(16);
+  const auto font = open(kIdentityA, TtfFont::kMaxPointSize);
+  ASSERT_NE(nullptr, font);
+  uint32_t cp = 0x21;
+  fillToTwoSegments(font, cp);
+  ASSERT_TRUE(font.set->markFull());
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'B'));
+  ASSERT_TRUE(font->ringMode());
+  static bool held = false;
+  held = false;
+  TtfFont::setHooks({[] { return held; }});
+  busy = 0;
+  EXPECT_FALSE(font.set->makeRoom(FlashGlyphStore::Budget::Open, [this] { ++busy; }));
+  EXPECT_EQ(0, busy);
+  EXPECT_TRUE(font->ringMode());
+  held = true;
+  EXPECT_TRUE(font.set->makeRoom(FlashGlyphStore::Budget::Open, [this] { ++busy; }));
+  EXPECT_EQ(1, busy);
+  EXPECT_FALSE(font->ringMode());
+}
+
+TEST_F(TtfFontTest, AnIdleStepLeavesAPendingWipeToTheNextOpen) {
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'A'));
+  flash.failNextProgram();
+  ASSERT_NE(nullptr, font->glyph(kRegular, 'B'));
+  ASSERT_TRUE(font->ringMode());
+  ASSERT_TRUE(font.set->stats().wipePending);
+  busy = 0;
+  EXPECT_FALSE(font.set->makeRoom(FlashGlyphStore::Budget::Idle, [this] { ++busy; }));  // a wipe takes seconds
+  EXPECT_EQ(0, busy);
+  EXPECT_TRUE(font->ringMode());
+  EXPECT_TRUE(font.set->stats().wipePending);
+  EXPECT_TRUE(font.set->makeRoom(FlashGlyphStore::Budget::Open, [this] { ++busy; }));
+  EXPECT_EQ(1, busy);
+  EXPECT_FALSE(font->ringMode());
+  EXPECT_FALSE(font.set->stats().wipePending);
+}
+
+TEST_F(TtfFontTest, MakingRoomWithoutAStoreDoesNothing) {
+  TtfFontSet closed(flash);
+  EXPECT_FALSE(closed.makeRoom(FlashGlyphStore::Budget::Open));
+}
+
+TEST_F(TtfFontTest, ADrawnStoredGlyphIsCounted) {
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  const EpdGlyph* a = font->glyph(kRegular, 'A');
+  ASSERT_NE(nullptr, a);
+  ASSERT_TRUE(font.set->markFull());  // keeps the counts
+  static bool counts = false;
+  counts = false;
+  TtfFont::Hooks hooks;
+  hooks.countsDraw = [] { return counts; };
+  TtfFont::setHooks(hooks);
   const uint8_t* bitmap = nullptr;
-  EXPECT_FALSE(font->ownsBitmap(font->glyph(kRegular, 'A'), bitmap));
-  EXPECT_EQ(1u, font->renders());
+  EXPECT_FALSE(font->ownsBitmap(a, bitmap));
+  EXPECT_EQ(0u, font.set->stats().drawsCounted);  // not the pass that counts
+  counts = true;
+  EXPECT_FALSE(font->ownsBitmap(a, bitmap));
+  EXPECT_EQ(1u, font.set->stats().drawsCounted);
+  // A ring glyph is not a record of the log.
+  const EpdGlyph* b = font->glyph(kRegular, 'B');
+  ASSERT_NE(nullptr, b);
+  ASSERT_TRUE(font->ringMode());
+  EXPECT_TRUE(font->ownsBitmap(b, bitmap));
+  EXPECT_EQ(1u, font.set->stats().drawsCounted);
+  // Without the hook every draw counts.
+  TtfFont::setHooks({});
+  EXPECT_FALSE(font->ownsBitmap(a, bitmap));
+  EXPECT_EQ(2u, font.set->stats().drawsCounted);
+}
+
+TEST_F(TtfFontTest, UseCountsAreTakenAtTheNextMakeRoomNotInTheDraw) {
+  // A five-segment log: with two live, the free ones are within one of the target, so counts are wanted.
+  flash.setFreePages(16);
+  const auto font = open(kIdentityA, TtfFont::kMaxPointSize);
+  ASSERT_NE(nullptr, font);
+  uint32_t cp = 0x21;
+  // Each glyph is rendered and stored inside its draw, where a session-long block could pin a region the reader
+  // released: the commit that nears a full ring takes no memory for the counts.
+  fillToTwoSegments(font, cp);
+  ASSERT_EQ(3u, font.set->stats().freeSegments);
+  const EpdGlyph* a = font->glyph(kRegular, 'A');
+  ASSERT_NE(nullptr, a);
+  const uint8_t* bitmap = nullptr;
+  ASSERT_FALSE(font->ownsBitmap(a, bitmap));  // a record of the log, drawn
+  EXPECT_EQ(0u, font.set->stats().drawsCounted);
+  EXPECT_TRUE(font.set->needsIdleRoom());  // an idle step would take them
+  // The next idle step takes them, though it has no room to make.
+  EXPECT_FALSE(font.set->makeRoom(FlashGlyphStore::Budget::Idle));
+  EXPECT_FALSE(font.set->needsIdleRoom());
+  a = font->glyph(kRegular, 'A');
+  ASSERT_FALSE(font->ownsBitmap(a, bitmap));
+  EXPECT_EQ(1u, font.set->stats().drawsCounted);
+}
+
+TEST_F(TtfFontTest, ASetLoadedOverAStoreNearFullCountsItsFirstDraws) {
+  flash.setFreePages(16);
+  {
+    const auto first = open(kIdentityA, TtfFont::kMaxPointSize);
+    ASSERT_NE(nullptr, first);
+    uint32_t cp = 0x21;
+    fillToTwoSegments(first, cp);
+    ASSERT_EQ(3u, first.set->stats().freeSegments);
+  }
+  // The next boot opens the store near full: the load ends by keeping the counts, so they are kept when it returns.
+  const auto font = open(kIdentityA, TtfFont::kMaxPointSize);
+  ASSERT_NE(nullptr, font);
+  const uint32_t renders = font->renders();
+  const EpdGlyph* a = font->glyph(kRegular, 'A');
+  ASSERT_NE(nullptr, a);
+  ASSERT_EQ(renders, font->renders());  // read from the store
+  const uint8_t* bitmap = nullptr;
+  ASSERT_FALSE(font->ownsBitmap(a, bitmap));
+  EXPECT_EQ(1u, font.set->stats().drawsCounted);
+}
+
+TEST_F(TtfFontTest, TheStatsShowTheRing) {
+  flash.setFreePages(16);
+  const TtfFontSet::StoreEvents before = TtfFontSet::storeEvents();
+  const auto font = open(kIdentityA, TtfFont::kMaxPointSize);
+  ASSERT_NE(nullptr, font);
+  for (const char c : {'A', 'B', 'C'}) ASSERT_NE(nullptr, font->glyph(kRegular, c));
+  TtfFontSet::Stats stats = font.set->stats();
+  EXPECT_GT(stats.segments, 0u);
+  EXPECT_LE(stats.freeSegments, stats.segments);
+  EXPECT_LT(stats.freeSegments, stats.segments);  // the head is live
+  EXPECT_GE(stats.liveSlots, 3u);
+  uint32_t cp = 0x21;
+  fillToTwoSegments(font, cp);
+  ASSERT_TRUE(font.set->markFull());
+  ASSERT_TRUE(font.set->makeRoom(FlashGlyphStore::Budget::Open));
+  const TtfFontSet::StoreEvents after = TtfFontSet::storeEvents();
+  EXPECT_EQ(before.rooms + 1, after.rooms);
+  EXPECT_GT(after.dropped, before.dropped);
 }
 
 TEST_F(TtfFontTest, ABrokenGlyphIsMarkedMissingAndNotTriedAgain) {
@@ -471,7 +766,7 @@ TEST_F(TtfFontTest, ABrokenGlyphIsMarkedMissingAndNotTriedAgain) {
   EXPECT_EQ(nullptr, font->glyph(kRegular, 'B'));
   EXPECT_EQ(writes, flash.programCalls());
   EXPECT_NE(nullptr, font->glyph(kRegular, 'A'));
-  EXPECT_EQ(nullptr, font->font(kBold));  // a one-style family
+  EXPECT_TRUE(font->slanted(kItalic));  // a one-style family: its bold and italic are synthetic (spec 7.1, 7.4)
 }
 
 TEST_F(TtfFontTest, AGlyphReachingTooFarFromThePenIsMissing) {
@@ -823,7 +1118,7 @@ TEST_F(TtfFontTest, ASizeTheFullTableRefusesIsDrawnFromTheRingWhileTheOthersStor
   expectDrawnAs(referenceAt(files[kRegular].bytes, 'M', px(60)), *font, kRegular, refused);
   EXPECT_FALSE(font->ringMode());
   EXPECT_FALSE(font->ownsBitmap(font->glyph(kRegular, 'Q'), bitmap));  // the body still stores its glyphs
-  // The wipe at the next book open frees the table.
+  // The wipe at the next chapter or book open frees the table.
   EXPECT_TRUE(font.set->wipeIfPending());
   EXPECT_FALSE(font->ownsBitmap(nativeGlyph(fonts[kRegular], 'M'), bitmap));
   expectDrawnAs(referenceAt(files[kRegular].bytes, 'M', px(60)), *font, kRegular, nativeGlyph(fonts[kRegular], 'M'));
@@ -945,6 +1240,8 @@ TEST_F(TtfFontTest, AFontWithoutKerningAsksNothing) {
 TEST_F(TtfFontTest, AFamilyHoldsMemoryOnlyForTheStylesItHas) {
   Font built = kernedBoxes();
   built.extraTables.clear();  // no kerning: nothing else a style holds differs between them
+  // Declared bold italic, so no style is synthetic: ASyntheticStyleCostsItsFontsAndNoFile counts those.
+  built.macStyle = 3;
   const std::vector<uint8_t> bytes = buildFont(built);
   const uint8_t* const identities[] = {kIdentityA, kIdentityB, kIdentityA};
   const int styleCounts[] = {1, 2, 4};
@@ -1081,7 +1378,7 @@ TEST_F(TtfFontSetTest, TheFamiliesAreInstalledTogetherAndTheNextLoadReusesThem) 
   EXPECT_EQ(2, set->familyCount());
   EXPECT_NE(nullptr, set->font(0)->font(kItalic));
   EXPECT_NE(nullptr, set->font(1)->font(kBold));
-  EXPECT_EQ(nullptr, set->font(1)->font(kItalic));  // no Inter italic here
+  EXPECT_TRUE(set->font(1)->slanted(kItalic));  // no Inter italic file: the regular, slanted (spec 7.4)
   EXPECT_EQ(nullptr, set->font(2));
 }
 
@@ -1232,7 +1529,7 @@ namespace {
 // Families of files, in the set's order, loaded on `chip` at 14 pt as the set `identity`; null when the set cannot
 // be drawn.
 std::unique_ptr<TtfFontSet> openFamilies(SimNorFlash& chip, const std::vector<MemoryFile*>& families, int& busy,
-                                         const uint8_t* identity = kIdentitySet) {
+                                         const uint8_t* identity = kIdentitySet, bool* failedForNow = nullptr) {
   auto set = std::make_unique<TtfFontSet>(chip);
   std::vector<std::array<ttf::FileSource, 4>> sources(families.size());
   for (size_t f = 0; f < families.size(); ++f) {
@@ -1241,10 +1538,10 @@ std::unique_ptr<TtfFontSet> openFamilies(SimNorFlash& chip, const std::vector<Me
     }
   }
   static_assert(sizeof(std::array<ttf::FileSource, 4>) == sizeof(TtfFontSet::Files), "one family's files");
-  if (!set->load(reinterpret_cast<const TtfFontSet::Files*>(sources.data()), static_cast<uint8_t>(families.size()),
-                 identity, [&busy] { ++busy; })) {
-    return nullptr;
-  }
+  const bool loaded = set->load(reinterpret_cast<const TtfFontSet::Files*>(sources.data()),
+                                static_cast<uint8_t>(families.size()), identity, [&busy] { ++busy; });
+  if (failedForNow) *failedForNow = set->failedForNow();
+  if (!loaded) return nullptr;
   for (uint8_t f = 0; f < families.size(); ++f) {
     if (!set->font(f)->setBodySize(14)) return nullptr;
   }
@@ -1825,4 +2122,936 @@ TEST_F(TtfFontSetTest, AnSdModeMissMakesItsPageCacheWhereItMakesTheScratchBlock)
   for (MemoryFile& file : files) file.reads = 0;
   expectDrawnAs(reference(files[kRegular].bytes, 'g', 14), *set->font(0), kRegular, set->font(0)->glyph(kRegular, 'g'));
   EXPECT_GT(files[kRegular].reads, 0u);
+}
+
+// --- OpenType CFF families ---
+
+TEST_F(TtfFontTest, AnOtfFamilyDrawsInFlashMode) {
+  files[kRegular].bytes = readFont("OpenDyslexic/OpenDyslexic-Regular.otf");
+  for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  for (const uint32_t cp : {uint32_t{'A'}, uint32_t{'g'}, uint32_t{'W'}, uint32_t{' '}}) {
+    expectDrawnAs(reference(files[kRegular].bytes, cp, 14), *font, kRegular, font->glyph(kRegular, cp));
+  }
+  // OpenDyslexic's one kern lookup widens "!" and its like before a space: 160 units, 4.6 px at 14 pt.
+  EXPECT_GT(font->kerning(kRegular, '!', ' '), 0);
+  EXPECT_EQ(0, font->kerning(kRegular, 'A', 'B'));
+}
+
+TEST_F(TtfFontTest, ACjkCffFamilyDrawsInFlashMode) {
+  files[kRegular].bytes = readFixture("NotoSansJP-CffFlat.otf");
+  for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+  ASSERT_FALSE(files[kRegular].bytes.empty());
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  for (const uint32_t cp : {uint32_t{0x6F22} /* kanji */, uint32_t{0x3042} /* hiragana a */}) {
+    const EpdGlyph* glyph = font->glyph(kRegular, cp);
+    ASSERT_NE(nullptr, glyph) << cp;
+    EXPECT_GT(glyph->dataLength, 0u) << cp;
+    expectDrawnAs(reference(files[kRegular].bytes, cp, 14), *font, kRegular, glyph);
+  }
+}
+
+// --- OpenType CFF families in SD mode: the CFF table rebuilt in the style block, the charstrings on the card ---
+
+namespace {
+
+// A CFF fixture padded to the 24 pages of kSdOnlyBytes, which nothing reads past its tables: too large for flash mode
+// there, while its tables are not.
+std::vector<uint8_t> tooLargeForFlashMode(const std::string& fixture) {
+  std::vector<uint8_t> font = readFixture(fixture);
+  EXPECT_FALSE(font.empty()) << fixture;
+  font.resize(kSdOnlyBytes);
+  return font;
+}
+
+// Every codepoint the font maps to a glyph, below U+10000.
+std::vector<uint32_t> mappedCodepoints(const std::vector<uint8_t>& font) {
+  FontBytes bytes(font.data(), static_cast<uint32_t>(font.size()));
+  ttf::Face face;
+  EXPECT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(bytes, &face));
+  std::vector<uint32_t> codepoints;
+  for (uint32_t cp = 0x20; cp < 0x10000; ++cp) {
+    if (ttf::glyphIndex(bytes, face, cp) != 0) codepoints.push_back(cp);
+  }
+  return codepoints;
+}
+
+// The CharStrings INDEX's data in the file: what an SD-mode CFF style reads from the card.
+std::pair<uint32_t, uint32_t> charStringData(const std::vector<uint8_t>& font) {
+  FontBytes bytes(font.data(), static_cast<uint32_t>(font.size()));
+  ttf::Face face;
+  EXPECT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(bytes, &face));
+  return {face.cff.charStrings.dataStart, face.cff.charStrings.end};
+}
+
+}  // namespace
+
+TEST_F(TtfFontTest, ACffFamilyMakesRoomAndDrawsEveryGlyphAfterIt) {
+  // The store makes room for a CFF family as for a TrueType one: the drawn glyphs are kept, nothing is wiped, and
+  // every glyph drawn before, kept or dropped, draws as FreeType's afterwards.
+  files[kRegular].bytes = readFixture("NotoSansJP-CffFlat.otf");
+  for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+  flash.setFreePages(16);
+  const TtfFontSet::StoreEvents before = TtfFontSet::storeEvents();
+  const auto font = open(kIdentityA, TtfFont::kMaxPointSize);
+  ASSERT_NE(nullptr, font);
+  const std::vector<uint32_t> cps = mappedCodepoints(files[kRegular].bytes);
+  size_t i = 0;
+  for (; i < cps.size() && !font->ringMode(); ++i) {
+    font->glyph(kRegular, cps[i]);
+    const TtfFontSet::Stats stats = font.set->stats();
+    if (stats.segments - stats.freeSegments >= 2) break;
+  }
+  ASSERT_FALSE(font->ringMode());
+  ASSERT_GE(font.set->stats().segments - font.set->stats().freeSegments, 2u) << i << " of " << cps.size();
+  ASSERT_TRUE(font.set->markFull());
+  for (size_t k = 0; k < 8; ++k) font->glyph(kRegular, cps[k]);  // drawn while full: counted, kept by the reclaim
+  EXPECT_TRUE(font->ringMode());
+  ASSERT_TRUE(font.set->makeRoom(FlashGlyphStore::Budget::Open));
+  EXPECT_FALSE(font->ringMode());
+  EXPECT_EQ(before.rooms + 1, TtfFontSet::storeEvents().rooms);
+  EXPECT_EQ(before.wipes, TtfFontSet::storeEvents().wipes);
+  for (size_t k = 0; k <= i && k < cps.size(); ++k) {
+    expectDrawnAs(reference(files[kRegular].bytes, cps[k], TtfFont::kMaxPointSize), *font, kRegular,
+                  font->glyph(kRegular, cps[k]));
+    if (HasFailure()) return;
+  }
+}
+
+TEST_F(TtfFontSetTest, ACffFamilyDrawsInSdMode) {
+  MemoryFile serif[4];
+  serif[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  SimNorFlash chip{kSdOnlyBytes};
+  const auto set = openFamilies(chip, {serif}, busy);
+  ASSERT_NE(nullptr, set);
+  TtfFont& font = *set->font(0);
+  ASSERT_TRUE(font.readsCard());
+  // A batch of new glyphs reads only their charstrings from the card, each once, in file order: at most a page for
+  // each, and the one the last of them runs into.
+  const char* const kana =
+      "\xE3\x81\x82\xE3\x81\x84\xE3\x81\x86\xE3\x81\x88\xE3\x81\x8A\xE3\x81\x8B\xE3\x81\x8D"
+      "\xE3\x81\x8F\xE3\x81\x91\xE3\x81\x93";  // あいうえおかきくけこ
+  const uint32_t before = set->sdPageReads();
+  font.prefetch(kRegular, kana);
+  EXPECT_EQ(10u, font.renders());
+  EXPECT_LE(set->sdPageReads() - before, 10u + 1u);
+  EXPECT_GT(set->sdPageReads(), before);
+  // Every glyph of the fixture as flash mode draws it.
+  const std::vector<uint32_t> codepoints = mappedCodepoints(serif[kRegular].bytes);
+  ASSERT_GT(codepoints.size(), 250u);
+  for (const uint32_t cp : codepoints) {
+    expectDrawnAs(reference(serif[kRegular].bytes, cp, 14), font, kRegular, font.glyph(kRegular, cp));
+    if (HasFailure()) return;
+  }
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontSetTest, ACardReadErrorInACffCharStringDrawsTheGlyphAsMissingAndAsksAgain) {
+  MemoryFile serif[4];
+  serif[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  SimNorFlash chip{kSdOnlyBytes};
+  const auto set = openFamilies(chip, {serif}, busy);
+  ASSERT_NE(nullptr, set);
+  TtfFont& font = *set->font(0);
+  ASSERT_TRUE(font.readsCard());
+  // The charstring is the one read the card serves: a failed read must draw nothing, neither from the bytes of an
+  // earlier window nor with a status of Ok, and so commit nothing to the glyph store.
+  const std::vector<uint32_t> codepoints = mappedCodepoints(serif[kRegular].bytes);
+  ASSERT_GT(codepoints.size(), 250u);
+  serif[kRegular].failReads = true;
+  for (size_t i = 0; i < 20; ++i) {
+    const uint32_t cp = codepoints[i * 7];
+    EXPECT_EQ(nullptr, font.glyph(kRegular, cp)) << "U+" << std::hex << cp;  // transient: not marked as missing
+  }
+  const uint32_t renders = font.renders();
+  serif[kRegular].failReads = false;
+  for (size_t i = 0; i < 20; ++i) {
+    const uint32_t cp = codepoints[i * 7];
+    expectDrawnAs(reference(serif[kRegular].bytes, cp, 14), font, kRegular, font.glyph(kRegular, cp));
+    if (HasFailure()) return;
+  }
+  EXPECT_GT(font.renders(), renders);  // each was drawn now, none had been
+  EXPECT_FALSE(set->ringMode());
+}
+
+TEST_F(TtfFontSetTest, ASubroutinizedCffKeepsItsSubroutinesInTheBlock) {
+  MemoryFile serif[4];
+  serif[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-Cff.otf");
+  SimNorFlash chip{kSdOnlyBytes};
+  const auto set = openFamilies(chip, {serif}, busy);
+  ASSERT_NE(nullptr, set);
+  ASSERT_TRUE(set->font(0)->readsCard());
+  // From now on the card serves only the charstring data, in the 512-byte pages the cache reads: the global and
+  // local subroutines, the font DICTs and everything else a glyph needs come from the block.
+  const auto [dataStart, dataEnd] = charStringData(serif[kRegular].bytes);
+  constexpr uint32_t kCachePage = ttf::SdPageCache::kPageBytes;
+  serif[kRegular].readsFrom = dataStart / kCachePage * kCachePage;
+  serif[kRegular].readsTo = (dataEnd + kCachePage - 1) / kCachePage * kCachePage;
+  serif[kRegular].reads = 0;
+  for (const uint32_t cp : mappedCodepoints(serif[kRegular].bytes)) {
+    expectDrawnAs(reference(serif[kRegular].bytes, cp, 14), *set->font(0), kRegular, set->font(0)->glyph(kRegular, cp));
+    if (HasFailure()) return;
+  }
+  EXPECT_GT(serif[kRegular].reads, 0u);
+}
+
+TEST_F(TtfFontSetTest, AChangedOtfFileIsInstalledOver) {
+  MemoryFile cjk[4];
+  cjk[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  SimNorFlash chip{kSdOnlyBytes};
+  ASSERT_NE(nullptr, openFamilies(chip, {cjk}, busy));
+  EXPECT_EQ(1, busy);
+  constexpr uint32_t kKanji = 0x6F22;
+  // The same file in another directory: its stamp changed.
+  cjk[kRegular].stamp ^= 1;
+  auto set = openFamilies(chip, {cjk}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(2, busy);
+  ASSERT_TRUE(set->font(0)->readsCard());
+  expectDrawnAs(reference(cjk[kRegular].bytes, kKanji, 14), *set->font(0), kRegular,
+                set->font(0)->glyph(kRegular, kKanji));
+  set.reset();
+  // Another font rewritten in its place, at the same size and time: its table directory tells it apart.
+  cjk[kRegular].bytes = tooLargeForFlashMode("NotoSansJP-CffFlat.otf");
+  set = openFamilies(chip, {cjk}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(3, busy);
+  expectDrawnAs(reference(cjk[kRegular].bytes, kKanji, 14), *set->font(0), kRegular,
+                set->font(0)->glyph(kRegular, kKanji));
+  set.reset();
+  ASSERT_NE(nullptr, openFamilies(chip, {cjk}, busy));
+  EXPECT_EQ(3, busy);  // and kept from then on
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontSetTest, AFamilyOfTrueTypeAndCffStylesDrawsEachFromItsOwnOutlines) {
+  MemoryFile mixed[4];
+  mixed[kRegular].bytes = readFont("Bookerly/Bookerly-Regular.ttf");
+  mixed[kBold].bytes = readFont("OpenDyslexic/OpenDyslexic-Bold.otf");
+  const auto expectEachStylesOwn = [&](TtfFontSet& set) {
+    TtfFont& font = *set.font(0);
+    for (const uint32_t cp : {uint32_t{'A'}, uint32_t{'g'}, uint32_t{'W'}}) {
+      const Reference regular = reference(mixed[kRegular].bytes, cp, 14);
+      const Reference bold = reference(mixed[kBold].bytes, cp, 14);
+      ASSERT_NE(regular.bitmap, bold.bitmap) << cp;
+      expectDrawnAs(regular, font, kRegular, font.glyph(kRegular, cp));
+      expectDrawnAs(bold, font, kBold, font.glyph(kBold, cp));
+    }
+  };
+  {
+    // Flash mode: both files whole.
+    const auto set = openFamilies(flash, {mixed}, busy);
+    ASSERT_NE(nullptr, set);
+    EXPECT_FALSE(set->font(0)->readsCard());
+    expectEachStylesOwn(*set);
+  }
+  // SD mode: the bold file too large for flash mode on 24 pages; each style's outlines read from its own file.
+  mixed[kBold].bytes.resize(kSdOnlyBytes);
+  SimNorFlash chip{kSdOnlyBytes};
+  const auto set = openFamilies(chip, {mixed}, busy);
+  ASSERT_NE(nullptr, set);
+  ASSERT_TRUE(set->font(0)->readsCard());
+  mixed[kRegular].reads = 0;
+  mixed[kBold].reads = 0;
+  expectEachStylesOwn(*set);
+  EXPECT_GT(mixed[kRegular].reads, 0u);
+  EXPECT_GT(mixed[kBold].reads, 0u);
+  expectWrittenOnce(chip);
+}
+
+// --- SD mode: a failure for now (no memory, a card read) is never a reason to install ---
+
+TEST_F(TtfFontSetTest, APlanWithoutMemoryAtTheOpenInstallsNothing) {
+  MemoryFile cjk[4];
+  cjk[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  SimNorFlash chip{kSdOnlyBytes};
+  ASSERT_NE(nullptr, openFamilies(chip, {cjk}, busy));
+  const uint32_t erases = chip.totalSectorErases();
+  // The open checks the file against its block through a plan, whose page cache the heap cannot hold this once: the
+  // load fails for now, and the store stays as it is.
+  refuseNextObjectBytes = ttf::CffBlock::planBytes();
+  bool forNow = false;
+  EXPECT_EQ(nullptr, openFamilies(chip, {cjk}, busy, kIdentitySet, &forNow));
+  EXPECT_TRUE(forNow);
+  EXPECT_EQ(1, busy);
+  EXPECT_EQ(erases, chip.totalSectorErases());
+  // With the memory back, the next load draws from the store as installed.
+  const auto set = openFamilies(chip, {cjk}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(1, busy);
+  expectDrawnAs(reference(cjk[kRegular].bytes, 0x6F22, 14), *set->font(0), kRegular,
+                set->font(0)->glyph(kRegular, 0x6F22));
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontSetTest, ACardReadErrorAtTheOpenInstallsNothing) {
+  // A CFF file whose CFF table cannot be read past its first sector, and a TrueType family whose files cannot be read
+  // at all: neither load installs, both fail for now, and both draw once the card reads again.
+  MemoryFile cjk[4];
+  cjk[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  SimNorFlash cffChip{kSdOnlyBytes};
+  ASSERT_NE(nullptr, openFamilies(cffChip, {cjk}, busy));
+  SimNorFlash trueTypeChip{kSdOnlyBytes};
+  ASSERT_NE(nullptr, openFamilies(trueTypeChip, {files}, busy));
+  ASSERT_EQ(2, busy);
+  const uint32_t cffErases = cffChip.totalSectorErases();
+  const uint32_t trueTypeErases = trueTypeChip.totalSectorErases();
+  cjk[kRegular].readsTo = ttf::SdPageCache::kPageBytes;
+  for (MemoryFile& file : files) file.failReads = true;
+  bool forNow = false;
+  EXPECT_EQ(nullptr, openFamilies(cffChip, {cjk}, busy, kIdentitySet, &forNow));
+  EXPECT_TRUE(forNow);
+  forNow = false;
+  EXPECT_EQ(nullptr, openFamilies(trueTypeChip, {files}, busy, kIdentitySet, &forNow));
+  EXPECT_TRUE(forNow);
+  EXPECT_EQ(2, busy);
+  EXPECT_EQ(cffErases, cffChip.totalSectorErases());
+  EXPECT_EQ(trueTypeErases, trueTypeChip.totalSectorErases());
+  cjk[kRegular].readsTo = UINT32_MAX;
+  for (MemoryFile& file : files) file.failReads = false;
+  const auto cff = openFamilies(cffChip, {cjk}, busy);
+  const auto trueType = openFamilies(trueTypeChip, {files}, busy);
+  ASSERT_NE(nullptr, cff);
+  ASSERT_NE(nullptr, trueType);
+  EXPECT_EQ(2, busy);
+  expectDrawnAs(reference(cjk[kRegular].bytes, 0x6F22, 14), *cff->font(0), kRegular,
+                cff->font(0)->glyph(kRegular, 0x6F22));
+  expectDrawnAs(reference(files[kItalic].bytes, 'q', 14), *trueType->font(0), kItalic,
+                trueType->font(0)->glyph(kItalic, 'q'));
+  expectWrittenOnce(cffChip);
+  expectWrittenOnce(trueTypeChip);
+}
+
+TEST_F(TtfFontSetTest, AKeptBlockThatCannotBeReadForNowIsNotErased) {
+  // The file moved (its stamp changed), so the set is installed again; the block it would keep cannot be compared
+  // this once, its DICT INDEXes made without the memory for their page cache. The install stops before any erase.
+  MemoryFile cjk[4];
+  cjk[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  SimNorFlash chip{kSdOnlyBytes};
+  ASSERT_NE(nullptr, openFamilies(chip, {cjk}, busy));
+  const uint32_t erases = chip.totalSectorErases();
+  cjk[kRegular].stamp ^= 1;
+  refuseNextObjectBytes = ttf::CffBlock::readBytes();
+  bool forNow = false;
+  EXPECT_EQ(nullptr, openFamilies(chip, {cjk}, busy, kIdentitySet, &forNow));
+  EXPECT_TRUE(forNow);
+  EXPECT_EQ(erases, chip.totalSectorErases());
+  // Back where it was, the file finds the store as it was installed.
+  cjk[kRegular].stamp ^= 1;
+  const int installs = busy;
+  const auto set = openFamilies(chip, {cjk}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(installs, busy);
+  EXPECT_EQ(erases, chip.totalSectorErases());
+  expectDrawnAs(reference(cjk[kRegular].bytes, 0x3042, 14), *set->font(0), kRegular,
+                set->font(0)->glyph(kRegular, 0x3042));
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontSetTest, APlanWithoutMemoryInAnInstallErasesNothingAndAsksForNoFewerFamilies) {
+  // The first install of a family only SD mode fits: its block's plan finds no memory this once. Not "too large":
+  // the load fails for now, nothing erased, and the manager loads the same set again later rather than fewer
+  // families.
+  MemoryFile cjk[4];
+  cjk[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  SimNorFlash chip{kSdOnlyBytes};
+  refuseNextObjectBytes = ttf::CffBlock::planBytes();
+  bool forNow = false;
+  EXPECT_EQ(nullptr, openFamilies(chip, {cjk}, busy, kIdentitySet, &forNow));
+  EXPECT_TRUE(forNow);
+  EXPECT_EQ(0, busy);
+  EXPECT_EQ(0u, chip.totalSectorErases());
+  // A set that is too large is not a failure for now.
+  SimNorFlash small{2 * kPage};
+  forNow = true;
+  EXPECT_EQ(nullptr, openFamilies(small, {cjk}, busy, kIdentitySet, &forNow));
+  EXPECT_FALSE(forNow);
+  const auto set = openFamilies(chip, {cjk}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_TRUE(set->font(0)->readsCard());
+  expectWrittenOnce(chip);
+}
+
+TEST_F(TtfFontTest, AProbeThatCannotPlanForNowLeavesACffFamilyListed) {
+  // Discovery plans a CFF file's block to learn its size. Without the memory this once, or with the card failing
+  // past the file's first sector, the size is not known: the family stays listed for its load to decide, rather than
+  // be dropped as too large until the next scan.
+  MemoryFile cjk;
+  cjk.bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  const uint32_t fileBytes = static_cast<uint32_t>(cjk.bytes.size());
+  refuseNextObjectBytes = ttf::CffBlock::planBytes();
+  const ttf::FileProbe withoutMemory = ttf::probeFile(cjk.source());
+  cjk.readsTo = ttf::SdPageCache::kPageBytes;
+  const ttf::FileProbe withoutReads = ttf::probeFile(cjk.source());
+  for (const ttf::FileProbe& probe : {withoutMemory, withoutReads}) {
+    EXPECT_EQ(0, probe.style);
+    EXPECT_EQ(ttf::kSdBytesUnknown, probe.sdBytes);
+    EXPECT_TRUE(ttf::fitsStore(&fileBytes, &probe.sdBytes, 1, kSdOnlyBytes, 24));
+  }
+  // A file too large for flash mode that can have no block is not listed; one that can, by its size.
+  const uint32_t none = UINT32_MAX;
+  EXPECT_FALSE(ttf::fitsStore(&fileBytes, &none, 1, kSdOnlyBytes, 24));
+  cjk.readsTo = UINT32_MAX;
+  const uint32_t planned = ttf::probeFile(cjk.source()).sdBytes;
+  EXPECT_LT(planned, 64u * 1024);
+  EXPECT_TRUE(ttf::fitsStore(&fileBytes, &planned, 1, kSdOnlyBytes, 24));
+}
+
+TEST_F(TtfFontSetTest, AnInstallWithoutMemoryForItsHeaderErasesNothingAndAsksForNoFewerFamilies) {
+  // The set is installed; another set (Bookerly alone) is to be installed over it. The store's header, made as the
+  // install begins, finds no memory this once: armed by onBusy, after the plan and before the install begins, so no
+  // other header (the open's, of the same size) takes the refusal. Nothing is erased yet, so the load fails for now.
+  ASSERT_NE(nullptr, openSet());
+  const uint32_t erases = flash.totalSectorErases();
+  TtfFontSet other(flash);
+  ttf::FileSource sources[4];
+  for (int s = 0; s < 4; ++s) sources[s] = files[s].source();
+  const auto beforeTheInstall = [this] {
+    ++busy;
+    refuseNextObjectBytes = sizeof(glyphstore::Header);
+  };
+  EXPECT_FALSE(other.load(&sources, 1, kIdentityA, beforeTheInstall));
+  EXPECT_TRUE(other.failedForNow());
+  EXPECT_EQ(2, busy);
+  EXPECT_EQ(0u, refuseNextObjectBytes);  // taken by the install's header
+  EXPECT_EQ(erases, flash.totalSectorErases());
+  // The store still holds the first set, whole.
+  ttf::FileSource both[2][4];
+  for (int s = 0; s < 4; ++s) {
+    both[0][s] = files[s].source();
+    if (!accent[s].bytes.empty()) both[1][s] = accent[s].source();
+  }
+  TtfFontSet same(flash);
+  EXPECT_TRUE(same.load(both, 2, kIdentitySet, {}, TtfFontSet::Install::Never));
+}
+
+namespace {
+
+// The first yield between install chunks makes the next nothrow new of a store header fail, once: past the install's
+// own header, that is the open's after the install.
+bool headerRefusalArmed = false;
+void refuseTheNextHeaderOnce() {
+  if (headerRefusalArmed) return;
+  headerRefusalArmed = true;
+  refuseNextObjectBytes = sizeof(glyphstore::Header);
+}
+
+}  // namespace
+
+TEST_F(TtfFontSetTest, AnOpenWithoutMemoryAfterAReinstallFailsForNowAndTheNextLoadOpensTheSet) {
+  MemoryFile cjk[4];
+  cjk[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  SimNorFlash chip{kSdOnlyBytes};
+  ASSERT_NE(nullptr, openFamilies(chip, {cjk}, busy));
+  // Another font written in its place: installed again. Its block differs from its first bytes on, so the kept check
+  // yields nothing; the first copied chunk arms the refusal, and the open after the install finds no memory for the
+  // header. The set is installed whole: the load fails for now, and the next opens it.
+  cjk[kRegular].bytes = tooLargeForFlashMode("NotoSansJP-CffFlat.otf");
+  headerRefusalArmed = false;
+  TtfFont::Hooks hooks;
+  hooks.yield = &refuseTheNextHeaderOnce;
+  TtfFont::setHooks(hooks);
+  bool forNow = false;
+  EXPECT_EQ(nullptr, openFamilies(chip, {cjk}, busy, kIdentitySet, &forNow));
+  TtfFont::setHooks({});
+  EXPECT_TRUE(forNow);
+  EXPECT_EQ(2, busy);
+  EXPECT_TRUE(headerRefusalArmed);
+  EXPECT_EQ(0u, refuseNextObjectBytes);  // taken by the open's header
+  const auto set = openFamilies(chip, {cjk}, busy);
+  ASSERT_NE(nullptr, set);
+  EXPECT_EQ(2, busy);
+  expectDrawnAs(reference(cjk[kRegular].bytes, 0x6F22, 14), *set->font(0), kRegular,
+                set->font(0)->glyph(kRegular, 0x6F22));
+  expectWrittenOnce(chip);
+}
+
+// --- Synthetic bold (spec 7.1) ---
+
+TEST_F(TtfFontTest, ARegularOnlyFamilyDrawsBoldEmboldenedItalicSlantedAndBoldItalicBoth) {
+  for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  const bool bolds[4] = {false, true, false, true};
+  const bool slants[4] = {false, false, true, true};
+  for (uint8_t s = 0; s < 4; ++s) {
+    EXPECT_EQ(bolds[s], font->emboldened(s)) << int{s};
+    EXPECT_EQ(slants[s], font->slanted(s)) << int{s};
+  }
+  ASSERT_NE(nullptr, font->font(kBold));
+  ASSERT_NE(nullptr, font->font(kItalic));
+  ASSERT_NE(nullptr, font->font(kBoldItalic));
+  EXPECT_NE(font->font(kRegular), font->font(kBold));
+  EXPECT_NE(font->font(kRegular), font->font(kItalic));
+  EXPECT_NE(font->font(kRegular), font->font(kBoldItalic));
+  const std::vector<uint8_t>& regular = files[kRegular].bytes;
+  expectDrawnAs(emboldened(regular, 'W', 14), *font, kBold, font->glyph(kBold, 'W'));
+  expectDrawnAs(slanted(regular, 'W', 14), *font, kItalic, font->glyph(kItalic, 'W'));
+  expectDrawnAs(slanted(regular, 'W', 14, true), *font, kBoldItalic, font->glyph(kBoldItalic, 'W'));
+  expectDrawnAs(reference(regular, 'W', 14), *font, kRegular, font->glyph(kRegular, 'W'));
+}
+
+/// The style choice, run again on a family that has made it (a reopen after an install does not, today; a future one
+/// might).
+struct TtfFontTestAccess {
+  static void chooseAgain(TtfFont& font) { font.chooseSynthetic(); }
+  static bool draws(const TtfFont& font, const uint8_t style) { return font.draws(style); }
+  static uint8_t source(const TtfFont& font, const uint8_t style) { return font.source_[style]; }
+};
+
+TEST_F(TtfFontTest, ChoosingSyntheticStylesAgainGivesTheSameChoice) {
+  // A regular-only family: the first choice sets source_[2] to the regular, and a second must not read that as an
+  // italic file (draws(2)), or bold italic would be drawn from file slot 0xFF.
+  for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  uint8_t before[4];
+  for (uint8_t s = 0; s < 4; ++s) before[s] = TtfFontTestAccess::source(*font, s);
+  TtfFontTestAccess::chooseAgain(*font);
+  for (uint8_t s = 0; s < 4; ++s) EXPECT_EQ(before[s], TtfFontTestAccess::source(*font, s)) << int{s};
+  EXPECT_TRUE(TtfFontTestAccess::draws(*font, kBoldItalic));
+  EXPECT_TRUE(font->emboldened(kBoldItalic));
+  EXPECT_TRUE(font->slanted(kBoldItalic));
+}
+
+TEST_F(TtfFontTest, BoldItalicIsEmboldenedFromTheItalicWhenThereIsOne) {
+  files[kBold].bytes.clear();
+  files[kBoldItalic].bytes.clear();
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  EXPECT_TRUE(font->synthetic(kBold));
+  EXPECT_TRUE(font->synthetic(kBoldItalic));
+  for (uint8_t s = 0; s < 4; ++s) EXPECT_FALSE(font->slanted(s)) << int{s};
+  expectDrawnAs(emboldened(files[kRegular].bytes, 'W', 14), *font, kBold, font->glyph(kBold, 'W'));
+  expectDrawnAs(emboldened(files[kItalic].bytes, 'W', 14), *font, kBoldItalic, font->glyph(kBoldItalic, 'W'));
+  expectDrawnAs(reference(files[kItalic].bytes, 'W', 14), *font, kItalic, font->glyph(kItalic, 'W'));
+}
+
+TEST_F(TtfFontTest, AFamilyWithABoldFileIsNeverEmboldened) {
+  // Spec 7.1's first row, and 7.4's fourth: a bold file and no bold italic one, with a real italic. synthetic() covers
+  // the slant too, so nothing is drawn from another style's file. Bold italic falls back as it always has, to the real
+  // upright Bold.
+  files[kBoldItalic].bytes.clear();
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  for (uint8_t style = 0; style < 4; ++style) EXPECT_FALSE(font->synthetic(style)) << int{style};
+  EXPECT_EQ(nullptr, font->font(kBoldItalic));
+  const EpdFontFamily family(font->font(0), font->font(1), font->font(2), font->font(3));
+  const EpdGlyphRef boldItalic = family.getGlyph('W', EpdFontFamily::BOLD_ITALIC);
+  ASSERT_TRUE(boldItalic);
+  EXPECT_EQ(reference(files[kBold].bytes, 'W', 14).metrics.advanceX, boldItalic.advanceX);
+}
+
+TEST_F(TtfFontTest, ABoldFileServingAsTheRegularIsNotEmboldenedAgain) {
+  // Spec 7.1's second row: a family of one bold file, which assignStyles moves to the regular slot. Its face says bold.
+  const std::pair<const char*, const uint8_t*> families[] = {{"Bookerly/Bookerly-Bold.ttf", kIdentityA},
+                                                             {"OpenDyslexic/OpenDyslexic-Bold.otf", kIdentityB}};
+  for (const auto& [name, identity] : families) {
+    files[kRegular].bytes = readFont(name);
+    for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+    const auto font = open(identity);
+    ASSERT_NE(nullptr, font) << name;
+    EXPECT_FALSE(font->synthetic(kBold)) << name;
+    EXPECT_EQ(nullptr, font->font(kBold)) << name;
+    EXPECT_TRUE(font->slanted(kItalic)) << name;
+    // Bold only by its face: bold italic falls back to the slanted face (EpdFontFamily::getFont).
+    EXPECT_EQ(nullptr, font->font(kBoldItalic)) << name;
+  }
+}
+
+TEST_F(TtfFontTest, ASingleHeavyFaceIsNotEmboldened) {
+  // Spec 7.1's third row: Inter Bold's head.macStyle says regular; its OS/2 weight, 700, says bold.
+  files[kRegular].bytes = readFont("Inter/Inter-Bold.ttf");
+  for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  EXPECT_FALSE(font->synthetic(kBold));
+  EXPECT_EQ(nullptr, font->font(kBold));
+}
+
+TEST_F(TtfFontTest, AnOtfFamilyIsEmboldenedAsATrueTypeOne) {
+  files[kRegular].bytes = readFont("OpenDyslexic/OpenDyslexic-Regular.otf");
+  files[kItalic].bytes = readFont("OpenDyslexic/OpenDyslexic-Italic.otf");
+  files[kBold].bytes.clear();
+  files[kBoldItalic].bytes.clear();
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  EXPECT_TRUE(font->synthetic(kBold));
+  EXPECT_TRUE(font->synthetic(kBoldItalic));
+  expectDrawnAs(emboldened(files[kRegular].bytes, 'W', 14), *font, kBold, font->glyph(kBold, 'W'));
+  expectDrawnAs(emboldened(files[kItalic].bytes, 'W', 14), *font, kBoldItalic, font->glyph(kBoldItalic, 'W'));
+  // OpenDyslexic's one kern lookup widens "!" and its like before a space: the bold kerns by the regular's pairs.
+  const int8_t widened = font->kerning(kRegular, '!', ' ');
+  EXPECT_GT(widened, 0);
+  EXPECT_EQ(widened, font->kerning(kBold, '!', ' '));
+}
+
+TEST_F(TtfFontTest, SyntheticBoldIsStoredUnderTheBoldStyleAndServesTheNextBoot) {
+  for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+  {
+    const auto font = open();
+    ASSERT_NE(nullptr, font);
+    ASSERT_NE(nullptr, font->glyph(kBold, 'W'));
+    ASSERT_NE(nullptr, font->glyph(kRegular, 'W'));
+    EXPECT_EQ(2u, font->renders());  // the regular's key is not the bold's
+  }
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  expectDrawnAs(emboldened(files[kRegular].bytes, 'W', 14), *font, kBold, font->glyph(kBold, 'W'));
+  expectDrawnAs(reference(files[kRegular].bytes, 'W', 14), *font, kRegular, font->glyph(kRegular, 'W'));
+  EXPECT_EQ(0u, font->renders());
+  EXPECT_EQ(2u, font->storeHits());
+}
+
+TEST_F(TtfFontTest, SyntheticBoldKernsAsItsFileAndIsWiderByItsStrength) {
+  useBuiltFont(kernedBoxes());
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  EXPECT_TRUE(font->synthetic(kBold));
+  // Every glyph is the same amount wider: the bold kerns by the regular's pairs, looked up once for both.
+  EXPECT_EQ(-47, font->kerning(kRegular, 'A', 'B'));
+  EXPECT_EQ(-47, font->kerning(kBold, 'A', 'B'));
+  EXPECT_EQ(1u, font->kernLookups());
+  const EpdGlyph* regular = font->glyph(kRegular, 'A');
+  const EpdGlyph* bold = font->glyph(kBold, 'A');
+  ASSERT_NE(nullptr, regular);
+  ASSERT_NE(nullptr, bold);
+  // The advance grows by the strength, from 26.6 to 12.4 as FreeType rounds it; the left side bearing and the
+  // baseline stay (spec 7.2).
+  EXPECT_EQ(regular->advanceX + (ttf::emboldenStrength(ttf::ppemFromPoints(14)).x + 2) / 4, bold->advanceX);
+  EXPECT_EQ(regular->left, bold->left);
+  EXPECT_EQ(regular->top, bold->top);
+}
+
+TEST_F(TtfFontTest, SyntheticBoldDrawsEveryGlyphAtTheLargestNativeSize) {
+  // An emboldened glyph is wider than its file's plan allows for: the scratch block has room for the growth at the
+  // largest size, for TrueType outlines and CFF ones.
+  const auto expectEveryGlyph = [this](const std::vector<uint8_t>& regular, const uint8_t* identity,
+                                       const uint32_t first, const uint32_t last, const size_t atLeast) {
+    files[kRegular].bytes = regular;
+    for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+    const auto font = open(identity);
+    ASSERT_NE(nullptr, font);
+    const EpdFont* fonts[4] = {};
+    ASSERT_TRUE(font->nativeFonts(font->maxNativePx(), fonts));
+    ASSERT_NE(nullptr, fonts[kBold]);
+    // What the regular draws at this size: a glyph past the output region's 4 KB is not drawn in any style. A
+    // default-ignorable codepoint draws as nothing in every style.
+    std::vector<uint32_t> codepoints;
+    for (const uint32_t cp : mappedCodepoints(regular)) {
+      if (cp >= first && cp <= last && !utf8IsDefaultIgnorable(cp) && nativeGlyph(fonts[kRegular], cp)) {
+        codepoints.push_back(cp);
+      }
+    }
+    ASSERT_GT(codepoints.size(), atLeast);
+    const uint32_t ppem = px(font->maxNativePx());
+    for (const uint32_t cp : codepoints) {
+      expectDrawnAs(emboldenedAt(regular, cp, ppem), *font, kBold, nativeGlyph(fonts[kBold], cp));
+      if (HasFailure()) {
+        ADD_FAILURE() << "U+" << std::hex << cp;
+        return;
+      }
+    }
+  };
+  expectEveryGlyph(readFont("Bookerly/Bookerly-Regular.ttf"), kIdentityA, 0x21, 0x24F, 300);
+  if (HasFailure()) return;
+  expectEveryGlyph(readFixture("NotoSansJP-CffFlat.otf"), kIdentityB, 0x20, 0xFFFF, 250);
+}
+
+TEST_F(TtfFontTest, SyntheticBoldDrawsAGlyphTooLargeToEmboldenUnemboldened) {
+  // At the largest native size the 4 KB output region decides: a glyph that fits as the regular does not once
+  // emboldened. It is drawn unemboldened, as before synthetic bold, never marked missing (spec 7.2).
+  for (int s = 1; s < 4; ++s) files[s].bytes.clear();  // Bookerly Regular: its largest native size is 119 px
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  ASSERT_TRUE(font->synthetic(kBold));
+  const uint32_t ppem = px(font->maxNativePx());
+  const std::vector<uint8_t>& regular = files[kRegular].bytes;
+  // The glyphs that load but do not embolden, found with the rasterizer on its own.
+  std::vector<uint32_t> tooLarge;
+  {
+    FontBytes bytes(regular.data(), static_cast<uint32_t>(regular.size()));
+    ttf::Face face;
+    ASSERT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(bytes, &face));
+    ttf::Rasterizer rasterizer;
+    ASSERT_TRUE(rasterizer.allocate(
+        ttf::planScratch(face, static_cast<uint32_t>(TtfFont::kMaxNativePx) << 6, ttf::kPoolBytesFlash, true)));
+    for (const uint32_t cp : mappedCodepoints(regular)) {
+      EpdGlyph metrics{};
+      if (rasterizer.load(bytes, face, ttf::glyphIndex(bytes, face, cp), ppem, &metrics) != ttf::Status::Ok) continue;
+      if (rasterizer.embolden(ttf::emboldenStrength(ppem), &metrics) == ttf::Status::Unsupported) {
+        tooLarge.push_back(cp);
+      }
+    }
+  }
+  ASSERT_FALSE(tooLarge.empty());
+  const EpdFont* fonts[4] = {};
+  ASSERT_TRUE(font->nativeFonts(font->maxNativePx(), fonts));
+  ASSERT_NE(nullptr, fonts[kBold]);
+  for (const uint32_t cp : tooLarge) {
+    // The bold style's glyph is the regular weight's, drawn under the bold key.
+    expectDrawnAs(referenceAt(regular, cp, ppem), *font, kBold, nativeGlyph(fonts[kBold], cp));
+    if (HasFailure()) {
+      ADD_FAILURE() << "U+" << std::hex << cp;
+      return;
+    }
+  }
+  // A glyph that fits is still emboldened.
+  expectDrawnAs(emboldenedAt(regular, 'W', ppem), *font, kBold, nativeGlyph(fonts[kBold], 'W'));
+}
+
+// What a synthetic style costs: its fonts in each size, as a style with a file costs, and no file of its own.
+TEST_F(TtfFontTest, ASyntheticStyleCostsItsFontsAndNoFile) {
+  Font built = kernedBoxes();
+  built.extraTables.clear();  // no kerning: nothing else a style holds differs between them
+  const uint8_t* const identities[] = {kIdentityA, kIdentityB};
+  size_t family[2] = {};
+  size_t native[2] = {};
+  for (int i = 0; i < 2; ++i) {
+    built.macStyle = i == 0 ? 3 : 0;  // declared bold italic, then regular: the second draws three styles synthetically
+    useBuiltFont(built);
+    ASSERT_NE(nullptr, open(identities[i]));  // installed: what an install or the first mapping keeps is not counted
+    const size_t before = heapBytesHeld;
+    const auto font = open(identities[i]);
+    ASSERT_NE(nullptr, font);
+    family[i] = heapBytesHeld - before;
+    const EpdFont* fonts[4] = {};
+    const size_t beforeNative = heapBytesHeld;
+    ASSERT_TRUE(font->nativeFonts(40, fonts));
+    native[i] = heapBytesHeld - beforeNative;
+    EXPECT_EQ(i == 1, fonts[kBold] != nullptr);
+    EXPECT_EQ(i == 1, fonts[kItalic] != nullptr);
+  }
+  std::printf("[  heap    ] a one-file family without and with synthetic styles: %zu/%zu B; a native size: %zu/%zu B\n",
+              family[0], family[1], native[0], native[1]);
+  EXPECT_GT(family[1], family[0]);
+  EXPECT_LT(family[1] - family[0], 768u);
+  EXPECT_GT(native[1], native[0]);
+  EXPECT_LT(native[1] - native[0], 768u);
+}
+
+TEST_F(TtfFontSetTest, SyntheticBoldInSdModeIsDrawnFromTheRegularFile) {
+  // A synthetic style has no style block of its own: it maps its file's, and reads that file's outlines from the card.
+  MemoryFile serif[4];
+  serif[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  SimNorFlash chip{kSdOnlyBytes};
+  const auto set = openFamilies(chip, {serif}, busy);
+  ASSERT_NE(nullptr, set);
+  TtfFont& font = *set->font(0);
+  ASSERT_TRUE(font.readsCard());
+  ASSERT_TRUE(font.synthetic(kBold));
+  const char* const kana =
+      "\xE3\x81\x82\xE3\x81\x84\xE3\x81\x86\xE3\x81\x88\xE3\x81\x8A\xE3\x81\x8B\xE3\x81\x8D"
+      "\xE3\x81\x8F\xE3\x81\x91\xE3\x81\x93";  // あいうえおかきくけこ
+  const uint32_t before = set->sdPageReads();
+  font.prefetch(kBold, kana);
+  EXPECT_EQ(10u, font.renders());
+  EXPECT_GT(set->sdPageReads(), before);
+  EXPECT_LE(set->sdPageReads() - before, 10u + 1u);  // a page for each charstring, and the one the last runs into
+  for (const uint32_t cp : {0x3042u, 0x3044u, 0x3046u, 0x3048u, 0x304Au, 0x304Bu, 0x304Du, 0x304Fu, 0x3051u, 0x3053u}) {
+    expectDrawnAs(emboldened(serif[kRegular].bytes, cp, 14), font, kBold, font.glyph(kBold, cp));
+  }
+  EXPECT_EQ(10u, font.renders());  // stored by the batch
+  expectDrawnAs(reference(serif[kRegular].bytes, 0x3042, 14), font, kRegular, font.glyph(kRegular, 0x3042));
+  expectWrittenOnce(chip);
+}
+
+// --- Synthetic italic (spec 7.4) ---
+
+TEST_F(TtfFontTest, ARegularAndBoldFamilyDrawsItalicAndBoldItalicSlanted) {
+  files[kItalic].bytes.clear();
+  files[kBoldItalic].bytes.clear();
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  const bool slants[4] = {false, false, true, true};
+  for (uint8_t s = 0; s < 4; ++s) {
+    EXPECT_FALSE(font->emboldened(s)) << int{s};
+    EXPECT_EQ(slants[s], font->slanted(s)) << int{s};
+  }
+  expectDrawnAs(slanted(files[kRegular].bytes, 'W', 14), *font, kItalic, font->glyph(kItalic, 'W'));
+  expectDrawnAs(slanted(files[kBold].bytes, 'W', 14), *font, kBoldItalic, font->glyph(kBoldItalic, 'W'));
+  // The family's fallback for a style it lacks serves the advance of the file it falls back to.
+  const EpdFontFamily family(font->font(kRegular), font->font(kBold), font->font(kItalic), font->font(kBoldItalic));
+  const EpdGlyphRef italic = family.getGlyph('W', EpdFontFamily::ITALIC);
+  const EpdGlyphRef boldItalic = family.getGlyph('W', EpdFontFamily::BOLD_ITALIC);
+  ASSERT_TRUE(italic);
+  ASSERT_TRUE(boldItalic);
+  EXPECT_EQ(reference(files[kRegular].bytes, 'W', 14).metrics.advanceX, italic.advanceX);
+  EXPECT_EQ(reference(files[kBold].bytes, 'W', 14).metrics.advanceX, boldItalic.advanceX);
+}
+
+TEST_F(TtfFontTest, AnItalicFileServingAsTheRegularIsNotSlantedAgain) {
+  const char* const names[] = {"Bookerly/Bookerly-Italic.ttf", "NotoSans/NotoSans-Italic.ttf"};
+  const uint8_t* const identities[] = {kIdentityA, kIdentityB};
+  for (int i = 0; i < 2; ++i) {
+    files[kRegular].bytes = readFont(names[i]);
+    for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+    const auto font = open(identities[i]);
+    ASSERT_NE(nullptr, font) << names[i];
+    EXPECT_FALSE(font->slanted(kItalic)) << names[i];
+    EXPECT_EQ(nullptr, font->font(kItalic)) << names[i];
+    EXPECT_TRUE(font->emboldened(kBold)) << names[i];
+    EXPECT_TRUE(font->emboldened(kBoldItalic)) << names[i];
+    expectDrawnAs(emboldened(files[kRegular].bytes, 'W', 14), *font, kBoldItalic, font->glyph(kBoldItalic, 'W'));
+  }
+}
+
+TEST_F(TtfFontTest, AFaceWhoseFsSelectionSaysItalicOrObliqueIsNotSlanted) {
+  const uint16_t selections[] = {1, static_cast<uint16_t>(1u << 9)};
+  const uint8_t* const identities[] = {kIdentityA, kIdentityB};
+  for (int i = 0; i < 2; ++i) {
+    Font built = kernedBoxes();
+    built.os2 = true;
+    built.os2Selection = selections[i];
+    useBuiltFont(built);
+    const auto font = open(identities[i]);
+    ASSERT_NE(nullptr, font) << i;
+    EXPECT_FALSE(font->slanted(kItalic)) << i;
+    EXPECT_EQ(nullptr, font->font(kItalic)) << i;
+    EXPECT_TRUE(font->emboldened(kBold)) << i;
+  }
+}
+
+TEST_F(TtfFontTest, AFaceFlaggedItalicOnlyByItsAngleIsNotSlanted) {
+  // OpenDyslexic Italic: macStyle 0, fsSelection 0xC0, post.italicAngle -15.
+  files[kRegular].bytes = readFont("OpenDyslexic/OpenDyslexic-Italic.otf");
+  for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  EXPECT_FALSE(font->slanted(kItalic));
+  EXPECT_EQ(nullptr, font->font(kItalic));
+  EXPECT_TRUE(font->emboldened(kBold));
+  EXPECT_TRUE(font->emboldened(kBoldItalic));
+  expectDrawnAs(emboldened(files[kRegular].bytes, 'W', 14), *font, kBoldItalic, font->glyph(kBoldItalic, 'W'));
+}
+
+TEST_F(TtfFontTest, SyntheticItalicIsStoredUnderTheItalicStyleAndServesTheNextBoot) {
+  for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+  {
+    const auto font = open();
+    ASSERT_NE(nullptr, font);
+    ASSERT_NE(nullptr, font->glyph(kRegular, 'W'));
+    ASSERT_NE(nullptr, font->glyph(kItalic, 'W'));
+    ASSERT_NE(nullptr, font->glyph(kBoldItalic, 'W'));
+    EXPECT_EQ(3u, font->renders());  // each style has its own key
+  }
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  expectDrawnAs(reference(files[kRegular].bytes, 'W', 14), *font, kRegular, font->glyph(kRegular, 'W'));
+  expectDrawnAs(slanted(files[kRegular].bytes, 'W', 14), *font, kItalic, font->glyph(kItalic, 'W'));
+  expectDrawnAs(slanted(files[kRegular].bytes, 'W', 14, true), *font, kBoldItalic, font->glyph(kBoldItalic, 'W'));
+  EXPECT_EQ(0u, font->renders());
+  EXPECT_EQ(3u, font->storeHits());
+}
+
+TEST_F(TtfFontTest, SyntheticItalicKernsAsItsFileAndKeepsItsAdvance) {
+  useBuiltFont(kernedBoxes());
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  EXPECT_TRUE(font->slanted(kItalic));
+  EXPECT_EQ(-47, font->kerning(kRegular, 'A', 'B'));
+  EXPECT_EQ(-47, font->kerning(kItalic, 'A', 'B'));
+  EXPECT_EQ(1u, font->kernLookups());
+  const EpdGlyph* regular = font->glyph(kRegular, 'A');
+  const EpdGlyph* italic = font->glyph(kItalic, 'A');
+  const EpdGlyph* bold = font->glyph(kBold, 'A');
+  const EpdGlyph* boldItalic = font->glyph(kBoldItalic, 'A');
+  ASSERT_NE(nullptr, regular);
+  ASSERT_NE(nullptr, italic);
+  ASSERT_NE(nullptr, bold);
+  ASSERT_NE(nullptr, boldItalic);
+  EXPECT_EQ(regular->advanceX, italic->advanceX);
+  EXPECT_EQ(regular->left, italic->left);
+  EXPECT_EQ(regular->top, italic->top);
+  EXPECT_EQ(regular->height, italic->height);
+  EXPECT_GT(italic->width, regular->width);
+  EXPECT_EQ(bold->advanceX, boldItalic->advanceX);
+}
+
+TEST_F(TtfFontTest, SyntheticItalicAtTheLargestNativeSizeIsSlantedWhereItFitsAndUprightWhereItDoesNot) {
+  const auto expectEveryGlyph = [this](const std::vector<uint8_t>& regular, const uint8_t* identity,
+                                       const uint32_t first, const uint32_t last, const size_t atLeast,
+                                       const bool bothKinds) {
+    files[kRegular].bytes = regular;
+    for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+    const auto font = open(identity);
+    ASSERT_NE(nullptr, font);
+    const EpdFont* fonts[4] = {};
+    ASSERT_TRUE(font->nativeFonts(font->maxNativePx(), fonts));
+    ASSERT_NE(nullptr, fonts[kItalic]);
+    ASSERT_NE(nullptr, fonts[kBoldItalic]);
+    std::vector<uint32_t> codepoints;
+    for (const uint32_t cp : mappedCodepoints(regular)) {
+      if (cp >= first && cp <= last && !utf8IsDefaultIgnorable(cp) && nativeGlyph(fonts[kRegular], cp)) {
+        codepoints.push_back(cp);
+      }
+    }
+    ASSERT_GT(codepoints.size(), atLeast);
+    const uint32_t ppem = px(font->maxNativePx());
+    size_t leaningItalic = 0;
+    size_t uprightItalic = 0;
+    for (const uint32_t cp : codepoints) {
+      bool leaning = false;
+      expectDrawnAs(drawnAt(regular, cp, ppem, false, &leaning), *font, kItalic, nativeGlyph(fonts[kItalic], cp));
+      (leaning ? leaningItalic : uprightItalic) += 1;
+      bool leaningBold = false;
+      expectDrawnAs(drawnAt(regular, cp, ppem, true, &leaningBold), *font, kBoldItalic,
+                    nativeGlyph(fonts[kBoldItalic], cp));
+      if (HasFailure()) {
+        ADD_FAILURE() << "U+" << std::hex << cp;
+        return;
+      }
+    }
+    if (bothKinds) {
+      EXPECT_GT(leaningItalic, 0u);
+      EXPECT_GT(uprightItalic, 0u);  // the 4 KB cap decides
+    }
+  };
+  expectEveryGlyph(readFont("Bookerly/Bookerly-Regular.ttf"), kIdentityA, 0x21, 0x24F, 300, true);
+  if (HasFailure()) return;
+  expectEveryGlyph(readFixture("NotoSansJP-CffFlat.otf"), kIdentityB, 0x20, 0xFFFF, 250, false);
+}
+
+TEST_F(TtfFontTest, AnItalicGlyphReachingTooFarLeftOnceSlantedIsDrawnUpright) {
+  Font built;
+  built.glyphs.resize(3);
+  built.glyphs[0].contours = {rect(0, 0, 400, 600)};
+  built.glyphs[1].contours = {rect(50, 0, 450, 700)};
+  built.glyphs[2].contours = {rect(-2200, -2000, -2100, 0)};
+  built.cmap = {{'A', 1}, {'J', 2}};
+  useBuiltFont(built);
+  const auto font = open(kIdentityA, TtfFont::kMaxPointSize);
+  ASSERT_NE(nullptr, font);
+  ASSERT_TRUE(font->slanted(kItalic));
+  // Upright 'J' reaches 120 px left of the pen; slanted, its foot reaches 143 px, past int8.
+  expectDrawnAs(reference(files[kRegular].bytes, 'J', TtfFont::kMaxPointSize), *font, kItalic,
+                font->glyph(kItalic, 'J'));
+  expectDrawnAs(slanted(files[kRegular].bytes, 'A', TtfFont::kMaxPointSize), *font, kItalic, font->glyph(kItalic, 'A'));
+}
+
+TEST_F(TtfFontSetTest, SyntheticItalicInSdModeIsDrawnFromTheRegularFile) {
+  MemoryFile serif[4];
+  serif[kRegular].bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
+  SimNorFlash chip{kSdOnlyBytes};
+  const auto set = openFamilies(chip, {serif}, busy);
+  ASSERT_NE(nullptr, set);
+  TtfFont& font = *set->font(0);
+  ASSERT_TRUE(font.readsCard());
+  ASSERT_TRUE(font.slanted(kItalic));
+  const char* const kana =
+      "\xE3\x81\x82\xE3\x81\x84\xE3\x81\x86\xE3\x81\x88\xE3\x81\x8A\xE3\x81\x8B\xE3\x81\x8D"
+      "\xE3\x81\x8F\xE3\x81\x91\xE3\x81\x93";  // the ten kana
+  const uint32_t before = set->sdPageReads();
+  font.prefetch(kItalic, kana);
+  EXPECT_EQ(10u, font.renders());
+  EXPECT_GT(set->sdPageReads(), before);
+  EXPECT_LE(set->sdPageReads() - before, 10u + 1u);
+  for (const uint32_t cp : {0x3042u, 0x3044u, 0x3046u, 0x3048u, 0x304Au, 0x304Bu, 0x304Du, 0x304Fu, 0x3051u, 0x3053u}) {
+    expectDrawnAs(slanted(serif[kRegular].bytes, cp, 14), font, kItalic, font.glyph(kItalic, cp));
+  }
+  EXPECT_EQ(10u, font.renders());  // stored by the batch
+  expectDrawnAs(reference(serif[kRegular].bytes, 0x3042, 14), font, kRegular, font.glyph(kRegular, 0x3042));
+  expectWrittenOnce(chip);
 }

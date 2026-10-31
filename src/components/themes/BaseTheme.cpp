@@ -19,6 +19,7 @@
 #include "components/BookProgressPresentation.h"
 #include "components/UITheme.h"
 #include "components/themes/CardTextFit.h"
+#include "components/themes/HeaderLayout.h"
 #include "fontIds.h"
 
 // Internal constants
@@ -330,13 +331,16 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
     renderer.drawCenteredText(UI_12_FONT_ID, rect.y + 5, truncatedTitle.c_str(), true, EpdFontFamily::BOLD);
   }
 
-  if (subtitle) {
+  // The band has no room for a second line, so the subtitle goes in the line kept for it at the foot
+  // of the content, right-aligned under the header's right edge. A screen whose header has one takes
+  // its body from UITheme::getBodyRect() with the same subtitle, which ends above that line.
+  if (HeaderLayout::hasText(subtitle)) {
     auto truncatedSubtitle = renderer.truncatedText(
         SMALL_FONT_ID, subtitle, rect.width - BaseMetrics::values.contentSidePadding * 2, EpdFontFamily::REGULAR);
     int truncatedSubtitleWidth = renderer.getTextWidth(SMALL_FONT_ID, truncatedSubtitle.c_str());
     renderer.drawText(SMALL_FONT_ID,
-                      rect.x + rect.width - BaseMetrics::values.contentSidePadding - truncatedSubtitleWidth, subtitleY,
-                      truncatedSubtitle.c_str(), true);
+                      rect.x + rect.width - BaseMetrics::values.contentSidePadding - truncatedSubtitleWidth,
+                      UITheme::getSubtitleLine(renderer).y, truncatedSubtitle.c_str(), true);
   }
 }
 
@@ -748,7 +752,7 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
                               const int paddingBottom, const bool isStarred, const std::string& printedPageLabel,
                               const bool fillMargin, const bool pageCountApproximate,
                               const std::vector<float>& chapterMarkers,
-                              const bool lowMemory) const {
+                              const bool lowMemory, const bool fillFromRight) const {
   if (!SETTINGS.showStatusBar) {
     return;
   }
@@ -776,6 +780,7 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     if (barHeight > 0) {
       const int progress = statusBarProgressPercent(bookProgress);
       const int barWidth = progressBarMaxWidth * progress / 100;
+      const int barX = fillFromRight ? barMarginLeft + progressBarMaxWidth - barWidth : barMarginLeft;
       const int extraBottom = (!statusAtTop && fillMargin) ? orientedMarginBottom - 1 : 0;
       const int totalBarHeight = barHeight + extraBottom;
       const int y = statusAtTop ? orientedMarginTop + paddingBottom
@@ -786,25 +791,26 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
 
       // Draw the filled portion of the progress bar
       if (barWidth > 0) {
-        renderer.fillRect(barMarginLeft, y, barWidth, totalBarHeight, true);
+        renderer.fillRect(barX, y, barWidth, totalBarHeight, true);
       }
 
       // Draw chapter markers for book progress bar
       if (!chapterMarkers.empty()) {
         int lastMarkerX = -100;
         for (const float markerProg : chapterMarkers) {
-          const int markerX = barMarginLeft + static_cast<int>(std::round(progressBarMaxWidth * markerProg));
+          const int offset = static_cast<int>(std::round(progressBarMaxWidth * markerProg));
+          const int markerX = fillFromRight ? barMarginLeft + progressBarMaxWidth - offset : barMarginLeft + offset;
           if (markerX <= barMarginLeft || markerX >= barMarginLeft + progressBarMaxWidth) {
             continue;
           }
           // Avoid clustering: ensure at least 2px of spacing between adjacent markers
-          if (markerX - lastMarkerX < 3) {
+          if (std::abs(markerX - lastMarkerX) < 3) {
             continue;
           }
           lastMarkerX = markerX;
 
           // Inverted color (white) when progress bar has passed the chapter, black otherwise
-          const bool passed = (markerX < barMarginLeft + barWidth);
+          const bool passed = fillFromRight ? markerX >= barX : markerX < barMarginLeft + barWidth;
           const bool markerColor = !passed;
           renderer.fillRect(markerX, y, 1, totalBarHeight, markerColor);
         }

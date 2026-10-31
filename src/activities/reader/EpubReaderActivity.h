@@ -8,13 +8,16 @@
 #define ENABLE_BENCHMARKS 0
 #endif
 
+#include <BookCache.h>
 #include <BuildArena.h>
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
+#include <Epub/LineSpacing.h>
 #include <Epub/Section.h>
 
 #include <array>
 #include <atomic>
+#include <optional>
 
 #include "BookmarkStore.h"
 #include "ChapterPageSpan.h"
@@ -262,8 +265,11 @@ class EpubReaderActivity final : public Activity {
   //   - a deliberate jump to a possibly-uncached section (chapter/percent/footnote): those sites
   //     arm a HALF refresh override via ReaderUtils::enforceExitFullRefresh(), which the indexing
   //     popup would otherwise consume, leaving the content page a FAST diff. buildSection detects
-  //     that pending override (renderer.hasRefreshOverridePending()) and arms the post-popup HALF
-  //     too, so the override paints the popup and the flag paints the content — both clean.
+  //     that pending override (renderer.hasRefreshOverridePending()) and moves it to the content
+  //     page: the popup paints FAST and the flag paints the content HALF. The X3 leaves a jump's
+  //     HALF on its popup.
+  // A HALF still pending at the first section entry, the one the reader was launched with (a book
+  // open, or main.cpp after a boot), moves to the content page on every board, the X3 included.
   bool coldOpenHalfRefreshArmed_ = true;
   // True after the "Indexing..." popup is drawn for a build flagged as a dramatic transition (see
   // coldOpenHalfRefreshArmed_), until the first real page replaces it on screen. That first page is
@@ -606,7 +612,9 @@ class EpubReaderActivity final : public Activity {
   bool usePreRenderedBuffer = false;
   // Progress save is posted by render() and consumed by loop() to keep SD I/O off the render task.
   // render() writes spineIndex/page/pageCount then sets pending with release semantics so loop()
-  // sees a coherent snapshot when it observes pending==true via acquire.
+  // sees a coherent snapshot when it observes pending==true via acquire. An exit that skips loop() writes it instead
+  // (writeOwedPageSave), and a restart's save of the live page drops it; every one of them, loop() included, holds
+  // the RenderLock, so one write per post.
   struct PendingProgressSave {
     std::atomic<bool> pending{false};
     int spineIndex = 0;
@@ -623,6 +631,9 @@ class EpubReaderActivity final : public Activity {
   // them", not "the render lock covers them". A unique_ptr assigned from one task while another
   // moves it is a double-free waiting to happen.
   std::atomic<bool> finishedBookLaunchPending_{false};
+  // The book on screen turns its pages right to left (spec 5.5): stored by renderContents from the section's flow
+  // context, read by loop() for the buttons, taps and swipes and by the percent picker and the status bar.
+  std::atomic<bool> pageProgressionRtl_{false};
   // Last valid spine/page/pageCount at book-finish time, stashed for onFinishedBookSyncRequested()
   // — see the SyncPositionOverride comment for why currentSpineIndex/section can't be used there.
   int finishedBookSyncSpineIndex_ = 0;
@@ -641,6 +652,10 @@ class EpubReaderActivity final : public Activity {
   int8_t bookHyphenationOverride = -1;
   int8_t bookFontSizeNormalizationOverride = -1;
   int8_t bookInlineFootnotePreviewsOverride = -1;
+  int8_t bookLineSpacingOverride = -1;
+  int8_t bookVerticalTextOverride = -1;
+  // Whether the book's language is ever set vertically (TypographyProfile::verticalAllowed); read once in onEnter.
+  bool bookVerticalAllowed_ = false;
 
   // Bookmarks (starred pages)
   BookmarkStore bookmarkStore;
@@ -671,6 +686,8 @@ class EpubReaderActivity final : public Activity {
   // the reader had already returned from, which would be worse than none: Back would jump from
   // wherever they had read on to an origin they had already left behind.
   bool linkStackOnDisk_ = false;
+  // Delete Book Cache's answer, set when the reader leaves for it: what onExit() keeps of the folder.
+  std::optional<BookCache::Keep> clearCacheOnExit_;
 
   // --- render() pass dispatch (see RenderPass) ---
   // Opportunistically restore the secondary display buffer if a prior OOM degraded it.
@@ -717,6 +734,9 @@ class EpubReaderActivity final : public Activity {
   // Returns true if the page was displayed (render() should return); false if the fast path
   // could not be taken (load failed / image page) and render() must fall through to Normal.
   bool renderBufferDisplayPass(const RenderLayout& layout);
+  // Stores the section's page direction for the buttons, taps and bar; every pass that draws a page calls it, a
+  // building section included (its flow context answers from the live parser).
+  void pinPageProgression();
   // BuildSection pass: construct/load the section cache for currentSpineIndex and resolve the
   // nav target. Returns true if a section is ready to render; false if render() should return
   // (build failed, finished-book handoff, or a requestUpdate retry was posted).
@@ -783,6 +803,12 @@ class EpubReaderActivity final : public Activity {
   // Serialises SD access against the render task via RenderLock; skips the tick instead of
   // blocking when the render task is busy.
   void stepBackgroundSectionBuild();
+  // One step of making room in the TrueType glyph store (a segment reclaimed or the index rebuilt), under a Try
+  // RenderLock. True when it did work; the tick then yields to the loop.
+  bool stepGlyphStoreRoom();
+  // The gates Background-B and the idle glyph-store step share: a section on screen in the READING phase, background
+  // work not suspended, and no pre-render, pre-rendered page, display refresh or image decode pending.
+  bool lookAheadMayRun() const;
   // The image lane's step; called from stepBackgroundSectionBuild with the RenderLock held. What
   // it found in its window (LaneBeforeBuild::Window): Dirty when it did a page's worth of work this
   // tick (the caller then yields to the loop); Background-B may borrow only on Clean or Closed.
@@ -961,8 +987,11 @@ class EpubReaderActivity final : public Activity {
   // loop()'s idle branch: asks again for an owed minute-tick refresh once the reader has settled.
   void serviceOwedPeriodicRefresh();
   bool maybeRestartForFragmentedHeap(uint32_t freeHeap, uint32_t contigHeap);
-  // What a restart to the reader must save first, since it skips onExit: the position, when it is authoritative,
-  // and the link back stack.
+  // The page save render() posted and loop() has not written yet, written now unless the book is finished: for
+  // onExit() and a restart to the reader when they do not save the live position.
+  void writeOwedPageSave();
+  // What a restart to the reader must save first, since it skips onExit: the position, when it is authoritative (else
+  // a page save still owed), and the link back stack.
   void saveStateForRestart();
   // A layout change mid-session (a per-book override, the memory ladder's fewer families): the section goes, and
   // the next render builds it again at the paragraph (or page) on screen.
@@ -1033,6 +1062,14 @@ class EpubReaderActivity final : public Activity {
                                 int8_t paragraphAlignmentOverride, int8_t textAntiAliasingOverride,
                                 int8_t hyphenationOverride, int8_t fontSizeNormalizationOverride,
                                 int8_t inlineFootnotePreviewsOverride);
+  // The reader menu carries the line spacing and vertical text overrides too; the narrower overload
+  // above forwards here with the book's current values, so a font-size cycle keeps them.
+  void applyBookReaderOverrides(int8_t embeddedStyleOverride, int8_t imageRenderingOverride, int8_t fontFamilyOverride,
+                                const std::string& sdFontFamilyOverride, int8_t fontSizeOverride,
+                                int8_t paragraphAlignmentOverride, int8_t textAntiAliasingOverride,
+                                int8_t hyphenationOverride, int8_t fontSizeNormalizationOverride,
+                                int8_t inlineFootnotePreviewsOverride, int8_t lineSpacingOverride,
+                                int8_t verticalTextOverride);
   void openReaderMenu();
   void openQuickOverrides();
   bool getEffectiveEmbeddedStyle() const;
@@ -1046,7 +1083,16 @@ class EpubReaderActivity final : public Activity {
   // getEffectiveReaderFontId(), and the family it resolved to (a built-in's label or an SD family
   // name) when `familyOut` is given.
   int resolveReaderFont(std::string* familyOut) const;
-  float getEffectiveReaderLineCompression() const;
+  uint8_t getEffectiveLineSpacingStep() const;
+  // The vertical-text request the book's sections are built with: its override, else the setting; Off for a language
+  // that is never set vertically.
+  VerticalText getEffectiveVerticalText() const;
+  LineSpacing getEffectiveLineSpacing() const;
+  // The line spacing `epub` is laid out with at `step` (CrossPointSettings::LINE_COMPRESSION) in body font `fontId` at
+  // `pointSize`: Chinese, Japanese and Korean books by an em pitch, others by a factor on the font's line height. The
+  // reader and the sleep screen's page both take it from here, so both build under one section key.
+  static LineSpacing lineSpacingForBook(uint8_t step, const Epub& epub, int fontId, uint8_t pointSize,
+                                        const GfxRenderer& renderer);
   // Re-point navTarget at the page currently displayed. Must be called after every move of
   // section->currentPage that stays inside the loaded section — see the definition for why.
   void anchorNavTargetToCurrentPage();
@@ -1119,6 +1165,9 @@ class EpubReaderActivity final : public Activity {
   // DISP log now says so out loud.
   void startActivityForResult(std::unique_ptr<Activity>&& activity, ActivityResultHandler resultHandler) override;
   bool isReaderActivity() const override { return true; }
+  bool mirrorsLeftRight() const override {
+    return pageProgressionRtl_.load() && SETTINGS.pageTurnButtons == CrossPointSettings::PAGE_TURN_FOLLOW_BOOK;
+  }
   // Polled by main.cpp's loop without the render lock; see refreshLoopHints().
   bool preventAutoSleep() override;
   // Hold full speed while a section build is in flight. A build only ever runs during reader

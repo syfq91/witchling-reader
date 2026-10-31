@@ -3,6 +3,7 @@
 
 #include <cstdint>
 
+#include "CffBuilder.h"
 #include "TtfBuilder.h"
 #include "TtfFace.h"
 #include "TtfTestUtil.h"
@@ -61,22 +62,56 @@ TEST(TtfFace, ParsesTheTablesAGlyphNeeds) {
   EXPECT_EQ(4, face.cmapFormat);
 }
 
-TEST(TtfFace, CffFontsAndCollectionsAreUnsupported) {
+TEST(TtfFace, CffFontsAreReadAndCollectionsAreUnsupported) {
   Font font = threeGlyphs();
   font.sfntVersion = tagOf("OTTO");
+  CffSpec cff;  // three glyphs, as the TrueType tables have
+  font.extraTables = {{"CFF ", buildCff(cff)}};
   Face face;
-  EXPECT_EQ(FaceStatus::Unsupported, parse(buildFont(font), &face));
+  ASSERT_EQ(FaceStatus::Ok, parse(buildFont(font), &face));
+  EXPECT_EQ(Face::Outlines::Cff, face.outlines);
+  EXPECT_EQ(3, face.numGlyphs);
+  EXPECT_EQ(0u, face.glyf);
+  EXPECT_EQ(0u, face.loca);
+  EXPECT_EQ(1, lookup(buildFont(font), 'A'));
+  font.extraTables.clear();  // 'OTTO' without a CFF table
+  EXPECT_EQ(FaceStatus::Malformed, parse(buildFont(font), &face));
   font.sfntVersion = tagOf("ttcf");
   EXPECT_EQ(FaceStatus::Unsupported, parse(buildFont(font), &face));
   font.sfntVersion = tagOf("true");  // Apple's TrueType tag is fine
-  EXPECT_EQ(FaceStatus::Ok, parse(buildFont(font), &face));
+  ASSERT_EQ(FaceStatus::Ok, parse(buildFont(font), &face));
+  EXPECT_EQ(Face::Outlines::TrueType, face.outlines);
 }
 
-TEST(TtfFace, ABundledCffSourceIsUnsupported) {
-  const std::vector<uint8_t> data = readFont("OpenDyslexic/OpenDyslexic-Regular.otf");
-  ASSERT_FALSE(data.empty());
+TEST(TtfFace, ACff2OnlyFontIsUnsupported) {
+  // Variable OpenType (CFF2) is not read; FreeType reads a CFF2 table before a CFF one, so neither is a font with both.
+  Font font = threeGlyphs();
+  font.sfntVersion = tagOf("OTTO");
+  Bytes cff2 = {2, 0, 5, 0, 0};
+  font.extraTables = {{"CFF2", cff2}};
   Face face;
-  EXPECT_EQ(FaceStatus::Unsupported, parse(data, &face));
+  EXPECT_EQ(FaceStatus::Unsupported, parse(buildFont(font), &face));
+  font.extraTables.push_back({"CFF ", buildCff(CffSpec{})});
+  EXPECT_EQ(FaceStatus::Unsupported, parse(buildFont(font), &face));
+}
+
+TEST(TtfFace, ACffFontTakesAShortMaxp) {
+  // A CFF font's maxp is version 0.5, six bytes: no outline limits.
+  Font font = threeGlyphs();
+  font.sfntVersion = tagOf("OTTO");
+  Bytes maxp(6, 0);
+  set32(maxp, 0, 0x00005000);
+  set16(maxp, 4, 3);
+  font.extraTables = {{"CFF ", buildCff(CffSpec{})}, {"maxp", maxp}};
+  Face face;
+  EXPECT_EQ(FaceStatus::Ok, parse(buildFont(font), &face));
+  set32(maxp, 0, 0x00006000);
+  font.extraTables[1].second = maxp;
+  EXPECT_EQ(FaceStatus::Malformed, parse(buildFont(font), &face));
+  font.sfntVersion = 0x00010000;  // a TrueType font needs version 1.0
+  set32(maxp, 0, 0x00005000);
+  font.extraTables = {{"maxp", maxp}};
+  EXPECT_EQ(FaceStatus::Malformed, parse(buildFont(font), &face));
 }
 
 TEST(TtfFace, BrokenFilesAreMalformed) {
@@ -226,12 +261,6 @@ TEST(TtfFace, HmtxIsReadAsFreeTypeReadsIt) {
   EXPECT_FALSE(bytes.outOfRange());
 }
 
-TEST(TtfFace, PointSizesBecomeFreeTypesPixelsPerEm) {
-  EXPECT_EQ(1600u, ppemFromPoints(12));
-  EXPECT_EQ(1867u, ppemFromPoints(14));
-  EXPECT_EQ(2400u, ppemFromPoints(18));
-}
-
 TEST(TtfFace, AdvancesAreTheConvertersTwelveFour) {
   const Bytes data = buildFont(threeGlyphs());
   FontBytes bytes(data.data(), static_cast<uint32_t>(data.size()));
@@ -286,6 +315,93 @@ TEST(TtfFace, Os2MetricsAreUsedWhereFreeTypeUsesThem) {
   EXPECT_EQ(1100, face.ascender);
   EXPECT_EQ(-400, face.descender);
   EXPECT_EQ(1500, face.height);
+}
+
+TEST(TtfFace, BoldIsMacStyleOrAWeightOf600InEitherOutlineFormat) {
+  // Spec 7.1: read alike from a TrueType face and a CFF one.
+  for (const bool cff : {false, true}) {
+    const auto bold = [cff](const uint16_t macStyle, const bool os2, const uint16_t weight) {
+      Font font = threeGlyphs();
+      if (cff) {
+        font.sfntVersion = tagOf("OTTO");
+        font.extraTables = {{"CFF ", buildCff(CffSpec{})}};
+      }
+      font.macStyle = macStyle;
+      font.os2 = os2;
+      font.weightClass = weight;
+      Face face;
+      EXPECT_EQ(FaceStatus::Ok, parse(buildFont(font), &face));
+      return face.bold;
+    };
+    EXPECT_FALSE(bold(0, false, 400)) << cff;
+    EXPECT_TRUE(bold(1, false, 400)) << cff;
+    EXPECT_FALSE(bold(2, false, 400)) << cff;  // italic
+    EXPECT_FALSE(bold(0, true, 599)) << cff;
+    EXPECT_TRUE(bold(0, true, 600)) << cff;
+  }
+}
+
+namespace {
+
+// A post table: the format at offset 0, the 16.16 italicAngle at 4, zeros after.
+Bytes postTable(const uint32_t format, const int32_t italicAngle, const size_t bytes = 32) {
+  Bytes post(bytes, 0);
+  for (int i = 0; i < 4; ++i) {
+    post[i] = static_cast<uint8_t>(format >> (24 - 8 * i));
+    post[4 + i] = static_cast<uint8_t>(static_cast<uint32_t>(italicAngle) >> (24 - 8 * i));
+  }
+  return post;
+}
+
+bool fileIsItalic(const char* name) {
+  const Bytes data = readFont(name);
+  Face face;
+  EXPECT_EQ(FaceStatus::Ok, parse(data, &face)) << name;
+  return face.italic;
+}
+
+}  // namespace
+
+TEST(TtfFace, ItalicIsMacStyleFsSelectionOrItalicAngleInEitherOutlineFormat) {
+  // Spec 7.4. OS/2 and post are read as FreeType accepts them: one too short (for its version), or a post table
+  // of a format FreeType refuses, counts as missing.
+  for (const bool cff : {false, true}) {
+    const auto italic = [cff](const uint16_t macStyle, const bool os2, const uint16_t fsSelection,
+                              const uint16_t os2Bytes = 78, const Bytes& post = {}) {
+      Font font = threeGlyphs();
+      if (cff) {
+        font.sfntVersion = tagOf("OTTO");
+        font.extraTables = {{"CFF ", buildCff(CffSpec{})}};
+      }
+      if (!post.empty()) font.extraTables.push_back({"post", post});
+      font.macStyle = macStyle;
+      font.os2 = os2;
+      font.os2Selection = fsSelection;
+      font.os2Bytes = os2Bytes;
+      Face face;
+      EXPECT_EQ(FaceStatus::Ok, parse(buildFont(font), &face));
+      return face.italic;
+    };
+    EXPECT_FALSE(italic(0, false, 0)) << cff;
+    EXPECT_TRUE(italic(2, false, 0)) << cff;
+    EXPECT_FALSE(italic(1, false, 0)) << cff;                  // bold
+    EXPECT_TRUE(italic(0, true, 1)) << cff;                    // ITALIC
+    EXPECT_TRUE(italic(0, true, 1u << 9)) << cff;              // OBLIQUE
+    EXPECT_FALSE(italic(0, true, 0x20 | 0x40 | 0x80)) << cff;  // BOLD, REGULAR, USE_TYPO_METRICS
+    EXPECT_FALSE(italic(0, true, 1, 64)) << cff;               // a 64-byte OS/2: missing
+    EXPECT_TRUE(italic(2, true, 0, 64)) << cff;                // macStyle still counts
+    EXPECT_TRUE(italic(0, false, 0, 78, postTable(0x00030000, -15 * 0x10000))) << cff;
+    EXPECT_TRUE(italic(0, false, 0, 78, postTable(0x00020000, 12 * 0x10000, 64))) << cff;  // glyph names follow
+    EXPECT_TRUE(italic(0, false, 0, 78, postTable(0x00010000, -12 * 0x10000))) << cff;     // format 1
+    EXPECT_TRUE(italic(0, false, 0, 78, postTable(0x00025000, -12 * 0x10000))) << cff;     // format 2.5
+    EXPECT_FALSE(italic(0, false, 0, 78, postTable(0x00030000, 0))) << cff;
+    EXPECT_FALSE(italic(0, false, 0, 78, postTable(0x00030000, -15 * 0x10000, 31))) << cff;  // too short
+    EXPECT_FALSE(italic(0, false, 0, 78, postTable(0x00040000, -15 * 0x10000))) << cff;      // format refused
+  }
+  EXPECT_TRUE(fileIsItalic("OpenDyslexic/OpenDyslexic-Italic.otf"));  // by its angle alone
+  EXPECT_FALSE(fileIsItalic("OpenDyslexic/OpenDyslexic-Regular.otf"));
+  EXPECT_TRUE(fileIsItalic("Bookerly/Bookerly-Italic.ttf"));
+  EXPECT_FALSE(fileIsItalic("Bookerly/Bookerly-Regular.ttf"));
 }
 
 TEST(TtfFace, HugeAdvancesNeitherOverflowNorWrap) {

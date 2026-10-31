@@ -19,6 +19,7 @@
 // header separator or a bookmark entry belonging to the preceding header.
 class GlobalBookmarksActivity final : public UiListActivity {
  public:
+  bool drawsBookText() const override { return true; }
   explicit GlobalBookmarksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, ReturnHint restoreHint = {})
       : UiListActivity("GlobalBookmarks", renderer, mappedInput), restoreHint(std::move(restoreHint)) {}
 

@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "ttf/FlashGlyphStore.h"
+
 class EpdFontFamily;
 class GfxRenderer;
 template <typename Family>
@@ -63,6 +65,10 @@ class SdCardFontManager {
   // cannot.
   bool loadTtfFamilies(const SdCardFontFamilyInfo* const* families, uint8_t count, GfxRenderer& renderer,
                        uint8_t targetPtSize, const std::function<void()>& onColdLoad = {});
+  // Loads exactly these TTF families only when the glyph store holds them as a set already, as resumeTtf() does:
+  // nothing is installed, wiped or left out. For screens outside the reader that draw book text.
+  bool openTtfFamiliesReadOnly(const SdCardFontFamilyInfo* const* families, uint8_t count, GfxRenderer& renderer,
+                               uint8_t targetPtSize);
   // True when the TTF families last loaded were asked for as these, in this order, from the same files: a book's
   // family is told from another book's of the same name by its files (SdCardFontFamilyInfo::filesKey).
   bool ttfFamiliesLoaded(const SdCardFontFamilyInfo* const* families, uint8_t count) const;
@@ -82,11 +88,20 @@ class SdCardFontManager {
   // Unload everything, unregister from renderer.
   void unloadAll(GfxRenderer& renderer);
 
+  // Told the TrueType family the UI may borrow glyphs from, the loaded set's first with CJK or else its first, when a
+  // set loads or its body size is set, and nullptr before the set's native sizes go (CjkUiFonts::setReaderFont).
+  void setUiFontHook(void (*hook)(TtfFont* font)) { uiFontHook_ = hook; }
+
   // The loaded TTF families' body size: for each, a new font ID drawn natively at pointSize, never scaled.
   // False when no TTF family is loaded, the size is out of range, or an ID collides.
   bool setTtfBodySize(GfxRenderer& renderer, uint8_t pointSize);
-  // Runs the TTF glyph store's pending wipe (it filled up), calling onBusy first. Only at book open.
-  void wipeTtfIfPending(const std::function<void()>& onBusy);
+  // Makes room in the loaded set's glyph store (TtfFontSet::makeRoom): Open at book and chapter open (it runs a pending
+  // wipe, left by a failed write or a full face table, first), Idle in idle time. Only under RenderLock. True when it
+  // did work.
+  bool makeTtfRoom(FlashGlyphStore::Budget budget, const std::function<void()>& onBusy);
+  // An Idle step would do work in the glyph store: room to make, or its use counts to take (TtfFontSet::needsIdleRoom).
+  // Only under RenderLock.
+  bool ttfNeedsIdleRoom() const;
   bool ttfLoaded() const { return ttfSet_ != nullptr; }
   // The loaded set, for the serial test API (CMD:TTF): nullptr when none is loaded or it is suspended. Only under
   // RenderLock, as every use of the set.
@@ -162,6 +177,7 @@ class SdCardFontManager {
   // The loaded TTF set closed and its font IDs out of the renderer: unloadAll() and suspendTtf(). The families'
   // names, font IDs and windows stay.
   void closeTtfSet(GfxRenderer& renderer);
+  void lendUiFont();
   void dropSizeAlias(GfxRenderer& renderer);
   void registerTtfFace(GfxRenderer& renderer, uint8_t family, int fontId);
   int32_t pickNativeBase(const GfxRenderer& renderer, uint32_t identityHash, const char* familyName) const;
@@ -170,6 +186,7 @@ class SdCardFontManager {
   static std::optional<ResolvedFont<EpdFontFamily>> resolveTtfSize(void* ctx, int fontId);
 
   GfxRenderer* renderer_ = nullptr;
+  void (*uiFontHook_)(TtfFont* font) = nullptr;
   std::string loadedFamilyName_;
   uint8_t loadedPointSize_ = 0;
   std::vector<LoadedFont> loaded_;

@@ -13,7 +13,7 @@
   7. table         CJK text in a table cell
   8. table budget  a cell of 289 CJK characters, one token each: charged per token (about 14 KB), the
                    row passes the 12 KB row budget and flows as text
-                   (CjkTable.ALongCjkCellIsChargedPerToken). The row degrades before the run that
+                   (the golden lays its first character out in a LINE, not a cell). The row degrades before the run that
                    would cross the budget is added, so the cell's word lists never double to 512
                    entries (the heap baseline guards it)
   9. chunk seams   the SAX parser hands text over in 256-byte pieces that may cut a character in two:
@@ -26,6 +26,20 @@
  11. dense digits  600 codepoints of Han characters alternating with digits: every digit is a token
                    of its own, and the parser's 32-token run flush counts it, so the paragraph's
                    word lists keep their 128-entry steady state (the heap baseline guards it)
+ 12. ruby markup   <ruby>: mono-ruby, a group with <rb>, <rp> dropped, a pretty-printed paragraph (the source
+                   of RubyLayout.APrettyPrintedRubyLaysOutWithoutSpaces), an <rt> with no new base, an <rt>
+                   outside <ruby>, <rtc>
+ 13. ruby at edges 煙<rt>けむり</rt> between kana every 27 characters for 30 lines: at 28 ems a line the group
+                   lands in every column, the first and last included
+ 14. longer ruby   a reading longer than its base: between Han characters (the base spreads), 御台所 with
+                   おだいどころ, two adjacent groups between kana
+ 15. ruby in table <ruby> in a table cell
+ 16. emphasis dots text-emphasis-style spans: sesame, dot and open circle by class (plain, -epub- and -webkit-
+                   forms) and by style=, a filled double-circle, a span that wraps over several lines, and a span
+                   over 。 and 「」 (the marks skip the punctuation)
+ 17. cjk-latin     a quarter em between Han or kana and Latin letters or digits, and none next to brackets,
+                   full-width letters, half-width katakana or a source space (spec 5.4)
+ 18. push-in       a line that fits only pushed in (spec 5.3)
 
 Each case paragraph opens with an indented first line (CSS text-indent), so the rule checker tells a
 paragraph's first line from a line the layout broke.
@@ -43,6 +57,9 @@ CSS = """body { margin: 0; padding: 0 }
 p { margin: 0; text-indent: 1em }
 h2 { margin: 1em 0 0 0; text-indent: 0; font-size: 1em }
 td { padding: 0 }
+.sesame { -epub-text-emphasis-style: sesame }
+.dot { text-emphasis-style: dot }
+.circle { -webkit-text-emphasis-style: open circle }
 """
 
 KINSOKU = (
@@ -83,6 +100,64 @@ QUOTE_SEAMS = (
 # Case 11: 300 Han characters, each followed by a digit, in one paragraph of 600 codepoints.
 DENSE_DIGITS = "".join(f"{c}{i % 10}" for i, c in enumerate((LONG_RUN * 4)[:300]))
 
+# Case 12: the fourth paragraph is RubyLayout's kPrettyPrinted, verbatim.
+RUBY_MARKUP = (
+    "<p><ruby>漢<rp>（</rp><rt>かん</rt><rp>）</rp>字<rp>（</rp><rt>じ</rt><rp>）</rp></ruby>は"
+    "<ruby>難<rt>むずか</rt></ruby>しいです。</p>\n"
+    "<p><ruby><rb>吾輩</rb><rt>わがはい</rt></ruby>は猫である。名前はまだ無い。</p>\n"
+    "<p>これは<ruby>漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>です。</p>\n"
+    "<p>\n"
+    "  <ruby>\n"
+    "    漢<rp>（</rp><rt>かん</rt><rp>）</rp>\n"
+    "    字<rp>（</rp><rt>じ</rt><rp>）</rp>\n"
+    "  </ruby>は<ruby>難<rt>むずか</rt></ruby>しいですが、<ruby>\n"
+    "    面<rt>おも</rt>\n"
+    "    白<rt>しろ</rt>\n"
+    "  </ruby>いです。\n"
+    "</p>\n"
+    "<p><ruby>漢<rt>かん</rt><rt>じ</rt></ruby>の読みが基底字より多い。</p>\n"
+    "<p>前<rt>まえ</rt>後に読みだけが現れる。</p>\n"
+    "<p><ruby>漢<rtc><rt>かん</rt></rtc></ruby>の複合ルビ。</p>"
+)
+
+# Case 13: 26 kana, then a ruby base: a group every 27 characters, 30 times.
+RUBY_EDGES = "<p>" + "".join("あ" * 26 + "<ruby>煙<rt>けむり</rt></ruby>" for _ in range(30)) + "</p>"
+
+# Case 14: a reading longer than its Han base, 御台所, and two adjacent groups between kana.
+RUBY_LONGER = (
+    "<p>それは<ruby>日<rt>にちじょうさはんじ</rt></ruby><ruby>本<rt>ほんとう</rt></ruby>の話だ。</p>\n"
+    "<p>奥様は<ruby>御台所<rt>おだいどころ</rt></ruby>へ行った。</p>\n"
+    "<p>これは<ruby>東<rt>とう</rt></ruby><ruby>京<rt>きょう</rt></ruby>という町です。</p>"
+)
+
+RUBY_TABLE = (
+    "<table><tr><td><p>表のセルの<ruby>漢字<rt>かんじ</rt></ruby>にも<ruby>振<rt>ふ</rt></ruby>り仮名がつく。"
+    "<ruby>長<rt>ながい</rt></ruby>い文章も折り返される。</p></td><td><p>短い</p></td></tr></table>"
+)
+
+# Case 16: emphasis marks by class, by style=, across a line break and over punctuation.
+EMPHASIS = (
+    "<p>これは<span class=\"sesame\">傍点</span>の例で、<span class=\"dot\">黒丸</span>と"
+    "<span class=\"circle\">白丸</span>と<span style=\"text-emphasis-style: filled double-circle\">二重丸</span>"
+    "も使える。</p>\n"
+    "<p>長い強調は行をまたぐ。<span class=\"sesame\">吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。"
+    "何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。</span>その後は普通の文字。</p>\n"
+    "<p>句読点は<span class=\"dot\">「強調」の中。そして、続く。</span>印は付かない。</p>"
+)
+
+# Case 17: the CJK-Latin gap where it belongs (kana and Latin, digits and Han, a hyphenated Latin word), and the
+# boundaries that take none: brackets, full-width letters, half-width katakana, the source's own spaces.
+CJK_LATIN = (
+    "<p>新しいiPhoneは2026年10月に出た。USB-C端子が付き、価格は約15万円だ。</p>\n"
+    "<p>「Python」と書いた本の第3章とChapter 4、ＡＢＣ全角、abcｱｲｳ半角。漢字 Latin 漢字は空白のまま。</p>"
+)
+
+# Case 18: push-in. After its 1 em indent the first line holds 27 characters, the whole 28 em text width (the pipeline
+# harness lays out 460 px in 16 px ems: 448). The second line holds 27 characters, 、 and the 。 glued to its last
+# character: 29 ems at full width, 28 with 、 at its Japanese minimum (half) and the line-end 。 at half, so the greedy
+# breaker (hyphenation on) pushes it in.
+PUSH_IN = LONG_RUN[:32] + "、" + LONG_RUN[32:54] + "。" + LONG_RUN[54:]
+
 CASES = [
     ("1. kinsoku", f"<p>{KINSOKU}</p>\n<p>{KINSOKU}</p>"),
     (
@@ -117,6 +192,13 @@ CASES = [
     ("9. chunk seams", f"<p>{SEAM_AFTER_1}</p>\n<p>{SEAM_AFTER_2}</p>\n<p>{SEAM_BEFORE}</p>"),
     ("10. quote seams", QUOTE_SEAMS),
     ("11. dense digits", f"<p>{DENSE_DIGITS}</p>"),
+    ("12. ruby markup", RUBY_MARKUP),
+    ("13. ruby at edges", RUBY_EDGES),
+    ("14. longer ruby", RUBY_LONGER),
+    ("15. ruby in table", RUBY_TABLE),
+    ("16. emphasis dots", EMPHASIS),
+    ("17. cjk-latin", CJK_LATIN),
+    ("18. push-in", f"<p>{PUSH_IN}</p>"),
 ]
 
 CHAPTER = """<?xml version="1.0" encoding="UTF-8"?>

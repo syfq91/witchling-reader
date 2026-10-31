@@ -5,6 +5,8 @@ add_executable(TtfFontTest
   TtfFontTest.cpp
   TtfRegistryTest.cpp
   TtfOpenTypeTest.cpp
+  TtfMapsCodepointTest.cpp
+  ShippedFamiliesTest.cpp
   ${REPO_ROOT}/lib/EpdFont/SdCardFontRegistry.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/TtfFamily.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/TtfFont.cpp
@@ -16,6 +18,10 @@ add_executable(TtfFontTest
   ${REPO_ROOT}/lib/EpdFont/ttf/FlashGlyphStore.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/GlyphStoreFormat.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/FontBytes.cpp
+  ${REPO_ROOT}/lib/EpdFont/ttf/TtfCff.cpp
+  ${REPO_ROOT}/lib/EpdFont/ttf/TtfCffBlock.cpp
+  ${REPO_ROOT}/lib/EpdFont/ttf/TtfCffCharString.cpp
+  ${REPO_ROOT}/lib/EpdFont/ttf/TtfCffLoad.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/TtfFace.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/TtfRasterizer.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/third_party/freetype/ftgrays.c
@@ -43,6 +49,8 @@ target_include_directories(TtfFontTest PRIVATE
 
 target_compile_definitions(TtfFontTest PRIVATE
   TTF_FONT_DIR="${REPO_ROOT}/lib/EpdFont/builtinFonts/source"
+  TTF_FIXTURE_DIR="${REPO_ROOT}/test/fixtures/fonts"
+  SD_FONTS_DIR="${REPO_ROOT}/assets/sd-fonts"
 )
 
 target_link_libraries(TtfFontTest PRIVATE

@@ -19,8 +19,8 @@ struct SdCardFontFileInfo {
 struct SdCardFontFamilyInfo {
   std::string name;  // directory name, e.g. "NotoSansCJK"
   std::vector<SdCardFontFileInfo> files;
-  // A TrueType family: one .ttf file per style, regular among them, every size drawn from them on the
-  // device (TtfFont). A directory with any .cpfont file is a .cpfont family, whatever else it holds.
+  // A TrueType or OpenType CFF family: one .ttf or .otf file per style, regular among them, every size drawn from
+  // them on the device (TtfFont). A directory with any .cpfont file is a .cpfont family, whatever else it holds.
   // Derived, not stored: a TTF file is listed with pointSize 0, which no .cpfont name can give, and a field
   // here would cost the registry's 128 reserved records heap for good.
   bool ttf() const { return !files.empty() && files.front().pointSize == 0; }
@@ -38,6 +38,11 @@ struct SdCardFontFamilyInfo {
   // family, which has no per-size files (callers that need one skip it).
   const SdCardFontFileInfo* pickClosestSize(uint8_t targetPtSize) const;
 };
+
+// The registry reserves MAX_SD_FAMILIES records at every discovery and keeps them: a field here is that many times
+// permanent heap, so whether a family is TTF is derived from its files instead.
+static_assert(sizeof(SdCardFontFamilyInfo) == sizeof(std::string) + sizeof(std::vector<SdCardFontFileInfo>),
+              "a family record costs only its name and its files");
 
 class SdCardFontRegistry {
  public:

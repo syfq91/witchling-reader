@@ -1,6 +1,7 @@
 #include "ActivityManager.h"
 
 #include <Arduino.h>
+#include <GlyphProvider.h>
 #include <HalPowerManager.h>
 #include <Logging.h>
 #include <Memory.h>  // makeUniqueNoThrow
@@ -128,7 +129,13 @@ void ActivityManager::renderTaskLoop() {
       // exactly the window a plain RenderLock cannot see — see RenderLock(ExclusiveActivityAccess).
       renderPassActive.store(true, std::memory_order_release);
       renderPassesStarted.fetch_add(1, std::memory_order_relaxed);
-      currentActivity->render(std::move(lock));
+      {
+        // A screen that draws book text draws its first-sight glyphs in the secondary framebuffer, not on the heap:
+        // black-and-white screens all. The reader keeps it for its grayscale passes and pre-renders.
+        const bool lend = currentActivity->drawsBookText() && !currentActivity->isReaderActivity();
+        const glyph_miss::LendScope glyphLend(lend ? &lendFramebufferForGlyphs : nullptr);
+        currentActivity->render(std::move(lock));
+      }
       // Cleared unconditionally on every exit path of render(): the call cannot throw
       // (-fno-exceptions) and every `return` inside it lands here.
       renderPassActive.store(false, std::memory_order_release);
@@ -250,6 +257,7 @@ void ActivityManager::loop() {
         if (exitingReader && !currentActivity->isReaderActivity()) {
           unloadSdFontIfLoaded();
         }
+        syncBookFonts();
         LOG_DBG("ACT", "Popped from activity stack, new size = %zu", stackActivities.size());
         // Handle result if necessary
         if (currentActivity->resultHandler) {
@@ -321,6 +329,7 @@ void ActivityManager::loop() {
       currentActivity = std::move(pendingActivity);
       refreshWifiActivityFlag();
       noteActivityChanged();
+      syncBookFonts();
 
       lock.unlock();  // onEnter may acquire its own lock
       currentActivity->onEnter();
@@ -356,6 +365,11 @@ void ActivityManager::exitActivity(const RenderLock& lock) {
   }
 }
 
+void ActivityManager::syncBookFonts() {
+  // A reader anywhere on the stack owns the fonts: its menu, TOC and lists borrow from its set.
+  syncUiBookFonts(currentActivity && currentActivity->drawsBookText(), isReaderActivity());
+}
+
 void ActivityManager::refreshWifiActivityFlag() {
   // The whole stack, not just the top: a network activity with a prompt or a picker above it still
   // owns the radio -- it brought it up and takes it down in its own onExit().
@@ -380,6 +394,7 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
     currentActivity = std::move(newActivity);
     refreshWifiActivityFlag();
     noteActivityChanged();
+    syncBookFonts();
     currentActivity->onEnter();
   }
 }
@@ -432,12 +447,31 @@ void ActivityManager::goToBrowserWithSearch(std::string query) {
   }
 }
 
+void ActivityManager::armBookOpenRefresh(const std::string& path) const {
+  // The reader's first page diffs against whatever the panel holds -- a list and its covers, the
+  // carousel, a menu, the last book's page -- and a FAST diff of a change that size leaves the old
+  // screen ghosting through. A HALF clears it. Measured on cached opens: about 0.1 s more on the X3,
+  // where the page's HALF goes through triggerDisplay() without the settle passes a displayBuffer()
+  // HALF takes (a 453 ms waveform against 383 ms FAST); 1.4 s more on the T5S3, and 0.7 s from a
+  // list, which no longer paints the busy indicator first (showBusyIndicator()).
+  // Not for a picture: the viewer refreshes it HALF itself, and an armed HALF would go on its
+  // loading popup instead.
+  if (ReaderActivity::isImageFile(path)) return;
+  renderer.setNextDisplayRefreshMode(HalDisplay::HALF_REFRESH);
+}
+
+void ActivityManager::openBook(std::string path) {
+  armBookOpenRefresh(path);
+  goToReader(std::move(path));
+}
+
 void ActivityManager::goToReader(std::string path) {
   // The book's font is loaded by ReaderActivity::onEnter(), once the activity it replaces has exited.
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
 }
 
 void ActivityManager::replaceWithReader(std::string path, ReturnHint hint) {
+  armBookOpenRefresh(path);
   returnHint = std::move(hint);
   hasReturnHint = true;
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));  // see goToReader()
@@ -573,6 +607,8 @@ bool ActivityManager::isReaderActivity() const {
 }
 
 bool ActivityManager::currentIsReaderActivity() const { return currentActivity && currentActivity->isReaderActivity(); }
+
+bool ActivityManager::currentMirrorsLeftRight() const { return currentActivity && currentActivity->mirrorsLeftRight(); }
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
 

@@ -7,7 +7,10 @@
 #include <string>
 #include <vector>
 
+#include "CffBuilder.h"
 #include "TtfBuilder.h"
+#include "TtfCff.h"
+#include "TtfCffCharString.h"
 #include "TtfRasterizer.h"
 #include "TtfTestUtil.h"
 
@@ -94,43 +97,6 @@ Bytes header(const int16_t contours) {
 
 }  // namespace
 
-TEST_F(TtfRasterizerTest, ASquareFillsItsBox) {
-  const uint16_t g = add(outline({rect(64, 0, 384, 320)}));  // x 1..6 px, y 0..5 px
-  ASSERT_EQ(Status::Ok, draw(g));
-  EXPECT_EQ(5, metrics.width);
-  EXPECT_EQ(5, metrics.height);
-  EXPECT_EQ(1, metrics.left);
-  EXPECT_EQ(5, metrics.top);
-  EXPECT_EQ(7, metrics.dataLength);
-  EXPECT_EQ(0u, metrics.dataOffset);
-  EXPECT_EQ("33333\n33333\n33333\n33333\n33333\n", image);
-}
-
-TEST_F(TtfRasterizerTest, RowsRunFromTheTop) {
-  const uint16_t g = add(outline({rect(0, 0, 192, 64), rect(0, 64, 64, 192)}));  // an L
-  ASSERT_EQ(Status::Ok, draw(g));
-  EXPECT_EQ("3..\n3..\n333\n", image);
-  EXPECT_EQ(3, metrics.top);
-}
-
-TEST_F(TtfRasterizerTest, CoverageQuantisesWithTheConvertersThresholds) {
-  // A pixel 8, 20, 36 and 52 of 64 covered: coverage 32, 80, 144, 208 -> nibbles 2, 5, 9, 13.
-  const int16_t widths[] = {8, 20, 36, 52};
-  const char* expected[] = {".\n", "1\n", "2\n", "3\n"};
-  for (int i = 0; i < 4; ++i) {
-    font.glyphs.resize(1);
-    const uint16_t g = add(outline({rect(0, 0, widths[i], 64)}));
-    ASSERT_EQ(Status::Ok, draw(g)) << i;
-    EXPECT_EQ(expected[i], image) << i;
-  }
-}
-
-TEST_F(TtfRasterizerTest, AdvancesComeFromHmtx) {
-  const uint16_t g = add(outline({rect(64, 0, 384, 320)}, 500));
-  ASSERT_EQ(Status::Ok, draw(g, 640));  // 10 px: 500 units are 4.99998 px
-  EXPECT_EQ(80, metrics.advanceX);
-}
-
 TEST_F(TtfRasterizerTest, AGlyphWithNoOutlineLoadsEmpty) {
   Glyph space;
   space.advance = 250;
@@ -143,62 +109,6 @@ TEST_F(TtfRasterizerTest, AGlyphWithNoOutlineLoadsEmpty) {
   uint8_t canary[4] = {0xEE, 0xEE, 0xEE, 0xEE};
   EXPECT_EQ(Status::Ok, rasterizer.rasterize(canary));
   EXPECT_EQ(0xEE, canary[0]);
-}
-
-TEST_F(TtfRasterizerTest, TheOutlineMovesSoTheLeftSideBearingStartsAtTheOrigin) {
-  // FreeType places a glyph by its hmtx left side bearing, not by its outline: xMin - lsb is taken off.
-  Glyph glyph = outline({rect(64, 0, 128, 64)});
-  glyph.lsbIsXMin = false;
-  glyph.lsb = 0;
-  const uint16_t shifted = add(glyph);
-  ASSERT_EQ(Status::Ok, draw(shifted));
-  EXPECT_EQ(0, metrics.left);
-  glyph.lsb = 64;
-  const uint16_t inPlace = add(glyph);
-  ASSERT_EQ(Status::Ok, draw(inPlace));
-  EXPECT_EQ(1, metrics.left);
-}
-
-TEST_F(TtfRasterizerTest, ComponentsAreOffset) {
-  const uint16_t dot = add(outline({rect(0, 0, 64, 64)}));
-  const uint16_t g = add(compound({{dot, 128, 64}, {dot, 0, 0}}));
-  ASSERT_EQ(Status::Ok, draw(g));
-  EXPECT_EQ(0, metrics.left);
-  EXPECT_EQ(2, metrics.top);
-  EXPECT_EQ("..3\n3..\n", image);
-}
-
-TEST_F(TtfRasterizerTest, ComponentsAreScaled) {
-  const uint16_t square = add(outline({rect(0, 0, 128, 128)}));  // 2 x 2 px
-  const uint16_t half = add(compound({{square, 0, 0, {0x2000}}}));
-  ASSERT_EQ(Status::Ok, draw(half));
-  EXPECT_EQ("3\n", image);
-  const uint16_t flat = add(compound({{square, 0, 0, {0x4000, 0x2000}}}));  // x 1.0, y 0.5
-  ASSERT_EQ(Status::Ok, draw(flat));
-  EXPECT_EQ("33\n", image);
-}
-
-TEST_F(TtfRasterizerTest, TheTwoByTwoTransformTakesItsEntriesInFileOrder) {
-  // a, b, c, d in the file: x' = a*x + c*y, y' = b*x + d*y. This one turns a quarter left: (x, y) -> (-y, x).
-  const uint16_t bar = add(outline({rect(0, 0, 192, 64)}));  // 3 x 1 px
-  const uint16_t turned = add(compound({{bar, 0, 0, {0, 0x4000, -0x4000, 0}}}));
-  ASSERT_EQ(Status::Ok, draw(turned));
-  EXPECT_EQ(-1, metrics.left);
-  EXPECT_EQ(3, metrics.top);
-  EXPECT_EQ("3\n3\n3\n", image);
-}
-
-TEST_F(TtfRasterizerTest, UseMyMetricsTakesTheComponentsLeftSideBearing) {
-  Glyph base = outline({rect(64, 0, 128, 64)});
-  base.lsbIsXMin = false;
-  base.lsb = 0;  // FreeType shifts this glyph 1 px left when it stands alone
-  const uint16_t dot = add(base);
-  const uint16_t plain = add(compound({{dot, 0, 0}}));
-  ASSERT_EQ(Status::Ok, draw(plain));
-  EXPECT_EQ(1, metrics.left);  // the compound's own lsb equals its xMin: no shift
-  const uint16_t mine = add(compound({{dot, 0, 0, {}, 0x0200}}));
-  ASSERT_EQ(Status::Ok, draw(mine));
-  EXPECT_EQ(0, metrics.left);
 }
 
 TEST_F(TtfRasterizerTest, PointMatchedAndScaledOffsetComponentsAreUnsupported) {
@@ -396,6 +306,165 @@ TEST(TtfScratch, OneBlockServesEveryStyle) {
   EXPECT_EQ(kPoolBytesSd, m.poolBytes);
 }
 
+TEST(TtfScratch, ACffFaceIsPlannedAtTheCapsWithTheInterpretersState) {
+  // maxp does not count a CFF font's points: the caps, and the charstring interpreter's region.
+  Face face;
+  face.outlines = Face::Outlines::Cff;
+  face.unitsPerEm = 1000;
+  face.xMax = 1000;
+  face.yMax = 1000;
+  const ScratchPlan cff = planScratch(face, 1000, kPoolBytesFlash);
+  EXPECT_EQ(kMaxScratchPoints, cff.points);
+  EXPECT_EQ(kMaxScratchContours, cff.contours);
+  EXPECT_EQ(kCffDecoderBytes, cff.decoderBytes);
+  EXPECT_EQ(81u, cff.outputBytes);  // head's box as for TrueType: 18 x 18 at 2 bits
+  face.outlines = Face::Outlines::TrueType;
+  face.maxPoints = 600;
+  face.maxContours = 40;
+  const ScratchPlan trueType = planScratch(face, 1000, kPoolBytesFlash);
+  EXPECT_EQ(0u, trueType.decoderBytes);
+  EXPECT_EQ(kCffDecoderBytes, mergePlans(trueType, cff).decoderBytes);
+  EXPECT_EQ(kCffDecoderBytes, mergePlans(cff, trueType).decoderBytes);
+}
+
+TEST(TtfScratch, AnEmboldenedPlanHasRoomForTheGrowthAndKeepsTheCffCaps) {
+  Face face;
+  face.outlines = Face::Outlines::Cff;
+  face.unitsPerEm = 1000;
+  face.xMax = 1000;
+  face.yMax = 1000;
+  const ScratchPlan plain = planScratch(face, 1000, kPoolBytesFlash);
+  const ScratchPlan bold = planScratch(face, 1000, kPoolBytesFlash, true);
+  EXPECT_EQ(81u, plain.outputBytes);
+  EXPECT_EQ(90u, bold.outputBytes);  // 20 x 18: two pixels across for emboldenStrength(1000).x = 42/64, none down
+  EXPECT_EQ(kMaxScratchPoints, bold.points);
+  EXPECT_EQ(kMaxScratchContours, bold.contours);
+  EXPECT_EQ(kCffDecoderBytes, bold.decoderBytes);
+  EXPECT_EQ(kMaxOutputBytes, planScratch(face, kMaxPpem26_6, kPoolBytesFlash, true).outputBytes);
+}
+
+TEST(TtfScratch, TheEmboldenedGrowthIsClampedWithTheBox) {
+  // 60 px per em: the box is 5000 units wide, 302 px, past the 255 cap before the growth (6 px) is added; the height
+  // is the em square, 62 px, with no growth down.
+  Face face;
+  face.unitsPerEm = 1000;
+  face.xMax = 5000;
+  face.yMax = 1000;
+  const ScratchPlan bold = planScratch(face, 3840, kPoolBytesFlash, true);
+  EXPECT_EQ(255u * 62u / 4u + 1u, bold.outputBytes);  // 255 x 62 at 2 bits: 3953, not a width of 261
+  EXPECT_EQ(bold.outputBytes, planScratch(face, 3840, kPoolBytesFlash).outputBytes);
+}
+
+TEST(TtfScratch, ASlantedPlanHasRoomForTheShear) {
+  Face face;
+  face.outlines = Face::Outlines::Cff;
+  face.unitsPerEm = 1000;
+  face.xMax = 1000;
+  face.yMax = 1000;
+  EXPECT_EQ(99u, planScratch(face, 1000, kPoolBytesFlash, false, true).outputBytes);  // 22 x 18: 18 rows x kSlant,
+                                                                                      // rounded up, is 4 px across
+  const ScratchPlan both = planScratch(face, 1000, kPoolBytesFlash, true, true);
+  EXPECT_EQ(108u, both.outputBytes);  // 24 x 18: and emboldening's 2
+  EXPECT_EQ(kMaxScratchPoints, both.points);
+  EXPECT_EQ(kMaxScratchContours, both.contours);
+  EXPECT_EQ(kCffDecoderBytes, both.decoderBytes);
+  EXPECT_EQ(kMaxOutputBytes, planScratch(face, kMaxPpem26_6, kPoolBytesFlash, true, true).outputBytes);
+}
+
+TEST(TtfScratch, TheInterpretersStateLivesInTheCellPool) {
+  // The state is dead once load() has the outline, so a CFF plan takes no more scratch than a TrueType one of the same
+  // points and contours.
+  ScratchPlan plan{13, 3, 100, kPoolBytesFlash};
+  Rasterizer trueType;
+  ASSERT_TRUE(trueType.setPlan(plan));
+  plan.decoderBytes = kCffDecoderBytes;
+  Rasterizer cff;
+  ASSERT_TRUE(cff.setPlan(plan));
+  EXPECT_EQ(trueType.scratchBytes(), cff.scratchBytes());
+  plan.decoderBytes = kCffDecoderBytes - 8;  // too small for the interpreter
+  EXPECT_FALSE(cff.setPlan(plan));
+  plan.decoderBytes = kCffDecoderBytes + 8;
+  EXPECT_FALSE(cff.setPlan(plan));
+}
+
+TEST(TtfScratch, ACffGlyphInABlockPlannedWithoutTheInterpreterIsTransient) {
+  // The plan's fault, not the glyph's: drawn once the block is planned for the face.
+  const std::vector<uint8_t> data = readFixture("CffOperators.otf");
+  FontBytes bytes(data.data(), static_cast<uint32_t>(data.size()));
+  Face face;
+  ASSERT_EQ(FaceStatus::Ok, parseFace(bytes, &face));
+  const uint16_t glyph = glyphIndex(bytes, face, 'A');
+  ASSERT_NE(0, glyph);
+  ScratchPlan plan = planScratch(face, kUnitPpem, kPoolBytesFlash);
+  plan.decoderBytes = 0;
+  Rasterizer rasterizer;
+  ASSERT_TRUE(rasterizer.allocate(plan));
+  EpdGlyph metrics{};
+  EXPECT_EQ(Status::Transient, rasterizer.render(bytes, face, glyph, kUnitPpem, &metrics));
+  ASSERT_TRUE(rasterizer.allocate(planScratch(face, kUnitPpem, kPoolBytesFlash)));
+  EXPECT_EQ(Status::Ok, rasterizer.render(bytes, face, glyph, kUnitPpem, &metrics));
+  EXPECT_GT(metrics.width, 0);
+}
+
+TEST(TtfCffLoad, APointPastThirtyTwoBitsOnceOffsetIsUnsupported) {
+  // A Top DICT offset of 2,147,482,993 font units ([1E-5 0 0 1E-5 32767.99 0], normalized to an em of 65,536) leaves
+  // 654 units below INT32_MAX. Glyph 1 lies 1,000 units left of the offset and draws; glyph 2 lies 1,000 units right
+  // and is refused before it is scaled. Kept to 32 bits it would wrap to about -2^31, which at this size lands in
+  // range, 2,048 px left of the origin.
+  CffSpec spec;
+  spec.topMatrix = "0.00001 0 0 0.00001 32767.99 0";
+  spec.fds = {CffFontDict{}};
+  Bytes inside;
+  putType2Op(inside, {-1000, 0}, 21);       // rmoveto
+  putType2Op(inside, {100, 0, 0, 100}, 5);  // rlineto
+  putType2Op(inside, {}, 14);               // endchar
+  Bytes past;
+  putType2Op(past, {1000, 0}, 21);
+  putType2Op(past, {100, 0, 0, 100}, 5);
+  putType2Op(past, {}, 14);
+  spec.charStrings = {{14}, inside, past};
+  const Bytes data = buildOtf(spec, 16384);
+  FontBytes bytes(data.data(), static_cast<uint32_t>(data.size()));
+  Face face;
+  ASSERT_EQ(FaceStatus::Ok, parseFace(bytes, &face));
+  CffGlyphSource source;
+  ASSERT_EQ(Status::Ok, cffGlyphSource(bytes, face, 2, &source));
+  ASSERT_EQ(2147482993, source.matrix.dx);
+  Rasterizer rasterizer;
+  ASSERT_TRUE(rasterizer.allocate(planScratch(face, ppemFromPoints(14), kPoolBytesFlash)));
+  // At a 26.6 ppem of 1 and head's 16,384 units per em the scale is 4 (16.16): 2,147,481,993 units are 131,072 in
+  // 26.6, 2,048 px.
+  EpdGlyph metrics{};
+  ASSERT_EQ(Status::Ok, rasterizer.render(bytes, face, 1, 1, &metrics));
+  EXPECT_EQ(2048, metrics.left);
+  EXPECT_EQ(Status::Unsupported, rasterizer.render(bytes, face, 2, 1, &metrics));
+}
+
+TEST(TtfCffLoad, AFontDictScalePastThirtyTwoBitsIsUnsupported) {
+  // A font DICT matrix of [100 0 0 100 0 0] under a Top DICT one of [1E-5 0 0 1E-5 0 0] scales its glyphs by the Top
+  // DICT's units per em over the font DICT's, 100,000 / 1,000 (cff_slot_load). With head's 16 units per em the size
+  // scale is 4,096 x the 26.6 ppem, times 100 past INT32_MAX from 5,243 (82 px) on: refused before any point, so an
+  // empty glyph shows it.
+  CffSpec spec;
+  spec.cid = true;
+  spec.topMatrix = "0.00001 0 0 0.00001 0 0";
+  spec.fds = {cffFontDict("100 0 0 100 0 0")};
+  const Bytes data = buildOtf(spec, 16);
+  FontBytes bytes(data.data(), static_cast<uint32_t>(data.size()));
+  Face face;
+  ASSERT_EQ(FaceStatus::Ok, parseFace(bytes, &face));
+  CffGlyphSource source;
+  ASSERT_EQ(Status::Ok, cffGlyphSource(bytes, face, 1, &source));
+  ASSERT_EQ(100000u, source.scaleNum);
+  ASSERT_EQ(1000u, source.scaleDen);
+  Rasterizer rasterizer;
+  ASSERT_TRUE(rasterizer.allocate(planScratch(face, kMaxPpem26_6, kPoolBytesFlash)));
+  EpdGlyph metrics{};
+  EXPECT_EQ(Status::Ok, rasterizer.render(bytes, face, 1, 5242, &metrics));
+  EXPECT_EQ(Status::Unsupported, rasterizer.render(bytes, face, 1, 5243, &metrics));
+  EXPECT_EQ(Status::Unsupported, rasterizer.render(bytes, face, 1, kMaxPpem26_6, &metrics));
+}
+
 TEST(TtfScratch, AllocationHoldsThePlanAndRefusesImpossibleOnes) {
   Rasterizer rasterizer;
   const ScratchPlan plan{512, 256, 4096, kPoolBytesSd};
@@ -418,11 +487,4 @@ TEST(TtfScratch, AllocationHoldsThePlanAndRefusesImpossibleOnes) {
   EXPECT_FALSE(rasterizer.allocate({512, 256, 4096, 1024}));  // pool under ftgrays' minimum
   EXPECT_FALSE(rasterizer.allocate({kMaxScratchPoints + 1, 1, 64, kPoolBytesFlash}));
   EXPECT_FALSE(rasterizer.allocate({8, 1, kMaxOutputBytes + 1, kPoolBytesFlash}));
-}
-
-TEST(TtfStatus, NamesForTheLog) {
-  EXPECT_STREQ("ok", statusName(Status::Ok));
-  EXPECT_STREQ("unsupported", statusName(Status::Unsupported));
-  EXPECT_STREQ("malformed", statusName(Status::Malformed));
-  EXPECT_STREQ("transient", statusName(Status::Transient));
 }

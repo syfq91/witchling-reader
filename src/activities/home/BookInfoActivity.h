@@ -44,6 +44,7 @@ class BookInfoActivity final : public Activity, private UiAppHost {
   static void actionTrampoline(const freeink::ui::ActionEvent& event, void* user);
 
  public:
+  bool drawsBookText() const override { return true; }
   explicit BookInfoActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string filePath)
       : Activity("BookInfo", renderer, mappedInput), UiAppHost(renderer), filePath(std::move(filePath)) {}
 

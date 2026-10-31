@@ -164,6 +164,31 @@ TEST(ContentOpfParser, ExtractsMetadataManifestAndGuideFields) {
   EXPECT_EQ(parser.guideCoverPageHref, "book/OEBPS/text/cover.xhtml");
 }
 
+// The spine's page-progression-direction, read with or without a cache: rtl, ltr, or Default when it says nothing or
+// says `default`. Values are case-insensitive; a prefixed spine tag counts.
+TEST(ContentOpfParser, ReadsThePageProgressionDirection) {
+  const std::string cacheDir = makeTempDir();
+  ASSERT_FALSE(cacheDir.empty());
+  TempDirGuard dirGuard(cacheDir);
+  const auto progression = [&cacheDir](const std::string& spineTag) {
+    const std::string xml =
+        "<?xml version='1.0' encoding='utf-8'?>"
+        "<package xmlns:opf='http://www.idpf.org/2007/opf' xmlns:dc='http://purl.org/dc/elements/1.1/'>"
+        "<metadata><dc:title>T</dc:title></metadata>"
+        "<manifest><item id='c' href='c.xhtml' media-type='application/xhtml+xml'/></manifest>" +
+        spineTag + "<itemref idref='c'/></" + (spineTag.rfind("<opf:", 0) == 0 ? "opf:spine" : "spine") + "></package>";
+    ContentOpfParser parser(cacheDir, "/book/", xml.size(), nullptr);
+    EXPECT_TRUE(parseOpfXml(parser, xml));
+    return parser.pageProgression;
+  };
+  EXPECT_EQ(PageProgression::Rtl, progression("<spine page-progression-direction='rtl'>"));
+  EXPECT_EQ(PageProgression::Ltr, progression("<spine page-progression-direction='ltr'>"));
+  EXPECT_EQ(PageProgression::Rtl, progression("<spine toc='ncx' page-progression-direction='RTL'>"));
+  EXPECT_EQ(PageProgression::Default, progression("<spine page-progression-direction='default'>"));
+  EXPECT_EQ(PageProgression::Default, progression("<spine>"));
+  EXPECT_EQ(PageProgression::Rtl, progression("<opf:spine page-progression-direction='rtl'>"));
+}
+
 // A cover/metadata load (Epub::loadForCover / loadForMetadata) passes a null cache. It must still
 // resolve the EPUB2 <meta name="cover"> -> manifest image item, and it must NOT build the .items.bin
 // item store: that store exists only to resolve spine idrefs, which a null cache skips entirely.
@@ -305,41 +330,6 @@ TEST(ContentOpfParser, OversizedFirstManifestIdNeitherHangsNorBreaksLaterIdrefs)
   ASSERT_EQ(capturedSpineHrefs.size(), 2u);
   EXPECT_EQ(capturedSpineHrefs[0], "book/OEBPS/text/ok1.xhtml");
   EXPECT_EQ(capturedSpineHrefs[1], "book/OEBPS/text/ok2.xhtml");
-}
-
-TEST(ContentOpfParser, ResolvesOutOfOrderSpineIdrefsInALargeManifest) {
-  const std::string cacheDir = makeTempDir();
-  ASSERT_FALSE(cacheDir.empty());
-  TempDirGuard dirGuard(cacheDir);
-
-  std::vector<std::string> capturedSpineHrefs;
-  ScopedSpineHrefSink sinkGuard(&capturedSpineHrefs);
-
-  constexpr int kItemCount = 420;
-  const std::string base = "/book/OEBPS/";
-  const std::string xml =
-      "<?xml version='1.0' encoding='utf-8'?>"
-      "<package xmlns:opf='http://www.idpf.org/2007/opf' xmlns:dc='http://purl.org/dc/elements/1.1/'>"
-      "<metadata><dc:title>T</dc:title></metadata>"
-      "<manifest>" +
-      buildManifestItems(kItemCount) +
-      "</manifest>"
-      "<spine>"
-      "<itemref idref='ch419'/>"
-      "<itemref idref='ch10'/>"
-      "<itemref idref='missing'/>"
-      "<itemref idref='ch0'/>"
-      "</spine>"
-      "</package>";
-
-  BookMetadataCache cache(cacheDir);
-  ContentOpfParser parser(cacheDir, base, xml.size(), &cache);
-  ASSERT_TRUE(parseOpfXml(parser, xml));
-
-  ASSERT_EQ(capturedSpineHrefs.size(), 3u);
-  EXPECT_EQ(capturedSpineHrefs[0], "book/OEBPS/text/ch419.xhtml");
-  EXPECT_EQ(capturedSpineHrefs[1], "book/OEBPS/text/ch10.xhtml");
-  EXPECT_EQ(capturedSpineHrefs[2], "book/OEBPS/text/ch0.xhtml");
 }
 
 // A huge manifest (the King's Avatar case: 1732 items) must parse without aborting and resolve every

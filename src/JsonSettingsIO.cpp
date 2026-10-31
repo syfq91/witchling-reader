@@ -25,6 +25,74 @@ namespace {
 // generous cap. Anything longer is corrupt or hand-edited, and decoding it would
 // cost contiguous heap we can't spare.
 constexpr size_t MAX_PASSWORD_LENGTH = 64;
+
+// Passwords are XORed with the key of the reader that saves them. opds.json and koreader.json
+// record that key's id as "keyId", as wifi.json does in lastKnownMacAddress (see loadWifi()), so a
+// card moved to another reader, or a copied file, still decodes. Without it, the other reader got
+// passwords of the right length and the wrong bytes, which the server turned down.
+constexpr char PASSWORD_KEY_ID[] = "keyId";
+
+// The key a credentials file's passwords decode with, from the id its writer recorded.
+struct PasswordKey {
+  obfuscation::PasswordWriter writer = obfuscation::PasswordWriter::Unknown;
+  uint8_t writerKey[6] = {};
+
+  const uint8_t* decodeKey() const { return writer == obfuscation::PasswordWriter::OtherReader ? writerKey : nullptr; }
+
+  // Whether the file must be saved again under this reader's key (obfuscation::resaveUnderThisKey):
+  // re-keyed when another reader wrote it, and stamped with ours when older firmware recorded no
+  // key, but only when its passwords decode plausibly with ours and the card's wifi.json does not
+  // say it came from another reader. A stamp is what lets the next reader decode the file, so it is
+  // written the first time the file loads, which for a card that never moved is on the reader that
+  // wrote it.
+  bool resaveAfterLoad(const bool hasObfuscatedPassword, const bool allPlausible, const char* tag) const;
+
+  // A file that names no key and was not stamped: the loaders mark its passwords, whose key is
+  // then not known, and the savers record no key id while one of them is left.
+  bool leftUnstamped(const bool hasObfuscatedPassword, const bool resaved) const {
+    return writer == obfuscation::PasswordWriter::Unknown && hasObfuscatedPassword && !resaved;
+  }
+};
+
+// What the card's wifi.json says about the reader it was last in (obfuscation::cardHint()), read
+// from the file itself rather than from WIFI_STORE: the boot loads koreader.json before
+// wifi.json, and opds.json after it (WIFI_STORE re-keys a moved card's file as it loads, which is
+// why it keeps arrivedFrom). Read only for a file it decides, so it is rare.
+obfuscation::CardHint cardHintFromWifiJson() {
+  if (!Storage.exists(WifiCredentialStore::FILE_PATH)) return obfuscation::CardHint::None;
+  const String json = Storage.readFile(WifiCredentialStore::FILE_PATH);
+  // The whole small file, parsed as loadWifi() parses it: a filter for the two fields costs ~3 KB
+  // of flash in ArduinoJson template code to save a few hundred bytes of heap, once.
+  JsonDocument doc;
+  if (json.isEmpty() || deserializeJson(doc, json.c_str())) return obfuscation::CardHint::None;
+  return obfuscation::cardHint(doc["lastKnownMacAddress"] | std::string(""), doc["arrivedFrom"] | std::string(""));
+}
+
+bool PasswordKey::resaveAfterLoad(const bool hasObfuscatedPassword, const bool allPlausible, const char* tag) const {
+  using obfuscation::CardHint;
+  using obfuscation::PasswordWriter;
+  // The hint only decides a file that names no key and decodes plausibly here.
+  const bool undecided = writer == PasswordWriter::Unknown && hasObfuscatedPassword && allPlausible;
+  const CardHint hint = undecided ? cardHintFromWifiJson() : CardHint::None;
+  if (writer == PasswordWriter::Unknown && hasObfuscatedPassword) {
+    if (!allPlausible) {
+      LOG_INF(tag, "Passwords name no key and do not decode with this reader's; another reader wrote them");
+    } else if (hint == CardHint::OtherReader) {
+      LOG_INF(tag, "Passwords name no key, and wifi.json says the card came from another reader; leaving them");
+    }
+  }
+  return obfuscation::resaveUnderThisKey(writer, hasObfuscatedPassword, allPlausible, hint);
+}
+
+PasswordKey passwordKeyOf(const JsonDocument& doc, const char* tag) {
+  PasswordKey key;
+  const std::string id = doc[PASSWORD_KEY_ID] | std::string("");
+  key.writer = obfuscation::passwordWriter(id, key.writerKey);
+  if (key.writer == obfuscation::PasswordWriter::OtherReader) {
+    LOG_INF(tag, "Passwords were saved by reader %s; re-keying them for this one", id.c_str());
+  }
+  return key;
+}
 }  // namespace
 
 // ---- CrossPointState ----
@@ -370,6 +438,7 @@ bool JsonSettingsIO::saveWifi(const WifiCredentialStore& store, const char* path
   // did not pass through the WiFi screen (the web settings page in hotspot mode) must still say
   // which key it used. loadWifi() relies on it to read a file another reader wrote.
   doc["lastKnownMacAddress"] = obfuscation::deviceKeyId();
+  if (!store.arrivedFromKeyId.empty()) doc["arrivedFrom"] = store.arrivedFromKeyId;
 
   JsonArray arr = doc["credentials"].to<JsonArray>();
   for (const auto& cred : store.getCredentials()) {
@@ -443,6 +512,8 @@ bool JsonSettingsIO::loadWifi(WifiCredentialStore& store, const char* json, bool
       *needsResave = true;
     }
   }
+  store.arrivedFromKeyId = doc["arrivedFrom"] | std::string("");
+  if (!isValidDashedMac(store.arrivedFromKeyId)) store.arrivedFromKeyId.clear();
 
   // Passwords are XORed with the key of the reader that wrote them, and lastKnownMacAddress names
   // that reader: saveWifi() records its own key, and older firmware re-saved the file under its own
@@ -450,14 +521,15 @@ bool JsonSettingsIO::loadWifi(WifiCredentialStore& store, const char* json, bool
   // wifi.json) is therefore read with the writer's key and re-saved under ours. Read with ours it
   // gave passwords of the right length and the wrong bytes, which the router rejects as a 4-way
   // handshake timeout - indistinguishable from a weak signal on the device.
-  uint8_t ownKey[6];
   uint8_t writerKey[6];
-  const bool fromOtherReader = obfuscation::parseKeyId(obfuscation::deviceKeyId(), ownKey) &&
-                               obfuscation::parseKeyId(store.lastKnownMacAddress, writerKey) &&
-                               std::memcmp(ownKey, writerKey, sizeof(ownKey)) != 0;
+  const bool fromOtherReader =
+      obfuscation::passwordWriter(store.lastKnownMacAddress, writerKey) == obfuscation::PasswordWriter::OtherReader;
   if (fromOtherReader) {
     LOG_INF("WCS", "wifi.json was written by reader %s; re-keying its passwords for this one",
             store.lastKnownMacAddress.c_str());
+    // Kept, so opds.json and koreader.json files that name no key still learn that the card moved
+    // after this re-key has made lastKnownMacAddress name this reader (obfuscation::cardHint()).
+    store.arrivedFromKeyId = store.lastKnownMacAddress;
     store.lastKnownMacAddress = obfuscation::deviceKeyId();
     if (needsResave) *needsResave = true;
   }
@@ -568,6 +640,8 @@ bool JsonSettingsIO::saveRecentBooks(const RecentBooksStore& store, const char* 
     obj["hyphenationOverride"] = book.hyphenationOverride;
     obj["fontSizeNormalizationOverride"] = book.fontSizeNormalizationOverride;
     obj["inlineFootnotePreviewsOverride"] = book.inlineFootnotePreviewsOverride;
+    obj["lineSpacingOverride"] = book.lineSpacingOverride;
+    obj["verticalTextOverride"] = book.verticalTextOverride;
   }
 
   String json;
@@ -644,6 +718,10 @@ RecentBooksLoad JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const c
     book.hyphenationOverride = clampInt8(obj["hyphenationOverride"] | -1, -1, 1, -1);
     book.fontSizeNormalizationOverride = clampInt8(obj["fontSizeNormalizationOverride"] | -1, -1, 1, -1);
     book.inlineFootnotePreviewsOverride = clampInt8(obj["inlineFootnotePreviewsOverride"] | -1, -1, 1, -1);
+    book.lineSpacingOverride =
+        clampInt8(obj["lineSpacingOverride"] | -1, -1, CrossPointSettings::LINE_COMPRESSION_COUNT - 1, -1);
+    book.verticalTextOverride =
+        clampInt8(obj["verticalTextOverride"] | -1, -1, CrossPointSettings::VERTICAL_TEXT_COUNT - 1, -1);
     store.recentBooks.push_back(std::move(book));
   }
 
@@ -653,13 +731,20 @@ RecentBooksLoad JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const c
 
 // ---- OpdsServerStore ----
 // Follows the same save/load pattern as WifiCredentialStore above.
-// Passwords are XOR-obfuscated with the device MAC and base64-encoded ("password_obf" key).
+// Passwords are XOR-obfuscated with the device MAC and base64-encoded ("password_obf" key), under
+// the key named by "keyId" (PasswordKey above).
 
 bool JsonSettingsIO::saveOpds(const OpdsServerStore& store, const char* path) {
   JsonDocument doc;
+  // Our key id only while every password is known to be under our key (see saveKOReader()).
+  const auto& servers = store.getServers();
+  if (std::none_of(servers.begin(), servers.end(),
+                   [](const OpdsServer& server) { return server.passwordKeyUnknown; })) {
+    doc[PASSWORD_KEY_ID] = obfuscation::deviceKeyId();
+  }
 
   JsonArray arr = doc["servers"].to<JsonArray>();
-  for (const auto& server : store.getServers()) {
+  for (const auto& server : servers) {
     JsonObject obj = arr.add<JsonObject>();
     obj["name"] = server.name;
     obj["url"] = server.url;
@@ -681,6 +766,9 @@ bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* ne
     return false;
   }
 
+  const PasswordKey key = passwordKeyOf(doc, "OPS");
+  bool hasObfuscatedPassword = false;
+  bool allPlausible = true;
   store.servers.clear();
   JsonArray arr = doc["servers"].as<JsonArray>();
   for (JsonObject obj : arr) {
@@ -693,7 +781,13 @@ bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* ne
     // files written before obfuscation was added (or hand-edited JSON).
     bool ok = false;
     bool tooLong = false;
-    server.password = obfuscation::deobfuscateFromBase64(obj["password_obf"] | "", MAX_PASSWORD_LENGTH, &ok, &tooLong);
+    server.password = obfuscation::deobfuscateFromBase64(obj["password_obf"] | "", MAX_PASSWORD_LENGTH, &ok, &tooLong,
+                                                         key.decodeKey());
+    if (ok && !server.password.empty()) {
+      hasObfuscatedPassword = true;
+      allPlausible = allPlausible && obfuscation::plausiblePassword(server.password);
+      server.passwordKeyUnknown = true;  // until the file's key is settled below
+    }
     if (tooLong) {
       LOG_ERR("OPS", "Discarding oversized password for server: %s", server.name.c_str());
       if (needsResave) *needsResave = true;
@@ -710,6 +804,11 @@ bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* ne
     }
     store.servers.push_back(std::move(server));
   }
+  const bool stamped = key.resaveAfterLoad(hasObfuscatedPassword, allPlausible, "OPS");
+  if (!key.leftUnstamped(hasObfuscatedPassword, stamped)) {
+    for (auto& server : store.servers) server.passwordKeyUnknown = false;
+  }
+  if (stamped && needsResave) *needsResave = true;
 
   LOG_DBG("OPS", "Loaded %zu OPDS servers from file", store.servers.size());
   return true;

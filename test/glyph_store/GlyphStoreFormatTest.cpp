@@ -54,10 +54,20 @@ TEST(GlyphStoreFormat, APairStyleIsItsFamilyAndItsStyle) {
   EXPECT_LE(pairStyle(kMaxStyles - 1, 3), 0xFFFFu);  // the high half of a pair slot's value
 }
 
-TEST(GlyphStoreFormat, NoGlyphIsAValueOnlyACompleteWriteProduces) {
-  // A cut leaves extra 1 bits; only a write that lands every bit reads as 0.
-  EXPECT_EQ(0u, kNoGlyph);
-  EXPECT_GE(kRecordHeaderBytes, 1u);  // a record slot holds a dataOffset, which is never 0
+TEST(GlyphStoreFormat, ASlotValuePacksTheEpochAndTheOffset) {
+  const uint32_t value = glyphSlotValue(0x1234, 0x3FFFFC);
+  EXPECT_EQ(0x234u, slotEpoch(value));  // the low 12 bits
+  EXPECT_EQ(0x3FFFFCu, slotDataOffset(value));
+}
+
+TEST(GlyphStoreFormat, AGlyphSlotValueIsNeverNoGlyphOrErased) {
+  // The first record's bitmap is past its segment header and its own header; the last bitmap that is not in the log's
+  // final 4 bytes ends inside 4 MiB.
+  const uint32_t first = kSegmentHeaderBytes + kRecordHeaderBytes;
+  for (uint32_t epoch : {0u, 1u, 0xFFFu, 0x1000u}) {
+    EXPECT_NE(kNoGlyph, glyphSlotValue(epoch, first));
+    EXPECT_NE(kErased, glyphSlotValue(epoch, kMaxLogBytes - kSectorBytes));
+  }
 }
 
 TEST(GlyphStoreFormat, HomeSlotMatchesFibonacciHashingForPowersOfTwo) {
@@ -77,9 +87,11 @@ TEST(GlyphStoreFormat, HomeSlotStaysInRangeForAnySlotCount) {
 
 TEST(GlyphStoreFormat, HeaderLayoutIsStable) {
   // Bump kFormatVersion when any of these change.
-  EXPECT_EQ(3u, kFormatVersion);
-  EXPECT_EQ(312u, sizeof(Header));
-  EXPECT_EQ(308u, offsetof(Header, check));
+  EXPECT_EQ(4u, kFormatVersion);
+  EXPECT_EQ(316u, sizeof(Header));
+  EXPECT_EQ(312u, offsetof(Header, check));
+  static_assert(sizeof(SegmentHeader) == kSegmentHeaderBytes, "a segment header is 16 bytes");
+  EXPECT_EQ(479u, kJournalEntries);
   EXPECT_EQ(32u, sizeof(StyleInfo));
   EXPECT_EQ(8u, sizeof(Slot));
   EXPECT_EQ(8u, sizeof(FaceEntry));
@@ -117,6 +129,33 @@ TEST(GlyphStorePlan, CjkSdModeGetsTheLargestLog) {
   EXPECT_EQ(8 * 65536u, g.indexOffset);
   EXPECT_EQ(kSlotsPerPage, g.indexSlots);
   EXPECT_EQ(21 * 65536u, g.logSize);
+}
+
+TEST(GlyphStorePlan, TheLogIsCutIntoPageSegments) {
+  Layout layout{};
+  ASSERT_TRUE(planLayout(input(kModeSd, 1, 430000), layout));
+  const Geometry& g = layout.geometry;
+  EXPECT_EQ(kPageBytes, g.segmentBytes);
+  EXPECT_EQ(0u, g.logOffset % kPageBytes);
+  EXPECT_EQ(0u, g.logSize % g.segmentBytes);
+  EXPECT_GE(g.logSize / g.segmentBytes, kMinSegments);
+  EXPECT_LE(g.logSize / g.segmentBytes, kMaxSegments);
+  EXPECT_LT(g.logSize, kMaxLogBytes);
+}
+
+TEST(GlyphStorePlan, ALargePartitionGetsTheLargestLogTheFormatAllows) {
+  // 8 MiB of partition and a budget to map it all: the log stops at 63 pages, the most segments under 4 MiB.
+  PlanInput in = input(kModeSd, 1, 430000, 200);
+  in.usableBytes = 128 * kPageBytes;
+  Layout layout{};
+  ASSERT_TRUE(planLayout(in, layout));
+  const Geometry& g = layout.geometry;
+  EXPECT_EQ(63 * kPageBytes, g.logSize);
+  EXPECT_LE(g.logSize / g.segmentBytes, kMaxSegments);
+  EXPECT_LT(g.logSize, kMaxLogBytes);
+  EXPECT_LE(uint64_t{g.logOffset} + g.logSize, in.usableBytes);
+  // The index still holds what the log holds.
+  EXPECT_GE(uint64_t{g.indexSlots} * kIndexLoadPercent / 100, uint64_t{g.logSize} / kExpectedRecordSd);
 }
 
 TEST(GlyphStorePlan, LargeStylesShrinkTheLog) {
@@ -187,12 +226,6 @@ TEST(GlyphStorePlan, TheIndexExpectsTheBodysRecords) {
   EXPECT_LT(b.geometry.indexSlots, a.geometry.indexSlots);
 }
 
-TEST(GlyphStorePlan, EightStyleBlocksAreTheMost) {
-  Layout layout{};
-  EXPECT_TRUE(planLayout(input(kModeFlash, kMaxStyles, 200000), layout));
-  EXPECT_FALSE(planLayout(input(kModeFlash, kMaxStyles + 1, 200000), layout));
-}
-
 TEST(GlyphStorePlan, StylesThatDoNotFitAreRefused) {
   Layout layout{};
   EXPECT_FALSE(planLayout(input(kModeFlash, 4, 900000), layout));
@@ -216,6 +249,7 @@ TEST(GlyphStorePlan, TheIndexHoldsWhatTheLogHolds) {
 
 TEST(GlyphStorePlan, BadInputIsRefused) {
   Layout layout{};
+  EXPECT_TRUE(planLayout(input(kModeFlash, kMaxStyles, 200000), layout)) << "the most styles it accepts";
   EXPECT_FALSE(planLayout(input(kModeFlash, 0, 1000), layout));
   EXPECT_FALSE(planLayout(input(kModeFlash, kMaxStyles + 1, 1000), layout));
   EXPECT_FALSE(planLayout(input(2, 1, 1000), layout));

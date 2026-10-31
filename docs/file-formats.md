@@ -18,7 +18,7 @@ truncates the file in place.
 | `settings.json` | `JsonSettingsIO::saveSettings` | `fontSizeOrderV`: `CrossPointSettings::FONT_SIZE_ORDER_VERSION` (2); `gestureDefaultsV`: `GESTURE_DEFAULTS_VERSION` (3) | The settings. From `fontSizeOrderV` 2, `fontSize` and `txtFontSize` are point sizes; an older file is converted as it loads and saved again |
 | `state.json` | `JsonSettingsIO::saveState` | none | The open book, the sleep image, a pending KOReader sync or bookmark jump, the Library tab last left (`libraryTab`) and the views of its lists (`recentBooksView`, `addedBooksView`, `authorsView`; an old `recentBooksGridView` is read to migrate) |
 | `recent.json` | `JsonSettingsIO::saveRecentBooks` | `fontSizeOrderV` (2), stamped separately from `settings.json` | Recently opened books and their per-book overrides; `fontSizeOverride` is a point size from version 2 |
-| `wifi.json`, `opds.json`, `koreader.json` | `JsonSettingsIO::saveWifi`, `saveOpds`, `saveKOReader` | none | Credentials, obfuscated. The web file endpoints refuse them (`lib/FsHelpers/ProtectedPaths.h`) |
+| `wifi.json`, `opds.json`, `koreader.json` | `JsonSettingsIO::saveWifi`, `saveOpds`, `saveKOReader` | none | Credentials, obfuscated with the key of the reader that saved them, which `wifi.json` names in `lastKnownMacAddress` and the other two in `keyId`, so a card moved to another reader still decodes; `wifi.json` also keeps `arrivedFrom`, the reader it was re-keyed from when the card moved. A file without `keyId` (older firmware) gets one the first time it loads if its passwords decode to plausible text with this reader's key and `wifi.json` does not say the card came from another reader; otherwise it is left as it is, and no later save records a `keyId` until those passwords are entered again. The web file endpoints refuse them (`lib/FsHelpers/ProtectedPaths.h`) |
 | `weather_settings.json`, `weather_cache.json` | `WeatherSettingsStore`, `WeatherClient::saveCache` | none | Weather settings, and the last forecast (dropped when its `requestSignature` no longer matches the settings) |
 | `autosync.json` | `AutoSyncState::saveToFile` | none | KOReader auto-sync state |
 | `language.bin` | `I18n::saveSettings` | `SETTINGS_VERSION` (2) | `u8` version, then the UI language's code; version 1 (an enum index) is migrated. See [i18n.md](i18n.md) |
@@ -31,15 +31,18 @@ truncates the file in place.
 | `fileindex/<hash>.idx` | `FileIndex` | `INDEX_VERSION` (2) | A large folder's sorted listing, magic `CPFI`; `<hash>` is FNV-1a 64 of the folder's path |
 | `fonts/<Family>/<Family>_<size>.cpfont` | Font Manager, web upload | `CPFONT_VERSION` (4) in `lib/EpdFont/SdCardFont.cpp` | SD fonts; one of another version is refused. Downloads are staged in `<Family>__staging/` and swapped in. See [contributing/font-cache-structures.md](contributing/font-cache-structures.md) |
 | `fontprev/*.fpv` | `FontPreviewCache::store` | `FORMAT_VERSION` (2) | Rendered font previews, magic `CPFP` |
-| `opds_<hash>_disc.json` | `saveOpdsDiscovery` | `"v": 1` | An OPDS server's navigation entries and search template; `<hash>` is FNV-1a of the server's URL |
+| `opds_<hash>_disc.json` | `saveOpdsDiscovery` | `"v"` (`OPDS_DISCOVERY_VERSION`, 2) | An OPDS server's navigation entries and search template; `<hash>` is FNV-1a of the server's URL. Version 2: a template from an OpenSearch description is its Atom one |
 | `epub_<hash>/`, `xtc_<hash>/`, `txt_<hash>/` | | | One per book: next table |
 
 ### Per book
 
 `<hash>` is `std::hash` of the book's path, so a book moved or renamed gets a new directory (the
 `Epub`, `Xtc` and `Txt` constructors; `ReaderActivity::bookCacheDir`). TXT and Markdown books share
-`txt_`. Settings → System → Clear Reading Cache removes these directories whole, progress and
-bookmarks included, and `fontprev/` (`ClearCacheActivity`).
+`txt_`. Settings → System → Clear Reading Cache (`ClearCacheActivity`, which also removes
+`fontprev/`) and a book's Delete Book Cache clear them through `BookCache` (`lib/FsHelpers/`):
+**Keep** leaves the reading state, `progress.bin`, `linkstack.bin`, `bookmarks.bin` and
+`koreader_syncmethod.txt` (`BookCache::isReadingState`), and removes the rest; **Reset** removes the
+directory whole.
 
 | File | Formats | Version | Contents |
 |---|---|---|---|
@@ -48,10 +51,10 @@ bookmarks included, and `fontprev/` (`ClearCacheActivity`).
 | `details.bin` | all | `BookDetailsCache` `VERSION` (3) | What the Library's lists show: [below](#detailsbin) |
 | `thumb_*.bmp` | all | in the name | Cover thumbnails: [below](#cover-thumbnails) |
 | `cover.bmp` | all | none | The sleep screen's cover (`cover_crop.bmp` for an EPUB's cropped one) |
-| `book.bin` | EPUB | `BOOK_CACHE_VERSION` (11) | Metadata, spine and TOC: [below](#bookbin) |
+| `book.bin` | EPUB | `BOOK_CACHE_VERSION` (18) | Metadata, spine and TOC: [below](#bookbin) |
 | `fingerprint.bin`, `toc.retry` | EPUB | none | [below](#fingerprintbin-and-tocretry) |
 | `pagelist.bin` | EPUB | none | The printed-page list: [below](#pagelistbin) |
-| `css_rules.cache`, `css_bg.bin`, `css_fonts.bin` | EPUB | `CSS_CACHE_VERSION` (29), `BACKGROUND_IMAGES_FILE_VERSION` (1) | [below](#css_rulescache-css_bgbin-and-css_fontsbin) |
+| `css_rules.cache`, `css_bg.bin`, `css_fonts.bin` | EPUB | `CSS_CACHE_VERSION` (31), `BACKGROUND_IMAGES_FILE_VERSION` (1) | [below](#css_rulescache-css_bgbin-and-css_fontsbin) |
 | `spines/<n>/<spine>_<hash>.bin` | EPUB | `SECTION_FILE_VERSION` | Laid-out pages: [`section.bin`](#sectionbin) |
 | `spines/<n>/html_<spine>.bin` | EPUB | none | The spine item's inflated XHTML, banked by its build for the footnote pass and later builds; checked against the inflated size |
 | `pages.bin` | EPUB | `kFormatVersion` (1) in `SpinePageIndex.cpp`, plus the section version and property hash | Each spine item's page count and size under one render variant (`SpinePageIndex`), to count pages across a chapter split over several files |
@@ -60,14 +63,14 @@ bookmarks included, and `fontprev/` (`ClearCacheActivity`).
 | `img_<hash><ext>`, `<image>.1bit.pxc`, `<image>.bayer.pxc` | EPUB | `PixelCache::PXC_MAGIC` | Images extracted from the book (`<hash>` is FNV-1a 64 of the entry), and their dithered pixel caches: `u16` magic, `u16` width, `u16` height, 2-bit pixels |
 | `cover.img` | EPUB | none | The cover image's bytes, extracted once (or copied from a cover sidecar) |
 | `linkstack.bin` | EPUB | `EpubLinkBackStack::kVersion` (1) | The link Back stack: [below](#linkstackbin) |
-| `fonts.bin`, `fonts/<style>.ttf`, `fonts/accent<n>/<style>.ttf` | EPUB | `BookFonts::kVersion` (5) | The book's embedded body and accent fonts (Publisher Fonts): [below](#fontsbin) |
+| `fonts.bin`, `fonts/<style>.ttf`, `fonts/accent<n>/<style>.ttf` | EPUB | `BookFonts::kVersion` (6) | The book's embedded body and accent fonts (Publisher Fonts): [below](#fontsbin) |
 | `kosync_push.bin` | EPUB | `LastPush::kVersion` (1) | Our last KOReader push: [below](#kosync_pushbin) |
 | `koreader_docid.txt`, `koreader_syncmethod.txt` | EPUB | none | The KOReader document id, after the file size and fingerprint it was computed for, and the match method learned for the book |
-| `index.bin` | TXT, Markdown | `CACHE_VERSION`: TXT 2 (magic `TXTI`), Markdown 4 (`MKDI`) | Page offsets under the current layout. `SleepActivity` checks the TXT magic and version too |
+| `index.bin` | TXT, Markdown | `CACHE_VERSION`: TXT 2 (magic `TXTI`), Markdown 11 (`MKDI`) | Page offsets under the current layout. `SleepActivity` checks the TXT magic and version too |
 | `page_<n>.bw1`, `page_<n>.gr2` | XTC | none | Up to four pages' planes, transposed for drawing (`Xtc::kPageCacheMax`) |
 
-Builds also write scratch files that they remove when done: `spine.bin.tmp` and `toc.bin.tmp`
-(`BookMetadataCache`), `.items.bin` (`ContentOpfParser`), `.tmp.css` and `css_rules.compile.tmp` (the
+Builds also write scratch files that they remove when done: `spine.bin.tmp`, `toc.bin.tmp` and
+`toc.spine.tmp` (each TOC entry's spine item, `s16` in TOC order) (`BookMetadataCache`), `.items.bin` (`ContentOpfParser`), `.tmp.css` and `css_rules.compile.tmp` (the
 CSS pass), `spines/<n>/anchors_<spine>.tmp` (a section's anchor map), `footnotes.bin.idx`,
 `images.pending.tmp`, and an XTC's `*.t2bit` and `page_preview.*`.
 
@@ -77,7 +80,7 @@ CSS pass), `spines/<n>/anchors_<spine>.tmp` (a section's anchor map), `footnotes
 |---|---|---|
 | `/fonts_families.bin` | Font Manager | The family list, parked during a download: [below](#fonts_familiesbin) |
 | `/fonts_manifest.tmp`, `/fonts_manifest_web.tmp` | Font Manager, web UI | The downloaded font manifest; removed once parsed |
-| `/.tmp_opds_cache.dat`, `/.tmp_opds_cover.*` | `OpdsBookBrowserActivity` | The OPDS browser's entries and the cover being shown; removed when it closes |
+| `/.tmp_opds_cache.dat`, `/.tmp_opds_cover.*` | `OpdsBookBrowserActivity` | The OPDS browser's entries and the cover being shown; removed when it closes, and the cover files also when it opens (a power cut or a crash leaves them) |
 | `/sleep.bmp` | `BmpViewerActivity` | An image set as the sleep screen. A rendered one goes through `/sleep.bmp.tmp`, the old file kept as `/sleep.bmp.bak` until the swap is done |
 | `/crash_report.txt` | `HalSystem` | The last panic |
 | `/screenshots/*.bmp` | `ScreenshotUtil` | Screenshots |
@@ -91,11 +94,11 @@ fonts need.
 | Magic | Written by | Version | Contents |
 |---|---|---|---|
 | `CPFC` | `FlashFontPartition` | none | A `.cpfont` family copied from the card, mapped in place. See [contributing/font-cache-structures.md](contributing/font-cache-structures.md) |
-| `CPTT` | `FlashGlyphStore` | `glyphstore::kFormatVersion` (3) | The TTF glyph store: [below](#the-ttf-glyph-store-cptt) |
+| `CPTT` | `FlashGlyphStore` | `glyphstore::kFormatVersion` (4) | The TTF glyph store: [below](#the-ttf-glyph-store-cptt) |
 
 ## `book.bin`
 
-Written by `BookMetadataCache`. The version byte is `BOOK_CACHE_VERSION` in `lib/Epub/Epub/BookMetadataCache.cpp`; it is bumped when the layout changes, and an older cache is rebuilt on the next open. The pattern below matches version 11.
+Written by `BookMetadataCache`. The version byte is `BOOK_CACHE_VERSION` in `lib/Epub/Epub/BookMetadataCache.cpp`; it is bumped when the layout changes, and an older cache is rebuilt on the next open. The pattern below matches version 18.
 
 ImHex Pattern:
 
@@ -105,7 +108,7 @@ import std.string;
 import std.core;
 
 // === Configuration ===
-#define EXPECTED_VERSION 11
+#define EXPECTED_VERSION 18
 #define MAX_STRING_LENGTH 65535
 
 // === String Structure ===
@@ -133,6 +136,7 @@ struct Metadata {
     String series [[comment("Series name")]];
     String seriesIndex [[comment("Series index/position")]];
     String description [[comment("Book description / blurb")]];
+    u8 pageProgression [[comment("Spine page-progression-direction: 0 default, 1 ltr, 2 rtl (v18)")]];
 } [[comment("Book metadata information")]];
 
 // === Spine Entry Structure ===
@@ -141,6 +145,11 @@ struct SpineEntry {
     String href [[comment("Resource path")]];
     u32 cumulativeSize [[comment("Cumulative size in bytes"), color("FF6B6B")]];
     s16 tocIndex [[comment("Index into TOC (-1 if none)"), color("4ECDC4")]];
+    // The item's ZIP central-directory stat (v17), so its chapter opens without a lookup
+    u16 zipMethod [[comment("0 stored, 8 deflated")]];
+    u32 zipCompressedSize;
+    u32 zipUncompressedSize;
+    u32 zipLocalHeaderOffset [[comment("0 if the build did not find the entry")]];
 } [[comment("Spine entry defining reading order")]];
 
 // === TOC Entry Structure ===
@@ -204,7 +213,7 @@ if (parsedSize != fileSize) {
 
 One file per spine item and per set of render settings: `spines/<spine / 32>/<spine>_<hash>.bin` in the book's cache directory, `<hash>` being the render settings' property hash in eight hex digits (`Section::getSectionFilePath`, `Epub::spineCacheDir`; 32 is `Epub::SPINE_CACHE_BUCKET_SIZE`). Up to five variants per spine item are kept; past that the oldest by modification date go (`Section::evictOldVariants`). Written and read by `lib/Epub/Epub/Section.cpp`. `SECTION_FILE_VERSION` at the top of that file is bumped on every layout change, so read it there; a number quoted here would go stale within weeks. A file with another version is rejected and rebuilt.
 
-The property hash (`Section::calculatePropertyHash`) covers the header's render settings, font-size normalisation, the inline-footnote-preview setting and, when previews are on, `INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION` (3): a change in how previews expand rebuilds only the sections that show them.
+The property hash (`Section::calculatePropertyHash`) covers the header's render settings, font-size normalisation, the inline-footnote-preview setting and, when previews are on, `INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION` (3): a change in how previews expand rebuilds only the sections that show them. It also covers the vertical-text request (`VerticalText`: 0 Automatic, 1 On) when the request is not Off. Off adds nothing, and it is the request of every book in a language that is never set vertically, so those books keep the hash they had.
 
 The file is, in order:
 
@@ -236,12 +245,21 @@ These fields are the `header::*` constants in `Section.cpp`, in file order. The 
 | `embeddedStyle`        | bool    |                                                                         |
 | `bionicReadingEnabled` | bool    |                                                                         |
 | `imageRendering`       | u8      |                                                                         |
-| status                 | u8      | Bit flags: parse complete, and the "degraded" flags for a build that ran short of heap (image, table row, CSS) or hit a fixed capacity (simplified). The `kStatus*` constants in `Section.cpp` name them. Written as a bool by early builds, so a flag-less file still reads correctly |
+| `verticalText`         | u8      | The request the section was built with (`VerticalText`: 0 Automatic, 1 On, 2 Off). A file whose byte differs from the current request is rejected and rebuilt |
+| status                 | u8      | Bit flags: parse complete, and the "degraded" flags for a build that ran short of heap (image, table row, CSS) or hit a fixed capacity (simplified), and bit 5, `kStatusVertical`: the build set the section vertical-rl, which under Automatic depends on the chapter, not on the request alone. The `kStatus*` constants in `Section.cpp` name them. Written as a bool by early builds, so a flag-less file still reads correctly |
 | `pageCount`            | u16     |                                                                         |
 | page LUT offset        | u32     |                                                                         |
 | anchor map offset      | u32     |                                                                         |
 | page break map offset  | u32     |                                                                         |
 | paragraph LUT offset   | u32     |                                                                         |
+
+### Page record
+
+`Page::serialize` writes a `u16` element count, a `u16` `verticalBlockExtent`, the elements (a `u8` tag, then the element), and the footnotes (a `u16` count, then the entries).
+
+- `verticalBlockExtent` is 0 on a horizontal page. On a page of a vertical-rl section it is the block extent the columns fill, the reader's viewport width, and a non-zero value is what marks the page vertical (`Page::isVertical`): the page draws in the turned frame, and its elements are positioned in that frame.
+- A line (`TextBlock::serialize`) has a flags byte: bit 0 the word sizes are stored, bit 1 the line has annotations (ruby), bit 2 the line is vertical (its words run down a column), bit 3 reserved (a file that sets it is rejected), bits 4-7 the number of word fonts.
+- An image (`ImageBlock::serialize`) ends with a flags byte whose bit 0 says the image is turned, as on a vertical page. A turned image stores the size it is decoded and drawn at, upright in the reader's frame; the box it takes on the page is that size with width and height swapped (`ImageBlock::getWidth`, `getHeight`).
 
 ### Paragraph LUT entry
 
@@ -289,7 +307,7 @@ Two small files beside `book.bin` (`lib/Epub/Epub.cpp`).
 
 ## `css_rules.cache`, `css_bg.bin` and `css_fonts.bin`
 
-The book's compiled stylesheets, written by `CssParser` (`lib/Epub/Epub/css/`). `css_rules.cache` starts with a 14-byte header (`u8` version, `u16` rule count, `u32` selector candidates, `u32` unsupported-selector skips, `u8` flags, `u16` complex-table bytes), then the complex-rule table (compound, descendant and child selectors, which the hashed index cannot key; its layout is described at `CssParser::complexTable`), then the sorted `{hash, offset}` index, then the rule records (`u16` selector length, selector, `u16` source order, style payload). A selector declared again after other rules has a record per declaration, so rules of equal specificity can apply in stylesheet order. The version byte is `CssParser::CSS_CACHE_VERSION` (29); the comment above it lists what each version changed. A file with another version is deleted and the CSS compiled again, and the book's section caches go with it. It is compiled into `css_rules.compile.tmp` first.
+The book's compiled stylesheets, written by `CssParser` (`lib/Epub/Epub/css/`). `css_rules.cache` starts with a 14-byte header (`u8` version, `u16` rule count, `u32` selector candidates, `u32` unsupported-selector skips, `u8` flags, `u16` complex-table bytes), then the complex-rule table (compound, descendant and child selectors, which the hashed index cannot key; its layout is described at `CssParser::complexTable`), then the sorted `{hash, offset}` index, then the rule records (`u16` selector length, selector, `u16` source order, style payload). A selector declared again after other rules has a record per declaration, so rules of equal specificity can apply in stylesheet order. The version byte is `CssParser::CSS_CACHE_VERSION` (31); the comment above it lists what each version changed. A file with another version is deleted and the CSS compiled again, and the book's section caches go with it. It is compiled into `css_rules.compile.tmp` first.
 
 `css_bg.bin` sits beside it and holds the CSS background pictures (`CssParser::backgroundImageFor`): the `no-repeat` `background-image` of each rule that sets one. Absent when the book has none.
 
@@ -305,13 +323,13 @@ count x {
 `css_fonts.bin` holds the book's `@font-face` rules (`CssParser::loadFontFaces`, read one at a time by `CssParser::nextFontFace`), in source order, for its embedded fonts: at most `MAX_FONT_FACES` (32). Absent when the book declares none.
 
 ```text
-u8  version             CSS_CACHE_VERSION (29)
+u8  version             CSS_CACHE_VERSION (31)
 then, to the end of the file, one record per face {
     u16 weight          font-weight, 100-900 (normal 400, bold 700)
     u8  italic          1 when font-style is not normal
     u8  nameLen, name bytes       the declared family name, unquoted; CssParser::fontFamilyHash of it is
                                   what a style's font-family is compared with
-    u8  hrefLen, href bytes       the src url() chosen (TrueType, else OpenType, else another format;
+    u8  hrefLen, href bytes       the src url() chosen (TrueType or OpenType, else another format;
                                   never WOFF2, SVG, EOT or data:), joined to its sheet's folder
 }
 ```
@@ -373,7 +391,7 @@ An empty stack is stored as no file. The file is written when the reader closes 
 What `BookFonts::prepare` (`lib/Epub/Epub/BookFonts.*`) found when the Publisher Fonts setting first met the book: the family its body text is set in, whether it embeds it, and up to three accent families (the embedded families other blocks are set in, the one the most blocks are set in first), with where the copies are. Written once per book, last, after the font files; the next open trusts it.
 
 ```text
-u8  version             BookFonts::kVersion (5)
+u8  version             BookFonts::kVersion (6)
 u8  code                0 none: the book's body keeps the reader's font
                         1 family: its body family is in fonts/
                         2 + n: n failed attempts (a read failed); examined again at the next open, given up at 3
@@ -385,7 +403,7 @@ u32 accents[3]          the accent families' identities (BookFonts::kMaxAccents)
                         accent family, '\0' and its name; to the end of the file
 ```
 
-The body family's files sit in `fonts/`, accent family n's in `fonts/accent<n>/` (`accent0` to `accent2`), one per style, named `<style>.ttf` (0 regular, 1 bold, 2 italic, 3 bold italic): plain TrueType, any IDPF or Adobe font obfuscation undone. An accent family whose faces are refused (CFF, WOFF, encrypted) gives its place to the next. The reader loads each directory as it loads a `.ttf` family directory on the card. A file of another version, or none, means the book has not been examined; `prepare` then removes the whole `fonts/` directory first.
+The body family's files sit in `fonts/`, accent family n's in `fonts/accent<n>/` (`accent0` to `accent2`), one per style, named `<style>.ttf` (0 regular, 1 bold, 2 italic, 3 bold italic): plain TrueType or CFF (`OTTO`) files under the same `.ttf` names, any IDPF or Adobe font obfuscation undone; font discovery reads the content, not the name. An accent family whose faces are refused (WOFF, WOFF2, a collection, encrypted) gives its place to the next. The reader loads each directory as it loads a `.ttf` family directory on the card. A file of another version, or none, means the book has not been examined; `prepare` then removes the whole `fonts/` directory first.
 
 ## `kosync_push.bin`
 
@@ -480,6 +498,33 @@ another change came while the build ran. While it is there, the next visit to Ne
 the index (`LibraryStaleness::rebuildNeeded`). Being inside `/.crosspoint`, writing it is not itself a
 change.
 
+## The font manifests (`fonts.json`, `fonts-v3.json`)
+
+`assets/sd-fonts/fonts.json` and `fonts-v3.json`, both written by `scripts/generate-font-manifest.py --config` from
+one scan of `sd-fonts.yaml`, and fetched from `master` by the Font Manager and the web font API
+(`FONT_MANIFEST_URL`, `src/util/FontManifestReader.h`). `FontManifestReader` streams them through
+`FontManifestParser` into a `FontCatalog`.
+
+Version 2 (`fonts.json`):
+
+```json
+{ "version": 2, "baseUrl": "https://.../assets/sd-fonts/",
+  "families": [ { "name": "Alegreya", "description": "...", "styles": ["regular", "bold"],
+                  "files": [ { "name": "Alegreya/Alegreya_10.cpfont", "size": 269830, "crc32": 3998528417 } ] } ] }
+```
+
+Version 3 (`fonts-v3.json`) adds two keys to a family:
+
+- `format`: `cpfont` (the default when it is left out), `ttf` or `otf`. A `.cpfont` family has one file per size; a
+  `ttf` or `otf` family has one file per style, and the reader draws every size from it.
+- `inDownloadAll`: a boolean, `true` when left out. The CJK families say `false`: "Download all" does not take them.
+
+Who reads which: `fonts.json` lists the `.cpfont` families alone, for firmware from before version 3, which rejects a
+manifest of a version it does not know. Firmware with this format reads `fonts-v3.json`, and versions 1 to 3 alike.
+A family of an unknown format is left out, and so is one whose files are not of its format (judged when the family
+closes, since `format` may follow `files`: a `.ttf` in an `otf` family, an `.otf` in a `cpfont` one, any other
+extension).
+
 ## `fonts_families.bin`
 
 `/fonts_families.bin`, at the card's root: the Font Manager's list of downloadable families, parked on
@@ -490,8 +535,8 @@ device's byte order:
 
 | Part | Layout |
 |---|---|
-| Header, 16 B | `u32` magic `CPFC`; `u16` version (1); `u16` families, files, stringBytes; `u32` blockBytes, the whole block |
-| Families | 12 B each: `u32` totalSize; `u16` name, description, firstFile; `u8` flags (bit 0 installed, bit 1 update available, bit 2 resumable download); `u8` 0 |
+| Header, 16 B | `u32` magic `CPFC`; `u16` version (2); `u16` families, files, stringBytes; `u32` blockBytes, the whole block |
+| Families | 12 B each: `u32` totalSize; `u16` name, description, firstFile; `u8` flags (bit 0 installed, bit 1 update available, bit 2 resumable download, bit 3 an outline family, bit 4 not in "Download all"); `u8` 0 |
 | Files | 12 B each: `u32` size, crc32; `u16` name; `u8` hasCrc32; `u8` 0 |
 | Strings | NUL-terminated; `name` and `description` are offsets into them |
 
@@ -504,7 +549,7 @@ parsed.
 
 ## The TTF glyph store (`CPTT`)
 
-`FlashGlyphStore` (`lib/EpdFont/ttf`) keeps the reader's TrueType families in the font area: their files, and
+`FlashGlyphStore` (`lib/EpdFont/ttf`) keeps the reader's TrueType and CFF families in the font area: their files, and
 every glyph drawn from them, so a glyph is rendered once and then read from flash. It holds a family set: one
 family, or several drawn together (the body's, and a book's accent families under Publisher Fonts), installed
 together. The layout is
@@ -514,32 +559,71 @@ produces; a power cut leaves at worst bytes nothing references.
 
 | Offset | Size | Contents |
 |---|---|---|
-| 0 | 4 KB sector | `Header`, written last at install: `u32` magic `CPTT`, `u16` version, `u16` header bytes, the set's 16-byte identity, the `Geometry` (style count, the regions' offsets and sizes), 8 `StyleInfo` (a style block's offset, size and mode; in SD mode also its file and outlines, below), then `u32` FNV-1a over all of it |
-| 4 KB | 4 KB sector | The state: 32 face entries `{u32 face, u32 claimed}`, then the `u32` wipe word |
+| 0 | 4 KB sector | `Header`, written last at install: `u32` magic `CPTT`, `u16` version, `u16` header bytes, the set's 16-byte identity, the `Geometry` (style count, the regions' offsets and sizes, `segmentBytes`), 8 `StyleInfo` (a style block's offset, size and mode; in SD mode also its file and outlines, below), then `u32` FNV-1a over all of it |
+| 4 KB | 4 KB sector | The state: 32 face entries `{u32 face, u32 claimed}`, then the `u32` wipe word, then the rebuild journal: 479 entries `{u32 base, u32 done}` |
 | 64 KB | 64 KB pages | The style blocks, each family's styles in the set's order, each on its own page so one maps alone; the SD-mode blocks after every flash-mode one |
 | `indexOffset` | whole pages | Glyph index: 8-byte slots `{u32 key, u32 value}`, open addressing, at most 128 probes |
 | `pairOffset` | 64 KB | Kerning pairs: `{u32 left << 16 \| right, u32 pairStyle << 16 \| i16 font units}` |
-| `logOffset` | whole pages | Glyph records, append only: `u32 key`, the 16-byte `EpdGlyph`, the 2-bit bitmap, padded to 4 bytes |
+| `logOffset` | whole pages | The log, a ring of equal segments (`segmentBytes` each, a whole number of 4 KB sectors; 4 to 64 of them): each opens with a 16-byte `SegmentHeader`, then glyph records, append only: `u32 key`, the 16-byte `EpdGlyph`, the 2-bit bitmap, padded to 4 bytes |
 
 - **A style block's mode.** Flash mode: the style's whole TTF file. SD mode (a family too large for flash mode, or
   beside others that fill the font area): a font of its own made of the file's tables but `glyf` (`cmap`, `head`,
-  `hhea`, `hmtx`, `loca`, `maxp`, `OS/2`, `GPOS`, `GSUB`, `kern`, whichever it has), each 4-byte aligned behind a
-  table directory whose `glyf` record points past the block (`SdOutlines::fontOffset`); the outlines are read from
-  the file on the card there (`SdOutlines::fileOffset`, `length`). An SD-mode `StyleInfo` also holds the file's
-  stamp (`FileSource::stamp`: FNV-1a over its path and modification time) and size; a file that no longer matches
-  them installs the set again. Flash-mode blocks map one at a time, the SD-mode ones together.
+  `hhea`, `hmtx`, `loca`, `maxp`, `OS/2`, `GPOS`, `GSUB`, `kern`, and the first 32 bytes of `post`, whichever it
+  has), each 4-byte aligned behind a table directory whose `glyf` record points past the block
+  (`SdOutlines::fontOffset`); the outlines are read from the file on the card there (`SdOutlines::fileOffset`,
+  `length`). An SD-mode `StyleInfo` also holds the file's stamp (`FileSource::stamp`: FNV-1a over its path and
+  modification time) and size; a file that no longer matches them installs the set again. Flash-mode blocks map one
+  at a time, the SD-mode ones together.
 - **A face** is a family at one size: `face = family << 24 | ppem` (26.6 pixels per em; the family is its index in
   the set). An entry is in use once `claimed` reads 0. A glyph key is `codepoint | style << 21 | faceIndex << 23`,
   bits 28-31 zero, so a key never reads as erased. The 32 entries are every family's; taking the last one, or asking
-  for a 33rd, makes the wipe pending.
-- **A slot's value** is the record's `dataOffset` (its log offset + 20), or 0: the font has no glyph for that key.
+  for a 33rd, makes the wipe pending. A synthetic style (spec 7.1, 7.4), drawn emboldened or slanted from another
+  style's file, keys its glyphs under its own style bits and the face index of its size, like a style with a file;
+  its kerning pairs are those of the style it is drawn from.
+- **A slot's value** is 0 (the font has no glyph for that key), or the record's `dataOffset` (its log offset + 20) in
+  4-byte units in the low 20 bits (so a log is under 4 MiB), under the low 12 bits of the epoch of the segment that
+  holds the record. A reused segment gets a new epoch, so a slot still naming its old contents no longer matches and
+  reads as stale.
+- **A segment** opens with `SegmentHeader {u32 magic "SGMT", u32 epoch, u32 epochCheck = ~epoch, u32 retired}`. The
+  epoch is written with its complement, so a torn write fails the check. `retired` reads erased while the segment is
+  live and is programmed 0 before the segment is erased, so a cut during the erase never leaves a half-erased
+  segment reading as live. A record never crosses its segment's end; what does not fit starts the next segment.
+  Segments are used in ring order, each with the next epoch, and two are kept erased and ready, so a batch of new
+  glyphs never waits for an erase.
 - **A pair's style** is `family << 2 | style`; the value is the kerning in font units, the same at every size.
 - **The wipe word** reads erased unless a wipe is pending. A wipe erases the index, the pairs and the log (only
-  sectors that hold data), and the state sector last, at the next book open.
+  sectors that hold data), and the state sector last, at the next chapter or book open (idle time leaves it).
+- **The rebuild journal** fills the rest of the state sector after the wipe word, one `{u32 base, u32 done}` entry per
+  index rebuild, used in order and each programmed once. `base` is the epoch of the oldest live segment when the
+  rebuild began: no slot written since names an older one. `done` is programmed 0 after the last slot is in, so an
+  entry with `base` and an erased `done` is a rebuild a power cut interrupted, and is done again at the next chapter
+  or book open. With all 479 entries used, the next rebuild wipes the store instead, which erases the journal with the
+  state sector; like any wipe, only at a chapter or book open (idle time leaves it).
+- **Making room** keeps the log from filling, a segment at a time, in idle time (one step per tick) and at a chapter
+  or book open (until there is enough, behind the "Loading font" popup).
+  - *A reclaim* takes the oldest segment while two or more are live. It writes, in this order: each glyph it keeps
+    (one with a use count above 0, at most half a segment's payload, the most used first) copied to the head as the
+    record and then its slot (the count halved); then `retired` = 0 in the segment's header; then the erase of the
+    segment. A cut after a copy's record but before its slot leaves a record nothing names; a cut after the retire
+    and before the erase leaves a segment that no longer reads as live. The glyphs it did not keep are dropped: their
+    slots go stale.
+  - *A rebuild* of the index writes: the journal entry's `base`; the erase of the index; the slots again, one for
+    each live record that a slot named, with the segment's epoch (use counts kept; the "no glyph" marks are
+    forgotten); last the entry's `done`. It runs when the index stops writes (past its load limit, a probe chain
+    full, or the epochs used up), in idle time too. At a chapter or book open only, it also runs when 12 % of the
+    index's slots are stale (the "no glyph" marks do not count: they call for a rebuild only once they fill the
+    index), when a power cut stopped the last one, or 2,048 epochs after the last one's `base`.
+  - *The epoch limits.* The epochs a slot can name must stay distinct in 12 bits. A rebuild is due 2,048 epochs after
+    the last one's `base`, and waits for an open; the hard bound is 3,968 (4,096 less two rings of 64 segments): no
+    segment gets an epoch that far past the base until the index is rebuilt, in idle time if need be.
 - **The identity** is FNV-1a over the families' identities in the set's order (`ttf::setIdentity`); a family's is
   FNV-1a over each style file's name, size and modification time and the engine's render version
-  (`ttf::familyIdentity`). A store of another identity, or one whose header fails its check, is installed again.
+  (`ttf::kRenderVersion`, 3; `ttf::familyIdentity`). A store of another identity, or one whose header fails its
+  check, is installed again.
 
 Version 1 held one family: four style blocks, and a size table of bare ppems with pairs keyed by style alone.
 Version 2 had the mode in the `Geometry`, the store's, and a table map in each `StyleInfo` (1,240 B headers).
+Version 3 moved the mode into each `StyleInfo`, with the SD-mode outlines. Its log was one append-only run, emptied
+by a wipe when full, and a slot's value was the bare `dataOffset`; version 4 has the ring of segments, the packed
+slot value and the journal.
 An older header reads as not installed, so the first load installs the set over it.

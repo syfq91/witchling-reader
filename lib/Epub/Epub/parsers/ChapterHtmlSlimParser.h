@@ -9,6 +9,7 @@
 
 #include <array>
 #include <climits>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -19,6 +20,7 @@
 
 #include "../BlockFontFamilies.h"
 #include "../EpubImageManifest.h"
+#include "../FlowContext.h"
 #include "../FontSizeLadder.h"
 #include "../FootnoteEntry.h"
 #include "../FootnotePreviews.h"
@@ -118,6 +120,22 @@ class ChapterHtmlSlimParser final : public Print {
   // segment-break rule; in CJK text the quotes are CJK punctuation): hard-wrapped Chinese and
   // Japanese sources break lines mid-sentence.
   bool cjkSegmentBreakPending_ = false;
+
+  // <ruby>: a group is made when an <rt> closes, over the tokens the target got since the last group (see
+  // startElement).
+  static constexpr size_t kNoRubyGroup = SIZE_MAX;
+  static constexpr size_t kRubyGroupSlack = 32;  // tokens the 96-token split may wait for a group
+  int rubyDepth_ = -1;                           // the open <ruby>'s depth
+  int rtDepth_ = -1;                             // collecting <rt> text while >= 0
+  int rtcDepth_ = -1;                            // inside <rtc>: its <rt> flows inline
+  size_t rubyGroupStart_ = kNoRubyGroup;
+  bool rubyHasGroup_ = false;  // this <ruby> made a group: a later <rt> without a base appends to it
+  std::string rubyText_;
+  uint32_t rtVisibleOffset_ = 0;  // where the <rt> text starts, for the inline fallback
+  // The open table cell's text, else currentTextBlock: where words go.
+  ParsedText* wordTarget();
+  // </rt>: the collected text becomes a group over the bases before it, or flows inline when it cannot.
+  void closeRt();
   // KOReader sync content offsets (docs/contributing/koreader-synchronization.md).
   // visibleTextOffset_ counts VisibleText.h's visible bytes of the source text the SAX parser has
   // delivered: inside <body>, outside head/script/style, before any layout decision. The mappers
@@ -262,6 +280,10 @@ class ChapterHtmlSlimParser final : public Print {
   float mainTextFontSizeBaseline_ = 1.0f;
   bool hasMainTextFontSizeBaseline_ = false;
   float lineCompression;
+  // Book's style line spacing (setBookLineHeight): the compression of one em of line-height, and the least a block
+  // takes. bookPerEm_ 0: off.
+  float bookPerEm_ = 0.0f;
+  float bookFloor_ = 0.0f;
   bool extraParagraphSpacing;
   uint8_t paragraphAlignment;
   uint16_t viewportWidth;
@@ -287,6 +309,8 @@ class ChapterHtmlSlimParser final : public Print {
     bool hasSup = false, sup = false;
     bool hasSub = false, sub = false;
     bool hasSmallCaps = false, smallCaps = false;
+    bool hasTextEmphasis = false;  // text-emphasis-style: textEmphasis is a TextEmphasis mark, 0 for none
+    uint8_t textEmphasis = 0;
     bool hasMarginLeft = false;
     int16_t marginLeftPx = 0;  // margin-left in pixels, for span-level poem indents
     // Inline font-size as a percent of the PARENT element's size (em semantics).
@@ -309,6 +333,7 @@ class ChapterHtmlSlimParser final : public Print {
   bool effectiveSup = false;
   bool effectiveSub = false;
   bool effectiveSmallCaps = false;
+  uint8_t effectiveTextEmphasis_ = 0;     // the TextEmphasis mark of the words being flushed; 0 for none
   int16_t effectiveInlineMarginLeft = 0;  // accumulated margin-left from inline span stack
   // Composed inline font-size percent (relative to the block font size) for the
   // words currently being flushed. 100 outside sized spans; clamped to the
@@ -603,6 +628,7 @@ class ChapterHtmlSlimParser final : public Print {
   std::string pendingInlineFootnotePreview;
   std::vector<std::pair<int, FootnoteEntry>> pendingFootnotes;  // <wordIndex, entry>
   int wordsExtractedInBlock = 0;
+  bool bionicReadingEnabled = false;
   bool layoutFailed = false;
 
   // Per-chapter caches: resolveStyle and parseInlineStyle are called for every HTML element;
@@ -649,6 +675,39 @@ class ChapterHtmlSlimParser final : public Print {
   CssParser::Ancestry cssAncestry(const std::string& tagName, const std::string& classAttr,
                                   const std::string& idAttr) const;
 
+  // The inherited values layout reads (writing mode, direction, line-height), where an open element changes one: an
+  // element takes the innermost entry above it. Trimmed by depth at every start tag, so an element closed through a
+  // skip path leaves nothing behind. A book nests a change a few levels deep; an entry past the eighth is dropped.
+  struct FlowEntry {
+    int16_t depth = 0;
+    CssWritingMode writingMode = CssWritingMode::Unset;
+    CssDirection direction = CssDirection::Unset;
+    float lineHeightEm = 0.0f;  // 0: no line-height set
+  };
+  static constexpr uint8_t kMaxFlowEntries = 8;
+  FlowEntry flows_[kMaxFlowEntries] = {};
+  uint8_t flowCount_ = 0;
+  FlowEntry elementFlow_;  // the element startElement is resolving, its values computed
+  bool flowLogged_ = false;
+  bool flowOverflowLogged_ = false;
+  // Trims the stack to the element's ancestors, pushes the element when it sets a writing mode, direction or
+  // line-height other than its parent's, and returns its computed values. `depth` is the element's own (startElement
+  // increments it last).
+  FlowEntry enterFlow(const CssStyle& style);
+
+  // The section's writing mode (spec 5.1): decided once, at the first element outside <html>'s own tag and outside
+  // any <head> (normally <body>), from the mode in effect there (its own, else html's), the request and the book's
+  // ppd. A vertical-rl section is laid out as a horizontal page in the turned frame (spec 5.2), so the viewport's width
+  // and height swap there, before any block is laid out: lines run down the reader's height, columns across its width.
+  VerticalText verticalRequest_ = VerticalText::Off;
+  PageProgression pageProgression_ = PageProgression::Default;
+  bool frameDecided_ = false;
+  bool vertical_ = false;
+  // The depth of an open <head>, by any case, until the decision: an upper-case HEAD is not skipped (SKIP_TAGS
+  // matches lower case), so its TITLE and LINK reach the decision and must not take it. -1: none seen.
+  int16_t headDepth_ = -1;
+  void decideFrame(CssWritingMode rootMode);
+
   // Default size for superscript/subscript text, percent of the surrounding size.
   // Sup/sub scaling flows through the ordinary per-word size channel (the SUP/SUB
   // style bits only shift the baseline at render time); an explicit CSS font-size
@@ -665,9 +724,13 @@ class ChapterHtmlSlimParser final : public Print {
   // Fold an element's CSS vertical-align into an inline style-stack entry. `baseline`
   // explicitly cancels an inherited sup/sub rather than being ignored.
   static void applyVerticalAlignToEntry(StyleStackEntry& entry, const CssStyle& cssStyle);
-  // Fold an element's CSS font-weight, font-style, text-decoration and font-variant into an
+  // Fold an element's CSS font-weight, font-style, text-decoration, font-variant and text-emphasis-style into an
   // inline style-stack entry. `text-decoration: none` cancels an inherited underline/strike.
   static void applyCssEmphasisToEntry(StyleStackEntry& entry, const CssStyle& cssStyle);
+  // Fold an element's text-emphasis-style into an entry; `none` cancels an inherited mark. The bold, italic,
+  // underline, sup/sub and internal-link paths take only this from the full set above (their own tag decides the
+  // rest).
+  static void applyCssTextEmphasisToEntry(StyleStackEntry& entry, const CssStyle& cssStyle);
   // Fold an element's font-family into an entry, while the book has other families; true when it did.
   bool applyCssFontFamilyToEntry(StyleStackEntry& entry, const CssStyle& cssStyle) const;
   // A block's (or heading's) own emphasis, pushed at its depth so the blocks nested inside it
@@ -798,6 +861,10 @@ class ChapterHtmlSlimParser final : public Print {
   void placeBackgroundImage(const std::string& resolvedPath);
   // Place an already-built ImageBlock as a centered, full-width block element, page-breaking if needed.
   void placeImageBlockAsBlock(std::unique_ptr<ImageBlock> image);
+  // In a vertical section an image is sized in the content frame as its turned self: native width and height swap
+  // before sizing, and the block it becomes is turned (drawn upright in the reader's frame).
+  void turnIfVertical(ImageDimensions& dims) const;
+  void turnIfVertical(ImageBlock* image) const;
   // Emit currentPage to the consumer while keeping paragraphLutPerPage and completedPageCount
   // in lockstep. Every page break MUST go through this helper; open-coded completePageFn
   // calls risk desynchronising paragraphLutPerPage and failing the size check in Section.cpp.
@@ -825,14 +892,17 @@ class ChapterHtmlSlimParser final : public Print {
   std::string abbreviateInlineFootnote(const char* text) const;
 
  public:
-  explicit ChapterHtmlSlimParser(
-      std::shared_ptr<Epub> epub, GfxRenderer& renderer, const int fontId, const float lineCompression,
-      const bool extraParagraphSpacing, const uint8_t paragraphAlignment, const uint16_t viewportWidth,
-      const uint16_t viewportHeight, const bool hyphenationEnabled, const bool fontSizeNormalization,
-      const std::function<bool(std::unique_ptr<Page>)>& completePageFn, const bool embeddedStyle,
-      const std::string& contentBase, const std::string& imageBasePath, const uint8_t imageRendering = 0,
-      std::vector<std::string> tocAnchors = {}, const std::function<void(int)>& progressFn = nullptr,
-      const CssParser* cssParser = nullptr, EpubImageManifest* imageManifest = nullptr)
+  explicit ChapterHtmlSlimParser(std::shared_ptr<Epub> epub, GfxRenderer& renderer, const int fontId,
+                                 const float lineCompression, const bool extraParagraphSpacing,
+                                 const uint8_t paragraphAlignment, const uint16_t viewportWidth,
+                                 const uint16_t viewportHeight, const bool hyphenationEnabled,
+                                 const bool fontSizeNormalization, const bool bionicReadingEnabled,
+                                 const std::function<bool(std::unique_ptr<Page>)>& completePageFn,
+                                 const bool embeddedStyle, const std::string& contentBase,
+                                 const std::string& imageBasePath, const uint8_t imageRendering = 0,
+                                 std::vector<std::string> tocAnchors = {},
+                                 const std::function<void(int)>& progressFn = nullptr,
+                                 const CssParser* cssParser = nullptr, EpubImageManifest* imageManifest = nullptr)
 
       : epub(epub),
         renderer(renderer),
@@ -852,7 +922,8 @@ class ChapterHtmlSlimParser final : public Print {
         imageRendering(imageRendering),
         contentBase(contentBase),
         imageBasePath(imageBasePath),
-        tocAnchors(std::move(tocAnchors)) {}
+        tocAnchors(std::move(tocAnchors)),
+        bionicReadingEnabled(bionicReadingEnabled) {}
 
   ~ChapterHtmlSlimParser() override;
 
@@ -974,6 +1045,17 @@ class ChapterHtmlSlimParser final : public Print {
   void setFontFamilies(const BlockFontFamilies& families) { fontFamilies_ = families; }
   // The book's typography (TypographyProfile.h), handed to every block the parser lays out; Latin rules by default.
   void setTypography(const TypographyProfile& typography) { typography_ = typography; }
+  // The reader's vertical-text request for the book and its page progression, from which the section decides its
+  // writing mode at <body> (decideFrame). Off, horizontal, by default. Set before the parse.
+  void setVerticalText(const VerticalText request, const PageProgression ppd) {
+    verticalRequest_ = request;
+    pageProgression_ = ppd;
+  }
+  // True once the section has been decided vertical-rl: its pages are laid out in the turned frame.
+  bool isVertical() const { return vertical_; }
+  // Book's style line spacing: a block's CSS line-height sets its pitch, a multiple of `emPx`, never below `floor`
+  // (a compression on the font's line height). Off by default, and with a floor of 0.
+  void setBookLineHeight(float floor, uint16_t emPx);
 
  private:
   // Snap a completed block's effective font size (block multiplier, after uniform per-word
@@ -1001,7 +1083,7 @@ class ChapterHtmlSlimParser final : public Print {
   // wireParagraphLines does the same for any text laid out as a paragraph of the page.
   void wireTextBlock();
   void wireParagraphLines(ParsedText& text);
-  void beforeLineHook(uint8_t maxSizePct);
+  void beforeLineHook(uint8_t maxSizePct, bool annotated);
   // Widow/orphan control and keep-with-next (CSS defaults: orphans 2, widows 2), decided before
   // each line of currentTextBlock is placed: true when the page should end before a line that
   // still fits. A placed line is never moved, so the decision looks ahead instead. `nextLine`

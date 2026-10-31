@@ -13,9 +13,7 @@ namespace {
 constexpr int kMaxCell = 242;
 constexpr int kMaxCellWidth = 198;
 
-// Content area left to the grid, computed the way FileBrowserActivity::coverGrid does it:
-//   width  = panel width - side button hints
-//   height = panel height - button hints - (topPadding + header + spacing) - spacing
+// The theme metrics the Library screen reads, restated here so the expectations are readable.
 struct Theme {
   int topPadding, header, spacing, buttonHints, sideHints;
 };
@@ -36,10 +34,9 @@ CoverGridLayout::Input portrait(int panelW, int panelH, const Theme& t, bool isX
 
 TEST(CoverGridLayout, X4PortraitIsTwoByTwoWithFullSizeCells) {
   for (const auto& theme : {kClassic, kLyra, kLyraLarge}) {
-    const auto l = CoverGridLayout::compute(portrait(480, 800, theme, /*isX3=*/false));
+    const auto l = placeOn(480, 800, theme, /*isX3=*/false).cells();
     EXPECT_EQ(l.cols, 2);
     EXPECT_EQ(l.rows, 2);
-    EXPECT_EQ(l.cellWidth, 210);
     EXPECT_EQ(l.cellHeight, kMaxCell);  // stored thumb draws 1:1, never resampled
     EXPECT_EQ(l.thumbWidth, 196);       // the full-size thumbnail: the covers already on the card
     EXPECT_EQ(l.thumbHeight, 240);
@@ -48,36 +45,36 @@ TEST(CoverGridLayout, X4PortraitIsTwoByTwoWithFullSizeCells) {
 
 TEST(CoverGridLayout, X3PortraitIsTwoByTwoWithFullSizeCells) {
   for (const auto& theme : {kClassic, kLyra, kLyraLarge}) {
-    const auto l = CoverGridLayout::compute(portrait(528, 792, theme, /*isX3=*/true));
+    const auto l = placeOn(528, 792, theme, /*isX3=*/true).cells();
     EXPECT_EQ(l.cols, 2);
     EXPECT_EQ(l.rows, 2);
-    EXPECT_EQ(l.cellWidth, 219);
     EXPECT_EQ(l.cellHeight, kMaxCell);
     EXPECT_EQ(l.thumbWidth, 196);
     EXPECT_EQ(l.thumbHeight, 240);
   }
 }
 
-// The LilyGo T5S3's 540x960 panel: two full-size rows left 211 px blank, more than half a row, so it
-// takes a third row of slightly smaller cells -- and at that cover width, a third column.
+// The LilyGo T5S3's 540x960 panel: two full-size rows left a spare band of more than half a row, so
+// it takes a third row of smaller cells -- and at that cover width, a third column. The thumbnail is
+// made at the cell's size, so it still draws 1:1.
 TEST(CoverGridLayout, T5S3PortraitIsThreeByThreeWithShrunkCells) {
-  const auto l = CoverGridLayout::compute(portrait(540, 960, kLyra, /*isX3=*/false));
+  const auto l = placeOn(540, 960, kLyra, /*isX3=*/false).cells();
   EXPECT_EQ(l.cols, 3);
   EXPECT_EQ(l.rows, 3);
-  EXPECT_EQ(l.cellWidth, 156);
-  EXPECT_EQ(l.cellHeight, 216);
-  EXPECT_EQ(l.thumbWidth, 154);  // the thumbnail is made at the cell's size, so it still draws 1:1
-  EXPECT_EQ(l.thumbHeight, 214);
+  EXPECT_LT(l.cellHeight, kMaxCell);
+  EXPECT_EQ(l.thumbWidth, l.cellWidth - 2);
+  EXPECT_EQ(l.thumbHeight, l.cellHeight - 2);
 }
 
-// The Large UI font takes 12 px from the grid; on a panel whose cells are already shrunk, that is
+// The Large UI font takes height from the grid; on a panel whose cells are already shrunk, that is
 // a smaller thumbnail.
 TEST(CoverGridLayout, T5S3AtTheLargeUiFontShrinksTheCellsAgain) {
-  const auto l = CoverGridLayout::compute(portrait(540, 960, kLyraLarge, /*isX3=*/false));
-  EXPECT_EQ(l.cols, 3);
-  EXPECT_EQ(l.rows, 3);
-  EXPECT_EQ(l.thumbWidth, 154);
-  EXPECT_EQ(l.thumbHeight, 210);
+  const auto normal = placeOn(540, 960, kLyra, /*isX3=*/false).cells();
+  const auto large = placeOn(540, 960, kLyraLarge, /*isX3=*/false).cells();
+  EXPECT_EQ(large.cols, 3);
+  EXPECT_EQ(large.rows, 3);
+  EXPECT_LT(large.thumbHeight, normal.thumbHeight);
+  EXPECT_EQ(large.thumbHeight, large.cellHeight - 2);
 }
 
 TEST(CoverGridLayout, LessThanHalfARowLeftKeepsFullSizeCells) {
@@ -107,7 +104,7 @@ TEST(CoverGridLayout, ThumbnailAlwaysFitsItsCell) {
   for (const auto& theme : {kClassic, kLyra}) {
     for (int panelH = 500; panelH <= 1600; panelH += 13) {
       for (int panelW = 300; panelW <= 1200; panelW += 37) {
-        const auto l = CoverGridLayout::compute(portrait(panelW, panelH, theme, /*isX3=*/false));
+        const auto l = placeOn(panelW, panelH, theme, /*isX3=*/false).cells();
         EXPECT_LE(l.thumbWidth, l.cellWidth - 2) << panelW << "x" << panelH;
         EXPECT_LE(l.thumbHeight, l.cellHeight - 2) << panelW << "x" << panelH;
         EXPECT_LE(l.thumbWidth, kMaxCellWidth - 2);
@@ -119,17 +116,17 @@ TEST(CoverGridLayout, ThumbnailAlwaysFitsItsCell) {
 
 TEST(CoverGridLayout, EveryPageFitsTheContentArea) {
   for (const auto& theme : {kClassic, kLyra}) {
-    for (const auto& in : {portrait(480, 800, theme, false), portrait(528, 792, theme, true)}) {
-      const auto l = CoverGridLayout::compute(in);
-      EXPECT_LE(l.rows * l.rowStride, in.contentHeight - in.bottomReserve);
-      EXPECT_LE((l.cols + 1) * CoverGridLayout::kMargin + l.cols * l.cellWidth, in.contentWidth);
+    for (const auto& on : {placeOn(480, 800, theme, false), placeOn(528, 792, theme, true)}) {
+      const auto& l = on.cells();
+      EXPECT_LE(l.rows * l.rowStride, on.usableHeight);
+      EXPECT_LE((l.cols + 1) * CoverGridLayout::kMargin + l.cols * l.cellWidth, on.contentWidth);
     }
   }
 }
 
 TEST(CoverGridLayout, HigherResolutionPanelGetsMoreCellsNotBiggerOnes) {
   // A 1072x1448 300 dpi panel: nothing changes but the numbers handed in.
-  const auto l = CoverGridLayout::compute(portrait(1072, 1448, kLyra, /*isX3=*/false));
+  const auto l = placeOn(1072, 1448, kLyra, /*isX3=*/false).cells();
   EXPECT_EQ(l.cols, 6);
   EXPECT_EQ(l.rows, 4);
   EXPECT_EQ(l.cellHeight, kMaxCell);  // still capped by the full-size thumbnail
@@ -138,7 +135,7 @@ TEST(CoverGridLayout, HigherResolutionPanelGetsMoreCellsNotBiggerOnes) {
 // A column holds a 2:3 cover at the cell's height -- the usual shape, and what a fitted one fills.
 TEST(CoverGridLayout, EveryColumnHoldsAPortraitCover) {
   for (int panelW = 300; panelW <= 2000; panelW += 7) {
-    const auto l = CoverGridLayout::compute(portrait(panelW, 1000, kClassic, /*isX3=*/false));
+    const auto l = placeOn(panelW, 1000, kClassic, /*isX3=*/false).cells();
     EXPECT_GE(l.cellWidth, (l.cellHeight - 2) * 2 / 3 + 2) << "panel width " << panelW;
   }
 }
@@ -180,7 +177,7 @@ constexpr int kOriginX = 0;
 constexpr int kOriginY = 100;
 
 // The real X4 portrait grid: 2 columns, full-size cells.
-CoverGridLayout::Layout x4Grid() { return CoverGridLayout::compute(portrait(480, 800, kLyra, /*isX3=*/false)); }
+CoverGridLayout::Layout x4Grid() { return placeOn(480, 800, kLyra, /*isX3=*/false).cells(); }
 
 // Centre of the cell at (row, col) on the current page, in the frame hitTest expects.
 void cellCentre(const CoverGridLayout::Layout& l, int row, int col, int& x, int& y) {

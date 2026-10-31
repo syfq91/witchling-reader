@@ -72,6 +72,8 @@ void RecentBooksStore::addBook(const std::string& path, const std::string& title
     newBook.hyphenationOverride = it->hyphenationOverride;
     newBook.fontSizeNormalizationOverride = it->fontSizeNormalizationOverride;
     newBook.inlineFootnotePreviewsOverride = it->inlineFootnotePreviewsOverride;
+    newBook.lineSpacingOverride = it->lineSpacingOverride;
+    newBook.verticalTextOverride = it->verticalTextOverride;
     recentBooks.erase(it);
   }
 
@@ -246,7 +248,7 @@ bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t 
   return setReaderOverrides(path, embeddedStyleOverride, imageRenderingOverride, fontFamilyOverride,
                             sdFontFamilyOverride, fontSizeOverride, paragraphAlignmentOverride,
                             it->textAntiAliasingOverride, it->hyphenationOverride, it->fontSizeNormalizationOverride,
-                            it->inlineFootnotePreviewsOverride);
+                            it->inlineFootnotePreviewsOverride, it->lineSpacingOverride, it->verticalTextOverride);
 }
 
 bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t embeddedStyleOverride,
@@ -255,7 +257,8 @@ bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t 
                                           const int8_t paragraphAlignmentOverride,
                                           const int8_t textAntiAliasingOverride, const int8_t hyphenationOverride,
                                           const int8_t fontSizeNormalizationOverride,
-                                          const int8_t inlineFootnotePreviewsOverride) {
+                                          const int8_t inlineFootnotePreviewsOverride, const int8_t lineSpacingOverride,
+                                          const int8_t verticalTextOverride) {
   const Hold hold;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
@@ -273,6 +276,8 @@ bool RecentBooksStore::setReaderOverrides(const std::string& path, const int8_t 
   it->hyphenationOverride = hyphenationOverride;
   it->fontSizeNormalizationOverride = fontSizeNormalizationOverride;
   it->inlineFootnotePreviewsOverride = inlineFootnotePreviewsOverride;
+  it->lineSpacingOverride = lineSpacingOverride;
+  it->verticalTextOverride = verticalTextOverride;
   return saveToFile();
 }
 

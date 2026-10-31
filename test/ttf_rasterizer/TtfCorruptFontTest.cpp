@@ -32,6 +32,20 @@ int exercise(const std::vector<uint8_t>& font, Rasterizer& rasterizer) {
       const Status status = rasterizer.render(bytes, face, glyph, ppem, &metrics);
       EXPECT_TRUE(status == Status::Ok || isPermanent(status)) << statusName(status);
       rendered += status == Status::Ok;
+      // The same glyph again, emboldened.
+      const Strength s = emboldenStrength(ppem);
+      EpdGlyph bold{};
+      Status boldStatus = rasterizer.load(bytes, face, glyph, ppem, &bold);
+      if (boldStatus == Status::Ok) boldStatus = rasterizer.embolden({s.x, s.x}, &bold);
+      if (boldStatus == Status::Ok) boldStatus = rasterizer.rasterize(rasterizer.output());
+      EXPECT_TRUE(boldStatus == Status::Ok || isPermanent(boldStatus)) << statusName(boldStatus);
+      // And emboldened, then slanted.
+      EpdGlyph italic{};
+      Status italicStatus = rasterizer.load(bytes, face, glyph, ppem, &italic);
+      if (italicStatus == Status::Ok) italicStatus = rasterizer.embolden({s.x, s.x}, &italic);
+      if (italicStatus == Status::Ok) italicStatus = rasterizer.slant(&italic);
+      if (italicStatus == Status::Ok) italicStatus = rasterizer.rasterize(rasterizer.output());
+      EXPECT_TRUE(italicStatus == Status::Ok || isPermanent(italicStatus)) << statusName(italicStatus);
     }
   }
   return rendered;

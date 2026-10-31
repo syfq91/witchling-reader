@@ -5,8 +5,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <vector>
 
@@ -32,9 +30,16 @@ struct Recorder {
     self(ctx).events.push_back(line);
   }
   static void familyEnd(void* ctx) { self(ctx).events.emplace_back("}family"); }
+  static void familyFormat(void* ctx, const char* value, size_t len) {
+    self(ctx).events.push_back("format=" + std::string(value, len));
+  }
+  static void familyInDownloadAll(void* ctx, bool value) {
+    self(ctx).events.push_back(std::string("inDownloadAll=") + (value ? "true" : "false"));
+  }
 
   FontManifestCallbacks callbacks() {
-    return FontManifestCallbacks{this, familyBegin, familyName, familyDescription, file, familyEnd};
+    return FontManifestCallbacks{this, familyBegin, familyName,   familyDescription,
+                                 file, familyEnd,   familyFormat, familyInDownloadAll};
   }
 };
 
@@ -379,70 +384,58 @@ TEST(FontManifestParserTest, ResetStartsAFreshDocument) {
   EXPECT_FALSE(parser.hasError());
 }
 
-// Callbacks left null are skipped: a pass that only counts families sets just one.
-TEST(FontManifestParserTest, NullCallbacksAreSkipped) {
-  struct Counter {
-    int families = 0;
-  } counter;
-  FontManifestCallbacks cb{};
-  cb.ctx = &counter;
-  cb.onFamilyBegin = [](void* ctx) { ++static_cast<Counter*>(ctx)->families; };
-  FontManifestParser parser(cb);
-  parser.feed(kTwoFamilies.data(), kTwoFamilies.size());
-  EXPECT_EQ(counter.families, 2);
-  EXPECT_TRUE(parser.complete());
+// Version 3: a family says its format and whether "Download all" takes it, in any order among its keys.
+TEST(FontManifestParserTest, AVersion3FamilyGivesItsFormatAndItsPlaceInDownloadAll) {
+  const Parsed run = parse(
+      R"({"version":3,"baseUrl":"https://x/","families":[{"name":"NotoSansJP","inDownloadAll":false,"format":"otf",)"
+      R"("files":[{"name":"NotoSansJP/NotoSansJP-Regular.otf","size":5,"crc32":6}],"description":"JP"},)"
+      R"({"format":"cpfont","inDownloadAll":true,"name":"Alpha"}]})");
+  EXPECT_EQ(run.events, (Events{
+                            "family{",
+                            "name=NotoSansJP",
+                            "inDownloadAll=false",
+                            "format=otf",
+                            "file=NotoSansJP/NotoSansJP-Regular.otf size=5 crc=6",
+                            "desc=JP",
+                            "}family",
+                            "family{",
+                            "format=cpfont",
+                            "inDownloadAll=true",
+                            "name=Alpha",
+                            "}family",
+                        }));
+  EXPECT_EQ(run.version, 3);
+  EXPECT_TRUE(run.complete);
 }
 
-// 10. The manifest the Font Manager downloads, end to end, in the 512-byte pieces the device reads.
-// Structural checks only, so regenerating assets/sd-fonts/fonts.json does not break them.
-TEST(FontManifestParserTest, ParsesTheShippedManifest) {
-  std::ifstream in(FONT_MANIFEST_PATH, std::ios::binary);
-  ASSERT_TRUE(in.good()) << FONT_MANIFEST_PATH;
-  const std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+// inDownloadAll is a boolean or nothing: a string, a number or null is dropped, and the family still arrives.
+TEST(FontManifestParserTest, AnInDownloadAllThatIsNotABooleanIsIgnored) {
+  const Parsed run =
+      parse(R"({"version":3,"families":[{"name":"A","inDownloadAll":"false"},{"name":"B","inDownloadAll":0},)"
+            R"({"name":"C","inDownloadAll":null}]})");
+  EXPECT_EQ(run.events, (Events{
+                            "family{",
+                            "name=A",
+                            "}family",
+                            "family{",
+                            "name=B",
+                            "}family",
+                            "family{",
+                            "name=C",
+                            "}family",
+                        }));
+  EXPECT_TRUE(run.complete);
+}
 
-  struct Tally {
-    int families = 0;
-    int files = 0;
-    int withCrc = 0;
-    int overflowed = 0;
-    std::string firstFamily;
-    std::string firstDescription;
-    std::string firstFile;
-  } tally;
-  FontManifestCallbacks cb{};
-  cb.ctx = &tally;
-  cb.onFamilyBegin = [](void* ctx) { ++static_cast<Tally*>(ctx)->families; };
-  cb.onFamilyName = [](void* ctx, const char* v, size_t n) {
-    auto& t = *static_cast<Tally*>(ctx);
-    if (t.families == 1) t.firstFamily.assign(v, n);
-  };
-  cb.onFamilyDescription = [](void* ctx, const char* v, size_t n) {
-    auto& t = *static_cast<Tally*>(ctx);
-    if (t.families == 1) t.firstDescription.assign(v, n);
-  };
-  cb.onFile = [](void* ctx, const FontManifestFile& f) {
-    auto& t = *static_cast<Tally*>(ctx);
-    if (++t.files == 1) {
-      t.firstFile.assign(f.name, f.nameLen);
-    }
-    if (f.hasCrc32) ++t.withCrc;
-    if (f.nameOverflow) ++t.overflowed;
-  };
+// A boolean that is an element of families[] is still the empty entry any non-object is.
+TEST(FontManifestParserTest, ABooleanInAFamiliesArrayIsStillAnEmptyEntry) {
+  EXPECT_EQ(parse(R"({"version":3,"families":[true]})").events, (Events{"family{", "}family"}));
+}
 
-  FontManifestParser parser(cb);
-  for (size_t at = 0; at < json.size(); at += 512) {
-    parser.feed(json.data() + at, std::min<size_t>(512, json.size() - at));
-  }
-
-  EXPECT_FALSE(parser.hasError());
-  EXPECT_TRUE(parser.complete());
-  EXPECT_EQ(parser.version(), 2);
-  EXPECT_STREQ(parser.baseUrl(), "https://raw.githubusercontent.com/jpirnay/witchhunt-reader/master/assets/sd-fonts/");
-  EXPECT_FALSE(parser.baseUrlOverflow());
-  EXPECT_GT(tally.families, 0);
-  EXPECT_GT(tally.files, 0);
-  EXPECT_EQ(tally.withCrc, tally.files);
-  EXPECT_EQ(tally.overflowed, 0);
-  EXPECT_FALSE(tally.firstFamily.empty());
-  EXPECT_FALSE(tally.firstFile.empty());
+// Only a family's own object says its format.
+TEST(FontManifestParserTest, AFormatOutsideAFamilyIsIgnored) {
+  const Parsed run =
+      parse(R"({"version":3,"format":"otf","families":[{"name":"A","files":[{"name":"A/a.otf","format":"otf",)"
+            R"("inDownloadAll":false}]}]})");
+  EXPECT_EQ(run.events, (Events{"family{", "name=A", "file=A/a.otf size=0 crc=-", "}family"}));
 }

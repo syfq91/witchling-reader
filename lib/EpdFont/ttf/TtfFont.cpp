@@ -24,6 +24,10 @@ TtfFont::Hooks hooks;
 std::atomic<uint32_t> storeFills{0};
 std::atomic<uint32_t> storeWipes{0};
 std::atomic<uint32_t> lastWipeMs{0};
+std::atomic<uint32_t> storeRooms{0};
+std::atomic<uint32_t> storeRebuilds{0};
+std::atomic<uint32_t> storeDropped{0};
+std::atomic<uint32_t> lastRoomMs{0};
 
 // What a default-ignorable codepoint draws as: no advance and no ink, as the converter makes them (spec 8.1).
 const EpdGlyph kIgnorable{};
@@ -70,19 +74,20 @@ void checkLock() {
   }
 }
 
+// What the flash at a style block's place holds: the block's bytes already, others, or not known (a read failed).
+enum class Held : uint8_t { Same, Differs, Unread };
+
 // Whether the flash at `offset` holds `file` already, compared in halves of the install's copy buffer (the file's
 // beside the flash's); a block that differs stops at its first chunk that does.
-bool holdsFile(const NorFlash& flash, const uint32_t offset, const ttf::FileSource& file, uint8_t* buffer) {
+Held holdsFile(const NorFlash& flash, const uint32_t offset, const ttf::FileSource& file, uint8_t* buffer) {
   constexpr uint32_t kHalf = kCopyBytes / 2;
   for (uint32_t at = 0; at < file.size; at += kHalf) {
     const uint32_t len = std::min(kHalf, file.size - at);
-    if (!file.read(file.ctx, at, buffer, len) || !flash.read(offset + at, buffer + kHalf, len) ||
-        std::memcmp(buffer, buffer + kHalf, len) != 0) {
-      return false;
-    }
+    if (!file.read(file.ctx, at, buffer, len) || !flash.read(offset + at, buffer + kHalf, len)) return Held::Unread;
+    if (std::memcmp(buffer, buffer + kHalf, len) != 0) return Held::Differs;
     if (hooks.yield) hooks.yield();
   }
-  return true;
+  return Held::Same;
 }
 
 }  // namespace
@@ -96,6 +101,7 @@ TtfFontSet::TtfFontSet(NorFlash& flash) : flash_(flash), store_(flash) {}
 bool TtfFontSet::load(const Files* families, const uint8_t count, const uint8_t identity[kIdentityBytes],
                       const std::function<void()>& onBusy, const Install mode) {
   count_ = 0;
+  failedForNow_ = false;
   if (count == 0 || count > kMaxFamilies) return false;
   for (uint8_t f = 0; f < count; ++f) {
     if (families[f][0].size == 0) {
@@ -105,6 +111,7 @@ bool TtfFontSet::load(const Files* families, const uint8_t count, const uint8_t 
     fonts_[f].reset(new (std::nothrow) TtfFont(*this, f));
     if (!fonts_[f]) {
       LOG_ERR("TTF", "OOM: family %u", f);
+      failedForNow_ = true;
       return false;
     }
   }
@@ -121,6 +128,7 @@ bool TtfFontSet::load(const Files* families, const uint8_t count, const uint8_t 
   }
   if (opened != OpenResult::Ready) {
     LOG_ERR("TTF", "glyph store did not open (%u)", static_cast<unsigned>(opened));
+    failedForNow_ = opened == OpenResult::NoMemory;
     return false;
   }
 
@@ -139,6 +147,7 @@ bool TtfFontSet::load(const Files* families, const uint8_t count, const uint8_t 
     opened = store_.open(identity);
     if (opened != OpenResult::Ready) {
       LOG_ERR("TTF", "glyph store did not open after a reinstall (%u)", static_cast<unsigned>(opened));
+      failedForNow_ = opened == OpenResult::NoMemory;
       return false;
     }
     plan = ttf::ScratchPlan{};
@@ -169,6 +178,9 @@ bool TtfFontSet::load(const Files* families, const uint8_t count, const uint8_t 
             fonts_[f]->styles_[0].kerning.legacy() ? " (legacy kern table)" : "",
             fonts_[f]->styles_[0].ligatures.count);
   }
+  // Last: the counts' session-long block must not take the heap the set's own blocks need (a reload after an image
+  // decode runs with the heap at its shortest). A refusal only leaves them unkept.
+  store_.keepCountsIfDue();
   return true;
 }
 
@@ -203,13 +215,22 @@ bool TtfFontSet::install(const Files* families, const uint8_t count, const uint8
   const auto work = makeUniqueNoThrow<InstallWork>();
   if (!work) {
     LOG_ERR("TTF", "install: no %u B to work in", static_cast<unsigned>(sizeof(InstallWork)));
+    failedForNow_ = true;
     return false;
   }
+  // A failure for now (no memory, a card read) before anything is erased: the install stops there, the store kept
+  // as it is, and the load fails without asking for fewer families (failedForNow()).
+  const auto stopForNow = [this]([[maybe_unused]] const char* what, [[maybe_unused]] const uint8_t family,
+                                 [[maybe_unused]] const uint8_t block) {  // only the log reads them
+    LOG_ERR("TTF", "install: %s family %u's style block %u failed for now; nothing erased", what, family, block);
+    failedForNow_ = true;
+    return false;
+  };
 
   // Flash mode while the whole set fits; past that the families go to SD mode from the last on, the least used
   // accent first and the body last of all (from family `sdFrom` on, every one is in SD mode). An accent family keeps
-  // flash mode only while the log keeps kAccentFlashLogBytes. A style whose SD-mode block cannot be made keeps size
-  // 0 there, which the planner refuses.
+  // flash mode only while the log keeps kAccentFlashLogBytes. A style that can have no SD-mode block keeps size 0
+  // there, which the planner refuses.
   glyphstore::PlanInput in{};
   in.styleCount = styles;
   in.usableBytes = flash_.size();
@@ -221,12 +242,16 @@ bool TtfFontSet::install(const Files* families, const uint8_t count, const uint8
   for (int sdFrom = count; sdFrom >= 0 && !planned; --sdFrom) {
     for (uint8_t b = 0; b < styles; ++b) {
       glyphstore::StyleInfo& sd = work->sd[b];
-      if (sdFrom == count - 1 && work->block.plan(*files[b])) {
+      if (sdFrom == count - 1) {
         // The SD-mode blocks, planned once from each file's table directory, when first wanted.
-        sd.size = work->block.bytes();
-        sd.fileStamp = files[b]->stamp;
-        sd.fileSize = files[b]->size;
-        sd.outlines = work->block.outlines();
+        const ttf::SdPlan block = work->block.plan(*files[b]);
+        if (block == ttf::SdPlan::Transient) return stopForNow("planning", familyOf[b], b);
+        if (block == ttf::SdPlan::Ok) {
+          sd.size = work->block.bytes();
+          sd.fileStamp = files[b]->stamp;
+          sd.fileSize = files[b]->size;
+          sd.outlines = work->block.outlines();
+        }
       }
       const bool card = familyOf[b] >= sdFrom;
       in.styleMode[b] = card ? glyphstore::kModeSd : glyphstore::kModeFlash;
@@ -249,42 +274,54 @@ bool TtfFontSet::install(const Files* families, const uint8_t count, const uint8
   }
   if (onBusy) onBusy();
 
-  // A block's bytes as a file: the style's own file in flash mode, else its SD-mode block made from it.
+  // A block's bytes as a file: the style's own file in flash mode, else its SD-mode block made from it. Planned
+  // above already, so a plan that fails here failed for now, or the file changed meanwhile: no block to write either
+  // way.
   const auto blockSource = [&](const uint8_t b, ttf::FileSource* source) {
     if (layout.styleMode[b] == glyphstore::kModeFlash) {
       *source = *files[b];
       return true;
     }
-    if (!work->block.plan(*files[b])) return false;
+    if (work->block.plan(*files[b]) != ttf::SdPlan::Ok) return false;
     *source = work->block.source();
     return true;
   };
   // A style block that holds its bytes already where this layout puts it stays as it is, neither erased nor copied:
   // a set that keeps its leading families (a TrueType reader font beside another book's accent families, or beside
-  // none) copies only the rest. Reading a kept block costs a fraction of erasing and writing it again.
+  // none) copies only the rest. Reading a kept block costs a fraction of erasing and writing it again. A block that
+  // cannot be read now stops the install before anything is erased, rather than be erased as if it differed.
   uint8_t kept = 0;
   unsigned onCard = 0;
   for (uint8_t b = 0; b < styles; ++b) {
     ttf::FileSource source;
-    if (blockSource(b, &source) && holdsFile(flash_, layout.styleOffset[b], source, work->buffer)) {
-      kept |= static_cast<uint8_t>(1u << b);
-    }
+    if (!blockSource(b, &source)) return stopForNow("planning", familyOf[b], b);
+    const Held held = holdsFile(flash_, layout.styleOffset[b], source, work->buffer);
+    if (held == Held::Unread) return stopForNow("reading", familyOf[b], b);
+    if (held == Held::Same) kept |= static_cast<uint8_t>(1u << b);
     onCard += layout.styleMode[b] == glyphstore::kModeSd ? 1 : 0;
   }
-  if (!store_.beginInstall(layout, identity, work->sd, kept)) return false;
+  bool noHeaderMemory = false;
+  if (!store_.beginInstall(layout, identity, work->sd, kept, &noHeaderMemory)) {
+    failedForNow_ = noHeaderMemory;  // its header, made before anything is erased
+    return false;
+  }
   for (uint8_t b = 0; b < styles; ++b) {
     if ((kept & (1u << b)) != 0) continue;
     ttf::FileSource source;
-    bool copied = blockSource(b, &source);
+    bool read = blockSource(b, &source);
+    bool copied = read;
     for (uint32_t offset = 0; copied && offset < source.size; offset += kCopyBytes) {
       const uint32_t len = std::min(kCopyBytes, source.size - offset);
-      copied =
-          source.read(source.ctx, offset, work->buffer, len) && store_.writeStyleData(b, offset, work->buffer, len);
+      read = source.read(source.ctx, offset, work->buffer, len);
+      copied = read && store_.writeStyleData(b, offset, work->buffer, len);
       if (hooks.yield) hooks.yield();
     }
     if (!copied) {
       LOG_ERR("TTF", "install: copying family %u's style block %u failed", familyOf[b], b);
-      return false;  // the header is still erased: the next load installs again
+      // The header is still erased: the next load installs again. After a read that failed (memory, the card), the
+      // same set, not fewer families.
+      failedForNow_ = !read;
+      return false;
     }
   }
   if (!store_.finishInstall()) return false;
@@ -295,15 +332,27 @@ bool TtfFontSet::install(const Files* families, const uint8_t count, const uint8
 
 bool TtfFontSet::wipeIfPending(const std::function<void()>& onBusy) {
   if (!store_.isOpen() || !store_.wipePending()) return false;
+  if (hooks.renderLockHeld && !hooks.renderLockHeld()) {
+    // A lookup or a draw (a pre-render among them) may hold a record of the log: they all run under RenderLock.
+    LOG_INF("TTF", "glyph store wipe deferred: RenderLock is not held");
+    return false;
+  }
   if (onBusy) onBusy();
   const uint32_t start = hooks.nowMs ? hooks.nowMs() : 0;
-  if (!store_.wipe()) return false;  // stays pending: the next book open tries again
-  lastWipeMs = hooks.nowMs ? hooks.nowMs() - start : 0;
+  if (!store_.wipe()) return false;  // stays pending: the next chapter or book open tries again
+  noteWiped(start);
+  return true;
+}
+
+// The store was wiped, by wipe() or by a rebuild with a full journal: the ring has no store to wait for, and every
+// size claims its index again at its next lookup.
+void TtfFontSet::noteWiped(const uint32_t startMs) {
+  lastWipeMs = hooks.nowMs ? hooks.nowMs() - startMs : 0;
   ++storeWipes;
   LOG_INF("TTF", "glyph store wiped");
   ringMode_ = false;
   freeRing();
-  // The log may map elsewhere now; every size claims its index again at its next lookup.
+  // The log may map elsewhere now.
   for (uint8_t f = 0; f < count_; ++f) {
     TtfFont& font = *fonts_[f];
     font.rebase(font.body_);
@@ -311,7 +360,46 @@ bool TtfFontSet::wipeIfPending(const std::function<void()>& onBusy) {
       if (size) font.rebase(*size);
     }
   }
-  return true;
+}
+
+bool TtfFontSet::makeRoom(const FlashGlyphStore::Budget budget, const std::function<void()>& onBusy) {
+  if (!store_.isOpen()) return false;
+  if (hooks.renderLockHeld && !hooks.renderLockHeld()) {
+    LOG_INF("TTF", "making room deferred: RenderLock is not held");
+    return false;
+  }
+  // A write failure left a wipe pending: only the wipe goes on from there, and the store's makeRoom() would fail. A
+  // wipe takes seconds: an Idle step leaves it to the next Open, behind the busy indicator.
+  if (budget == FlashGlyphStore::Budget::Idle && store_.wipePending()) return false;
+  const bool wiped = wipeIfPending(onBusy);
+  if (store_.wipePending()) return wiped;
+  // A commit, inside a draw or a section build, only marks the use counts due. Their session-long block is taken here,
+  // room to make or not: an idle tick, or the top of a chapter's build, before it releases any of the reader's memory.
+  store_.keepCountsIfDue();
+  if (!store_.needsRoom(budget)) return wiped;
+  if (budget == FlashGlyphStore::Budget::Open && onBusy) onBusy();
+  const uint32_t start = hooks.nowMs ? hooks.nowMs() : 0;
+  const uint32_t generation = store_.generation();
+  FlashGlyphStore::RoomWork work;
+  const FlashGlyphStore::Room room = store_.makeRoom(budget, &work);
+  if (store_.generation() != generation) {
+    noteWiped(start);  // the rebuild's journal was full: the store is wiped instead, and every face index is void
+  } else if (room == FlashGlyphStore::Room::Failed) {
+    if (store_.wipePending()) noteCommit(Commit::WriteFailed);
+  } else if (ringMode_ && !store_.writesStopped()) {
+    ringMode_ = false;
+    freeRing();
+  }
+  const bool did = work.reclaimed > 0 || work.rebuilt || store_.generation() != generation;
+  if (did) {
+    ++storeRooms;
+    if (work.rebuilt) ++storeRebuilds;
+    storeDropped += work.dropped;
+    lastRoomMs = hooks.nowMs ? hooks.nowMs() - start : 0;
+    LOG_INF("TTF", "room made: %u reclaimed (%u kept, %u dropped)%s", work.reclaimed, work.kept, work.dropped,
+            work.rebuilt ? ", index rebuilt" : "");
+  }
+  return wiped || did;
 }
 
 bool TtfFontSet::markFull() {
@@ -319,6 +407,10 @@ bool TtfFontSet::markFull() {
   store_.markFull();
   noteCommit(Commit::Full);
   return true;
+}
+
+bool TtfFontSet::needsIdleRoom() const {
+  return store_.isOpen() && !store_.wipePending() && (store_.countsDue() || store_.idleWorkDue());
 }
 
 TtfFontSet::Stats TtfFontSet::stats() const {
@@ -330,6 +422,10 @@ TtfFontSet::Stats TtfFontSet::stats() const {
   s.logUsed = store_.logUsed();
   s.logSize = store_.isOpen() ? store_.geometry().logSize : 0;
   s.usedSlots = store_.usedSlots();
+  s.segments = static_cast<uint16_t>(store_.segmentCount());
+  s.freeSegments = static_cast<uint16_t>(store_.freeSegments());
+  s.liveSlots = store_.liveSlots();
+  s.drawsCounted = store_.drawsCounted();
   for (uint8_t f = 0; f < count_; ++f) {
     s.renders += fonts_[f]->renders();
     s.hits += fonts_[f]->storeHits();
@@ -337,7 +433,10 @@ TtfFontSet::Stats TtfFontSet::stats() const {
   return s;
 }
 
-TtfFontSet::StoreEvents TtfFontSet::storeEvents() { return {storeFills.load(), storeWipes.load(), lastWipeMs.load()}; }
+TtfFontSet::StoreEvents TtfFontSet::storeEvents() {
+  return {storeFills.load(),    storeWipes.load(),   lastWipeMs.load(), storeRooms.load(),
+          storeRebuilds.load(), storeDropped.load(), lastRoomMs.load()};
+}
 
 // --- The set: what only a miss needs ---
 
@@ -358,11 +457,11 @@ class TtfFontSet::MissScope {
 
 bool TtfFontSet::beginMiss() {
   if (rasterizer_.allocated() && (!readsCard_ || sdPages_)) return true;  // on the heap since an earlier miss
-  BuildArena* const arena = glyph_miss::arena();
   // Room for all of it, the worst padding included: a refused allocation would read in the arena's own log as its
   // owner running out.
   const size_t want = rasterizer_.scratchBytes() + alignof(std::max_align_t) +
                       (readsCard_ ? sizeof(ttf::SdPageCache) + alignof(ttf::SdPageCache) : 0);
+  BuildArena* const arena = glyph_miss::lendingArena(want);
   if (arena && !rasterizer_.allocated() && !sdPages_ && arena->capacity() - arena->used() >= want) {
     // All of it from the lent region, for this lookup alone: endMiss() gives it back, so the arena's owner finds its
     // blocks as it left them.
@@ -493,6 +592,8 @@ bool TtfFontSet::ownsBitmap(const EpdGlyph* glyph, const uint8_t*& bitmap) const
     bitmap = nullptr;
     return true;
   }
+  // A record of the log, drawn: a use for the reclaims (nothing happens while the store keeps no counts).
+  if (!hooks.countsDraw || hooks.countsDraw()) store_.noteDrawn(glyph);
   return false;
 }
 
@@ -513,8 +614,13 @@ void TtfFontSet::failed(const uint8_t style, const uint32_t codepoint, const ttf
 void TtfFontSet::noteCommit(const Commit result) {
   if (result == Commit::Full || result == Commit::WriteFailed) {
     if (!ringMode_) {
-      LOG_INF("TTF", "glyph store %s: new glyphs are not stored until the next book open",
-              result == Commit::Full ? "full" : "write failed");
+      // Room is made in idle time or at the next chapter or book open; a wipe only at the open.
+      if (result == Commit::Full && !store_.wipePending()) {
+        LOG_INF("TTF", "glyph store full: new glyphs are not stored until room is made");
+      } else {
+        LOG_INF("TTF", "glyph store %s: new glyphs are not stored until the wipe at the next chapter or book open",
+                result == Commit::Full ? "full" : "write failed");
+      }
       ++storeFills;
     }
     ringMode_ = true;
@@ -530,21 +636,30 @@ TtfFont::~TtfFont() = default;  // out of line: its styles and sizes are freed i
 TtfFont::StylesResult TtfFont::openStyles(const ttf::FileSource (&files)[4], uint8_t& block, ttf::ScratchPlan* plan) {
   maxNativePx_ = kMaxNativePx;
   if (!styles_) {
-    // The styles the family has files for, and the body size's fonts of them. Opened again after an install, the
-    // family keeps them: its files are the same.
+    // The styles the family has files for, each drawn from its own. Opened again after an install, the family keeps
+    // them: its files are the same.
     uint8_t count = 0;
-    for (uint8_t s = 0; s < 4; ++s) slot_[s] = files[s].size != 0 ? count++ : kNoSlot;
+    for (uint8_t s = 0; s < 4; ++s) {
+      fileSlot_[s] = files[s].size != 0 ? count++ : kNoSlot;
+      source_[s] = files[s].size != 0 ? s : kNoSlot;
+    }
     styles_ = makeUniqueNoThrow<Style[]>(count);
-    body_.styles = makeUniqueNoThrow<Size::StyleFont[]>(count);
-    if (!styles_ || !body_.styles) {
+    if (!styles_) {
       LOG_ERR("TTF", "OOM: family %u's %u styles", family_, count);
+      set_.failedForNow_ = true;
       return StylesResult::Failed;
     }
     styleCount_ = count;
   }
+  // Planned for the largest size drawn: a native size (5 x 26 pt's pixels per em, about) above the body sizes. A
+  // body too large for flash mode is a CJK font in practice, and draws about 37% faster with the larger pool.
+  const uint32_t largest = std::max(ttf::ppemFromPoints(kMaxPointSize), static_cast<uint32_t>(kMaxNativePx) << 6);
+  const auto poolFor = [this](const Style& style) {
+    return style.onCard && family_ == 0 ? ttf::kPoolBytesSd : ttf::kPoolBytesFlash;
+  };
   for (uint8_t s = 0; s < 4; ++s) {
     if (files[s].size == 0) continue;
-    Style& style = styles_[slot_[s]];
+    Style& style = styles_[fileSlot_[s]];
     style.present = false;
     style.onCard = false;
     style.sd = {};
@@ -566,10 +681,16 @@ TtfFont::StylesResult TtfFont::openStyles(const ttf::FileSource (&files)[4], uin
     FontBytes bytes;
     if (!fontBytes(s, &bytes)) return StylesResult::MapFailed;
     if (style.onCard) {
-      // The stamp misses a file rewritten in place at the same size and time; its table directory does not.
+      // The stamp misses a file rewritten in place at the same size and time; its table directory does not. A plan
+      // that fails for now (no memory, a card read) says nothing of the file: the load fails, and installs nothing.
       auto block = makeUniqueNoThrow<ttf::SdBlock>();
-      if (!block) return StylesResult::Failed;
-      if (!block->plan(files[s]) || !block->sameAs(bytes.span(0, style.bytes), style.bytes) ||
+      const ttf::SdPlan planned = block ? block->plan(files[s]) : ttf::SdPlan::Transient;
+      if (planned == ttf::SdPlan::Transient) {
+        LOG_ERR("TTF", "family %u style %u: its file could not be checked for now", family_, s);
+        set_.failedForNow_ = true;
+        return StylesResult::Failed;
+      }
+      if (planned != ttf::SdPlan::Ok || !block->sameAs(bytes.span(0, style.bytes), style.bytes) ||
           block->outlines().fileOffset != style.sd.fileOffset) {
         return StylesResult::Changed;
       }
@@ -583,14 +704,61 @@ TtfFont::StylesResult TtfFont::openStyles(const ttf::FileSource (&files)[4], uin
     style.kerning.resolve(bytes, style.face);
     ttf::resolveLigatures(bytes, style.face, &style.ligatures);
     maxNativePx_ = std::min(maxNativePx_, nativeCeilingPx(style.face));
-    // Planned for the largest size drawn: a native size (5 x 26 pt's pixels per em, about) above the body sizes. A
-    // body too large for flash mode is a CJK font in practice, and draws about 37% faster with the larger pool.
-    const uint32_t largest = std::max(ttf::ppemFromPoints(kMaxPointSize), static_cast<uint32_t>(kMaxNativePx) << 6);
-    const uint32_t pool = style.onCard && family_ == 0 ? ttf::kPoolBytesSd : ttf::kPoolBytesFlash;
-    *plan = ttf::mergePlans(*plan, ttf::planScratch(style.face, largest, pool));
+    *plan = ttf::mergePlans(*plan, ttf::planScratch(style.face, largest, poolFor(style)));
   }
   if (!draws(0)) return StylesResult::Failed;
+  if (!body_.styles) {
+    // The styles the family draws, a synthetic one too, and the body size's fonts of them.
+    chooseSynthetic();
+    body_.styles = makeUniqueNoThrow<Size::StyleFont[]>(fontCount_);
+    if (!body_.styles) {
+      LOG_ERR("TTF", "OOM: family %u's %u fonts", family_, fontCount_);
+      set_.failedForNow_ = true;
+      return StylesResult::Failed;
+    }
+  }
+  // A synthetic glyph outgrows its file's plan: wider emboldened, wider again slanted.
+  for (uint8_t s = 0; s < 4; ++s) {
+    if (!synthetic(s) || !draws(s)) continue;
+    const Style& source = *styleAt(s);
+    *plan = ttf::mergePlans(*plan, ttf::planScratch(source.face, largest, poolFor(source), emboldened(s), slanted(s)));
+  }
   return StylesResult::Ok;
+}
+
+void TtfFont::chooseSynthetic() {
+  // Spec 7.1: a family gets synthetic bold only when none of its files is bold. A file in the bold or bold italic slot
+  // counts as bold whatever its face says; so does any file whose face says bold (macStyle, or a weight of 600 or
+  // more), such as a bold file serving as the regular.
+  // Spec 7.4 reads italic alike: a file in the italic or bold italic slot, or a face that says italic (macStyle,
+  // fsSelection, italicAngle). Both rules read the files before either changes source_.
+  // Derived from the files each time, so a second call gives the first's result (a synthetic source it set must not
+  // read as a file below).
+  for (uint8_t s = 0; s < 4; ++s) source_[s] = fileSlot_[s] != kNoSlot ? s : kNoSlot;
+  emboldened_ = slanted_ = 0;
+  bool bold = fileSlot_[1] != kNoSlot || fileSlot_[3] != kNoSlot;
+  bool italic = fileSlot_[2] != kNoSlot || fileSlot_[3] != kNoSlot;
+  for (uint8_t s = 0; s < 4; ++s) {
+    if (!draws(s)) continue;
+    bold = bold || styleAt(s)->face.bold;
+    italic = italic || styleAt(s)->face.italic;
+  }
+  if (!bold) {
+    // Bold from the regular; bold italic from the italic when the family draws one, else from the regular too.
+    source_[1] = 0;
+    source_[3] = draws(2) ? 2 : 0;
+    emboldened_ = static_cast<uint8_t>((1u << 1) | (1u << 3));
+  }
+  if (!italic) {
+    // Italic from the regular. Bold italic: the emboldened regular above, else the Bold file. A family that is bold
+    // only by its faces (a bold or heavy file serving as the regular) has neither: its bold italic falls back to the
+    // italic.
+    source_[2] = 0;
+    if (source_[3] == kNoSlot && fileSlot_[1] != kNoSlot && draws(1)) source_[3] = 1;
+    slanted_ = static_cast<uint8_t>((1u << 2) | (source_[3] != kNoSlot ? 1u << 3 : 0u));
+  }
+  fontCount_ = 0;
+  for (uint8_t s = 0; s < 4; ++s) slot_[s] = source_[s] != kNoSlot ? fontCount_++ : kNoSlot;
 }
 
 bool TtfFont::configure(Size& size, const uint32_t ppem) {
@@ -629,8 +797,8 @@ bool TtfFont::configure(Size& size, const uint32_t ppem) {
 
 void TtfFont::rebase(Size& size) {
   if (size.ppem == 0) return;
-  for (uint8_t i = 0; i < styleCount_; ++i) {
-    if (styles_[i].present) size.styles[i].data.bitmap = set_.store_.logBase();
+  for (uint8_t s = 0; s < 4; ++s) {
+    if (draws(s)) size.styles[slot_[s]].data.bitmap = set_.store_.logBase();
   }
 }
 
@@ -669,7 +837,7 @@ TtfFont::Size* TtfFont::nativeSize(const uint8_t px) {
   }
   checkLock();
   auto size = makeUniqueNoThrow<Size>();
-  if (size) size->styles = makeUniqueNoThrow<Size::StyleFont[]>(styleCount_);
+  if (size) size->styles = makeUniqueNoThrow<Size::StyleFont[]>(fontCount_);
   if (!size || !size->styles) {
     LOG_ERR("TTF", "%u px: no memory for a native size; the nearest serves", px);
     return nearestNative(ppem);
@@ -732,6 +900,13 @@ bool TtfFont::storeKey(Size& size, const uint8_t style, const uint32_t codepoint
   return true;
 }
 
+bool TtfFont::mapsCodepoint(const uint32_t codepoint) {
+  if (!draws(0)) return false;
+  checkLock();
+  FontBytes bytes;
+  return fontBytes(0, &bytes) && ttf::glyphIndex(bytes, styleAt(0)->face, codepoint) != 0;
+}
+
 bool TtfFont::fontBytes(const uint8_t style, FontBytes* bytes) {
   // Flash mode maps one style block at a time, every family's, so the pointer is fetched again for every render.
   Style& s = *styleAt(style);
@@ -787,7 +962,7 @@ const EpdGlyph* TtfFont::render(const Size& size, const uint8_t style, const uin
   }
   glyph_miss::noteDrawn();
   EpdGlyph metrics{};
-  const ttf::Status loaded = placeable(set.rasterizer_.load(bytes, face, index, size.ppem, &metrics), metrics);
+  const ttf::Status loaded = load(bytes, face, index, size, style, &metrics);
   if (loaded != ttf::Status::Ok) {
     set.failed(style, codepoint, loaded, haveKey, key);
     return nullptr;
@@ -813,10 +988,37 @@ const EpdGlyph* TtfFont::render(const Size& size, const uint8_t style, const uin
   return set.drawToRing(metrics);
 }
 
-int8_t TtfFont::kerning(const Size& size, const uint8_t style, const uint32_t left, const uint32_t right) {
-  Style* const found = styleAt(style);
+// The rasterizer's load(), then embolden() and slant() as the style asks (spec 7.2, 7.4), for a glyph EpdGlyphRef can
+// place. A glyph that the synthesis makes too large (the output region's cap, the box or advance limits, EpdGlyphRef's
+// 8-bit offsets), though its file's glyph fits, is drawn without the slant, then without the emboldening too, rather
+// than missing. A Transient stays so.
+ttf::Status TtfFont::load(FontBytes& bytes, const ttf::Face& face, const uint16_t index, const Size& size,
+                          const uint8_t style, EpdGlyph* metrics) {
+  ttf::Rasterizer& rasterizer = set_.rasterizer_;
+  bool bold = emboldened(style);
+  bool slant = slanted(style);
+  for (;;) {
+    ttf::Status loaded = rasterizer.load(bytes, face, index, size.ppem, metrics);
+    if (loaded != ttf::Status::Ok) return loaded;
+    if (bold) loaded = rasterizer.embolden(ttf::emboldenStrength(size.ppem), metrics);
+    if (slant && loaded == ttf::Status::Ok) loaded = rasterizer.slant(metrics);
+    loaded = placeable(loaded, *metrics);
+    if (loaded != ttf::Status::Unsupported || (!bold && !slant)) return loaded;
+    if (slant) {
+      slant = false;  // upright first
+    } else {
+      bold = false;  // then the file's own weight
+    }
+  }
+}
+
+int8_t TtfFont::kerning(const Size& size, const uint8_t drawn, const uint32_t left, const uint32_t right) {
+  Style* const found = styleAt(drawn);
   if (!found || !found->present || !found->kerning.any() || size.ppem == 0) return 0;
   Style& s = *found;
+  // A synthetic style kerns as its file does, with the file's style's pairs: every glyph is the same amount wider
+  // (bold) or unchanged (italic: the shear keeps the advance).
+  const uint8_t style = source_[drawn];
   FlashGlyphStore& store = set_.store_;
   // The store keys a pair by its codepoints (BMP only) and keeps font units, so every size shares it.
   const bool storable = left <= 0xFFFF && right <= 0xFFFF;
@@ -906,7 +1108,7 @@ void TtfFont::prefetch(Size& size, const uint8_t style, const char* utf8Text) {
     const TtfFontSet::Pending& p = pending[i];
     key = glyphstore::makeKey(p.codepoint, style, size.index);
     EpdGlyph metrics{};
-    const ttf::Status loaded = placeable(set.rasterizer_.load(bytes, face, p.glyph, size.ppem, &metrics), metrics);
+    const ttf::Status loaded = load(bytes, face, p.glyph, size, style, &metrics);
     if (loaded != ttf::Status::Ok) {
       set.failed(style, p.codepoint, loaded, true, key);
       continue;

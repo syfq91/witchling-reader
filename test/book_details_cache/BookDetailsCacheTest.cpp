@@ -83,6 +83,9 @@ TEST_F(BookDetailsCacheTest, MissingOrTruncatedFileIsNotAnswered) {
   EXPECT_FALSE(BookDetailsCache::read(path_, 1, 0, out));
 }
 
+// Any other format version is parsed again. Version 1 has no primary author (answering from it
+// would group the book under "Unknown author" for good), version 2 no ISBN or ASIN (KOReader sync
+// would go without them until the book changed), 99 is a record from the future.
 TEST_F(BookDetailsCacheTest, AnotherFormatVersionIsNotAnswered) {
   ASSERT_TRUE(BookDetailsCache::write(path_, 1, 0, sample()));
   {

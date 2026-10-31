@@ -607,6 +607,12 @@ void ContentOpfParser::startElement(void* userData, const char* name, const char
 
   if (self->state == IN_PACKAGE && isSpineTag(name)) {
     self->state = IN_SPINE;
+    // Metadata, so read with or without a cache (the spine table below needs one).
+    for (int i = 0; atts[i]; i += 2) {
+      if (strcmp(atts[i], "page-progression-direction") != 0) continue;
+      if (strcasecmp(atts[i + 1], "rtl") == 0) self->pageProgression = PageProgression::Rtl;
+      if (strcasecmp(atts[i + 1], "ltr") == 0) self->pageProgression = PageProgression::Ltr;
+    }
     // No cache => no spine parsing (see the isItemRefTag branch), so nothing will read this.
     // queueSpineItemRef() already treats an absent reader as "cannot resolve".
     if (self->cache) {
@@ -832,7 +838,14 @@ void ContentOpfParser::startElement(void* userData, const char* name, const char
       if (strcmp(atts[i], "type") == 0) {
         type = atts[i + 1];
       } else if (strcmp(atts[i], "href") == 0) {
-        guideHref = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + atts[i + 1]));
+        // A reference names a document: its fragment is split off, before decoding so that an
+        // escaped '#' stays part of a filename. "Text/c1.xhtml#start" matched no spine item, and
+        // its lookup read every spine record.
+        const std::string_view raw(atts[i + 1]);
+        const std::string_view path = raw.substr(0, raw.find('#'));
+        if (!path.empty()) {
+          guideHref = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + std::string(path)));
+        }
       }
     }
     if (!guideHref.empty()) {

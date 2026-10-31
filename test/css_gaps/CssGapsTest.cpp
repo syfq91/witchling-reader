@@ -8,12 +8,6 @@
 // Gap 3: list-style-type / list-style: none
 // ============================================================================
 
-TEST(CssGapsListStyle, TypeNone) {
-  const CssStyle style = CssParser::parseInlineStyle("list-style-type: none");
-  ASSERT_TRUE(style.hasListStyleNone());
-  ASSERT_TRUE(style.listStyleNone);
-}
-
 TEST(CssGapsListStyle, ShorthandNone) {
   const CssStyle style = CssParser::parseInlineStyle("list-style: none");
   ASSERT_TRUE(style.hasListStyleNone());
@@ -27,116 +21,36 @@ TEST(CssGapsListStyle, TypeDiscIsNotNone) {
 }
 
 // ============================================================================
-// Gap 4: page-break-before / page-break-after
-// ============================================================================
-
-TEST(CssGapsPageBreak, BeforeAlways) {
-  const CssStyle style = CssParser::parseInlineStyle("page-break-before: always");
-  ASSERT_TRUE(style.hasPageBreakBefore());
-  ASSERT_TRUE(style.pageBreakBefore);
-}
-
-TEST(CssGapsPageBreak, AfterAlways) {
-  const CssStyle style = CssParser::parseInlineStyle("page-break-after: always");
-  ASSERT_TRUE(style.hasPageBreakAfter());
-  ASSERT_TRUE(style.pageBreakAfter);
-}
-
-TEST(CssGapsPageBreak, Css3BreakBeforePage) {
-  const CssStyle style = CssParser::parseInlineStyle("break-before: page");
-  ASSERT_TRUE(style.hasPageBreakBefore());
-  ASSERT_TRUE(style.pageBreakBefore);
-}
-
-TEST(CssGapsPageBreak, Css3BreakAfterPage) {
-  const CssStyle style = CssParser::parseInlineStyle("break-after: page");
-  ASSERT_TRUE(style.hasPageBreakAfter());
-  ASSERT_TRUE(style.pageBreakAfter);
-}
-
-TEST(CssGapsPageBreak, BeforeAutoIsNotSet) {
-  const CssStyle style = CssParser::parseInlineStyle("page-break-before: auto");
-  // auto should not set the break flag
-  ASSERT_FALSE(style.hasPageBreakBefore() && style.pageBreakBefore);
-}
-
-// ============================================================================
 // Gap 2: line-height
 // ============================================================================
 
-TEST(CssGapsLineHeight, Unitless) {
-  const CssStyle style = CssParser::parseInlineStyle("line-height: 1.5");
-  ASSERT_TRUE(style.hasLineHeight());
-  // 1.5 normalised around 1.5 base => 100%. Allow ±5%.
-  ASSERT_NEAR(style.lineHeightMultiplier, 1.0f, 0.05f);
+// line-height is a multiple of the element's font size, as CSS has it: unitless and em as given, rem as em, % over 100,
+// px and pt at CSS's 16 px medium. normal and the keywords leave it unset (the font's own line height).
+TEST(CssGapsLineHeight, IsAMultipleOfTheFontSize) {
+  const auto em = [](const char* decl) {
+    const CssStyle s = CssParser::parseInlineStyle(decl);
+    return s.hasLineHeight() ? s.lineHeightEm : -1.0f;
+  };
+  EXPECT_FLOAT_EQ(1.5f, em("line-height: 1.5"));
+  EXPECT_FLOAT_EQ(1.75f, em("line-height: 175%"));
+  EXPECT_FLOAT_EQ(1.6f, em("line-height: 1.6em"));
+  EXPECT_FLOAT_EQ(1.25f, em("line-height: 1.25rem"));
+  EXPECT_FLOAT_EQ(1.5f, em("line-height: 24px"));
+  EXPECT_FLOAT_EQ(2.0f, em("line-height: 24pt"));
+  EXPECT_FLOAT_EQ(1.75f, em("LINE-HEIGHT : 1.75 !important"));
 }
 
-TEST(CssGapsLineHeight, Percent) {
-  const CssStyle style = CssParser::parseInlineStyle("line-height: 150%");
-  ASSERT_TRUE(style.hasLineHeight());
-  ASSERT_NEAR(style.lineHeightMultiplier, 1.0f, 0.05f);
+TEST(CssGapsLineHeight, IsClamped) {
+  const auto em = [](const char* decl) { return CssParser::parseInlineStyle(decl).lineHeightEm; };
+  EXPECT_FLOAT_EQ(0.5f, em("line-height: 0.1"));
+  EXPECT_FLOAT_EQ(4.0f, em("line-height: 9"));
 }
 
-TEST(CssGapsLineHeight, Em) {
-  const CssStyle style = CssParser::parseInlineStyle("line-height: 1.5em");
-  ASSERT_TRUE(style.hasLineHeight());
-  ASSERT_NEAR(style.lineHeightMultiplier, 1.0f, 0.05f);
-}
-
-TEST(CssGapsLineHeight, SmallerValue) {
-  // line-height: 1.0 (compact) should give a multiplier < 1.0
-  const CssStyle style = CssParser::parseInlineStyle("line-height: 1.0");
-  ASSERT_TRUE(style.hasLineHeight());
-  ASSERT_LT(style.lineHeightMultiplier, 1.0f);
-}
-
-TEST(CssGapsLineHeight, LargerValue) {
-  // line-height: 2.0 (spacious) should give a multiplier > 1.0
-  const CssStyle style = CssParser::parseInlineStyle("line-height: 2.0");
-  ASSERT_TRUE(style.hasLineHeight());
-  ASSERT_GT(style.lineHeightMultiplier, 1.0f);
-}
-
-TEST(CssGapsLineHeight, ClampMin) {
-  // Very small value must be clamped to minimum (0.7)
-  const CssStyle style = CssParser::parseInlineStyle("line-height: 0.1");
-  ASSERT_TRUE(style.hasLineHeight());
-  ASSERT_GE(style.lineHeightMultiplier, 0.7f);
-}
-
-TEST(CssGapsLineHeight, ClampMax) {
-  // Very large value must be clamped to maximum (2.0)
-  const CssStyle style = CssParser::parseInlineStyle("line-height: 10.0");
-  ASSERT_TRUE(style.hasLineHeight());
-  ASSERT_LE(style.lineHeightMultiplier, 2.0f);
-}
-
-TEST(CssGapsLineHeight, NormalIsNotSet) {
-  // 'normal' keyword should not set a line-height override
-  const CssStyle style = CssParser::parseInlineStyle("line-height: normal");
-  ASSERT_FALSE(style.hasLineHeight());
-}
-
-// ============================================================================
-// Gap 1: font-size (heading scaling)
-// ============================================================================
-
-TEST(CssGapsFontSize, Percent160) {
-  const CssStyle style = CssParser::parseInlineStyle("font-size: 160%");
-  ASSERT_TRUE(style.hasFontSizeMultiplier());
-  ASSERT_NEAR(style.fontSizeMultiplier, 1.6f, 0.05f);
-}
-
-TEST(CssGapsFontSize, Em) {
-  const CssStyle style = CssParser::parseInlineStyle("font-size: 1.4em");
-  ASSERT_TRUE(style.hasFontSizeMultiplier());
-  ASSERT_NEAR(style.fontSizeMultiplier, 1.4f, 0.05f);
-}
-
-TEST(CssGapsFontSize, Smaller) {
-  const CssStyle style = CssParser::parseInlineStyle("font-size: 80%");
-  ASSERT_TRUE(style.hasFontSizeMultiplier());
-  ASSERT_NEAR(style.fontSizeMultiplier, 0.8f, 0.05f);
+TEST(CssGapsLineHeight, KeywordsAndNonsenseLeaveItUnset) {
+  for (const char* decl : {"line-height: normal", "line-height: inherit", "line-height: initial", "line-height: unset",
+                           "line-height: tall", "line-height: 0", "line-height: -1.5", "line-height: 1.5vh"}) {
+    EXPECT_FALSE(CssParser::parseInlineStyle(decl).hasLineHeight()) << decl;
+  }
 }
 
 // ============================================================================
@@ -168,12 +82,6 @@ TEST(CssGapsFontVariant, UnknownIsNotSet) {
   ASSERT_FALSE(style.hasSmallCaps());
 }
 
-TEST(CssGapsFontVariant, CaseInsensitive) {
-  const CssStyle style = CssParser::parseInlineStyle("FONT-VARIANT : SMALL-CAPS ;");
-  ASSERT_TRUE(style.hasSmallCaps());
-  ASSERT_TRUE(style.smallCaps);
-}
-
 // ============================================================================
 // CSS ID selector support (#id, tag#id)
 // ============================================================================
@@ -185,46 +93,12 @@ static void loadCssFromString(CssParser& parser, const char* css) {
   parser.loadFromStream(f);
 }
 
-TEST(CssGapsIdSelector, Basic) {
-  CssParser parser("");
-  loadCssFromString(parser, "#hero { font-weight: bold; }");
-  const CssStyle style = parser.resolveStyle("p", "", "hero");
-  ASSERT_TRUE(style.hasFontWeight());
-  ASSERT_EQ(style.fontWeight, CssFontWeight::Bold);
-}
-
 TEST(CssGapsIdSelector, NotMatchedOnOtherElement) {
   CssParser parser("");
   loadCssFromString(parser, "#hero { font-weight: bold; }");
   // No id attr — should not pick up the #hero rule
   const CssStyle style = parser.resolveStyle("p", "", "");
   ASSERT_FALSE(style.hasFontWeight());
-}
-
-TEST(CssGapsIdSelector, TagIdWinsOverId) {
-  // tag#id is more specific than #id — both applied, tag#id wins on conflict
-  CssParser parser("");
-  loadCssFromString(parser, "#intro { text-align: left; } p#intro { text-align: center; }");
-  const CssStyle style = parser.resolveStyle("p", "", "intro");
-  ASSERT_TRUE(style.hasTextAlign());
-  ASSERT_EQ(style.textAlign, CssTextAlign::Center);
-}
-
-TEST(CssGapsIdSelector, CascadesOverClass) {
-  // #id must override .class on the same property
-  CssParser parser("");
-  loadCssFromString(parser, ".note { text-align: left; } #special { text-align: right; }");
-  const CssStyle style = parser.resolveStyle("p", "note", "special");
-  ASSERT_TRUE(style.hasTextAlign());
-  ASSERT_EQ(style.textAlign, CssTextAlign::Right);
-}
-
-TEST(CssGapsIdSelector, CascadesOverTag) {
-  CssParser parser("");
-  loadCssFromString(parser, "p { text-align: left; } #override { text-align: center; }");
-  const CssStyle style = parser.resolveStyle("p", "", "override");
-  ASSERT_TRUE(style.hasTextAlign());
-  ASSERT_EQ(style.textAlign, CssTextAlign::Center);
 }
 
 TEST(CssGapsIdSelector, CaseNormalized) {

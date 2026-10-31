@@ -37,6 +37,7 @@ void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputMa
 
 class FinishedBookActivity final : public UiListActivity {
  public:
+  bool drawsBookText() const override { return true; }
   FinishedBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string currentBookPath,
                        std::string nextBookPath, std::string currentBookAuthor = {},
                        std::string currentBookTitle = {});

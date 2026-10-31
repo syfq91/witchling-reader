@@ -4,6 +4,7 @@
 
 #include <list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -116,7 +117,11 @@ class CssParser {
   //      looked at either, so a book's embedded fonts would stay unknown.
   // v29: `font-family` also keeps the list's generic serif or sans-serif (CssFontFamily), which v28
   //      dropped.
-  static constexpr uint8_t CSS_CACHE_VERSION = 29;
+  // v30: `line-height` is persisted, as a multiple of the font size; v29 dropped it from the cache and
+  //      stored it relative to a 1.5 base.
+  // v31: `text-emphasis-style` (and `text-emphasis`, with the -epub- and -webkit- prefixes) is persisted: a mark
+  //      in bits 3-6 of the smallCaps byte, defined in bit 2; in the resident pool, extra bit 5 and a mark byte.
+  static constexpr uint8_t CSS_CACHE_VERSION = 31;
   // Bytes before the complex-rule table and the sorted offset index: version(1) + ruleCount(2) +
   // totalSelectorCandidates(4) + unsupportedSelectorSkips(4) + flags(1) + complexTableBytes(2).
   static constexpr uint32_t CSS_CACHE_HEADER_BYTES = 14;
@@ -230,6 +235,11 @@ class CssParser {
    * Check if CSS rules cache file exists
    */
   bool hasCache() const;
+  // True when the rules cache is of this firmware's CSS_CACHE_VERSION, so a load reads it instead
+  // of compiling the stylesheets again: an open and a one-byte read (cache_version::isCurrent).
+  // A file of another version counts as no cache wherever the stylesheets are compiled or the CSS
+  // is waited for: loadFromCache() deletes it, and the book would be unstyled until the next open.
+  bool cacheIsCurrent() const;
 
   /**
    * Delete CSS rules cache file exists
@@ -255,7 +265,8 @@ class CssParser {
   // - endCacheCompile(): finalizes cache file from staged records
   bool beginCacheCompile();
   bool appendCompiledFromStream(FsFile& source);
-  bool endCacheCompile();
+  // `scratch`: a lent region the finish may take its two 2 KB windows from (null: the heap).
+  bool endCacheCompile(BuildArena* scratch = nullptr);
   // Abort a streaming compile (e.g. a stylesheet was skipped for low heap): discards the staged
   // temp file and persists NOTHING, so hasCache() stays false and the next open re-parses.
   // Persisting a partial compile is poison: an empty/incomplete index loads as VALID on every
@@ -345,8 +356,9 @@ class CssParser {
   // reader's font, and its low two bits are 0 (CssFontFamily).
   [[nodiscard]] static uint32_t fontFamilyHash(std::string_view name);
   // The face records of the book whose cache is at `cachePath`, for nextFontFace. False when there
-  // are none or the side file cannot be read.
-  static bool loadFontFaces(const std::string& cachePath, std::string& records);
+  // are none or the side file cannot be read. `stale` (optional) tells a file of another version, which is
+  // not "no faces" but "not known until the stylesheets are compiled again", from an absent one.
+  static bool loadFontFaces(const std::string& cachePath, std::string& records, bool* stale = nullptr);
   // Takes the first face off `records`. False when none is left (or the rest is damaged).
   static bool nextFontFace(std::string_view& records, FontFace& face);
 
@@ -493,12 +505,24 @@ class CssParser {
   static CssFontStyle interpretFontStyle(std::string_view val);
   static CssFontWeight interpretFontWeight(std::string_view val);
   static CssTextDecoration interpretDecoration(std::string_view val);
+  /** text-emphasis-style / text-emphasis (a colour is ignored): the TextEmphasis mark, 0 for `none`; nullopt for a
+   *  string mark, an unknown keyword or no keyword at all. */
+  static std::optional<uint8_t> parseTextEmphasisStyle(std::string_view value);
   static CssLength interpretLength(std::string_view val);
   /** Returns true only when a numeric length was parsed (e.g. 2em, 50%). False for auto/inherit/initial. */
   static bool tryInterpretLength(std::string_view val, CssLength& out);
   /** width:/height: on an image. Returns true when the declaration applies, with `out` holding
    *  either the length or the CssUnit::Auto marker; false for values we ignore. */
   static bool interpretImageSize(std::string_view val, CssLength& out);
+  /** line-height as a multiple of the element's font size; false for normal, the keywords and what is not a length. */
+  static bool interpretLineHeight(std::string_view val, float& em);
+  // How text runs. Each leaves `out` alone and returns false for inherit, unset, revert and values it does not know,
+  // which leaves the property unset: the element takes its parent's value where the property is inherited.
+  static bool interpretWritingMode(std::string_view val, CssWritingMode& out);
+  static bool interpretTextOrientation(std::string_view val, CssTextOrientation& out);
+  static bool interpretTextCombine(std::string_view val, CssTextCombine& out);
+  static bool interpretDirection(std::string_view val, CssDirection& out);
+  static bool interpretUnicodeBidi(std::string_view val, CssUnicodeBidi& out);
 
   // String utilities
   static std::string normalized(const std::string& s);
@@ -517,11 +541,15 @@ class CssParser {
                                 uint16_t& outOrder) const;
   static bool readCssStylePayload(FsFile& file, CssStyle& style);
   static void writeCssStylePayload(FsFile& file, const CssStyle& style);
+  // The payload writeCssStylePayload writes, into `out` (CSS_FIXED_STYLE_BYTES); its length.
+  static size_t encodeCssStylePayload(const CssStyle& style, uint8_t* out);
   // A rule record, the unit of the cache file and the compile staging file:
   // selectorLen(2) selector order(2) style payload.
   static void writeRuleRecord(FsFile& file, const std::string& selector, uint16_t order, const CssStyle& style);
   // complexTableBytes(2) and the complex-rule table, as the cache header ends.
   void writeComplexTable(FsFile& file) const;
+  // endCacheCompile's copy of the staged rules into the cache file, and its index.
+  bool writeCompiledCache(FsFile& outFile, FsFile& tempFile, BuildArena* scratch);
   void touchHotRule(const std::string& selector) const;
   void cacheHotRule(const std::string& selector, const OrderedStyle& rule) const;
 

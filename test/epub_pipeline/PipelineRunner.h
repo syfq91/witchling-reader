@@ -10,7 +10,12 @@
 #include <ostream>
 #include <string>
 
+#include "Epub/FlowContext.h"
+
 class BuildArena;
+class GfxRenderer;
+class Page;
+class Section;
 struct BlockFontFamilies;
 
 namespace pipeline_harness {
@@ -20,6 +25,9 @@ struct Profile {
   const char* name = "default";
   int fontId = 1;
   float lineCompression = 1.0f;
+  // Book's style line spacing (Section::BuildParams); off by default.
+  float bookLineHeightFloor = 0.0f;
+  uint16_t lineHeightEmPx = 0;
   bool extraParagraphSpacing = false;
   uint8_t paragraphAlignment = 0;
   uint16_t viewportWidth = 460;
@@ -31,6 +39,9 @@ struct Profile {
   uint8_t imageRendering = 0;
   // The book's other font families (Publisher Fonts' Accents and All Text); nullptr for none.
   const BlockFontFamilies* fontFamilies = nullptr;
+  // The reader's vertical-text request (Section::BuildParams); Off, as for every book whose language is never set
+  // vertically, so the default goldens stay horizontal.
+  VerticalText verticalText = VerticalText::Off;
   // When non-zero, every section build is lent a heap-backed BuildArena of this many bytes, the
   // way the reader lends the borrowed secondary framebuffer to a background build. The heap
   // census then shows what such a build keeps on the heap; the arena's own use is reported per
@@ -57,5 +68,11 @@ using SpineStatFn = std::function<void(int spineIndex, uint16_t pages, int64_t e
 // left behind (book.bin, CSS index, image manifest, banked XHTML, footnote store).
 bool runAndDump(const std::string& epubPath, const std::string& cacheDir, const Profile& profile, std::ostream& out,
                 const SpineStatFn& spineStat = {}, const ArenaStatFn& arenaStat = {});
+
+// Compile `epubPath` into `cacheDir` under `profile`, as runAndDump does, and hand every page of every spine, loaded
+// back from its section file, to `visit` with the renderer the build measured with. Heap-only builds: a profile with
+// `lentArenaBytes` set is refused. Returns false then and on any pipeline failure.
+bool forEachPage(const std::string& epubPath, const std::string& cacheDir, const Profile& profile,
+                 const std::function<void(int spine, const Section&, const Page&, GfxRenderer&)>& visit);
 
 }  // namespace pipeline_harness

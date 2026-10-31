@@ -1,5 +1,7 @@
 #include "TtfFace.h"
 
+#include <atomic>
+
 #include "TtfFixed.h"
 
 namespace ttf {
@@ -16,7 +18,8 @@ constexpr uint32_t kVersionTrueType = 0x00010000;
 constexpr uint32_t kVersionApple = tag("true");
 constexpr uint32_t kVersionCff = tag("OTTO");
 constexpr uint32_t kVersionCollection = tag("ttcf");
-constexpr uint32_t kMaxpVersion1 = 0x00010000;  // 0.5 is the CFF form, without the outline limits
+constexpr uint32_t kMaxpVersion1 = 0x00010000;
+constexpr uint32_t kMaxpVersion05 = 0x00005000;  // the CFF form: the glyph count, without the outline limits
 
 struct Table {
   uint32_t offset = 0;
@@ -138,43 +141,69 @@ uint32_t format4Glyph(FontBytes& bytes, const Face& face, const uint32_t codepoi
 
 FaceStatus parseFace(FontBytes& bytes, Face* face) {
   *face = Face{};
+  // Discovery parses outside the render lock, hence the atomic.
+  static std::atomic<uint32_t> lastStamp{0};
+  face->stamp = lastStamp.fetch_add(1, std::memory_order_relaxed) + 1;
   const uint32_t version = bytes.u32(0);
-  if (version == kVersionCff || version == kVersionCollection) return FaceStatus::Unsupported;
-  if (version != kVersionTrueType && version != kVersionApple) return readFailure(bytes, FaceStatus::Malformed);
+  if (version == kVersionCollection) return FaceStatus::Unsupported;
+  const bool cff = version == kVersionCff;
+  if (!cff && version != kVersionTrueType && version != kVersionApple) {
+    return readFailure(bytes, FaceStatus::Malformed);
+  }
   const uint16_t numTables = bytes.u16(4);
   if (12 + 16 * static_cast<uint64_t>(numTables) > bytes.size()) return readFailure(bytes, FaceStatus::Malformed);
+  // FreeType reads a CFF2 table (variable OpenType) before a CFF one (cff_face_init); CFF2 is not read here. A record
+  // FreeType skips, empty or outside the file, leaves the font to its CFF table.
+  Table cff2;
+  if (cff && findTable(bytes, numTables, tag("CFF2"), 1, &cff2)) return readFailure(bytes, FaceStatus::Unsupported);
 
-  Table head, hhea, maxp, cmap, loca, glyf, hmtx;
+  Table head, hhea, maxp, cmap, loca, glyf, hmtx, cffTable;
   if (!findTable(bytes, numTables, tag("head"), 54, &head) || !findTable(bytes, numTables, tag("hhea"), 36, &hhea) ||
-      !findTable(bytes, numTables, tag("maxp"), 32, &maxp) || !findTable(bytes, numTables, tag("cmap"), 4, &cmap) ||
-      !findTable(bytes, numTables, tag("loca"), 0, &loca) || !findTable(bytes, numTables, tag("glyf"), 0, &glyf) ||
-      !findTable(bytes, numTables, tag("hmtx"), 0, &hmtx)) {
+      !findTable(bytes, numTables, tag("maxp"), cff ? 6 : 32, &maxp) ||
+      !findTable(bytes, numTables, tag("cmap"), 4, &cmap) || !findTable(bytes, numTables, tag("hmtx"), 0, &hmtx) ||
+      (cff ? !findTable(bytes, numTables, tag("CFF "), 4, &cffTable)
+           : !findTable(bytes, numTables, tag("loca"), 0, &loca) ||
+                 !findTable(bytes, numTables, tag("glyf"), 0, &glyf))) {
     return readFailure(bytes, FaceStatus::Malformed);
   }
 
   face->unitsPerEm = bytes.u16(head.offset + 18);
   const int16_t locaFormat = bytes.i16(head.offset + 50);
-  face->numGlyphs = bytes.u16(maxp.offset + 4);
+  const uint32_t maxpVersion = bytes.u32(maxp.offset);
   face->numHMetrics = bytes.u16(hhea.offset + 34);
-  if (face->unitsPerEm < 16 || face->unitsPerEm > 16384 || (locaFormat != 0 && locaFormat != 1) ||
-      bytes.u32(maxp.offset) != kMaxpVersion1 || face->numGlyphs == 0 || face->numHMetrics == 0) {
+  if (face->unitsPerEm < 16 || face->unitsPerEm > 16384 || face->numHMetrics == 0 ||
+      (cff ? maxpVersion != kMaxpVersion05 && maxpVersion != kMaxpVersion1
+           : (locaFormat != 0 && locaFormat != 1) || maxpVersion != kMaxpVersion1)) {
     return readFailure(bytes, FaceStatus::Malformed);
   }
-  face->longLoca = locaFormat == 1;
+  if (cff) {
+    // FreeType's num_glyphs is the CharStrings count; the outlines have no point or contour limits to plan by.
+    if (!readCffTable(bytes, cffTable.offset, cffTable.length, face->unitsPerEm, &face->cff)) {
+      return readFailure(bytes, FaceStatus::Malformed);
+    }
+    face->outlines = Face::Outlines::Cff;
+    face->numGlyphs = face->cff.charStrings.count;
+  } else {
+    face->numGlyphs = bytes.u16(maxp.offset + 4);
+    if (face->numGlyphs == 0) return readFailure(bytes, FaceStatus::Malformed);
+    face->longLoca = locaFormat == 1;
+    const uint16_t simplePoints = bytes.u16(maxp.offset + 6);
+    const uint16_t compositePoints = bytes.u16(maxp.offset + 10);
+    const uint16_t simpleContours = bytes.u16(maxp.offset + 8);
+    const uint16_t compositeContours = bytes.u16(maxp.offset + 12);
+    face->maxPoints = simplePoints > compositePoints ? simplePoints : compositePoints;
+    face->maxContours = simpleContours > compositeContours ? simpleContours : compositeContours;
+    face->glyf = glyf.offset;
+    face->glyfLength = glyf.length;
+    face->loca = loca.offset;
+    face->locaLength = loca.length;
+  }
   face->xMin = bytes.i16(head.offset + 36);
   face->yMin = bytes.i16(head.offset + 38);
   face->xMax = bytes.i16(head.offset + 40);
   face->yMax = bytes.i16(head.offset + 42);
-  const uint16_t simplePoints = bytes.u16(maxp.offset + 6);
-  const uint16_t compositePoints = bytes.u16(maxp.offset + 10);
-  const uint16_t simpleContours = bytes.u16(maxp.offset + 8);
-  const uint16_t compositeContours = bytes.u16(maxp.offset + 12);
-  face->maxPoints = simplePoints > compositePoints ? simplePoints : compositePoints;
-  face->maxContours = simpleContours > compositeContours ? simpleContours : compositeContours;
-  face->glyf = glyf.offset;
-  face->glyfLength = glyf.length;
-  face->loca = loca.offset;
-  face->locaLength = loca.length;
+  face->bold = (bytes.u16(head.offset + 44) & 1) != 0;  // macStyle
+  face->italic = (bytes.u16(head.offset + 44) & 2) != 0;
   face->hmtx = hmtx.offset;
   face->hmtxLength = hmtx.length;
 
@@ -183,6 +212,17 @@ FaceStatus parseFace(FontBytes& bytes, Face* face) {
   Table os2;
   bool haveOs2 = findTable(bytes, numTables, tag("OS/2"), 78, &os2);
   if (haveOs2) haveOs2 = os2.length >= os2Length(bytes.u16(os2.offset));
+  if (haveOs2 && bytes.u16(os2.offset + 4) >= 600) face->bold = true;              // usWeightClass
+  if (haveOs2 && (bytes.u16(os2.offset + 62) & 0x0201) != 0) face->italic = true;  // fsSelection: ITALIC, OBLIQUE
+  // post.italicAngle, read as FreeType accepts the table (tt_face_load_post).
+  Table post;
+  if (findTable(bytes, numTables, tag("post"), kPostHeaderBytes, &post)) {
+    const uint32_t format = bytes.u32(post.offset);
+    if ((format == 0x00010000 || format == 0x00020000 || format == 0x00025000 || format == 0x00030000) &&
+        bytes.u32(post.offset + 4) != 0) {
+      face->italic = true;
+    }
+  }
   const int16_t typoAscender = haveOs2 ? bytes.i16(os2.offset + 68) : 0;
   const int16_t typoDescender = haveOs2 ? bytes.i16(os2.offset + 70) : 0;
   const int16_t typoLineGap = haveOs2 ? bytes.i16(os2.offset + 72) : 0;
@@ -228,6 +268,22 @@ uint16_t glyphIndex(FontBytes& bytes, const Face& face, const uint32_t codepoint
   const uint32_t glyph =
       face.cmapFormat == 12 ? format12Glyph(bytes, face, codepoint) : format4Glyph(bytes, face, codepoint);
   return glyph < face.numGlyphs ? static_cast<uint16_t>(glyph) : 0;
+}
+
+bool mapsCodepoint(FontBytes& bytes, const uint32_t codepoint) {
+  const uint32_t version = bytes.u32(0);
+  if (version != kVersionCff && version != kVersionTrueType && version != kVersionApple) return false;
+  const uint16_t numTables = bytes.u16(4);
+  if (12 + 16 * static_cast<uint64_t>(numTables) > bytes.size()) return false;
+  Table maxp, cmap;
+  Face face;
+  if (!findTable(bytes, numTables, tag("maxp"), 6, &maxp) || !findTable(bytes, numTables, tag("cmap"), 4, &cmap) ||
+      !chooseCmap(bytes, cmap, &face)) {
+    return false;
+  }
+  face.cmapEnd = cmap.offset + cmap.length;
+  face.numGlyphs = bytes.u16(maxp.offset + 4);  // maxp's count, which bounds a TrueType and a CFF font's glyphs alike
+  return glyphIndex(bytes, face, codepoint) != 0;
 }
 
 int32_t unitsToPixels(const Face& face, const uint32_t ppem26_6) {

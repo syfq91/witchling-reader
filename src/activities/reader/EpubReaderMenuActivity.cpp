@@ -4,9 +4,11 @@
 #include <I18n.h>
 
 #include "MappedInputManager.h"
+#include "OnOffOverride.h"
 #include "SdCardFontGlobals.h"
 #include "activities/settings/SettingActionDispatch.h"
 #include "components/UITheme.h"
+#include "components/themes/HeaderLayout.h"
 #include "fontIds.h"
 
 namespace fui = freeink::ui;
@@ -40,17 +42,31 @@ int8_t threeStateOverrideFromSlot(uint8_t slot) {
 // override menu's "Default" label should reflect that family by name even
 // though the per-book override list itself is built-in only.
 std::string defaultFontFamilyLabel(const SettingInfo& item) {
+  // A CJK book draws the default in a Noto CJK family: the one that stands in for a font without its script, or the
+  // regional sibling of a Noto CJK default (SdCardFontSystem, set for this book at its open).
+  if (sdFontSystem.languageFamily()[0] != '\0') return sdFontSystem.languageFamily();
   if (SETTINGS.sdFontFamilyName[0] != '\0') {
     const auto& families = sdFontSystem.registry().getFamilies();
     const auto it = std::find_if(families.begin(), families.end(),
                                  [](const auto& family) { return family.name == SETTINGS.sdFontFamilyName; });
     if (it != families.end()) {
-      return std::string(SETTINGS.sdFontFamilyName);
+      return sdFontSystem.effectiveReaderFamily(SETTINGS.sdFontFamilyName);
     }
   }
   // Built-in: index 0 is the "Default" entry, [1..] are built-in families
   // in CrossPointSettings::FONT_FAMILY order.
   return item.getEnumOptionLabel(static_cast<uint8_t>(SETTINGS.fontFamily + 1));
+}
+
+// drawChrome() puts the progress line directly under the title, and buildScreen() the tab bar under
+// that. Both measured from the lines above them, which grow with the UI font size: at fixed offsets
+// the large font's title ran into the progress line and the progress line into the tab bar.
+int progressLineY(const GfxRenderer& renderer, const Rect& content) {
+  return HeaderLayout::overlayTitleBottom(content, renderer.getLineHeight(UI_12_FONT_ID));
+}
+
+int tabBarTop(const GfxRenderer& renderer, const Rect& content) {
+  return progressLineY(renderer, content) + renderer.getLineHeight(UI_10_FONT_ID) + HeaderLayout::OVERLAY_TITLE_GAP;
 }
 }  // namespace
 
@@ -67,7 +83,9 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(
     const int8_t initialParagraphAlignmentOverride,
     const int8_t initialTextAntiAliasingOverride, const int8_t initialHyphenationOverride,
     const int8_t initialFontSizeNormalizationOverride, const int8_t initialInlineFootnotePreviewsOverride,
-    const bool hasStarredPages, const bool isCurrentPageStarred, const bool hasPrintedPages)
+    const int8_t initialLineSpacingOverride, const int8_t initialVerticalTextOverride, const bool verticalAllowed,
+    const bool hasStarredPages, const bool isCurrentPageStarred, const bool hasPrintedPages,
+    const bool wordLookupAvailable)
     : TabbedUiListActivity("EpubReaderMenu", renderer, mappedInput),
       currentPageStarred(isCurrentPageStarred),
       pendingOrientation(currentOrientation),
@@ -82,14 +100,17 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(
       pendingHyphenationOverride(initialHyphenationOverride),
       pendingFontSizeNormalizationOverride(initialFontSizeNormalizationOverride),
       pendingInlineFootnotePreviewsOverride(initialInlineFootnotePreviewsOverride),
+      pendingLineSpacingOverride(initialLineSpacingOverride),
+      pendingVerticalTextOverride(initialVerticalTextOverride),
       title(title),
       currentPage(currentPage),
       totalPages(totalPages),
       bookProgressPercent(bookProgressPercent) {
-  buildMenuItems(hasFootnotes, hasStarredPages, hasPrintedPages);
+  buildMenuItems(hasFootnotes, hasStarredPages, hasPrintedPages, verticalAllowed, wordLookupAvailable);
 }
 
-void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPages, bool hasPrintedPages) {
+void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPages, bool hasPrintedPages,
+                                            bool verticalAllowed, bool wordLookupAvailable) {
   auto& navigationItems = tabMenuItems[static_cast<size_t>(MenuTab::Navigation)];
   auto& settingsItems = tabMenuItems[static_cast<size_t>(MenuTab::Settings)];
   auto& syncItems = tabMenuItems[static_cast<size_t>(MenuTab::Sync)];
@@ -118,8 +139,10 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
   }
   // Always offered, even with no dictionary configured: choosing it then opens
   // the picker, which is more useful than hiding the feature from the person
-  // who has not found the setting yet.
-  navigationItems.push_back(SettingInfo::Action(StrId::STR_DICTIONARY, SettingAction::None));
+  // who has not found the setting yet. Not on a vertical page, whose words the picker cannot box.
+  if (wordLookupAvailable) {
+    navigationItems.push_back(SettingInfo::Action(StrId::STR_DICTIONARY, SettingAction::None));
+  }
 
   auto* self = this;
   // Orientation: straightforward 0-3 cycle
@@ -284,6 +307,42 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
                               })
                               .withSelectorActivity());
 
+  // Line spacing: default(-1) + the 6 global options
+  settingsItems.push_back(SettingInfo::DynamicEnumCtx(
+                              StrId::STR_LINE_SPACING,
+                              {StrId::STR_DEFAULT_VALUE, StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE,
+                               StrId::STR_EXTRA_WIDE, StrId::STR_WIDEST, StrId::STR_BOOK_S_STYLE},
+                              self,
+                              [](const void* ctx) -> uint8_t {
+                                const auto* s = static_cast<const EpubReaderMenuActivity*>(ctx);
+                                return (s->pendingLineSpacingOverride < 0)
+                                           ? 0
+                                           : static_cast<uint8_t>(s->pendingLineSpacingOverride + 1);
+                              },
+                              [](void* ctx, uint8_t v) {
+                                auto* s = static_cast<EpubReaderMenuActivity*>(ctx);
+                                s->pendingLineSpacingOverride = (v == 0) ? -1 : static_cast<int8_t>(v - 1);
+                              })
+                              .withSelectorActivity());
+
+  // Vertical text: default / automatic / on / off, for a book whose language is ever set vertically
+  if (verticalAllowed) {
+    settingsItems.push_back(
+        SettingInfo::DynamicEnumCtx(
+            StrId::STR_VERTICAL_TEXT,
+            {StrId::STR_DEFAULT_VALUE, StrId::STR_AUTOMATIC, StrId::STR_STATE_ON, StrId::STR_STATE_OFF}, self,
+            [](const void* ctx) -> uint8_t {
+              const auto* s = static_cast<const EpubReaderMenuActivity*>(ctx);
+              return (s->pendingVerticalTextOverride < 0) ? 0
+                                                          : static_cast<uint8_t>(s->pendingVerticalTextOverride + 1);
+            },
+            [](void* ctx, uint8_t v) {
+              auto* s = static_cast<EpubReaderMenuActivity*>(ctx);
+              s->pendingVerticalTextOverride = (v == 0) ? -1 : static_cast<int8_t>(v - 1);
+            })
+            .withSelectorActivity());
+  }
+
   // Text anti-aliasing: default / on / off (mirrors QuickOverrides)
   settingsItems.push_back(SettingInfo::DynamicEnumCtx(
       StrId::STR_TEXT_AA, {StrId::STR_DEFAULT_VALUE, StrId::STR_STATE_ON, StrId::STR_STATE_OFF}, self,
@@ -395,6 +454,8 @@ void EpubReaderMenuActivity::finishWithAction(MenuAction action) {
   // Appended after the file-browser fields, so set by name rather than position.
   payload.fontSizeNormalizationOverride = pendingFontSizeNormalizationOverride;
   payload.inlineFootnotePreviewsOverride = pendingInlineFootnotePreviewsOverride;
+  payload.lineSpacingOverride = pendingLineSpacingOverride;
+  payload.verticalTextOverride = pendingVerticalTextOverride;
   setResult(std::move(payload));
   finish();
 }
@@ -428,6 +489,8 @@ void EpubReaderMenuActivity::onBackPressed() {
   // Appended after the file-browser fields, so set by name rather than position.
   payload.fontSizeNormalizationOverride = pendingFontSizeNormalizationOverride;
   payload.inlineFootnotePreviewsOverride = pendingInlineFootnotePreviewsOverride;
+  payload.lineSpacingOverride = pendingLineSpacingOverride;
+  payload.verticalTextOverride = pendingVerticalTextOverride;
   result.data = std::move(payload);
   setResult(std::move(result));
   finish();
@@ -467,6 +530,14 @@ std::string EpubReaderMenuActivity::getItemValueString(int index) const {
     }
     if (item.nameId == StrId::STR_PARA_ALIGNMENT && pendingParagraphAlignmentOverride < 0) {
       const auto label = item.getEnumOptionLabel(static_cast<uint8_t>(SETTINGS.paragraphAlignment + 1));
+      if (!label.empty()) return std::string(tr(STR_DEFAULT_VALUE)) + " (" + label + ")";
+    }
+    if (item.nameId == StrId::STR_LINE_SPACING && pendingLineSpacingOverride < 0) {
+      const auto label = item.getEnumOptionLabel(static_cast<uint8_t>(SETTINGS.lineSpacing + 1));
+      if (!label.empty()) return std::string(tr(STR_DEFAULT_VALUE)) + " (" + label + ")";
+    }
+    if (item.nameId == StrId::STR_VERTICAL_TEXT && pendingVerticalTextOverride < 0) {
+      const auto label = item.getEnumOptionLabel(static_cast<uint8_t>(SETTINGS.verticalText + 1));
       if (!label.empty()) return std::string(tr(STR_DEFAULT_VALUE)) + " (" + label + ")";
     }
     if (item.nameId == StrId::STR_TEXT_AA && pendingTextAntiAliasingOverride < 0) {
@@ -579,7 +650,8 @@ void EpubReaderMenuActivity::drawChrome() {
   const int titleX =
       contentRect.x +
       (contentRect.width - renderer.getTextWidth(UI_12_FONT_ID, truncTitle.c_str(), EpdFontFamily::BOLD)) / 2;
-  renderer.drawText(UI_12_FONT_ID, titleX, 15 + contentRect.y, truncTitle.c_str(), true, EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, titleX, HeaderLayout::overlayTitleY(contentRect), truncTitle.c_str(), true,
+                    EpdFontFamily::BOLD);
 
   std::string progressLine;
   if (totalPages > 0) {
@@ -590,11 +662,13 @@ void EpubReaderMenuActivity::drawChrome() {
   // Centred across the full screen width, as the tab bar is.
   const int progressX =
       contentRect.x + (contentRect.width - renderer.getTextWidth(UI_10_FONT_ID, progressLine.c_str())) / 2;
-  renderer.drawText(UI_10_FONT_ID, progressX, 45 + contentRect.y, progressLine.c_str());
+  renderer.drawText(UI_10_FONT_ID, progressX, progressLineY(renderer, contentRect), progressLine.c_str());
 }
 
 const char* EpubReaderMenuActivity::footerConfirmLabel() const {
   // Confirm means "next tab" while the bar holds focus and "select" on a row, so the hint names
   // the tab it would move to, as the settings screen does.
+  // The idea, and the first sentence above word for word, are from witchling-reader commit
+  // e17b99e4 (syfq91), who asked for it in issue #330.
   return selectedPosition() == 0 ? tabLabel((selectedTab() + 1) % tabCount()) : tr(STR_SELECT);
 }

@@ -683,12 +683,12 @@ bool FileBrowserActivity::handleCoverTouch() {
 #endif
 }
 
-void FileBrowserActivity::clearFileMetadata(const std::string& fullPath) {
+void FileBrowserActivity::clearFileMetadata(const std::string& fullPath, const BookCache::Keep keep) {
   if (FsHelpers::hasEpubExtension(fullPath)) {
-    Epub(fullPath, "/.crosspoint").clearCache();
+    Epub(fullPath, "/.crosspoint").clearCache(keep);
     LOG_DBG("FileBrowser", "Cleared metadata cache for: %s", fullPath.c_str());
   } else if (FsHelpers::hasXtcExtension(fullPath)) {
-    Xtc(fullPath, "/.crosspoint").clearCache();
+    Xtc(fullPath, "/.crosspoint").clearCache(keep);
     LOG_DBG("FileBrowser", "Cleared metadata cache for: %s", fullPath.c_str());
   }
 }

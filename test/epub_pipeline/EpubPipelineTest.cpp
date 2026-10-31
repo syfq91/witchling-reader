@@ -16,9 +16,15 @@
 // (<book>_hyph.golden.txt: the two greedy breakers and the page-bottom retry), and
 // a few with bionic reading ON (<book>_bionic.golden.txt: the word-list rebuild).
 //
-// The books set in several font families also run with the families Publisher Fonts lays their blocks out in:
-// Accents (<book>_accents.golden.txt) and All Text (<book>_alltext.golden.txt). Off and Body Text are the default
-// golden (Body Text changes only the body font ID, which the shim renderer draws alike).
+// The books set in several font families also run with the families Publisher Fonts lays their blocks out in,
+// Accents (<book>_accents.golden.txt). Off and Body Text are the default golden, and All Text is the Accents one:
+// Body Text and All Text change only the body font ID, which the shim renderer draws alike.
+//
+// The books whose text-align matters also run with the book's own alignment (<book>_bookalign.golden.txt): the default
+// justifies every block, which hides text-align start and end.
+//
+// The CJK books also run with vertical text requested: Automatic (<book>_vertical.golden.txt), where each section
+// decides from the book, and On (<book>_vertical_on.golden.txt). The default is Off, as for a Latin book.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -44,7 +50,7 @@ std::string freshCacheDir(const std::string& tag) {
 }
 
 // The render setting a case turns ON; every other one stays as in the default.
-enum class Variant { Default, Normalization, Hyphenation, Accents, AllText };
+enum class Variant { Default, Normalization, Hyphenation, Accents, BookAlignment, Vertical, VerticalOn };
 
 // One corpus book under one variant.
 struct Case {
@@ -60,8 +66,12 @@ const char* variantName(const Variant v) {
       return "hyphenation";
     case Variant::Accents:
       return "publisherFontsAccents";
-    case Variant::AllText:
-      return "publisherFontsAllText";
+    case Variant::BookAlignment:
+      return "booksAlignment";
+    case Variant::Vertical:
+      return "verticalText";
+    case Variant::VerticalOn:
+      return "verticalTextOn";
     case Variant::Default:
       break;
   }
@@ -86,11 +96,23 @@ const char* const kHyphenationBooks[] = {"test_anchor_pagebreak", "test_kerning_
 // Books set in several font families (see test/epubs/make_test_font_families.py).
 const char* const kFontFamilyBooks[] = {"test_font_families"};
 
+// Books whose text-align matters: the default profile justifies everything, the book's own alignment shows start and
+// end resolved along the direction (see test/epubs/make_test_writing_modes.py).
+const char* const kBookAlignmentBooks[] = {"test_rtl_markup"};
+
+// Books the reader may set vertically, under Automatic (<book>_vertical.golden.txt): each section decides from its CSS
+// writing mode and the book's page progression, and a vertical one is laid out in the turned frame.
+const char* const kVerticalBooks[] = {"test_writing_modes", "test_vertical_text"};
+
+// Books that declare no writing mode, under On (<book>_vertical_on.golden.txt): what an Aozora conversion looks like
+// once the reader turns it vertical.
+const char* const kVerticalOnBooks[] = {"test_cjk_ja_soseki", "test_cjk_ko_hyeon"};
+
 // The families as the reader builds them for a 14 pt built-in body (buildBookFontFamilies), with stand-in IDs: the
 // built-in sans-serif's rungs are 2000 + their size, the accent families' native sizes 0x12345600, 0x23456700 and
-// 0x34567800 | px. Both have the book's three accent families (Stage B phase 3): Accents beside the built-in body, All
-// Text beside the book's TTF body, Book Body, in one glyph store. All Text's body font ID is another one, which the
-// shim renderer draws alike, so its layout is Accents'.
+// 0x34567800 | px: the book's three accent families (Stage B phase 3) beside the built-in body. All Text sets them
+// beside the book's TTF body, Book Body, in one glyph store; only its body font ID differs, which the shim renderer
+// draws alike, so its layout is this one's.
 BlockFontFamilies publisherFontFamilies() {
   BlockFontFamilies families;
   families.body = CssParser::fontFamilyHash("Book Body") | CssFontFamily::kSerif;
@@ -111,7 +133,6 @@ BlockFontFamilies publisherFontFamilies() {
   return families;
 }
 const BlockFontFamilies kAccentsFamilies = publisherFontFamilies();
-const BlockFontFamilies kAllTextFamilies = publisherFontFamilies();
 
 // Distinguishes the variants' cache dirs and golden files. The default keeps the
 // historical unsuffixed golden name so its committed layout stays reviewable
@@ -124,8 +145,12 @@ std::string variantSuffix(const Case& c) {
       return "_hyph";
     case Variant::Accents:
       return "_accents";
-    case Variant::AllText:
-      return "_alltext";
+    case Variant::BookAlignment:
+      return "_bookalign";
+    case Variant::Vertical:
+      return "_vertical";
+    case Variant::VerticalOn:
+      return "_vertical_on";
     case Variant::Default:
       break;
   }
@@ -137,7 +162,9 @@ std::string runOnce(const Case& c, const std::string& cacheDir) {
   profile.fontSizeNormalization = c.variant == Variant::Normalization;
   profile.hyphenationEnabled = c.variant == Variant::Hyphenation;
   if (c.variant == Variant::Accents) profile.fontFamilies = &kAccentsFamilies;
-  if (c.variant == Variant::AllText) profile.fontFamilies = &kAllTextFamilies;
+  if (c.variant == Variant::BookAlignment) profile.paragraphAlignment = static_cast<uint8_t>(CssTextAlign::None);
+  if (c.variant == Variant::Vertical) profile.verticalText = VerticalText::Automatic;
+  if (c.variant == Variant::VerticalOn) profile.verticalText = VerticalText::On;
   std::ostringstream dump;
   const bool ok = pipeline_harness::runAndDump(c.epub, cacheDir, profile, dump);
   EXPECT_TRUE(ok) << "pipeline failed for " << c.epub << " (" << variantName(c.variant) << ")\n" << dump.str();
@@ -150,7 +177,7 @@ std::string caseCacheDir(const Case& c, const std::string& tag) {
 }
 
 bool readFile(const fs::path& path, std::string& out) {
-  std::ifstream in(path);
+  std::ifstream in(path, std::ios::binary);
   if (!in) return false;
   std::stringstream bytes;
   bytes << in.rdbuf();
@@ -160,11 +187,14 @@ bool readFile(const fs::path& path, std::string& out) {
 
 class EpubPipelineTest : public testing::TestWithParam<Case> {};
 
+// The warm run, over the variants whose layout the book-level cache can change (see warmCases()).
+class EpubPipelineWarmTest : public EpubPipelineTest {};
+
 // runAndDump always rebuilds every section, so the second run is not a page cache served without a
 // build. What it does read back instead of the archive is the book-level state the first run left:
 // book.bin, the compiled CSS index, the image manifest, the banked chapter XHTML and the footnote
 // store with its resolved-spine bits.
-TEST_P(EpubPipelineTest, RebuildOverWarmBookCacheMatchesColdRun) {
+TEST_P(EpubPipelineWarmTest, RebuildOverWarmBookCacheMatchesColdRun) {
   const Case c = GetParam();
   const std::string cacheDir = caseCacheDir(c, "warm");
   const std::string cold = runOnce(c, cacheDir);
@@ -181,7 +211,7 @@ TEST_P(EpubPipelineTest, MatchesGolden) {
   const fs::path goldenPath = fs::path(GOLDEN_DIR) / (stem(c.epub) + variantSuffix(c) + ".golden.txt");
 
   if (std::getenv("UPDATE_GOLDENS")) {
-    std::ofstream(goldenPath) << dump;
+    std::ofstream(goldenPath, std::ios::binary) << dump;
     GTEST_SKIP() << "golden regenerated: " << goldenPath;
   }
   std::string golden;
@@ -218,20 +248,35 @@ std::vector<Case> corpusCases() {
     cases.push_back(Case{path});
     if (listed(kNormalizationSensitiveBooks, stem(path))) cases.push_back(Case{path, Variant::Normalization});
     if (listed(kHyphenationBooks, stem(path))) cases.push_back(Case{path, Variant::Hyphenation});
-    if (listed(kFontFamilyBooks, stem(path))) {
-      cases.push_back(Case{path, Variant::Accents});
-      cases.push_back(Case{path, Variant::AllText});
-    }
+    if (listed(kFontFamilyBooks, stem(path))) cases.push_back(Case{path, Variant::Accents});
+    if (listed(kBookAlignmentBooks, stem(path))) cases.push_back(Case{path, Variant::BookAlignment});
+    if (listed(kVerticalBooks, stem(path))) cases.push_back(Case{path, Variant::Vertical});
+    if (listed(kVerticalOnBooks, stem(path))) cases.push_back(Case{path, Variant::VerticalOn});
   }
   return cases;
 }
 
-INSTANTIATE_TEST_SUITE_P(SyntheticCorpus, EpubPipelineTest, testing::ValuesIn(corpusCases()),
-                         [](const testing::TestParamInfo<Case>& info) {
-                           std::string name = stem(info.param.epub) + variantSuffix(info.param);
-                           for (char& c : name)
-                             if (!isalnum(static_cast<unsigned char>(c))) c = '_';
-                           return name;
-                         });
+// The cases whose warm run can differ from their cold one. What the warm run reads back is the book-level cache,
+// which the default layout, normalization (the CSS index's font sizes) and the accent families (its font families)
+// all draw on. Hyphenation and bionic reading draw on none of it: the language the hyphenator needs comes from
+// book.bin, which the default warm case of the same book already compares (its BOOK line).
+std::vector<Case> warmCases() {
+  std::vector<Case> cases = corpusCases();
+  cases.erase(
+      std::remove_if(cases.begin(), cases.end(),
+                     [](const Case& c) { return c.variant == Variant::Hyphenation; }),
+      cases.end());
+  return cases;
+}
+
+std::string caseName(const testing::TestParamInfo<Case>& info) {
+  std::string name = stem(info.param.epub) + variantSuffix(info.param);
+  for (char& c : name)
+    if (!isalnum(static_cast<unsigned char>(c))) c = '_';
+  return name;
+}
+
+INSTANTIATE_TEST_SUITE_P(SyntheticCorpus, EpubPipelineTest, testing::ValuesIn(corpusCases()), caseName);
+INSTANTIATE_TEST_SUITE_P(SyntheticCorpus, EpubPipelineWarmTest, testing::ValuesIn(warmCases()), caseName);
 
 }  // namespace

@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "CjkPunctuation.h"
@@ -57,10 +58,24 @@ class ParsedText {
   std::vector<uint16_t> wordWidths_;
   // Each token's CjkPunctuation::Class when it is one full-width mark, and how much wider (> 0) or narrower (< 0) it
   // is at the line edge its mark acts at than mid-line, in pixels: where a line starts at an opening mark, where it
-  // ends after any other. Two bytes a token. Layout scratch in step with wordWidths_: calculateWordWidths fills both,
-  // hyphenateWordAtIndex inserts into both.
+  // ends after any other. Then what push-in (spec 5.3) may take off the mark, in pixels: mid-line, its width there
+  // less its minimum beside the same neighbour (shrink_); at its line edge, its line-edge width less its line-edge
+  // minimum (edgeShrink_); 0 for other tokens. Four bytes a token. Layout scratch in step with wordWidths_:
+  // calculateWordWidths fills all four, hyphenateWordAtIndex inserts into all four.
   std::vector<uint8_t> markClass_;
   std::vector<int8_t> edgeTrim_;
+  std::vector<uint8_t> shrink_;
+  std::vector<uint8_t> edgeShrink_;
+  // How a ruby group's tokens sit in their widths (applyRubyWidths), in pixels: `start` on the leader and `end` on
+  // the group's last token are the overhang a line edge must hold when the group starts or ends a line; `lead` is
+  // how far a base character widened by a longer ruby is drawn into its share (1:2:1 spreading).
+  struct RubyEdge {
+    int16_t start = 0;
+    int16_t end = 0;
+    int16_t lead = 0;
+  };
+  // A RubyEdge per token, in step with wordWidths_ like markClass_; empty when the block has no ruby. 6 B a token.
+  std::vector<RubyEdge> rubyEdge_;
   // How far the block's lines sit in from the left: half of what rounding the width down to whole ems took (the CJK
   // grid, spec section 5.5). Set by each layout pass.
   int16_t gridInset_ = 0;
@@ -83,12 +98,12 @@ class ParsedText {
   // (without the hook: the row is placed as a whole inside a block of its own). A cell laid out
   // as a fallback paragraph keeps the heap.
   BuildArena* lineArena_ = nullptr;
-  // Called with the line's largest word-size percent just before the line is materialised.
-  // The parser uses it to run its page-fit test BEFORE the allocation: a line that does not
+  // Called with the line's largest word-size percent, and whether the line carries ruby, just before the line is
+  // materialised. The parser uses it to run its page-fit test BEFORE the allocation: a line that does not
   // fit is then allocated from the page it lands on, not from the block of the page it
   // overflowed -- with page-scoped arena blocks, allocating first would leave page N+1 holding
   // bytes that die with page N.
-  std::function<void(uint8_t maxSizePct)> beforeLine_;
+  std::function<void(uint8_t maxSizePct, bool annotated)> beforeLine_;
   std::vector<EpdFontFamily::Style> wordStyles;
   // How each word joins the one before it (TokenBoundary.h): a space, glued, or a breakable CJK gap.
   // In lockstep with `words` through every insert/erase, like the per-word vectors below.
@@ -111,20 +126,31 @@ class ParsedText {
   // The first word's offset of the line most recently handed to processLine. Read by the parser's
   // line callbacks, which only get the TextBlock.
   uint32_t lastLineVisibleOffset_ = 0;
+  // The ruby text of each Leader token (TokenBoundary::RubyRole) of the block, in token order: the n-th Leader owns the
+  // n-th text. Moves with the tokens through every erase, snapshot and reset.
+  std::vector<std::string> rubyTexts_;
+  // The annotations of the line being extracted, handed to its TextBlock; reused across lines.
+  std::vector<TextBlock::Annotation> lineAnnotations_;
   LinePlace linePlace_;
   BlockStyle blockStyle;
   // The book's typography (TypographyProfile.h): Latin rules until the parser sets the book's.
   TypographyProfile typography_;
+  bool vertical_ = false;  // see setVertical
   bool extraParagraphSpacing;
   bool hyphenationEnabled;
+  bool bionicReadingEnabled;
   bool isContinuation_ = false;  ///< true after an intermediate flush; suppresses re-applying paragraph indent
   // Set (and never cleared) when addWord could not grow the word vectors within the largest
   // free heap block: the word was dropped and the parser must abort the parse at its next
   // layout gate. std::vector growth cannot fail gracefully under -fno-exceptions, so the
   // check has to happen before the reserve.
   bool wordGrowthRefused_ = false;
+  size_t bionicTransformedUpTo_ = 0;  ///< words[0..bionicTransformedUpTo_) have already been bionic-transformed
 
+  // How many tokens before tokenIndex lead a ruby group: the index of the ruby text of the first group at or after it.
+  size_t leadersBefore(size_t tokenIndex) const;
   void applyParagraphIndent(const GfxRenderer& renderer, int fontId);
+  void applyBionicReadingTransform();
   // Effective measurement scale of words[i]: the block-level multiplier (a word font's own scale for a word in
   // another family) combined with the word's own inline size percentage.
   float wordScale(const size_t i) const {
@@ -145,8 +171,13 @@ class ParsedText {
   // (no float zones active) that returns pageWidth unchanged.
   int widthForLine(int lineIndex, int lineHeight, int16_t blockStartY, int pageWidth) const;
   // The natural gap before words[j] (j > 0), unscaled: kerning across a glued boundary, nothing at a
-  // CJK gap, else the space advance. Every breaker measures gaps through this.
+  // CJK gap but the CJK-Latin gap, which is a quarter of the CJK side's scaled em, else the space advance.
+  // Every breaker measures gaps through this.
   int naturalGapBefore(const GfxRenderer& renderer, int fontId, size_t j) const;
+  // The CJK-Latin gap before words[j] (j > 0) in pixels, already scaled to the CJK side: callers must not
+  // multiply it by wordScale. 0 unless the profile sets it and the boundary is a breakable CJK gap between
+  // Han or kana and a Latin letter or digit.
+  int cjkLatinGapBefore(const GfxRenderer& renderer, int fontId, size_t j) const;
   // Room in all five per-word vectors for `additional` more tokens; false (and wordGrowthRefused_)
   // when the heap cannot hold the growth.
   bool reserveWords(size_t additional);
@@ -194,23 +225,61 @@ class ParsedText {
   // Fills `out` (cleared first); uses blockStyle.fontSizeMultiplier internally.
   void calculateWordWidths(const GfxRenderer& renderer, int fontId,
                            std::vector<uint16_t>& out);  // uses blockStyle.fontSizeMultiplier internally
-  // Narrows each CJK mark that is a token to its mid-line width and fills markClass_/edgeTrim_.
+  // Narrows each CJK mark that is a token to its mid-line width and fills markClass_, edgeTrim_, shrink_ and
+  // edgeShrink_.
   void applyPunctuationWidths(const GfxRenderer& renderer, int fontId, std::vector<uint16_t>& widths);
-  // How token i's width changes when a line starts at it, and when a line ends after it.
-  int lineStartTrim(const size_t i) const { return opensLine(i) ? edgeTrim_[i] : 0; }
-  int lineEndTrim(const size_t i) const { return opensLine(i) ? 0 : edgeTrim_[i]; }
+  // Widens the base of each ruby longer than what its neighbours let it overhang, and fills rubyEdge_; a mark in a
+  // group, or between overhangs, gives push-in only what the rubies leave it (shrink_).
+  void applyRubyWidths(const GfxRenderer& renderer, int fontId, std::vector<uint16_t>& widths);
+  // The advance of a ruby text over the group led by token `leader`: half the leader's size, its font, regular style,
+  // rounded once as TextBlock draws it.
+  int rubyWidth(const GfxRenderer& renderer, int fontId, size_t leader, const std::string& text) const;
+  // How token i's width changes when a line starts at it, and when a line ends after it: a CJK mark's line-edge
+  // width, and the overhang of a ruby group's ruby that the line edge has to hold.
+  int lineStartTrim(const size_t i) const {
+    return (opensLine(i) ? edgeTrim_[i] : 0) + (rubyEdge_.empty() ? 0 : rubyEdge_[i].start);
+  }
+  int lineEndTrim(const size_t i) const {
+    return (opensLine(i) ? 0 : edgeTrim_[i]) + (rubyEdge_.empty() ? 0 : rubyEdge_[i].end);
+  }
   bool opensLine(const size_t i) const { return markClass_[i] == static_cast<uint8_t>(CjkPunctuation::Class::Opening); }
   // A line first..last as drawn: its first and last token at their line-edge widths.
   int withEdgeTrims(const int naturalWidth, const size_t first, const size_t last) const {
     return naturalWidth + lineStartTrim(first) + lineEndTrim(last);
   }
+  // A mark that is not an opening one: a line's end edge acts on it. An ideographic space or an ambiguous quote passes
+  // too, with nothing to give.
+  bool closesLine(const size_t i) const {
+    return markClass_[i] != static_cast<uint8_t>(CjkPunctuation::Class::None) && !opensLine(i);
+  }
+  // What the gap of `gapBefore` px before token j may give under push-in: at a breakable CJK gap (where only a
+  // CJK-Latin gap has a width) all but half of it, rounded down, as JLREQ lets a quarter-em gap shrink to 1/8 em; a
+  // word space or a glued seam nothing.
+  int gapShrinkBefore(const size_t j, const int gapBefore) const {
+    const TokenBoundary::Boundary& boundary = wordBoundaries[j];
+    return !boundary.continues && boundary.noSpaceBefore ? gapBefore - gapBefore / 2 : 0;
+  }
+  // A line's push-in total with its first and last token giving their line-edge shrinks: `shrinkSum` is the line's
+  // mid-line sum, each token's shrink_ and each gap's gapShrinkBefore.
+  int withEdgeShrinks(const int shrinkSum, const size_t first, const size_t last) const {
+    int sum = shrinkSum;
+    if (opensLine(first)) sum += edgeShrink_[first] - shrink_[first];
+    if (closesLine(last)) sum += edgeShrink_[last] - shrink_[last];
+    return sum;
+  }
+  // The line first..last with everything that can give way at its minimum, what a breaker holds against the width
+  // (spec 5.3): `naturalSum` is its mid-line widths and gaps, `shrinkSum` what they may give.
+  int pushedInWidth(const int naturalSum, const int shrinkSum, const size_t first, const size_t last) const {
+    return withEdgeTrims(naturalSum, first, last) - withEdgeShrinks(shrinkSum, first, last);
+  }
 
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool hyphenationEnabled = false,
-                      const BlockStyle& blockStyle = BlockStyle())
+                      const BlockStyle& blockStyle = BlockStyle(), const bool bionicReadingEnabled = false)
       : blockStyle(blockStyle),
         extraParagraphSpacing(extraParagraphSpacing),
-        hyphenationEnabled(hyphenationEnabled) {}
+        hyphenationEnabled(hyphenationEnabled),
+        bionicReadingEnabled(bionicReadingEnabled) {}
   ~ParsedText() = default;
 
   // Start a new, empty block in this object under `blockStyle`, keeping the word vectors'
@@ -231,8 +300,16 @@ class ParsedText {
   // break the CJK rules allow (CjkLineBreak.h). attachToPrevious: no whitespace separated it from the
   // previous word in the source.
   // fontSlot: the word's font slot (see setFontSlot), below TextBlock::kMaxWordFonts.
+  // textEmphasis: the word's CSS text-emphasis mark (TextEmphasis), 0 for none; every token of the word carries it.
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,
-               uint8_t sizePct = DEFAULT_WORD_SIZE_PCT, uint32_t visibleOffset = 0, uint8_t fontSlot = 0);
+               uint8_t sizePct = DEFAULT_WORD_SIZE_PCT, uint32_t visibleOffset = 0, uint8_t fontSlot = 0,
+               uint8_t textEmphasis = 0);
+  // Tokens [firstToken, firstToken + tokenCount) become one ruby group: the first keeps its boundary (a break may
+  // come before the group), the rest are glued to it. False when the range is empty, runs past size(), or a token
+  // in it already has a role.
+  bool addRubyGroup(size_t firstToken, size_t tokenCount, std::string text);
+  // An <rt> with no new base: appended to the block's last group. False when the block has none.
+  bool appendRubyText(std::string_view text);
   // The face the words in `slot` are laid out in; a fontId of 0 (every slot after reset()) is the block's font. The
   // parser fills the slots its block's words use once it knows the block's font (see fontSlotsUsed).
   void setFontSlot(const uint8_t slot, const TextBlock::WordFont& font) {
@@ -254,9 +331,13 @@ class ParsedText {
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
   // Survives reset(): it is the book's, not the block's.
   void setTypography(const TypographyProfile& typography) { typography_ = typography; }
+  // Measure words as a column runs them (a vertical section's). Survives reset(): it is the section's.
+  void setVertical(bool vertical) { vertical_ = vertical; }
   // See lineArena_ / beforeLine_. Both survive reset().
   void setLineArena(BuildArena* arena) { lineArena_ = arena; }
-  void setBeforeLineHook(std::function<void(uint8_t maxSizePct)> hook) { beforeLine_ = std::move(hook); }
+  void setBeforeLineHook(std::function<void(uint8_t maxSizePct, bool annotated)> hook) {
+    beforeLine_ = std::move(hook);
+  }
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }
   uint32_t lastLineVisibleOffset() const { return lastLineVisibleOffset_; }
@@ -281,7 +362,7 @@ class ParsedText {
   // `preserveSource` snapshots the words on entry and restores them on return, so the caller gets
   // back exactly what it passed in. Suppressing the erase alone would not be enough: layout also
   // force-splits any word too wide for the line (inserting a hyphen), and applies the paragraph
-  // indent in place. It costs one copy of the word vectors for the duration
+  // indent and bionic transform in place. It costs one copy of the word vectors for the duration
   // of the call, so it is opt-in and only the table grid path uses it.
   void layoutAndExtractLines(
       const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,

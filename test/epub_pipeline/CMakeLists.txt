@@ -30,6 +30,9 @@ set(PIPELINE_SOURCES
   ${REPO_ROOT}/lib/Epub/Epub/parsers/TocNavParser.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/TocNcxParser.cpp
   ${REPO_ROOT}/lib/Epub/Epub/blocks/TextBlock.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/VerticalDraw.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/VerticalOrientation.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/FlowContext.cpp
   ${REPO_ROOT}/lib/Epub/Epub/blocks/ImageBlock.cpp
   ${REPO_ROOT}/lib/Epub/Epub/hyphenation/HyphenationCommon.cpp
   ${REPO_ROOT}/lib/Epub/Epub/hyphenation/Hyphenator.cpp
@@ -44,6 +47,7 @@ set(PIPELINE_SOURCES
   ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
   ${REPO_ROOT}/lib/InflateReader/InflateReader.cpp
   ${REPO_ROOT}/lib/uzlib/src/tinflate.c
+  ${REPO_ROOT}/lib/FsHelpers/BookCache.cpp
   ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
   ${REPO_ROOT}/lib/FsHelpers/SidecarFiles.cpp
   ${REPO_ROOT}/lib/CooperativeAbort/CooperativeAbort.cpp
@@ -51,7 +55,6 @@ set(PIPELINE_SOURCES
   ${REPO_ROOT}/lib/GfxRenderer/Bitmap.cpp
   ${REPO_ROOT}/lib/GfxRenderer/BitmapHelpers.cpp
   ${REPO_ROOT}/lib/JpegToBmpConverter/JpegToBmpConverter.cpp
-  ${REPO_ROOT}/lib/ProgressiveJpegDc/ProgressiveJpegDc.cpp
   ${REPO_ROOT}/lib/ProgressiveJpeg/ProgressiveJpeg.cpp
   ${REPO_ROOT}/lib/PngToBmpConverter/PngToBmpConverter.cpp
   ${REPO_ROOT}/lib/PngDecoder/PngStreamDecoder.cpp
@@ -85,7 +88,6 @@ set(PIPELINE_INCLUDES
   ${REPO_ROOT}/lib/JpegToBmpConverter
   ${REPO_ROOT}/lib/PngToBmpConverter
   ${REPO_ROOT}/lib/PngDecoder
-  ${REPO_ROOT}/lib/ProgressiveJpegDc
   ${REPO_ROOT}/lib/ProgressiveJpeg
   ${REPO_ROOT}/lib/TJpgDec/src
 )
@@ -93,6 +95,7 @@ set(PIPELINE_INCLUDES
 add_executable(EpubPipelineTest
   EpubPipelineTest.cpp
   CjkRulesTest.cpp
+  RubyLayoutTest.cpp
   FingerprintTest.cpp
   LostTocRetryTest.cpp
   TocSourceTest.cpp
@@ -104,6 +107,7 @@ add_executable(EpubPipelineTest
   FootnotePreviewStoreTest.cpp
   FootnoteResolveSliceTest.cpp
   ParagraphAnchorTest.cpp
+  KeptReadingStateTest.cpp
   ParsedTextOffsetTest.cpp
   LowHeapLoadTest.cpp
   LongChapterPageTablesTest.cpp
@@ -116,8 +120,9 @@ add_executable(EpubPipelineTest
   ImageManifestTest.cpp
   ImageWrapperWidthTest.cpp
   HeadingBlockLayoutTest.cpp
+  WritingModeLayoutTest.cpp
+  LineSpacingLayoutTest.cpp
   BlockEmphasisTest.cpp
-  PageBreakAfterTest.cpp
   KeepTogetherTest.cpp
   NativeSizeLayoutTest.cpp
   RootFontSizeTest.cpp
@@ -131,12 +136,18 @@ add_executable(EpubPipelineTest
   PlaceholderOnlyScopeTest.cpp
   PixelCacheWriteTest.cpp
   BufferedPrintTest.cpp
+  VerticalPageTest.cpp
+  ImageOnlyPageTest.cpp
+  VerticalLayoutTest.cpp
+  VerticalRulesTest.cpp
   CoverPipelineTest.cpp
   CoverWrapperTest.cpp
   CoverFallbackTest.cpp
   VisibleTextTest.cpp
   BookFontsTest.cpp
   FirstOpenIndexingTest.cpp
+  FirstChapterTest.cpp
+  TocPassTest.cpp
   # A book's embedded body font (Publisher Fonts): the probe and the extraction. Its SHA-1 comes from
   # test/shims/wolfssl, standing in for wolfCrypt.
   ${REPO_ROOT}/lib/Epub/Epub/BookFonts.cpp

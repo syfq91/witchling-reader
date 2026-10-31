@@ -25,7 +25,7 @@ class TtfFontSet;
 /// TtfFontSet, the families installed together, whose store and scratch block it shares.
 ///
 /// It serves the body size and, on demand, native sizes (headings, CSS sizes, drop caps at their own pixel size):
-/// each size is an EpdFontData without tables for each style the family has, so every lookup goes to a per-style
+/// each size is an EpdFontData without tables for each style the family draws, so every lookup goes to a per-style
 /// GlyphProvider adapter, and has its own entry in the store's face table. Kerning comes from the font's GPOS (or
 /// legacy kern) table through the store's pair index, and the fi/fl/ff/ffi/ffl ligatures from its GSUB table
 /// (spec 5.4).
@@ -52,6 +52,9 @@ class TtfFont {
     bool (*reclaim)() = nullptr;
     /// Milliseconds since boot, to time a wipe (TtfFontSet::storeEvents()); without it wipes are counted untimed.
     uint32_t (*nowMs)() = nullptr;
+    /// Whether a glyph drawn now counts as a use for the store's reclaims: the app answers true in the renderer's
+    /// black-and-white pass, the first of a page's passes. Null counts every draw.
+    bool (*countsDraw)() = nullptr;
   };
   static void setHooks(const Hooks& hooks);
 
@@ -63,8 +66,16 @@ class TtfFont {
   /// or over kMaxPointSize, or its line height does not fit EpdFontData (advanceY over 255).
   bool setBodySize(uint8_t pointSize);
   uint8_t bodySize() const { return pointSize_; }
-  /// The body face's font for `style`; nullptr for a style the family lacks (EpdFontFamily then falls back).
+  /// The body face's font for `style`; nullptr for a style the family lacks (EpdFontFamily then falls back). A family
+  /// none of whose files is bold draws bold, and bold italic without a file of its own, emboldened (spec 7.1). A family
+  /// none of whose files is italic draws italic, and bold italic without a file of its own, slanted (spec 7.4).
   const EpdFont* font(uint8_t style) const;
+  /// Whether `style` is drawn emboldened from another style's file (spec 7.1).
+  bool emboldened(const uint8_t style) const { return style < 4 && (emboldened_ & (1u << style)) != 0; }
+  /// Whether `style` is drawn slanted from another style's file (spec 7.4).
+  bool slanted(const uint8_t style) const { return style < 4 && (slanted_ & (1u << style)) != 0; }
+  /// Whether `style` is drawn from another style's file, emboldened or slanted.
+  bool synthetic(const uint8_t style) const { return emboldened(style) || slanted(style); }
   /// The body face's pixels per em (26.6), which native sizes are measured against; 0 before setBodySize().
   uint32_t bodyPpem() const { return body_.ppem; }
   /// The family's largest native size: kMaxNativePx, or less when its tallest glyph (head.yMax) or the furthest
@@ -77,12 +88,15 @@ class TtfFont {
   /// is outside kMinNativePx..kMaxNativePx, a line height does not fit EpdFontData, or no size can serve. They live
   /// until dropNativeSizes() or the font's end.
   bool nativeFonts(uint8_t px, const EpdFont* (&fonts)[4], uint32_t* servedPpem = nullptr);
+  /// Whether the regular style's cmap maps `codepoint`: a lookup in its tables, nothing rendered.
+  bool mapsCodepoint(uint32_t codepoint);
   /// Frees every native size, and the set's ring with them. Only once nothing refers to their fonts any more
   /// (their font IDs removed) and no glyph of the set is in use.
   void dropNativeSizes();
   uint8_t nativeSizeCount() const;
 
-  /// New glyphs are drawn without being stored until the next wipe: the set's store filled up, or failed.
+  /// New glyphs are drawn without being stored until room is made (or the next wipe): the set's store filled up, or a
+  /// write failed.
   bool ringMode() const;
   /// A style of the family reads its outlines from its file on the card (SD mode): that file stays open while the
   /// set is loaded.
@@ -103,6 +117,7 @@ class TtfFont {
 
  private:
   friend class TtfFontSet;
+  friend struct TtfFontTestAccess;  // host tests: the style choice, run again
   struct Size;
 
   class StyleProvider final : public GlyphProvider {
@@ -137,7 +152,7 @@ class TtfFont {
     bool indexValid = false;
     bool claimTried = false;  // in store generation `generation`
     uint32_t generation = 0;
-    // One for each style the family has a file for, where slot_ says: the body's made at load, a native size's with it.
+    // One for each style the family draws, where slot_ says: the body's made at load, a native size's with it.
     std::unique_ptr<StyleFont[]> styles;
   };
 
@@ -166,20 +181,22 @@ class TtfFont {
 
   // What opening the installed styles found: MapFailed means a style's block cannot be mapped (the budget shrank
   // since the install); Changed, an SD-mode style's file on the card is not the one installed; Failed, no usable
-  // regular style or an unreadable header.
+  // regular style, an unreadable header, or an SD-mode style's file that could not be checked for now (no memory, a
+  // card read: TtfFontSet::failedForNow()), which is never a reason to install again.
   enum class StylesResult : uint8_t { Ok, MapFailed, Changed, Failed };
 
   TtfFont(TtfFontSet& set, uint8_t family) : set_(set), family_(family) {}
-  // The style `style`, when the family has a file for it; else nullptr.
+  // The file that draws `style`: its own, or a synthetic style's source's; nullptr when none does.
   Style* styleAt(const uint8_t style) const {
-    return style < 4 && slot_[style] != kNoSlot ? &styles_[slot_[style]] : nullptr;
+    return style < 4 && source_[style] != kNoSlot ? &styles_[fileSlot_[source_[style]]] : nullptr;
   }
-  // Whether the family draws `style`: it has a file for it that the engine reads.
+  // Whether the family draws `style`: the file that draws it is one the engine reads.
   bool draws(const uint8_t style) const {
     const Style* const found = styleAt(style);
     return found && found->present;
   }
   StylesResult openStyles(const ttf::FileSource (&files)[4], uint8_t& block, ttf::ScratchPlan* plan);
+  void chooseSynthetic();
   bool fontBytes(uint8_t style, FontBytes* bytes);
   bool configure(Size& size, uint32_t ppem);
   void rebase(Size& size);
@@ -188,18 +205,27 @@ class TtfFont {
   bool claimSize(Size& size);
   bool storeKey(Size& size, uint8_t style, uint32_t codepoint, uint32_t* key);
   const EpdGlyph* glyph(Size& size, uint8_t style, uint32_t codepoint);
-  int8_t kerning(const Size& size, uint8_t style, uint32_t left, uint32_t right);
+  int8_t kerning(const Size& size, uint8_t drawn, uint32_t left, uint32_t right);
   void prefetch(Size& size, uint8_t style, const char* utf8Text);
   const EpdGlyph* render(const Size& size, uint8_t style, uint32_t codepoint, bool haveKey, uint32_t key);
+  ttf::Status load(FontBytes& bytes, const ttf::Face& face, uint16_t index, const Size& size, uint8_t style,
+                   EpdGlyph* metrics);
 
   TtfFontSet& set_;
   uint8_t family_;  // its index in the set: in its face entries and pair slots
   // Only the styles the family has a file for, a book's accent family often one or two (each style ~260 B, and its
-  // font in every size ~130 B): slot_ gives a style's place in them and in each size's fonts. Made at load.
+  // font in every size ~130 B): fileSlot_ gives a file's place in them. Each size has a font only for each style the
+  // family draws, a synthetic one too: slot_ gives its place there. source_ is the style whose file draws a style:
+  // its own, or for a synthetic style the regular, the italic or the bold. Made at load.
   static constexpr uint8_t kNoSlot = 0xFF;
   std::unique_ptr<Style[]> styles_;
+  uint8_t fileSlot_[4] = {kNoSlot, kNoSlot, kNoSlot, kNoSlot};
   uint8_t slot_[4] = {kNoSlot, kNoSlot, kNoSlot, kNoSlot};
-  uint8_t styleCount_ = 0;
+  uint8_t source_[4] = {kNoSlot, kNoSlot, kNoSlot, kNoSlot};
+  uint8_t styleCount_ = 0;  // files: styles_'s length
+  uint8_t fontCount_ = 0;   // each size's fonts
+  uint8_t emboldened_ = 0;  // emboldened(): one bit per style
+  uint8_t slanted_ = 0;     // slanted(): one bit per style
   Size body_;
   uint8_t pointSize_ = 0;
   std::unique_ptr<Size> native_[kMaxNativeSizes];
@@ -254,16 +280,38 @@ class TtfFontSet {
   /// is loaded: those files must stay open until then.
   bool load(const Files* families, uint8_t count, const uint8_t identity[glyphstore::kIdentityBytes],
             const std::function<void()>& onBusy = {}, Install install = Install::IfNeeded);
+  /// The last load() failed for now: no memory, or a card read failed. Loading fewer families would not help, and
+  /// would install another set over this one: load the same set again later. The store is then as the next load wants
+  /// it: as it was (nothing erased), or holding this set whole when the install finished and opening it failed for
+  /// now, which the next load opens; only a read that failed in the copy, after the erase, leaves it not installed,
+  /// and the next load installs the same set again.
+  bool failedForNow() const { return failedForNow_; }
   uint8_t familyCount() const { return count_; }
   /// The set's family `family`, in load()'s order; nullptr past familyCount().
   TtfFont* font(uint8_t family) const { return family < count_ ? fonts_[family].get() : nullptr; }
 
-  /// Runs a pending wipe (the store filled up, or a write failed), calling `onBusy` first. Only where no glyph
-  /// record of the set is in use: at book open. True when a wipe ran.
+  /// Runs a pending wipe (a write failed, or the face table filled), calling `onBusy` first. Only where no glyph record
+  /// of the set is in use: at a chapter or book open (load(), makeRoom() with Open). True when a wipe ran. False, doing
+  /// nothing, while the `renderLockHeld` hook says the lock is not held: a lookup or a draw may hold a record of the
+  /// log.
   bool wipeIfPending(const std::function<void()>& onBusy = {});
-  /// The store reacts as if it had just filled up: new glyphs go to the ring, and a wipe is pending. The serial test
-  /// API's CMD:TTF:FULL, to reach what a full store does at any size. False when no store is open.
+  /// Makes room in the store when it needs it (a full log, the index, or a rebuild due), after a pending wipe (Open
+  /// only: an Idle step leaves a wipe to the next Open, as it takes seconds, and does nothing else meanwhile): a
+  /// reclaim of its oldest segment or a rebuild of its index, one step for Idle, until enough for Open, which calls
+  /// `onBusy` first. Before that, room to make or not, it takes the store's use counts when a commit made them due
+  /// (FlashGlyphStore::countsDue()): a commit runs inside a draw or a section build, where a session-long block could
+  /// pin memory the reader released, so the counts wait for this call. Once writes resume the ring is freed and new
+  /// glyphs are stored again. Only under RenderLock, and where no glyph record of the set is in use across the call: a
+  /// rebuild with a full journal wipes the store instead. True when it did work (a reclaim, a rebuild or a wipe); false
+  /// when the store is not open, the lock is not held, or there was nothing to do (taking the counts aside).
+  bool makeRoom(FlashGlyphStore::Budget budget, const std::function<void()>& onBusy = {});
+  /// The store reacts as if it had just filled up: new glyphs go to the ring, and the next makeRoom() reclaims. The
+  /// serial test API's CMD:TTF:FULL, to reach what a full store does at any size. False when no store is open.
   bool markFull();
+  /// Whether an Idle step would do something now: the store is open, no wipe is pending (an Idle step leaves it to the
+  /// next Open), and its use counts are due or it has room to make in idle time. The serial test API's CMD:IDLE reads
+  /// it. Only under RenderLock.
+  bool needsIdleRoom() const;
 
   /// What the set and its store hold now, for the serial test API's CMD:TTF.
   struct Stats {
@@ -273,21 +321,29 @@ class TtfFontSet {
     bool wipePending = false;
     uint32_t logUsed = 0;
     uint32_t logSize = 0;
-    uint32_t usedSlots = 0;  ///< glyph index slots in use
-    uint32_t renders = 0;    ///< glyphs drawn from outlines since load, every family's
-    uint32_t hits = 0;       ///< lookups the store answered since load
+    uint32_t usedSlots = 0;     ///< glyph index slots in use
+    uint32_t renders = 0;       ///< glyphs drawn from outlines since load, every family's
+    uint32_t hits = 0;          ///< lookups the store answered since load
+    uint16_t segments = 0;      ///< the log's segments
+    uint16_t freeSegments = 0;  ///< of them, not live
+    uint32_t liveSlots = 0;     ///< index slots that name a live record
+    uint32_t drawsCounted = 0;  ///< draws the store counted as uses
   };
   Stats stats() const;
 
-  /// How often a store filled up and was wiped since boot, every set's, and how long the last wipe took (0 without
-  /// the nowMs hook). Read from any task: the serial test API polls it for its EVT: lines.
+  /// How often a store filled up, was wiped and made room since boot, every set's, and how long the last wipe and the
+  /// last room took (0 without the nowMs hook). Read from any task: the serial test API polls it for its EVT: lines.
   struct StoreEvents {
     uint32_t fills = 0;
     uint32_t wipes = 0;
     uint32_t lastWipeMs = 0;
+    uint32_t rooms = 0;     ///< makeRoom() calls that did work
+    uint32_t rebuilds = 0;  ///< index rebuilds they ran
+    uint32_t dropped = 0;   ///< glyphs their reclaims dropped
+    uint32_t lastRoomMs = 0;
   };
   static StoreEvents storeEvents();
-  /// New glyphs are drawn without being stored until the next wipe.
+  /// New glyphs are drawn without being stored until room is made (or the next wipe).
   bool ringMode() const { return ringMode_; }
   /// The heap the ring's bitmaps hold.
   uint32_t ringBytes() const;
@@ -322,6 +378,7 @@ class TtfFontSet {
   bool ownsBitmap(const EpdGlyph* glyph, const uint8_t*& bitmap) const;
   void failed(uint8_t style, uint32_t codepoint, ttf::Status status, bool haveKey, uint32_t key);
   void noteCommit(FlashGlyphStore::Commit result);
+  void noteWiped(uint32_t startMs);
   uint32_t batchCapacity() const { return rasterizer_.plan().outputBytes; }
   bool beginMiss();
   void endMiss();
@@ -341,6 +398,7 @@ class TtfFontSet {
   std::unique_ptr<TtfFont> fonts_[kMaxFamilies];
   uint8_t count_ = 0;
   bool readsCard_ = false;
+  bool failedForNow_ = false;   // failedForNow()
   bool missesStarved_ = false;  // the heap could not hold a miss's memory in this pass (beginMiss())
   bool ringMode_ = false;
 

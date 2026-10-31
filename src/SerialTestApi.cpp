@@ -27,6 +27,7 @@
 #include <GfxRenderer.h>
 #include <Memory.h>
 #include <ProtectedPaths.h>
+#include <Utf8.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -35,12 +36,14 @@
 #include <cstring>
 
 #include "ButtonEventManager.h"
+#include "CjkUiFonts.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "SdCardFontGlobals.h"
 #include "SettingsByKey.h"
 #include "TouchUi.h"  // CP_TOUCH_UI
 #include "UiLanguage.h"
+#include "util/CjkLookupRun.h"
 #include "util/Dictionary.h"
 #include "util/IdleGate.h"
 #endif
@@ -190,6 +193,7 @@ uint32_t reportedActivity = 0;
 uint32_t reportedPopup = 0;
 uint32_t reportedFills = 0;
 uint32_t reportedWipes = 0;
+uint32_t reportedRooms = 0;
 // An event line (sent unasked once EVENTS:ON) waits only 50 ms, so a host that enabled events and
 // went away cannot hold the loop up.
 constexpr unsigned long kEventStallMs = 50;
@@ -331,7 +335,8 @@ bool openReader(const std::string_view arg) {
     }
   }
 #endif
-  activityManager.goToReader(std::move(path));
+  // Opened as from a list, refresh included, so a test sees the open a reader sees.
+  activityManager.openBook(std::move(path));
   return true;
 }
 
@@ -357,6 +362,13 @@ void lookUpWord(const std::string_view wordView) {
   std::string definition;
   std::string headword;
   bool found = false;
+  // A word that starts with Han, kana or Hangul takes the prefix search, as the word screen does.
+  const bool cjk = CjkLookupRun::scriptOf(text.c_str(), text.size()) != CjkLookupRun::Script::Other;
+  CjkLookupRun run;
+  if (cjk) run.append(text.c_str(), text.size());
+  DictPrefixMatch match;
+  long searchMs = 0;
+  long exactMs = -1;  // -1: no exact baseline ran
   if (dictionaryName[0] != '\0') {
     // The object carries scan buffers and an inflate window between lookups; on the heap for the
     // length of this command only, and makeUniqueNoThrow so a fragmented heap is an answer, not
@@ -370,11 +382,28 @@ void lookUpWord(const std::string_view wordView) {
       outcome = "index_failed";
     } else {
       Dictionary::LookupResult result = Dictionary::LookupResult::NotFound;
-      found = dict->lookup(text.c_str(), definition, headword, &result);
+      if (cjk) {
+        // Run unabortable, so the time is the search's and not a keypress's.
+        const unsigned long searchStart = millis();
+        found = dict->resolvePrefixes(run.text(), match, &result);
+        searchMs = static_cast<long>(millis() - searchStart);
+        if (found) {
+          // The old path for the same headword, after the search so any cache warmth favours it.
+          DictLocation exactLocation;
+          std::string exactHeadword;
+          const unsigned long exactStart = millis();
+          dict->resolve(match.hits[0].headword.c_str(), exactLocation, exactHeadword);
+          exactMs = static_cast<long>(millis() - exactStart);
+          found = dict->readPrefixDefinitions(match, definition, &result);
+          headword = match.hits[0].headword;
+        }
+      } else {
+        found = dict->lookup(text.c_str(), definition, headword, &result);
+      }
       outcome = Dictionary::resultName(result);
     }
   }
-  Dictionary::logLookup(dictionaryName, text.c_str(), outcome, found ? headword.c_str() : nullptr);
+  Dictionary::logLookup(dictionaryName, cjk ? run.text() : text.c_str(), outcome, found ? headword.c_str() : nullptr);
   std::string line = "DICT:result=";
   line += outcome;
   appendField(line, "dict", dictionaryName);
@@ -382,6 +411,32 @@ void lookUpWord(const std::string_view wordView) {
   if (found) {
     appendField(line, "headword", headword);
     appendField(line, "bytes", static_cast<long>(definition.size()));
+  }
+  if (cjk) {
+    long matched = 0;
+    std::string hits;
+    std::string entries;
+    for (uint8_t i = 0; i < match.count; ++i) {
+      if (i > 0) {
+        hits += ',';
+        entries += ',';
+      }
+      hits += match.hits[i].headword;
+      entries += std::to_string(match.hits[i].entryCount);
+    }
+    if (match.count > 0) {
+      const auto* cursor = reinterpret_cast<const unsigned char*>(run.text());
+      const auto* const end = cursor + match.hits[0].runBytes;
+      while (cursor < end && utf8NextCodepoint(&cursor) != 0) ++matched;
+    }
+    appendField(line, "run", run.text());
+    appendField(line, "matched", matched);
+    appendField(line, "hits", hits);
+    appendField(line, "entries", entries);
+    appendField(line, "probes", static_cast<long>(match.probes));
+    appendField(line, "reads", static_cast<long>(match.reads));
+    appendField(line, "ms", searchMs);
+    if (exactMs >= 0) appendField(line, "exact_ms", exactMs);
   }
   reply(line);
 }
@@ -485,6 +540,8 @@ void cmdState(std::string_view /*arg*/) {
     appendField(state, "popup", popup.text);
     appendField(state, "popup_ms", static_cast<long>(millis() - popup.atMs));
   }
+  // The TrueType family behind the UI faces (CjkUiFonts::setReaderFont), when one is.
+  if (CjkUiFonts::hasReaderFont()) appendField(state, "ui_font", sdFontSystem.loadedFamily().c_str());
   appendField(state, "heap", static_cast<long>(ESP.getFreeHeap()));
   appendField(state, "maxblock",
               static_cast<long>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT)));
@@ -723,9 +780,12 @@ void injectContact(const std::string_view arg, const size_t count, const char* o
   int xy[4];
   float n[4];
   bool onScreen = SerialCommandGrammar::parseIntList(arg, xy, count);
+  // The reader's frame, as the touch HAL maps it: a vertical page holds the turned frame as the live one while it
+  // draws, and a contact sent then is still a point of the reader's.
+  const GfxRenderer::Orientation held = testRenderer->getHeldOrientation();
   for (size_t i = 0; onScreen && i < count; i += 2) {
-    onScreen = xy[i] >= 0 && xy[i + 1] >= 0 && xy[i] < testRenderer->getScreenWidth() &&
-               xy[i + 1] < testRenderer->getScreenHeight();
+    onScreen = xy[i] >= 0 && xy[i + 1] >= 0 && xy[i] < testRenderer->getScreenWidth(held) &&
+               xy[i + 1] < testRenderer->getScreenHeight(held);
     if (onScreen) testRenderer->logicalToTap(xy[i], xy[i + 1], n[i], n[i + 1]);
   }
   if (!onScreen) {
@@ -834,10 +894,14 @@ void appendStats(std::string& line, const TtfFontSet& set) {
   appendField(line, "pending", s.wipePending ? 1L : 0L);
   appendField(line, "renders", static_cast<long>(s.renders));
   appendField(line, "hits", static_cast<long>(s.hits));
+  appendField(line, "segments", static_cast<long>(s.segments));
+  appendField(line, "free", static_cast<long>(s.freeSegments));
+  appendField(line, "live_slots", static_cast<long>(s.liveSlots));
+  appendField(line, "draws", static_cast<long>(s.drawsCounted));
 }
 
 // CMD:TTF: what the loaded TrueType set and its glyph store hold. CMD:TTF:FULL: the store acts as if it had just filled
-// up (TtfFontSet::markFull), so what a full store does can be watched at any size.
+// up (TtfFontSet::markFull): the next safe point reclaims the oldest segment, so that can be watched at any size.
 void cmdTtf(const std::string_view arg) {
   if (!arg.empty() && arg != "FULL") {
     reply("TTF_ERROR:expected FULL, got ", arg);
@@ -860,6 +924,10 @@ void cmdTtf(const std::string_view arg) {
     appendField(line, "fills", static_cast<long>(events.fills));
     appendField(line, "wipes", static_cast<long>(events.wipes));
     appendField(line, "last_wipe_ms", static_cast<long>(events.lastWipeMs));
+    appendField(line, "rooms", static_cast<long>(events.rooms));
+    appendField(line, "rebuilds", static_cast<long>(events.rebuilds));
+    appendField(line, "dropped", static_cast<long>(events.dropped));
+    appendField(line, "last_room_ms", static_cast<long>(events.lastRoomMs));
   }
   reply(line);
 }
@@ -995,6 +1063,7 @@ void serviceEvents() {
     reportedPopup = popup.sequence;
     reportedFills = store.fills;
     reportedWipes = store.wipes;
+    reportedRooms = store.rooms;
     return;
   }
   if (activity != reportedActivity) {
@@ -1022,6 +1091,14 @@ void serviceEvents() {
     char line[56];
     snprintf(line, sizeof(line), "EVT:TTF_WIPE ms=%lu wipes=%lu", static_cast<unsigned long>(store.lastWipeMs),
              static_cast<unsigned long>(store.wipes));
+    reply(line, {}, kEventStallMs);
+  }
+  if (store.rooms != reportedRooms) {
+    reportedRooms = store.rooms;
+    char line[72];
+    snprintf(line, sizeof(line), "EVT:TTF_ROOM ms=%lu rooms=%lu dropped=%lu",
+             static_cast<unsigned long>(store.lastRoomMs), static_cast<unsigned long>(store.rooms),
+             static_cast<unsigned long>(store.dropped));
     reply(line, {}, kEventStallMs);
   }
   for (int i = 0; i < fontCount; ++i) {

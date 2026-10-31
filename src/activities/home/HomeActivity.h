@@ -126,6 +126,7 @@ class HomeActivity final : public Activity, private UiAppHost {
   bool coverAttemptsExhausted(const std::string& path) const;
 
  public:
+  bool drawsBookText() const override { return true; }
   explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string focusBookPath = {},
                         int focusSelectorIndex = -1)
       : Activity("Home", renderer, mappedInput),
