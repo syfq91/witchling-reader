@@ -37,19 +37,17 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
     SYNC_PROGRESS,
   };
 
-  explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
-                                  const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  const uint8_t currentOrientation, const bool hasFootnotes,
-                                  const int8_t initialEmbeddedStyleOverride, const int8_t initialImageRenderingOverride,
-                                  const int8_t initialFontFamilyOverride,
-                                  const std::string& initialSdFontFamilyOverride, const int8_t initialFontSizeOverride,
-                                  const uint8_t initialTextDarkness, const int8_t initialParagraphAlignmentOverride,
-                                  const int8_t initialTextAntiAliasingOverride, const int8_t initialHyphenationOverride,
-                                  const int8_t initialFontSizeNormalizationOverride,
-                                  const int8_t initialInlineFootnotePreviewsOverride, const int8_t initialLineSpacingOverride,
-                                  const int8_t initialVerticalTextOverride, const bool verticalAllowed,
-                                  const bool hasStarredPages, const bool isCurrentPageStarred, const bool hasPrintedPages,
-                                  const bool wordLookupAvailable);
+  explicit EpubReaderMenuActivity(
+      GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title, const int currentPage,
+      const int totalPages, const int bookProgressPercent, const uint8_t currentOrientation, const bool hasFootnotes,
+      const int8_t initialEmbeddedStyleOverride, const int8_t initialImageRenderingOverride,
+      const int8_t initialFontFamilyOverride, const std::string& initialSdFontFamilyOverride,
+      const int8_t initialFontSizeOverride, const uint8_t initialTextDarkness,
+      const int8_t initialParagraphAlignmentOverride, const int8_t initialTextAntiAliasingOverride,
+      const int8_t initialHyphenationOverride, const int8_t initialFontSizeNormalizationOverride,
+      const int8_t initialInlineFootnotePreviewsOverride, const int8_t initialLineSpacingOverride,
+      const int8_t initialVerticalTextOverride, const bool verticalAllowed, const bool hasStarredPages,
+      const bool isCurrentPageStarred, const bool hasPrintedPages, const bool wordLookupAvailable);
 
   void onExit() override;
 

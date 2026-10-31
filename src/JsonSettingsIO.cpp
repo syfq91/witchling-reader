@@ -146,7 +146,7 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   // Before Recent Books became a Browse Files list it had a grid/list switch: the grid is now
   // the Covers view, the list the Details view.
   const uint8_t fallbackView = (doc["recentBooksGridView"] | false) ? CrossPointSettings::BROWSER_VIEW_COVERS
-                                                                   : CrossPointSettings::BROWSER_VIEW_DETAILS;
+                                                                    : CrossPointSettings::BROWSER_VIEW_DETAILS;
   s.recentBooksView = doc["recentBooksView"] | fallbackView;
   if (s.recentBooksView >= CrossPointSettings::FILE_BROWSER_VIEW_COUNT ||
       s.recentBooksView == CrossPointSettings::BROWSER_VIEW_COVERS) {

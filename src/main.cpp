@@ -637,7 +637,6 @@ void ensureSdFontLoadedForPath(const char* path, const bool waitForBookFonts) {
   // RenderLock, so the lambda must not take one. Fires only on a genuine first load.
   const auto onColdFontLoad = [] { GUI.drawPopup(renderer, tr(STR_LOADING_FONT)); };
 
-
   const char* families[1 + BookFonts::kMaxAccents] = {};
   std::string readerFamily;
   uint8_t size = 0;
@@ -731,7 +730,6 @@ static HalGPIO::WakeGestures wakeGestureFromSettings() {
   gestures.longHold = true;
   return gestures;
 }
-
 
 void setup() {
   // FIRST statement, ahead of the NVS read and the wake gate: on the X4 the battery
@@ -1180,7 +1178,6 @@ void loop() {
   // Extra clearance from the panel edge, on top of the board profile's own inset. Pushed here
   // rather than once at boot so the Settings screen takes effect on the next render.
   renderer.setViewablePadding(SETTINGS.getEdgeMarginPadding());
-
 
   // Check for any user activity (button press or release, screen touch) or
   // active background work.

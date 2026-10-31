@@ -79,8 +79,10 @@ FileBrowserActivity::FileBrowserActivity(GfxRenderer& renderer, MappedInputManag
     currentTab = BrowserTab::Books;
   }
   tabStates[static_cast<size_t>(BrowserTab::Recents)].path = "/";
-  tabStates[static_cast<size_t>(BrowserTab::Books)].path = (mode == Mode::Books && !initialPath.empty()) ? initialPath : "/";
-  tabStates[static_cast<size_t>(BrowserTab::All)].path = (mode == Mode::AllFiles && !initialPath.empty()) ? initialPath : "/";
+  tabStates[static_cast<size_t>(BrowserTab::Books)].path =
+      (mode == Mode::Books && !initialPath.empty()) ? initialPath : "/";
+  tabStates[static_cast<size_t>(BrowserTab::All)].path =
+      (mode == Mode::AllFiles && !initialPath.empty()) ? initialPath : "/";
   tabStates[static_cast<size_t>(currentTab)].focusName = this->focusName;
   model.setPath(mode == Mode::Recents ? "/" : std::move(initialPath));
 }
@@ -124,9 +126,10 @@ void FileBrowserActivity::buildTabBar(UiScreen& screen) {
   tabStyles.normal.foreground = freeink::ui::Paint::solid(freeink::ui::Color::Black);
   tabStyles.normal.border = freeink::ui::Paint::solid(freeink::ui::Color::Black);
   tabStyles.normal.borderWidth = 1;
-  tabStyles.selected.background =
-      onTabs ? freeink::ui::Paint::solid(freeink::ui::Color::Black) : freeink::ui::Paint::dither(freeink::ui::Color::LightGray);
-  tabStyles.selected.foreground = freeink::ui::Paint::solid(onTabs ? freeink::ui::Color::White : freeink::ui::Color::Black);
+  tabStyles.selected.background = onTabs ? freeink::ui::Paint::solid(freeink::ui::Color::Black)
+                                         : freeink::ui::Paint::dither(freeink::ui::Color::LightGray);
+  tabStyles.selected.foreground =
+      freeink::ui::Paint::solid(onTabs ? freeink::ui::Color::White : freeink::ui::Color::Black);
   tabStyles.selected.border = freeink::ui::Paint::solid(freeink::ui::Color::Black);
   tabStyles.selected.borderWidth = 1;
   tabStyles.focused = tabStyles.selected;
@@ -773,7 +776,8 @@ bool FileBrowserActivity::handleCustomInput() {
       }
       if (ev.button == MappedInputManager::Button::Confirm &&
           (ev.type == ButtonEventManager::PressType::Short || ev.type == ButtonEventManager::PressType::Long)) {
-        selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + 1) % static_cast<int>(BrowserTab::Count)), true);
+        selectTab(static_cast<BrowserTab>((static_cast<int>(currentTab) + 1) % static_cast<int>(BrowserTab::Count)),
+                  true);
         return true;
       }
       if ((MappedInputManager::isDirection(ev.button, MappedInputManager::Direction::Down) ||
@@ -1262,11 +1266,10 @@ void FileBrowserActivity::drawChrome() {
 void FileBrowserActivity::drawFooter() {
   // Only the book browser leaves to Home; the others were opened from somewhere and go back there.
   const char* backLabel =
-      hasTabs()
-          ? tr(STR_BACK)
-          : (model.path() == "/")
-                ? (model.getMode() == Mode::Books || model.getMode() == Mode::Recents ? tr(STR_HOME) : tr(STR_BACK))
-                : tr(STR_BACK);
+      hasTabs() ? tr(STR_BACK)
+      : (model.path() == "/")
+          ? (model.getMode() == Mode::Books || model.getMode() == Mode::Recents ? tr(STR_HOME) : tr(STR_BACK))
+          : tr(STR_BACK);
   const bool hasEntries = listCount() > 0;
   bool selectingFirmwareFile = false;
   if (model.getMode() == Mode::PickFirmware && hasEntries) {
@@ -1295,11 +1298,11 @@ void FileBrowserActivity::drawFooter() {
   } else {
     prevLabel = (model.getMode() == Mode::PickFolder) ? tr(STR_NEW) : pages ? tr(STR_LIST_PAGE_PREV) : "";
     const bool optionsOnRight = showOptionsHint && !confirmOpensOptions();
-    nextLabel = (model.getMode() == Mode::PickFolder)   ? tr(STR_MOVE_HERE)
+    nextLabel = (model.getMode() == Mode::PickFolder)     ? tr(STR_MOVE_HERE)
                 : (model.getMode() == Mode::PickFirmware) ? (optionsOnRight ? tr(STR_OPTIONS) : "")
-                : pages                                 ? (optionsOnRight ? tr(STR_LIST_PAGE_NEXT_OR_OPTIONS) : tr(STR_LIST_PAGE_NEXT))
-                : optionsOnRight                        ? tr(STR_OPTIONS)
-                                                        : "";
+                : pages          ? (optionsOnRight ? tr(STR_LIST_PAGE_NEXT_OR_OPTIONS) : tr(STR_LIST_PAGE_NEXT))
+                : optionsOnRight ? tr(STR_OPTIONS)
+                                 : "";
   }
 
   // Paging is bound to logical Left/Right and stepping to logical Up/Down, so which physical pair

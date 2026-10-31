@@ -54,12 +54,10 @@ bool isCoverLabel(std::string_view label) {
   }
   lower[label.size()] = '\0';
 
-  if (strcmp(lower, "cover") == 0 || strcmp(lower, "front cover") == 0 ||
-      strcmp(lower, "cover page") == 0 || strcmp(lower, "cover image") == 0 ||
-      strcmp(lower, "book cover") == 0 || strcmp(lower, "title page") == 0 ||
-      strcmp(lower, "titlepage") == 0 || strcmp(lower, "portada") == 0 ||
-      strcmp(lower, "cubierta") == 0 || strcmp(lower, "couverture") == 0 ||
-      strcmp(lower, "capa") == 0 || strcmp(lower, "titelbild") == 0 ||
+  if (strcmp(lower, "cover") == 0 || strcmp(lower, "front cover") == 0 || strcmp(lower, "cover page") == 0 ||
+      strcmp(lower, "cover image") == 0 || strcmp(lower, "book cover") == 0 || strcmp(lower, "title page") == 0 ||
+      strcmp(lower, "titlepage") == 0 || strcmp(lower, "portada") == 0 || strcmp(lower, "cubierta") == 0 ||
+      strcmp(lower, "couverture") == 0 || strcmp(lower, "capa") == 0 || strcmp(lower, "titelbild") == 0 ||
       strcmp(lower, "umschlag") == 0 || strcmp(lower, "copertina") == 0) {
     return true;
   }
@@ -225,8 +223,7 @@ void TocNcxParser::endElement(void* userData, const char* name) {
 
       if (self->coverHref.empty() && (self->currentNavPointIsCover || isCoverLabel(self->currentLabel))) {
         self->coverHref = self->hrefScratch_;
-        LOG_DBG("TOC", "Found cover in NCX TOC: %s (label='%s')", self->coverHref.c_str(),
-                self->currentLabel.c_str());
+        LOG_DBG("TOC", "Found cover in NCX TOC: %s (label='%s')", self->coverHref.c_str(), self->currentLabel.c_str());
         if (self->stopOnCoverFound) {
           self->saxParser_.stop();
           return;

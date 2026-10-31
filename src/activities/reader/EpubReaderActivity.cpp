@@ -899,7 +899,6 @@ void EpubReaderActivity::onExit() {
   // The next onEnter takes them again, still at a stable point rather than mid-build
   // (GfxRenderer::ensureScaledGlyphCache).
   renderer.releaseGlyphCaches();
-
 }
 
 void EpubReaderActivity::loop() {
@@ -3045,11 +3044,11 @@ void EpubReaderActivity::applyBookReaderOverrides(
   bookInlineFootnotePreviewsOverride = inlineFootnotePreviewsOverride;
   bookLineSpacingOverride = lineSpacingOverride;
   bookVerticalTextOverride = verticalTextOverride;
-  RECENT_BOOKS.setReaderOverrides(
-      epub->getPath(), bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
-      bookSdFontFamilyOverride, bookFontSizeOverride, bookParagraphAlignmentOverride, bookTextAntiAliasingOverride,
-      bookHyphenationOverride, bookFontSizeNormalizationOverride, bookInlineFootnotePreviewsOverride,
-      bookLineSpacingOverride, bookVerticalTextOverride);
+  RECENT_BOOKS.setReaderOverrides(epub->getPath(), bookEmbeddedStyleOverride, bookImageRenderingOverride,
+                                  bookFontFamilyOverride, bookSdFontFamilyOverride, bookFontSizeOverride,
+                                  bookParagraphAlignmentOverride, bookTextAntiAliasingOverride, bookHyphenationOverride,
+                                  bookFontSizeNormalizationOverride, bookInlineFootnotePreviewsOverride,
+                                  bookLineSpacingOverride, bookVerticalTextOverride);
 
   // A changed override forces a full section relayout (section.reset() below → rebuild with the
   // "Indexing…" popup). That popup FAST-refreshes against whatever is on the panel; when the change
@@ -5149,7 +5148,6 @@ void EpubReaderActivity::renderNormalPass(RenderLock& lock, const RenderLayout& 
         lastRenderStats.phases.displayMs, lastRenderStats.fontCacheHits, lastRenderStats.fontCacheMisses,
         fontHitRatePct, lastRenderStats.fontGetBitmapCalls, lastRenderStats.fontGetBitmapTimeUs);
 
-
     // Pre-render was already scheduled in renderContents() before the lock was
     // released, so the loop task could start it during the waveform wait.
   }
@@ -6517,8 +6515,8 @@ float EpubReaderActivity::statusBarBookPercent() const {
 }
 
 std::string EpubReaderActivity::chapterTitle() const {
-  const int tocIndex =
-      section ? section->getTocIndexForPage(section->currentPage) : (epub ? epub->getTocIndexForSpineIndex(currentSpineIndex) : -1);
+  const int tocIndex = section ? section->getTocIndexForPage(section->currentPage)
+                               : (epub ? epub->getTocIndexForSpineIndex(currentSpineIndex) : -1);
   if (tocIndex == -1 || !epub) return tr(STR_UNNAMED);
   return epub->getTocItem(tocIndex).title;
 }

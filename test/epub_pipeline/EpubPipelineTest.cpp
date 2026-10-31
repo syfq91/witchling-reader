@@ -263,8 +263,7 @@ std::vector<Case> corpusCases() {
 std::vector<Case> warmCases() {
   std::vector<Case> cases = corpusCases();
   cases.erase(
-      std::remove_if(cases.begin(), cases.end(),
-                     [](const Case& c) { return c.variant == Variant::Hyphenation; }),
+      std::remove_if(cases.begin(), cases.end(), [](const Case& c) { return c.variant == Variant::Hyphenation; }),
       cases.end());
   return cases;
 }

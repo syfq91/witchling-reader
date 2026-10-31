@@ -48,8 +48,8 @@ bool clear(const std::string& cacheDir, const Keep keep, const bool keepCovers) 
     entry.getName(name, sizeof(name));
     const bool isDir = entry.isDirectory();
     entry.close();
-    if (name == std::string_view(kBookCacheStateFile) ||
-        (keep == Keep::ReadingState && isReadingState(name)) || (keepCovers && isCoverImage(name))) {
+    if (name == std::string_view(kBookCacheStateFile) || (keep == Keep::ReadingState && isReadingState(name)) ||
+        (keepCovers && isCoverImage(name))) {
       anyKept = true;
       continue;
     }

@@ -308,7 +308,6 @@ void BaseTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
   renderer.setDrawOrientation(orig_orientation);
 }
 
-
 void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle) const {
   // Hide last battery draw
   constexpr int maxBatteryWidth = 80;
@@ -751,8 +750,8 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
                               const int pageCount, const std::string& bookTitle, const std::string& chapterTitle,
                               const int paddingBottom, const bool isStarred, const std::string& printedPageLabel,
                               const bool fillMargin, const bool pageCountApproximate,
-                              const std::vector<float>& chapterMarkers,
-                              const bool lowMemory, const bool fillFromRight) const {
+                              const std::vector<float>& chapterMarkers, const bool lowMemory,
+                              const bool fillFromRight) const {
   if (!SETTINGS.showStatusBar) {
     return;
   }
@@ -869,10 +868,9 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
 
   // A legacy layout may still name a battery slot. In that case the battery is already drawn
   // below, and the low-battery glyph beside the book percentage would be a duplicate.
-  const bool batterySlotShown =
-      SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
-      SETTINGS.statusBarMiddle == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
-      SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY;
+  const bool batterySlotShown = SETTINGS.statusBarLeft == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+                                SETTINGS.statusBarMiddle == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
+                                SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY;
 
   // 1. Left slot
   int leftClusterWidth = 0;

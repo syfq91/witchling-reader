@@ -31,7 +31,6 @@
 #include "util/FullScreenMessageActivity.h"
 #include "util/SerialCommandGrammar.h"
 
-
 // Guards ActivityManager's cross-task state (requestedUpdate, waitingTaskHandle),
 // which the loop task and the render task both touch.
 //
