@@ -48,7 +48,7 @@ Button layout can be customized in the **[Controls Settings](#373-controls)**.
 
 ### Moving through lists
 
-The firmware's lists share one consistent set of button controls: the **OPDS catalog** and the **OPDS servers** with their settings, **Settings** and the **reader menu**, the option lists and pickers they open (fonts, dictionaries, language, keyboard layouts), the menus (file options, quick overrides), **File Transfer**'s choice of mode, **Customise Status Bar**, and the screen shown when you finish a book.
+The firmware's lists share one consistent set of button controls: the **OPDS catalog** and the **OPDS servers** with their settings, **Settings** and the **reader menu**, the option lists and pickers they open (fonts, dictionaries, language, keyboard layouts), the menus (file options, quick overrides), **File Transfer**'s choice of mode, **Customise Status Bar**, the screen shown when you finish a book and an EPUB's **[table of contents](#5-chapter-selection-screen)**.
 
 | Button | Press | Hold |
 | --- | --- | --- |
@@ -218,8 +218,18 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 **EPUB Font** (submenu):
 - **Font Family**: Font used for EPUB reading. Includes built-in fonts (Bookerly, Noto Sans) plus any fonts installed on the SD card (which are memory-mapped directly from storage for minimal RAM usage).
 - **Font Size**: For Bookerly and Noto Sans, 10pt to 26pt: 10pt to 18pt are typefaces designed at that size; 20, 22, 24 and 26pt are the 18pt face enlarged. For a font on the SD card, the sizes its files were built at (the number in each file name: `MyFont_8.cpfont` is 8pt), then the standard sizes above its largest file, drawn from that file enlarged. A size the selected font does not offer, such as 8pt after switching from an SD font to Bookerly, is shown and drawn as the nearest size it does offer, and comes back when you switch back.
+- **Normalize Font Size**: Shows text the book sets only slightly larger or smaller than its body text (within 10%) at your font size. "ON" (default) / "OFF"
 - **Text Anti-Aliasing**: Smooth grey edges on text. Slows page turns slightly. "ON" / "OFF"
 - **Text Darkness**: Ink density for rendered text: "Normal" (default), "Dark", "Extra Dark", "Max Dark"
+
+- **Publisher Fonts**: what of a book's own fonts the reader uses. Needs **Embedded Style** on; a book you give a font of its own in the reader menu's Font Family keeps it. The fonts are copied out of the book on its first open (the "Indexing" popup); fonts that are WOFF or WOFF2, font collections, or encrypted, are not used. A book font without a bold face draws bold text emboldened, and without an italic face draws italic text slanted. The reader menu's settings and the quick overrides set it for one book: Off keeps that book in your font, and the other choices give it its own fonts while the setting here is Off. A book whose fonts have not been copied out yet is opened again to copy them, on the page you were reading.
+  - **Off** (default): your font for everything.
+  - **Body Text**: a book that embeds its body font as TrueType or OpenType is read in that font instead of yours.
+  - **Accents**: your font for the body text, and the book's other fonts where it uses them: a heading, a dedication or a quotation set in a font of its own is drawn in it, and so is a word or phrase inside a paragraph (an emphasised name, a bit of inline code). The book's three most-used such fonts are drawn, beside a built-in font of yours (Bookerly, Noto Sans) or a TrueType or OpenType one from the card; beside a `.cpfont` font of yours, and for the book's other fonts, text in them takes the kind of font the book names after it: Noto Sans for sans-serif, Bookerly for serif. Text in plain `serif` or `sans-serif` gets that built-in font too, unless the body text is in that kind already; `monospace` stays your font.
+  - **All Text**: Body Text and Accents together: the book's body font for the body text, and its most-used other fonts where the book uses them.
+
+  The TrueType and OpenType fonts the reader draws at once (yours or the book's body font, and the book's other fonts) are installed together, so moving between two books in fonts of their own, or between such a book and one without, installs them again (a few seconds; a font that stays first, such as yours, is not copied again). Together they must fit the font area; when they do not, the book's least-used other fonts are left out, one at a time.
+
 **Layout** (submenu):
 - **Paragraph Alignment**: "Justified" (default), "Left", "Center", "Right", "Book Style"
 
@@ -233,14 +243,8 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 - **Large Image Placeholder**: Whether to substitute an explicit placeholder for images that are too large to display inline. "ON" / "OFF"
 
 - **Embedded Style**: Use the EPUB's own HTML/CSS styling. "ON" (default) / "OFF"
-- **Publisher Fonts**: what of a book's own fonts the reader uses. Needs **Embedded Style** on; a book you give a font of its own in the reader menu's Font Family keeps it. The fonts are copied out of the book on its first open (the "Indexing" popup); fonts that are OpenType CFF (`.otf`), WOFF or WOFF2, or encrypted, are not used.
-  - **Off** (default): your font for everything.
-  - **Body Text**: a book that embeds its body font as TrueType is read in that font instead of yours.
-  - **Accents**: your font for the body text, and the book's other fonts where it uses them: a heading, a dedication or a quotation set in a font of its own is drawn in it, and so is a word or phrase inside a paragraph (an emphasised name, a bit of inline code). The book's three most-used such fonts are drawn, beside a built-in font of yours (Bookerly, Noto Sans) or a TrueType one from the card; beside a `.cpfont` font of yours, and for the book's other fonts, text in them takes the kind of font the book names after it: Noto Sans for sans-serif, Bookerly for serif. Text in plain `serif` or `sans-serif` gets that built-in font too, unless the body text is in that kind already; `monospace` stays your font.
-  - **All Text**: Body Text and Accents together: the book's body font for the body text, and its most-used other fonts where the book uses them.
-
-  The TrueType fonts the reader draws at once (yours or the book's body font, and the book's other fonts) are installed together, so moving between two books in fonts of their own, or between such a book and one without, installs them again (a few seconds; a font that stays first, such as yours, is not copied again). Together they must fit the font area; when they do not, the book's least-used other fonts are left out, one at a time.
 - **Hyphenation**: Automatic hyphenation while reading. "ON" / "OFF"
+- **Avoid Widows & Orphans**: End a page early rather than leave a paragraph's first line alone at its foot, or its last line alone at the top of the next page. "ON" (default) / "OFF". With a large font few lines fit on a page, and a page can end up to two lines short; turn it off to fill every page. Headings keep with the text that follows them either way.
 - **Synthetic TOC Fallback**: Generate a table of contents from headings when the EPUB has an invalid or missing TOC. "ON" / "OFF"
 - **Customise Status Bar**: Opens a submenu to configure the reading status bar: location (Top / Bottom), content slots for Left, Middle, and Right (Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title, or Hide), and a single progress bar (Book / Chapter / Hide) that sits at the selected status bar edge.
   The chapter page count and the chapter progress bar cover the whole chapter as the table of contents lists it, even when the book splits that chapter into several files. A `~` before the total means part of it is still an estimate; it firms up as the rest of the chapter is laid out. On/off items are switches; the others step to their next value with **Confirm**. The preview under the list shows the result.
@@ -398,10 +402,15 @@ What is not supported: Chinese, Japanese, Korean, Vietnamese, Hebrew, Arabic, Gr
 
 ## 5. Chapter Selection Screen
 
-Accessible by pressing **Confirm** while inside a book and selecting **Table of Contents**.
+Accessible by pressing **Confirm** while inside a book and selecting **Select Chapter**.
 
-1.  Use **Left** (or **Volume Up**), or **Right** (or **Volume Down**) to highlight the desired chapter.
-2.  Press **Confirm** to jump to that chapter.
+The list opens on the chapter you are reading. Sections are indented under their chapter, and a long
+title wraps onto a second line, keeping its indent; only a title too long for two lines ends in "…".
+
+1.  In an EPUB, move through the list as **[Moving through lists](#moving-through-lists)** describes:
+    **Up / Down** step one entry, hold **Left / Right** to page. XTC and Markdown books still step with
+    **Up / Down** and page with a short **Left / Right**.
+2.  Press **Confirm** to jump to that chapter or section.
 3.  *Alternatively, press **Back** to cancel and return to your current page.*
 
 ---

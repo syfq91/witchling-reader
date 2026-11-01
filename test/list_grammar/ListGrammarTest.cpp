@@ -430,4 +430,3 @@ TEST(ListGrammarPageTop, EdgeConditionsEmptyAndSingleItem) {
   // First render before drawn rows are known
   EXPECT_EQ(ListGrammar::pageTopFor(15, 0, 0, 10, 50), 10);
 }
-

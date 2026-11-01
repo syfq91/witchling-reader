@@ -183,10 +183,13 @@ void BaseTheme::drawBatteryRight(const GfxRenderer& renderer, Rect rect, const b
   drawBatteryIcon(renderer, rect.x, y, BaseMetrics::values.batteryWidth, rect.height, percentage);
 }
 
-void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const size_t current,
-                                const size_t total) const {
+int BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const size_t current, const size_t total) const {
+  // The percentage sits this far below the bar; what follows it starts below its line.
+  constexpr int kPercentGap = 15;
+  const int percentY = rect.y + rect.height + kPercentGap;
+  const int bottom = percentY + renderer.getLineHeight(UI_10_FONT_ID);
   if (total == 0) {
-    return;
+    return bottom;
   }
 
   // Use 64-bit arithmetic to avoid overflow for large files
@@ -204,7 +207,8 @@ void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const si
 
   // Draw percentage text centered below bar
   const std::string percentText = std::to_string(percent) + "%";
-  renderer.drawCenteredText(UI_10_FONT_ID, rect.y + rect.height + 15, percentText.c_str());
+  renderer.drawCenteredText(UI_10_FONT_ID, percentY, percentText.c_str());
+  return bottom;
 }
 
 void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,

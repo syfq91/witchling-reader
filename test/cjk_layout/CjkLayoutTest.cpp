@@ -194,7 +194,6 @@ TEST(CjkTokens, EachLineStartsAtItsFirstTokensVisibleOffset) {
   EXPECT_EQ(lines[2].visibleOffset, 109u);
 }
 
-
 TEST(CjkSpaces, ANoBreakSpaceNextToCjkStaysGlued) {
   // The parser turns U+00A0 into a glued " " token: no break on either side of it.
   ParsedText text(false, false, leftAligned());

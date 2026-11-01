@@ -239,8 +239,6 @@ TEST(WordSizeSerialization, ArenaRoundTripPreservesPerWordFields) {
   }
 }
 
-
-
 // Punctuation the parser attaches to a word arrives as its own token with the same flag, so it
 // travels with the word instead of becoming a selectable "word" of its own.
 TEST(WordContinuation, AttachedPunctuationIsMarkedAsContinuation) {
@@ -659,7 +657,3 @@ TEST(WordSizeRender, BlockMultiplierComposesWithWordSize) {
   EXPECT_FLOAT_EQ(renderer.drawCalls[0].scale, 1.5f);   // block multiplier alone
   EXPECT_FLOAT_EQ(renderer.drawCalls[1].scale, 0.75f);  // 1.5 x 50%
 }
-
-
-
-

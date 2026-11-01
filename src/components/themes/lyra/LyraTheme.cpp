@@ -168,7 +168,6 @@ void LyraTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
                    Rect{batteryX, rect.y + 5, LyraMetrics::values.batteryWidth, LyraMetrics::values.batteryHeight},
                    showBatteryPercentage);
 
-
   int maxTitleWidth = title != nullptr ? renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD) : 0;
   int maxSubtitleWidth =
       subtitle != nullptr ? renderer.getTextWidth(SMALL_FONT_ID, subtitle, EpdFontFamily::REGULAR) : 0;
@@ -232,7 +231,6 @@ void LyraTheme::drawSubHeader(const GfxRenderer& renderer, Rect rect, const char
 
   renderer.drawLine(rect.x, rect.y + rect.height - 1, rect.x + rect.width - 1, rect.y + rect.height - 1, true);
 }
-
 
 void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                 const char* btn4) const {
@@ -299,8 +297,8 @@ void LyraTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, co
 
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
-  constexpr int buttonHeight = 78;                                       // Height on screen (width when rotated)
-  constexpr int sideMargin = 16;                                         // Gap from panel edge, matching bottom hints
+  constexpr int buttonHeight = 78;  // Height on screen (width when rotated)
+  constexpr int sideMargin = 16;    // Gap from panel edge, matching bottom hints
 
   const auto textCW = [&](const int fontId, const int x, const int y, const char* text) {
     const int textWidth = renderer.getTextWidth(fontId, text);

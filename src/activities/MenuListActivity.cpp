@@ -127,10 +127,9 @@ void MenuListActivity::buildScreen(UiScreen& screen) {
   constexpr int16_t kSideHintInset = 21;
   const int16_t sideInsetRight = (fullRect.width > listRectR.width) ? kSideHintInset : 0;
   const int16_t sideInsetLeft = (listRectR.x > fullRect.x) ? kSideHintInset : 0;
-  screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(listRect.y), sideInsetRight,
-      static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height)),
-      sideInsetLeft});
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(listRect.y), sideInsetRight,
+                  static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height)), sideInsetLeft});
 
   auto props = listProps(screen);
   props.count = static_cast<uint16_t>(listCount());

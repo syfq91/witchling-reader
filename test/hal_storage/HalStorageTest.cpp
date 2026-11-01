@@ -5,7 +5,6 @@
 // handle never opened keeps its assert.
 // As in HalStorage.cpp: FsFile is SdFat's here, which the test mounts and writes through.
 #define HAL_STORAGE_IMPL
-#include <ctime>
 #include <HalSpiBus.h>
 #include <HalStorage.h>
 #include <SDCardManager.h>
@@ -15,6 +14,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <new>
 #include <string>
 #include <unordered_map>

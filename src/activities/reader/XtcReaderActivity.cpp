@@ -51,7 +51,6 @@ void XtcReaderActivity::onEnter() {
   RECENT_BOOKS.addBook(xtc->getPath(), xtc->getTitle(), xtc->getAuthor(), "",
                        ReaderActivity::coverThumbPlaceholder(xtc->getPath()));
 
-
   // Trigger first update
   requestUpdate();
 }
@@ -74,7 +73,6 @@ void XtcReaderActivity::onExit() {
 
   UITheme::getInstance().getMutableTheme().onBookWillClose(xtc ? xtc->getPath() : "", nullptr, xtc.get());
   xtc.reset();
-
 }
 
 bool XtcReaderActivity::openChapterSelection() {

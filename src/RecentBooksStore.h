@@ -36,6 +36,8 @@ struct RecentBook {
   int8_t lineSpacingOverride = -1;
   // -1 = use global setting, otherwise CrossPointSettings::VERTICAL_TEXT value.
   int8_t verticalTextOverride = -1;
+  // -1 = use global setting, otherwise CrossPointSettings::PUBLISHER_FONTS value.
+  int8_t publisherFontsOverride = -1;
 
   bool operator==(const RecentBook& other) const { return path == other.path; }
 };
@@ -151,7 +153,7 @@ class RecentBooksStore {
                           int8_t paragraphAlignmentOverride, int8_t textAntiAliasingOverride,
                           int8_t hyphenationOverride, int8_t fontSizeNormalizationOverride,
                           int8_t inlineFootnotePreviewsOverride, int8_t lineSpacingOverride,
-                          int8_t verticalTextOverride);
+                          int8_t verticalTextOverride, int8_t publisherFontsOverride);
 };
 
 // Helper macro to access recent books store

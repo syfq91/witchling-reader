@@ -825,4 +825,3 @@ TEST(ContentOpfParserIdentifiers, MetadataReadIsSetWhenTheMetadataCloses) {
   EXPECT_TRUE(*parser.metadataRead());
   EXPECT_EQ(parser.uuidIdentifier, "urn:uuid:01");
 }
-

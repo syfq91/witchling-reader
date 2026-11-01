@@ -10,8 +10,6 @@
 
 namespace SliderSetting {
 
-
-
 bool configFor(const SettingAction action, SliderPickerActivity::Config& cfg) {
   switch (action) {
     case SettingAction::SleepTimeoutPicker:
@@ -47,7 +45,6 @@ bool apply(const SettingAction action, const uint8_t value) {
   //
   // Now a row that forgets to declare its field does not save AND does not apply, which is a
   // report on the first use rather than one after a power cycle.
-
 
   // The row is gone once the walk moves on, so only its field pointer is kept.
   uint8_t CrossPointSettings::* field = nullptr;

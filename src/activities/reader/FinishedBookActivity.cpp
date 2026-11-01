@@ -164,7 +164,6 @@ NextBookMetadata loadNextBookMetadata(const std::string& nextBookPath, BuildAren
     return metadata;
   }
 
-
   return metadata;
 }
 
@@ -494,7 +493,8 @@ void launchFinishedBookFlow(Activity& host, GfxRenderer& renderer, MappedInputMa
           return;
         }
         if (SETTINGS.removeFinishedBooksFromRecents) {
-          RECENT_BOOKS.removeBook(bookPath);        }
+          RECENT_BOOKS.removeBook(bookPath);
+        }
         if (goHome) {
           activityManager.goHome();
         } else if (openNext) {

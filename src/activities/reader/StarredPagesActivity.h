@@ -43,5 +43,4 @@ class StarredPagesActivity final : public UiListActivity {
   std::string getDefaultLabel(int index) const;
   void startRename();
   void deleteSelected();
-
 };

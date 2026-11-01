@@ -117,12 +117,7 @@ class FileBrowserActivity final : public UiListActivity {
   void goToResultFolder();
   void materializeListWindow();
 
-  enum class BrowserTab : uint8_t {
-    Recents = 0,
-    Books = 1,
-    All = 2,
-    Count = 3
-  };
+  enum class BrowserTab : uint8_t { Recents = 0, Books = 1, All = 2, Count = 3 };
 
   struct TabState {
     std::string path = "/";
@@ -150,6 +145,7 @@ class FileBrowserActivity final : public UiListActivity {
   void loop() override;
   // The borrowed framebuffer goes back before any other screen opens on top of this one.
   void startActivityForResult(std::unique_ptr<Activity>&& activity, ActivityResultHandler resultHandler) override;
+
  private:
   int listCount() const override;
   void buildScreen(UiScreen& screen) override;

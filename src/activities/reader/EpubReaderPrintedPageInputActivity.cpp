@@ -242,8 +242,7 @@ void EpubReaderPrintedPageInputActivity::loop() {
 void EpubReaderPrintedPageInputActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
-  GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer, true, true),
-                 tr(STR_GO_TO_PRINTED_PAGE));
+  GUI.drawHeader(renderer, UITheme::getHeaderRect(renderer, true, true), tr(STR_GO_TO_PRINTED_PAGE));
 
   renderUi();
   afterUiRender();

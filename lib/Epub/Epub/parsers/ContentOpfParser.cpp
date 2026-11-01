@@ -70,9 +70,7 @@ bool isCoverItemId(const std::string& id) {
   return false;
 }
 
-inline bool isPropSep(char c) {
-  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
-}
+inline bool isPropSep(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
 
 // True when `word` appears as a whole space-separated token in `props` (the OPF
 // `properties` attribute format). Pointer scan — no std::string construction.

@@ -413,8 +413,8 @@ void BmpViewerActivity::setAsSleepScreen() {
     const bool renderedForCapture = renderDecodedImage(false);
     if (renderedForCapture) {
       Storage.remove(SLEEP_BMP_TMP_PATH);
-      if (FramebufferUtil::saveFramebufferAsBmp(SLEEP_BMP_TMP_PATH, renderer.getFrameBuffer(), display.getDisplayWidth(),
-                                               display.getDisplayHeight())) {
+      if (FramebufferUtil::saveFramebufferAsBmp(SLEEP_BMP_TMP_PATH, renderer.getFrameBuffer(),
+                                                display.getDisplayWidth(), display.getDisplayHeight())) {
         success = replaceSleepBmpFromTemp();
       }
     }

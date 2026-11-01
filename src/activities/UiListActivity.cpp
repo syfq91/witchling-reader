@@ -144,11 +144,9 @@ void UiListActivity::layoutListArea(UiScreen& screen, const int16_t extraTop, co
   constexpr int16_t kSideHintInset = 21;
   const int16_t sideInsetRight = (fullRect.width > listRect.width) ? kSideHintInset : 0;
   const int16_t sideInsetLeft = (listRect.x > fullRect.x) ? kSideHintInset : 0;
-  screen.setContentMarginFromScreen(
-      fui::Insets{static_cast<int16_t>(listRect.y + metrics.topPadding + metrics.headerHeight + extraTop),
-                  sideInsetRight,
-                  static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height) + extraBottom),
-                  sideInsetLeft});
+  screen.setContentMarginFromScreen(fui::Insets{
+      static_cast<int16_t>(listRect.y + metrics.topPadding + metrics.headerHeight + extraTop), sideInsetRight,
+      static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height) + extraBottom), sideInsetLeft});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 }
 

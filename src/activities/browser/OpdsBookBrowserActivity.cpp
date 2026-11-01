@@ -431,12 +431,12 @@ void OpdsBookBrowserActivity::loop() {
         requestUpdate();
       };
 
-      buttonNavigator.onRelease(
-          ButtonNavigator::getStepNextButtons(),
-          [this, &moveSelection] { moveSelection(ButtonNavigator::nextIndex(selectorIndex, entryOffsets.size())); });
-      buttonNavigator.onRelease(
-          ButtonNavigator::getStepPreviousButtons(),
-          [this, &moveSelection] { moveSelection(ButtonNavigator::previousIndex(selectorIndex, entryOffsets.size())); });
+      buttonNavigator.onRelease(ButtonNavigator::getStepNextButtons(), [this, &moveSelection] {
+        moveSelection(ButtonNavigator::nextIndex(selectorIndex, entryOffsets.size()));
+      });
+      buttonNavigator.onRelease(ButtonNavigator::getStepPreviousButtons(), [this, &moveSelection] {
+        moveSelection(ButtonNavigator::previousIndex(selectorIndex, entryOffsets.size()));
+      });
 
       const int pageSize = std::max(1, listNav.pageRowsFor(static_cast<int>(entryOffsets.size())));
       buttonNavigator.onContinuous(ButtonNavigator::getStepNextButtons(), [this, &moveSelection, pageSize] {
@@ -594,8 +594,7 @@ void OpdsBookBrowserActivity::materializeListWindow() {
       windowLabels[offset] = entry.title;
       // Books whose only formats this reader cannot open say so in place of the
       // author; the detail screen still shows both title and author.
-      windowSubtitles[offset] =
-          entry.acquisitionLinks.empty() ? std::string(tr(STR_FORMAT_NOT_SUPPORTED)) : "";
+      windowSubtitles[offset] = entry.acquisitionLinks.empty() ? std::string(tr(STR_FORMAT_NOT_SUPPORTED)) : "";
     }
     row.label = windowLabels[offset].c_str();
     row.subtitle = windowSubtitles[offset].empty() ? nullptr : windowSubtitles[offset].c_str();

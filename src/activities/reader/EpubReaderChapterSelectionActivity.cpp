@@ -1,100 +1,73 @@
 #include "EpubReaderChapterSelectionActivity.h"
 
-#include <GfxRenderer.h>
 #include <I18n.h>
+#include <Utf8.h>
 
 #include <algorithm>
-
-#include "I18nKeys.h"
-#include "MappedInputManager.h"
-#include "SerialTestApi.h"
-#include "components/UITheme.h"
+#include <cstring>
 
 namespace fui = freeink::ui;
 
-int EpubReaderChapterSelectionActivity::listCount() const { return epub ? epub->getTocItemsCount() : 0; }
-
-const char* EpubReaderChapterSelectionActivity::headerTitle() const { return tr(STR_SELECT_CHAPTER); }
+namespace {
+// Levels past this many share the deepest indent, so a deeply nested TOC keeps room for its titles.
+constexpr int kMaxIndentLevels = 6;
+}  // namespace
 
 void EpubReaderChapterSelectionActivity::onEnter() {
   UiListActivity::onEnter();
+  if (!epub) return;
 
-  if (!epub) {
-    return;
-  }
-
-  int initialIndex = (currentTocIndex >= 0 && currentTocIndex < epub->getTocItemsCount())
-                         ? currentTocIndex
-                         : epub->getTocIndexForSpineIndex(currentSpineIndex);
-  if (initialIndex < 0) {
-    initialIndex = 0;
-  }
-  moveSelectionTo(initialIndex);
+  int selected = (currentTocIndex >= 0 && currentTocIndex < epub->getTocItemsCount())
+                     ? currentTocIndex
+                     : epub->getTocIndexForSpineIndex(currentSpineIndex);
+  if (selected < 0) selected = 0;
+  nav.selected = selected;
 }
 
-void EpubReaderChapterSelectionActivity::materializeListWindow() {
-  const int count = listCount();
-  windowFirst = static_cast<uint16_t>(std::max(0, std::min(nav.top, count)));
-  windowCount = static_cast<uint16_t>(
-      std::min(static_cast<size_t>(count - windowFirst), static_cast<size_t>(LIST_WINDOW_CAPACITY)));
+const char* EpubReaderChapterSelectionActivity::headerTitle() const { return tr(STR_SELECT_CHAPTER); }
 
-  for (uint16_t offset = 0; offset < windowCount; ++offset) {
-    const size_t index = windowFirst + offset;
-    auto item = epub->getTocItem(static_cast<int>(index));
-    const int level = std::max(1, static_cast<int>(item.level));
-    std::string indent;
-    if (level > 1) {
-      indent.assign(static_cast<size_t>(std::min(level - 1, 6) * 2), ' ');
-    }
-    windowLabels[offset] = indent + (item.title.empty() ? tr(STR_UNNAMED) : item.title);
-
-    auto& row = windowItems[offset];
-    row = {};
-    row.label = windowLabels[offset].c_str();
-    row.actionValue = static_cast<int16_t>(index);
-    row.enabled = true;
-  }
-}
-
+// Ported from crosspoint-reader 9e3cea2e (#2957, "convert all lists and tabs to FUI"), which builds
+// the TOC as a FreeInkUI list. Rows come from a provider rather than upstream's materialized
+// window, and the level is a ListItem::indent rather than leading spaces, which wrapping drops.
 void EpubReaderChapterSelectionActivity::buildScreen(UiScreen& screen) {
   layoutListArea(screen);
-
+  if (!epub) return;
   if (listCount() == 0) {
-    fui::TextAreaProps empty;
-    empty.text = tr(STR_NO_CHAPTERS);
-    empty.style = screen.theme().bodyText;
-    empty.showCaret = false;
-    screen.textArea(empty);
+    screen.centeredText(tr(STR_NO_CHAPTERS), screen.theme().bodyText);
     return;
   }
 
-  fui::ListProps props;
+  fui::ListProps props = listProps(screen);
+  props.rowProvider = &EpubReaderChapterSelectionActivity::provideRow;
+  props.rowProviderCtx = this;
   props.count = static_cast<uint16_t>(listCount());
-  props.action = ACTION_ROW;
-  props.inputMask = fui::InputTouch;
-  props.labelText = screen.theme().bodyText;
-  props.labelText.maxLines = 1;
+  indentStep_ = static_cast<int16_t>(screen.target().lineHeight(props.labelText.font) * 3 / 4);
+  addList(screen, props);
+}
 
-  syncListViewport(screen, props, /*hasSubtitle=*/false);
-  materializeListWindow();
-  props.items = windowItems.data();
-  props.itemsWindowFirst = windowFirst;
-  props.itemsWindowCount = windowCount;
-  screen.list(props);
+void EpubReaderChapterSelectionActivity::provideRow(void* ctx, const uint16_t index, fui::ListItem& item) {
+  auto* self = static_cast<EpubReaderChapterSelectionActivity*>(ctx);
+  const auto toc = self->epub->getTocItem(index);
+  const size_t length = std::min(toc.title.size(), sizeof(self->labelBuf_) - 1);
+  std::memcpy(self->labelBuf_, toc.title.data(), length);
+  // Cut on a character boundary, never inside a multi-byte one.
+  self->labelBuf_[utf8SafeTruncateBuffer(self->labelBuf_, static_cast<int>(length))] = '\0';
+  item.label = self->labelBuf_;
+  item.actionValue = static_cast<int16_t>(index);
+  const int level = std::clamp(static_cast<int>(toc.level) - 1, 0, kMaxIndentLevels);
+  item.indent = static_cast<int16_t>(level * self->indentStep_);
 }
 
 void EpubReaderChapterSelectionActivity::activateIndex(const int index) {
-  if (!epub) return;
-  const auto newSpineIndex = epub->getSpineIndexForTocIndex(index);
-  if (newSpineIndex == -1) {
-    ActivityResult result;
-    result.isCancelled = true;
-    setResult(std::move(result));
-    finish();
-  } else {
-    setResult(ChapterResult{newSpineIndex, index});
-    finish();
+  // The chosen row leaves this screen; a lingering tap flash would gray the reader's next frame.
+  app.clearTapFlash();
+  const int spineIndex = epub->getSpineIndexForTocIndex(index);
+  if (spineIndex == -1) {
+    onBackButton();
+    return;
   }
+  setResult(ChapterResult{spineIndex, index});
+  finish();
 }
 
 void EpubReaderChapterSelectionActivity::onBackButton() {

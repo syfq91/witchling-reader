@@ -156,14 +156,13 @@ void OtaUpdateActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATING));
 
     int y = top + height + metrics.verticalSpacing;
-    GUI.drawProgressBar(renderer,
-                        Rect{contentRect.x + metrics.contentSidePadding, y,
-                             contentRect.width - metrics.contentSidePadding * 2, metrics.progressBarHeight},
-                        static_cast<int>(updaterProgress * 100), 100);
-
-    const int bytesY = y + metrics.progressBarHeight + 15 + height + 6;
+    y = GUI.drawProgressBar(renderer,
+                            Rect{contentRect.x + metrics.contentSidePadding, y,
+                                 contentRect.width - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+                            static_cast<int>(updaterProgress * 100), 100) +
+        metrics.verticalSpacing;
     renderer.drawCenteredText(
-        UI_10_FONT_ID, bytesY,
+        UI_10_FONT_ID, y,
         (std::to_string(updater.getProcessedSize()) + " / " + std::to_string(updater.getTotalSize())).c_str());
   } else if (state == NO_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NO_UPDATE), true, EpdFontFamily::BOLD);

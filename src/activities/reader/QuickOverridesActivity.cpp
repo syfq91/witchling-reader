@@ -20,7 +20,7 @@ QuickOverridesActivity::QuickOverridesActivity(
     const std::string& initialSdFontFamilyOverride, const int8_t initialFontSizeOverride,
     const int8_t initialParagraphAlignmentOverride, const int8_t initialTextAntiAliasingOverride,
     const int8_t initialHyphenationOverride, const int8_t initialFontSizeNormalizationOverride,
-    const int8_t initialInlineFootnotePreviewsOverride)
+    const int8_t initialInlineFootnotePreviewsOverride, const int8_t initialPublisherFontsOverride)
     : MenuListActivity("QuickOverrides", renderer, mappedInput),
       pendingEmbeddedStyleOverride(initialEmbeddedStyleOverride),
       pendingImageRenderingOverride(initialImageRenderingOverride),
@@ -31,7 +31,8 @@ QuickOverridesActivity::QuickOverridesActivity(
       pendingTextAntiAliasingOverride(initialTextAntiAliasingOverride),
       pendingHyphenationOverride(initialHyphenationOverride),
       pendingFontSizeNormalizationOverride(initialFontSizeNormalizationOverride),
-      pendingInlineFootnotePreviewsOverride(initialInlineFootnotePreviewsOverride) {
+      pendingInlineFootnotePreviewsOverride(initialInlineFootnotePreviewsOverride),
+      pendingPublisherFontsOverride(initialPublisherFontsOverride) {
   buildMenuItems();
 }
 
@@ -56,7 +57,7 @@ int8_t threeStateOverrideFromSlot(uint8_t slot) {
 }  // namespace
 
 void QuickOverridesActivity::buildMenuItems() {
-  menuItems.reserve(10);
+  menuItems.reserve(11);
 
   auto* self = this;
 
@@ -135,7 +136,20 @@ void QuickOverridesActivity::buildMenuItems() {
               });
   menuItems.push_back(std::move(fontSizeItem));
 
-
+  // Publisher Fonts: default / off / body text / accents / all text (CrossPointSettings::PUBLISHER_FONTS)
+  menuItems.push_back(SettingInfo::DynamicEnumCtx(
+      StrId::STR_PUBLISHER_FONTS,
+      {StrId::STR_DEFAULT_VALUE, StrId::STR_OVERLAY_OFF, StrId::STR_PUBLISHER_FONTS_BODY,
+       StrId::STR_PUBLISHER_FONTS_ACCENTS, StrId::STR_PUBLISHER_FONTS_ALL},
+      self,
+      [](const void* ctx) -> uint8_t {
+        const auto* s = static_cast<const QuickOverridesActivity*>(ctx);
+        return (s->pendingPublisherFontsOverride < 0) ? 0 : static_cast<uint8_t>(s->pendingPublisherFontsOverride + 1);
+      },
+      [](void* ctx, uint8_t v) {
+        auto* s = static_cast<QuickOverridesActivity*>(ctx);
+        s->pendingPublisherFontsOverride = (v == 0) ? -1 : static_cast<int8_t>(v - 1);
+      }));
 
   // Paragraph alignment: default(-1) + the 5 global options
   menuItems.push_back(SettingInfo::DynamicEnumCtx(
@@ -231,6 +245,7 @@ void QuickOverridesActivity::finishWithResult(bool cancelled) {
   payload.hyphenationOverride = pendingHyphenationOverride;
   payload.fontSizeNormalizationOverride = pendingFontSizeNormalizationOverride;
   payload.inlineFootnotePreviewsOverride = pendingInlineFootnotePreviewsOverride;
+  payload.publisherFontsOverride = pendingPublisherFontsOverride;
   result.data = std::move(payload);
   setResult(std::move(result));
   finish();

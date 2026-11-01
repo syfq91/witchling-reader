@@ -195,8 +195,7 @@ inline void header<48>(Frame<48>& frame, Rect rect, const HeaderProps& props) {
         const Size rightSize =
             frame.target().measureText(props.subtitleText.font, props.rightLabel, props.subtitleText);
         Rect rightRect{static_cast<int16_t>(content.right() - rightSize.width),
-                       static_cast<int16_t>(titleY + titleLineH - rightSize.height), rightSize.width,
-                       rightSize.height};
+                       static_cast<int16_t>(titleY + titleLineH - rightSize.height), rightSize.width, rightSize.height};
         frame.target().text(rightRect, props.rightLabel, props.subtitleText);
         const int16_t used = static_cast<int16_t>(rightSize.width + 6);
         titleRect.width = static_cast<int16_t>(titleRect.width - used);
@@ -235,19 +234,17 @@ inline void header<48>(Frame<48>& frame, Rect rect, const HeaderProps& props) {
   }
 
   if (status.showBattery) {
-    const int16_t batteryX = status.batteryLeft
-                                 ? static_cast<int16_t>(rect.x + statusInset)
-                                 : static_cast<int16_t>(rect.right() - statusInset - batteryReserve);
+    const int16_t batteryX = status.batteryLeft ? static_cast<int16_t>(rect.x + statusInset)
+                                                : static_cast<int16_t>(rect.right() - statusInset - batteryReserve);
     batteryIndicator(frame, Rect{batteryX, rect.y, batteryReserve, statusStripH}, status.battery);
   }
   if (clockWidth > 0) {
     const int16_t clockLineH = frame.target().lineHeight(status.battery.text.font);
     const Rect ink = frame.target().inkBounds(status.battery.text.font, status.clockText, status.battery.text);
     const int16_t clockY = static_cast<int16_t>(rect.y + (statusStripH - ink.height) / 2 - ink.y);
-    const int16_t clockX = status.clockCentered
-                               ? static_cast<int16_t>(rect.x + (rect.width - clockWidth) / 2)
-                               : status.batteryLeft ? static_cast<int16_t>(rect.right() - statusInset - clockWidth)
-                                                    : static_cast<int16_t>(rect.x + statusInset);
+    const int16_t clockX = status.clockCentered ? static_cast<int16_t>(rect.x + (rect.width - clockWidth) / 2)
+                           : status.batteryLeft ? static_cast<int16_t>(rect.right() - statusInset - clockWidth)
+                                                : static_cast<int16_t>(rect.x + statusInset);
     frame.target().text(Rect{clockX, clockY, clockWidth, clockLineH}, status.clockText, status.battery.text);
   }
 }

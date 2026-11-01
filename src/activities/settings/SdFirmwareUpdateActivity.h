@@ -30,9 +30,7 @@ class SdFirmwareUpdateActivity : public Activity, private UiAppHost {
   };
 
   explicit SdFirmwareUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool recoveryMode = false)
-      : Activity("SdFirmwareUpdate", renderer, mappedInput),
-        UiAppHost(renderer),
-        recoveryMode(recoveryMode) {}
+      : Activity("SdFirmwareUpdate", renderer, mappedInput), UiAppHost(renderer), recoveryMode(recoveryMode) {}
 
   void onEnter() override;
   void onExit() override;

@@ -48,9 +48,7 @@ TEST(FirmwareBoardTag, MagicFirstCharIsUnique) {
   EXPECT_EQ(magic.find(magic[0], 1), std::string::npos);
 }
 
-TEST(FirmwareBoardTag, OwnTagIsNotAMismatch) {
-  EXPECT_FALSE(scanChunked("padding" + tagFor("x4") + "trailing", 4096));
-}
+TEST(FirmwareBoardTag, OwnTagIsNotAMismatch) { EXPECT_FALSE(scanChunked("padding" + tagFor("x4") + "trailing", 4096)); }
 
 // Any other board's tag, a sibling S3 board's included: x4pro and lilygo share an esp_image_header chip_id, so
 // the tag is the only thing that tells those two images apart.

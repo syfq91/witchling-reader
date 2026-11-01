@@ -14,9 +14,7 @@
 namespace BookProgressPresentation {
 namespace {
 // Pace-based ETA is not supported without reading stats.
-std::string bookEtaSuffix(const RecentBook& /*book*/, int /*progressPercent*/) {
-  return {};
-}
+std::string bookEtaSuffix(const RecentBook& /*book*/, int /*progressPercent*/) { return {}; }
 }  // namespace
 
 int readPercent(const RecentBook& book) { return readPercent(book.path); }
@@ -153,20 +151,12 @@ void drawBadge(const GfxRenderer& renderer, Rect coverRect, const RecentBook& bo
   }
 }
 
-std::string formatReadingDuration(uint32_t /*totalSeconds*/) {
-  return {};
-}
+std::string formatReadingDuration(uint32_t /*totalSeconds*/) { return {}; }
 
-std::string formatLastRead(time_t /*epoch*/) {
-  return {};
-}
+std::string formatLastRead(time_t /*epoch*/) { return {}; }
 
-std::string historyLine(const RecentBook& /*book*/) {
-  return {};
-}
+std::string historyLine(const RecentBook& /*book*/) { return {}; }
 
-std::string historyLineCompact(const RecentBook& /*book*/) {
-  return {};
-}
+std::string historyLineCompact(const RecentBook& /*book*/) { return {}; }
 
 }  // namespace BookProgressPresentation
