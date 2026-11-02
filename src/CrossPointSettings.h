@@ -468,7 +468,7 @@ class CrossPointSettings {
   // Action when the computed tilt value crosses the negative threshold.
   uint8_t tiltNegativeAction = TILT_ACT_PREV_PAGE;
 
-  // Enable synthetic TOC fallback for malformed/sparse TOC books (1 = enabled, 0 = disabled)
+  // Enable synthetic TOC fallback for malformed/sparse TOC books (enabled by default; removed from settings)
   uint8_t syntheticTocFallback = 1;
   // Expand semantic EPUB footnote references with a short inline preview. Disabled by default; removed from settings.
   uint8_t inlineFootnotePreviews = 0;

@@ -261,10 +261,6 @@ inline void buildSettings(const RowSink& emit) {
                            "extraParagraphSpacing", StrId::STR_CAT_READER)
            .withSubmenu(StrId::STR_MENU_READER_SPACING));
 
-  // Generic reader settings
-  emit(SettingInfo::Toggle(StrId::STR_CREATE_FALLBACK_FOR_INVALID_TOC, &CrossPointSettings::syntheticTocFallback,
-                           "syntheticTocFallback", StrId::STR_CAT_READER)
-           .withSubcategory(StrId::STR_MENU_READER_TWEAKS));
   emit(SettingInfo::Toggle(StrId::STR_STATUS_BAR, &CrossPointSettings::showStatusBar, "showStatusBar",
                            StrId::STR_CAT_READER));
 
