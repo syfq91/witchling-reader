@@ -3150,12 +3150,7 @@ bool EpubReaderActivity::getEffectiveFontSizeNormalization() const {
   return SETTINGS.fontSizeNormalization != 0;
 }
 
-bool EpubReaderActivity::getEffectiveInlineFootnotePreviews() const {
-  if (bookInlineFootnotePreviewsOverride >= 0) {
-    return bookInlineFootnotePreviewsOverride != 0;
-  }
-  return SETTINGS.inlineFootnotePreviews != 0;
-}
+bool EpubReaderActivity::getEffectiveInlineFootnotePreviews() const { return false; }
 
 uint8_t EpubReaderActivity::getEffectiveParagraphAlignment() const {
   if (bookParagraphAlignmentOverride >= 0) {
@@ -6996,9 +6991,7 @@ bool EpubReaderActivity::drawCurrentPageToBuffer(const std::string& filePath, Gf
                                                   ? currentBook.fontSizeNormalizationOverride != 0
                                                   : SETTINGS.fontSizeNormalization != 0;
 
-  const bool effectiveInlineFootnotePreviews = currentBook.inlineFootnotePreviewsOverride >= 0
-                                                   ? currentBook.inlineFootnotePreviewsOverride != 0
-                                                   : SETTINGS.inlineFootnotePreviews != 0;
+  const bool effectiveInlineFootnotePreviews = false;
   const uint8_t effectiveParagraphAlignment = currentBook.paragraphAlignmentOverride >= 0
                                                   ? static_cast<uint8_t>(currentBook.paragraphAlignmentOverride)
                                                   : SETTINGS.paragraphAlignment;

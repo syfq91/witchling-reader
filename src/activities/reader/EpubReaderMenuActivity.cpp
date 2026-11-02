@@ -116,7 +116,7 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
   auto& syncItems = tabMenuItems[static_cast<size_t>(MenuTab::Sync)];
   auto& toolsItems = tabMenuItems[static_cast<size_t>(MenuTab::Tools)];
   navigationItems.reserve(8);
-  settingsItems.reserve(13);
+  settingsItems.reserve(12);
   syncItems.reserve(3);
   toolsItems.reserve(8);
 
@@ -391,17 +391,6 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
         static_cast<EpubReaderMenuActivity*>(ctx)->pendingFontSizeNormalizationOverride = threeStateOverrideFromSlot(v);
       }));
 
-  settingsItems.push_back(SettingInfo::DynamicEnumCtx(
-      StrId::STR_INLINE_FOOTNOTE_PREVIEWS, {StrId::STR_DEFAULT_VALUE, StrId::STR_STATE_ON, StrId::STR_STATE_OFF}, self,
-      [](const void* ctx) -> uint8_t {
-        return threeStateSlotFromOverride(
-            static_cast<const EpubReaderMenuActivity*>(ctx)->pendingInlineFootnotePreviewsOverride);
-      },
-      [](void* ctx, uint8_t v) {
-        static_cast<EpubReaderMenuActivity*>(ctx)->pendingInlineFootnotePreviewsOverride =
-            threeStateOverrideFromSlot(v);
-      }));
-
   syncItems.push_back(SettingInfo::Action(StrId::STR_SYNC_PROGRESS, SettingAction::None));
 
   toolsItems.push_back(SettingInfo::Action(StrId::STR_BOOK_INFO, SettingAction::None));
@@ -571,10 +560,6 @@ std::string EpubReaderMenuActivity::getItemValueString(int index) const {
       return std::string(tr(STR_DEFAULT_VALUE)) + " (" + defaultEffective + ")";
     }
 
-    if (item.nameId == StrId::STR_INLINE_FOOTNOTE_PREVIEWS && pendingInlineFootnotePreviewsOverride < 0) {
-      const auto defaultEffective = (SETTINGS.inlineFootnotePreviews != 0) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
-      return std::string(tr(STR_DEFAULT_VALUE)) + " (" + defaultEffective + ")";
-    }
     if (item.nameId == StrId::STR_FONT_SIZE_NORMALIZATION && pendingFontSizeNormalizationOverride < 0) {
       const auto defaultEffective = (SETTINGS.fontSizeNormalization != 0) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
       return std::string(tr(STR_DEFAULT_VALUE)) + " (" + defaultEffective + ")";

@@ -199,17 +199,6 @@ void QuickOverridesActivity::buildMenuItems() {
       [](void* ctx, uint8_t v) {
         static_cast<QuickOverridesActivity*>(ctx)->pendingFontSizeNormalizationOverride = threeStateOverrideFromSlot(v);
       }));
-
-  menuItems.push_back(SettingInfo::DynamicEnumCtx(
-      StrId::STR_INLINE_FOOTNOTE_PREVIEWS, {StrId::STR_DEFAULT_VALUE, StrId::STR_STATE_ON, StrId::STR_STATE_OFF}, self,
-      [](const void* ctx) -> uint8_t {
-        return threeStateSlotFromOverride(
-            static_cast<const QuickOverridesActivity*>(ctx)->pendingInlineFootnotePreviewsOverride);
-      },
-      [](void* ctx, uint8_t v) {
-        static_cast<QuickOverridesActivity*>(ctx)->pendingInlineFootnotePreviewsOverride =
-            threeStateOverrideFromSlot(v);
-      }));
 }
 
 void QuickOverridesActivity::onEnter() {

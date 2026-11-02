@@ -265,8 +265,6 @@ inline void buildSettings(const RowSink& emit) {
   emit(SettingInfo::Toggle(StrId::STR_CREATE_FALLBACK_FOR_INVALID_TOC, &CrossPointSettings::syntheticTocFallback,
                            "syntheticTocFallback", StrId::STR_CAT_READER)
            .withSubcategory(StrId::STR_MENU_READER_TWEAKS));
-  emit(SettingInfo::Toggle(StrId::STR_INLINE_FOOTNOTE_PREVIEWS, &CrossPointSettings::inlineFootnotePreviews,
-                           "inlineFootnotePreviews", StrId::STR_CAT_READER));
   emit(SettingInfo::Toggle(StrId::STR_STATUS_BAR, &CrossPointSettings::showStatusBar, "showStatusBar",
                            StrId::STR_CAT_READER));
 
