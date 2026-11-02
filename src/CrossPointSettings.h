@@ -399,8 +399,8 @@ class CrossPointSettings {
   uint8_t halfRefreshAfterImagePage = 1;
   uint8_t hyphenationEnabled = 0;
   // Widow and orphan control: a page ends early rather than leave a paragraph's first or last line alone on it.
-  // Off, every page fills (#579: on a page of ten lines the rule could leave two empty).
-  uint8_t widowOrphanControl = 1;
+  // Off, every page fills (#579: on a page of ten lines the rule could leave two empty). Disabled.
+  uint8_t widowOrphanControl = 0;
   // Snap near-body font sizes (within ±10% of the body size) to plain body text, so publisher
   // sizing renders native — both inline wrappers like <span style="font-size:0.92em"> around whole
   // paragraphs and a size stated on the block itself (p.body { font-size: 1.1em }). Default on.
