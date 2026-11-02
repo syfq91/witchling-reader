@@ -584,6 +584,7 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   effectiveSub = false;
   effectiveSmallCaps = false;
   effectiveTextEmphasis_ = 0;
+  effectiveTextCombine_ = 0;
   effectiveInlineMarginLeft = 0;
   effectiveFontFamily_ = 0;
   // Inline font-size composes multiplicatively through the stack (em is relative to
@@ -631,6 +632,9 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
     }
     if (entry.hasTextEmphasis) {
       effectiveTextEmphasis_ = entry.textEmphasis;
+    }
+    if (entry.hasTextCombine) {
+      effectiveTextCombine_ = entry.textCombine;
     }
     if (entry.hasMarginLeft) {
       effectiveInlineMarginLeft = entry.marginLeftPx;
@@ -700,12 +704,19 @@ void ChapterHtmlSlimParser::applyCssEmphasisToEntry(StyleStackEntry& entry, cons
     entry.smallCaps = cssStyle.smallCaps;
   }
   applyCssTextEmphasisToEntry(entry, cssStyle);
+  applyCssTextCombineToEntry(entry, cssStyle);
 }
 
 void ChapterHtmlSlimParser::applyCssTextEmphasisToEntry(StyleStackEntry& entry, const CssStyle& cssStyle) {
   if (!cssStyle.hasTextEmphasis()) return;
   entry.hasTextEmphasis = true;
   entry.textEmphasis = cssStyle.textEmphasis;
+}
+
+void ChapterHtmlSlimParser::applyCssTextCombineToEntry(StyleStackEntry& entry, const CssStyle& cssStyle) {
+  if (!cssStyle.hasTextCombine()) return;
+  entry.hasTextCombine = true;
+  entry.textCombine = static_cast<uint8_t>(cssStyle.textCombine);
 }
 
 // A block's emphasis used to sit in one slot (currentCssStyle) that each nested block overwrote
@@ -717,8 +728,10 @@ void ChapterHtmlSlimParser::applyCssTextEmphasisToEntry(StyleStackEntry& entry, 
 void ChapterHtmlSlimParser::pushBlockStyleEntry(const CssStyle& cssStyle) {
   StyleStackEntry entry;
   entry.depth = depth;
+  // text-combine-upright only down a column: on a horizontal page it changes nothing, not even the stack.
   if (!applyCssFontFamilyToEntry(entry, cssStyle) && !cssStyle.hasFontWeight() && !cssStyle.hasFontStyle() &&
-      !cssStyle.hasTextDecoration() && !cssStyle.hasSmallCaps() && !cssStyle.hasTextEmphasis()) {
+      !cssStyle.hasTextDecoration() && !cssStyle.hasSmallCaps() && !cssStyle.hasTextEmphasis() &&
+      !(vertical_ && cssStyle.hasTextCombine())) {
     return;
   }
   applyCssEmphasisToEntry(entry, cssStyle);
@@ -1253,7 +1266,7 @@ bool ChapterHtmlSlimParser::flushPartWordBuffer() {
     // cleared alongside that, so this is belt-and-braces against a future reordering.
     const size_t tokensBefore = currentTableCell->text->size();
     currentTableCell->text->addWord(partWordBuffer, fontStyle, false, nextWordContinues, effectiveSizePct,
-                                    partWordVisibleOffset_, 0, effectiveTextEmphasis_);
+                                    partWordVisibleOffset_, 0, effectiveTextEmphasis_, effectiveTextCombine_);
     // Charge every token the word became against the row budget (a CJK word is one per character).
     // Only a row still headed for the grid accumulates — a degraded cell is drained and freed at </td>.
     if (currentTable && !currentTable->degraded && !currentTable->rowDegraded) {
@@ -1286,7 +1299,7 @@ bool ChapterHtmlSlimParser::flushPartWordBuffer() {
     }
     const bool newFontSlot = (currentTextBlock->fontSlotsUsed() & (1u << fontSlot)) == 0;
     currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, effectiveSizePct,
-                              partWordVisibleOffset_, fontSlot, effectiveTextEmphasis_);
+                              partWordVisibleOffset_, fontSlot, effectiveTextEmphasis_, effectiveTextCombine_);
     // A block laid out in parts has its font already: a family its later words bring in gets its face now.
     if (newFontSlot && wordFontsSize_ != 0) resolveWordFont(fontSlot);
 
@@ -1397,7 +1410,15 @@ void ChapterHtmlSlimParser::emitPage() {
   deferredDropCapLine_ = nullptr;
   // A vertical page draws in the turned frame across the block extent its columns fill: the reader's viewport width,
   // which the swap made this parser's height.
-  if (vertical_) currentPage->verticalBlockExtent = viewportHeight;
+  if (vertical_) {
+    currentPage->verticalBlockExtent = viewportHeight;
+    // A page of images alone is centred across that extent here: the reader's own centring moves a page along its y,
+    // which on a vertical page is along the column, while the block extent is known at build.
+    const int shift = currentPage->imageOnlyCentringOffset(viewportHeight);
+    if (shift > 0) {
+      for (auto& element : currentPage->elements) element->yPos = static_cast<int16_t>(element->yPos + shift);
+    }
+  }
   // The page is handed over only once both tables have its entry, so this table, the consumer's
   // and completedPageCount move in lockstep or not at all.
   if (pageTableFull_ || !paragraphLutPerPage.push_back({start, xpathParagraphIndex, xpathListItemIndex})) {
@@ -1561,7 +1582,10 @@ bool ChapterHtmlSlimParser::keepTogetherBreak(const int lineHeight, const bool n
     return need > room;
   }
   // Off, the page fills. On a page of ten lines the rule could leave two of them empty (#579).
-  if (!widowOrphanControl_) return false;
+  // A vertical section fills its pages whatever the setting says: the rule was written for Latin
+  // text, a vertical page holds about 9 columns where a horizontal one holds 14 lines, and the
+  // acceptance book's pages stopped after 5 of 9 columns (#577).
+  if (!widowOrphanControl_ || vertical_) return false;
   const int fit = room / lineHeight;  // lines of this height still on the page, this one included
   if (fit <= 0) return false;         // it does not fit at all: the ordinary break
   // Not known yet: the paragraph runs on past this layout pass, so it has lines enough to split.
@@ -3068,6 +3092,7 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
       // applyCssFontSizeToEntry is a no-op unless the link itself carries a font-size.
       applySupSubDefaultSize(entry);
       applyCssTextEmphasisToEntry(entry, cssStyle);
+      applyCssTextCombineToEntry(entry, cssStyle);
       applyCssFontSizeToEntry(entry, cssStyle);
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
@@ -3382,6 +3407,7 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
       entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
     }
     applyCssTextEmphasisToEntry(entry, cssStyle);
+    applyCssTextCombineToEntry(entry, cssStyle);
     applyCssFontSizeToEntry(entry, cssStyle);
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
@@ -3416,6 +3442,7 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
       }
     }
     applyCssTextEmphasisToEntry(entry, cssStyle);
+    applyCssTextCombineToEntry(entry, cssStyle);
     applyCssFontSizeToEntry(entry, cssStyle);
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
@@ -3450,6 +3477,7 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
       }
     }
     applyCssTextEmphasisToEntry(entry, cssStyle);
+    applyCssTextCombineToEntry(entry, cssStyle);
     applyCssFontSizeToEntry(entry, cssStyle);
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
@@ -3469,6 +3497,7 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
     }
     applySupSubDefaultSize(entry);
     applyCssTextEmphasisToEntry(entry, cssStyle);
+    applyCssTextCombineToEntry(entry, cssStyle);
     applyCssFontSizeToEntry(entry, cssStyle);  // explicit CSS font-size overrides the 50% default
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
@@ -3492,7 +3521,8 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
     entry.depth = self->depth;  // Track depth for matching pop
     if (self->applyCssFontFamilyToEntry(entry, cssStyle) || cssStyle.hasFontWeight() || cssStyle.hasFontStyle() ||
         cssStyle.hasTextDecoration() || cssStyle.hasVerticalAlign() || cssStyle.hasSmallCaps() || spanIndent ||
-        cssStyle.hasFontSizeMultiplier() || cssStyle.hasTextEmphasis() || isSmallTag || isBigTag) {
+        cssStyle.hasFontSizeMultiplier() || cssStyle.hasTextEmphasis() ||
+        (self->vertical_ && cssStyle.hasTextCombine()) || isSmallTag || isBigTag) {
       // Flush buffer before style change so preceding text gets current style
       if (self->partWordBufferIndex > 0) {
         const bool endsAtDashBreak = bufferEndsWithBreakableDash(self->partWordBuffer, self->partWordBufferIndex);
@@ -4683,6 +4713,7 @@ ParsedText::LineProcessResult ChapterHtmlSlimParser::addLineToPage(std::unique_p
     }
   }
   line->setVertical(vertical_);  // a column of a vertical page (TextBlock::render draws it down)
+  line->setCentredMarks(vertical_ && typography_.punctuation == TypographyProfile::Punctuation::TraditionalChinese);
   auto pageLine = makeUniqueNoThrow<PageLine>(std::move(line), xOffset, currentPageNextY);
   if (!pageLine) {
     // Accepted, not a retry: the line is gone either way, and retrying would just fail again.
@@ -5504,6 +5535,8 @@ bool ChapterHtmlSlimParser::layoutTableRow(BufferedTableRow& bufRow, const uint8
       // A column of a vertical page's table. Set here, not in the layout callback above: one more capture would take
       // that std::function past its in-place storage, a heap block per cell.
       cellLine->setVertical(vertical_);
+      cellLine->setCentredMarks(vertical_ &&
+                                typography_.punctuation == TypographyProfile::Punctuation::TraditionalChinese);
       cellTextHeight += lineHeight + cellLine->annotationBand(renderer, fontId);
     }
     uint16_t contentHeight = static_cast<uint16_t>(cellTextHeight);

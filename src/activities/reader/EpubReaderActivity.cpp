@@ -2637,11 +2637,6 @@ void EpubReaderActivity::openDictionary() {
   {
     RenderLock lock(*this);
     if (!section) return;
-    // The picker boxes the page's words in the reader's frame; a vertical page's are in the turned one.
-    if (section->isVertical()) {
-      LOG_INF("ERS", "Dictionary: not on a vertical page");
-      return;
-    }
   }
 
   if (SETTINGS.dictionaryName[0] == '\0') {
@@ -7192,7 +7187,7 @@ void EpubReaderActivity::openReaderMenu() {
           bookTextAntiAliasingOverride, bookHyphenationOverride, bookFontSizeNormalizationOverride,
           bookInlineFootnotePreviewsOverride, bookLineSpacingOverride, bookVerticalTextOverride,
           bookPublisherFontsOverride, bookVerticalAllowed_, !bookmarkStore.isEmpty(), isCurrentPageStarred,
-          hasPrintedPages, /*wordLookupAvailable=*/!(section && section->isVertical())),
+          hasPrintedPages),
       [this](const ActivityResult& result) {
         const auto& menu = std::get<MenuResult>(result.data);
         applyOrientation(menu.orientation);

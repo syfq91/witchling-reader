@@ -232,6 +232,7 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 
 **Layout** (submenu):
 - **Paragraph Alignment**: "Justified" (default), "Left", "Center", "Right", "Book Style"
+- **Vertical Text**: Whether a Chinese, Japanese or Korean book is set in vertical columns, read from top to bottom with the columns running from right to left. "Automatic" (default) sets a book vertically when it asks for it: its style declares vertical writing, or it declares no writing mode and turns its pages right to left. A book that declares left-to-right columns (`vertical-lr`) stays horizontal. "ON" sets every Chinese, Japanese or Korean book vertically and "OFF" none. Books in other languages are always set horizontally. The reader menu's settings and the quick overrides set it for one book. A vertical book turns its pages right to left (see **[Reading Mode](#4-reading-mode)**). A short run the book marks to be set across the column (CSS `text-combine-upright`, such as a two-digit chapter number) stands upright as one block in the space of one character. Limits for now: punctuation does not use the font's vertical forms (、 。 and small kana are moved to their place in the cell, but a wave dash 〜 is turned rather than mirrored); other Latin letters and digits run sideways (a book's `text-orientation` is not read), and so does a marked run too long to combine (more than four characters, more digits than the book allows, or wider than two characters); drop caps are not used in vertical text.
 
 **Spacing** (submenu):
 - **Screen Margin**: Left/right margin in Reading Mode, 5–40 px in 5 px steps.
@@ -244,7 +245,7 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 
 - **Embedded Style**: Use the EPUB's own HTML/CSS styling. "ON" (default) / "OFF"
 - **Hyphenation**: Automatic hyphenation while reading. "ON" / "OFF"
-- **Avoid Widows & Orphans**: End a page early rather than leave a paragraph's first line alone at its foot, or its last line alone at the top of the next page. "ON" (default) / "OFF". With a large font few lines fit on a page, and a page can end up to two lines short; turn it off to fill every page. Headings keep with the text that follows them either way.
+- **Avoid Widows & Orphans**: End a page early rather than leave a paragraph's first line alone at its foot, or its last line alone at the top of the next page. "ON" (default) / "OFF". With a large font few lines fit on a page, and a page can end up to two lines short; turn it off to fill every page. Vertical text always fills its pages; the setting applies to horizontal pages. Headings keep with the text that follows them either way.
 - **Synthetic TOC Fallback**: Generate a table of contents from headings when the EPUB has an invalid or missing TOC. "ON" / "OFF"
 - **Customise Status Bar**: Opens a submenu to configure the reading status bar: location (Top / Bottom), content slots for Left, Middle, and Right (Battery, Page Count, Percentage, Pages & %, Chapter Title, Book Title, or Hide), and a single progress bar (Book / Chapter / Hide) that sits at the selected status bar edge.
   The chapter page count and the chapter progress bar cover the whole chapter as the table of contents lists it, even when the book splits that chapter into several files. A `~` before the total means part of it is still an estimate; it firms up as the rest of the chapter is laid out. On/off items are switches; the others step to their next value with **Confirm**. The preview under the list shows the result.
@@ -376,6 +377,8 @@ The role of the volume (side) buttons can be swapped in the **[Controls Settings
 
 If the **Short Power Button Click** setting is set to "Page Turn", you can also turn to the next page by briefly pressing the Power button.
 
+### Books that turn right to left
+A book set vertically (**Vertical Text** in the **[Reader settings](#372-reader)**) is read the way a Japanese book is: its pages turn right to left. With **Page Turn Buttons** on "Follow Book" the Left button shows the next page and the Right button the previous one, and the chapter skips on a long press swap with them. The progress bars fill from the right, and the jump-to-percent screen moves from the right as well. The dictionary's word screen follows the columns: **Up** and **Down** move along the column, word by word and on into the next column, **Left** moves to the next column (the one to its left) and **Right** to the previous one (see [Dictionary](./docs/dictionary.md#looking-up-a-word)).
 ### Chapter Navigation
 * **Next Chapter:** Press and **hold** the **Right** (or **Volume Down**) button briefly, then release.
 * **Previous Chapter:** Press and **hold** the **Left** (or **Volume Up**) button briefly, then release.
