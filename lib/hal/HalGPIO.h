@@ -114,6 +114,7 @@ class HalGPIO {
   // How far back an injected long press dates its press edge.
   static constexpr uint32_t INJECTED_LONG_PRESS_MS = 1500;
   inline void injectTouch(float, float) {}
+  inline void injectLongTouch(float, float) {}
   inline void injectSwipe(float, float, float, float) {}
   // True while something injected (a press above) has not yet been handed to the loop
   // by update(). The serial CMD:IDLE uses it to know a press it sent has reached the screen.

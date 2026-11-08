@@ -8,6 +8,7 @@
 #include <cstdint>
 
 #include "MappedInputManager.h"
+#include "components/themes/PanelMetrics.h"
 
 namespace ReaderUtils {
 
@@ -61,6 +62,16 @@ inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
 // or chapter skip (the wake-hold easily exceeds skipChapterMs).
 // Each reader holds an instance, calls arm() in onEnter(), and calls shouldDrain() at the top
 // of loop() — returning early when it returns true.
+// Holds the panel's one-pass text mode for one page's render, pre-render or display. Everything else that
+// reaches the panel, a menu or a sleep image, has to find it off: gray planes are staged rather than
+// uploaded while it is on.
+struct OnePassTextScope {
+  explicit OnePassTextScope(const bool on) { display.setReaderRefresh(on); }
+  ~OnePassTextScope() { display.setReaderRefresh(false); }
+  OnePassTextScope(const OnePassTextScope&) = delete;
+  OnePassTextScope& operator=(const OnePassTextScope&) = delete;
+};
+
 struct InputDrainGuard {
   bool active = false;
 
@@ -99,6 +110,9 @@ struct PageTurnResult {
 // wasReleased branch) while Up/Down took the snapshot path — the two behaved visibly
 // differently under fast repeated presses. One path for all four keeps them identical.
 inline PageTurnResult detectTiltPageTurn() { return {false, false}; }
+
+// Where a reader's one-line message goes. A fixed 300 is below the bottom of a landscape 240 px panel.
+inline int messageY(const GfxRenderer& renderer) { return PanelMetrics::capped(300, renderer.getScreenHeight() / 2); }
 
 inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh) {
   const int freq = SETTINGS.getRefreshFrequency();

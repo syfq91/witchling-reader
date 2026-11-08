@@ -6,6 +6,7 @@
 #include "EpdFontData.h"
 
 class BuildArena;
+class ShapingFace;
 
 /// What a provider that renders glyphs needs only for one its font does not hold yet (a TrueType family's scratch
 /// block, and in SD mode its page cache), made for the first such lookup rather than held while nothing misses: where
@@ -125,4 +126,26 @@ class GlyphProvider {
   /// text call of GfxRenderer says so, so a provider may settle per string where its glyphs come from. Unlike
   /// prefetch(), which a page's layout calls once for its words, this comes with every string drawn.
   virtual void beginText(const char* utf8Text) { (void)utf8Text; }
+
+  /// True when this provider draws the keys of glyph_key (GlyphKey.h): a key from 0x110000 names a glyph by its ID.
+  /// Anything else must not be asked for one.
+  virtual bool drawsGlyphKeys() const { return false; }
+
+  /// The glyph-ID prefetch: prepare the glyphs `glyphs[0..count)` it lacks in one batch, as prefetch() does for text.
+  /// Lookups must still work for anything it skipped.
+  virtual void prefetchGlyphs(const uint16_t* glyphs, size_t count) {
+    (void)glyphs;
+    (void)count;
+  }
+
+  /// The shaping face of the file that draws this provider's style (a TrueType font's tables, shaped in place), and
+  /// in `ppem26_6` the pixels per em (26.6) its glyphs are drawn at. nullptr for a provider with no such tables, and
+  /// for one that has them but could not make the face for want of memory: that one also sets `*refused` (when
+  /// `refused` is not null), and leaves it as it is otherwise, so a caller can tell a refusal from a font that cannot
+  /// shape.
+  virtual ShapingFace* shapingFace(uint32_t* ppem26_6, bool* refused) {
+    (void)ppem26_6;
+    (void)refused;
+    return nullptr;
+  }
 };

@@ -94,7 +94,7 @@ fonts need.
 | Magic | Written by | Version | Contents |
 |---|---|---|---|
 | `CPFC` | `FlashFontPartition` | none | A `.cpfont` family copied from the card, mapped in place. See [contributing/font-cache-structures.md](contributing/font-cache-structures.md) |
-| `CPTT` | `FlashGlyphStore` | `glyphstore::kFormatVersion` (4) | The TTF glyph store: [below](#the-ttf-glyph-store-cptt) |
+| `CPTT` | `FlashGlyphStore` | `glyphstore::kFormatVersion` (5) | The TTF glyph store: [below](#the-ttf-glyph-store-cptt) |
 
 ## `book.bin`
 
@@ -246,7 +246,7 @@ These fields are the `header::*` constants in `Section.cpp`, in file order. The 
 | `bionicReadingEnabled` | bool    |                                                                         |
 | `imageRendering`       | u8      |                                                                         |
 | `verticalText`         | u8      | The request the section was built with (`VerticalText`: 0 Automatic, 1 On, 2 Off). A file whose byte differs from the current request is rejected and rebuilt |
-| status                 | u8      | Bit flags: parse complete, and the "degraded" flags for a build that ran short of heap (image, table row, CSS) or hit a fixed capacity (simplified), and bit 5, `kStatusVertical`: the build set the section vertical-rl, which under Automatic depends on the chapter, not on the request alone. The `kStatus*` constants in `Section.cpp` name them. Written as a bool by early builds, so a flag-less file still reads correctly |
+| status                 | u8      | Bit flags: parse complete, and the "degraded" flags for a build that ran short of heap (image, table row, CSS) or hit a fixed capacity (simplified), bit 5, `kStatusVertical`: the build set the section vertical-rl, which under Automatic depends on the chapter, not on the request alone, and bit 6, `kStatusShapingDegraded`: a shaped-script run was laid out as code points (no memory for it, or the font could not shape it), so the reader rebuilds the section once per spine per session. The `kStatus*` constants in `Section.cpp` name them. Written as a bool by early builds, so a flag-less file still reads correctly |
 | `pageCount`            | u16     |                                                                         |
 | page LUT offset        | u32     |                                                                         |
 | anchor map offset      | u32     |                                                                         |
@@ -258,8 +258,9 @@ These fields are the `header::*` constants in `Section.cpp`, in file order. The 
 `Page::serialize` writes a `u16` element count, a `u16` `verticalBlockExtent`, the elements (a `u8` tag, then the element), and the footnotes (a `u16` count, then the entries).
 
 - `verticalBlockExtent` is 0 on a horizontal page. On a page of a vertical-rl section it is the block extent the columns fill, the reader's viewport width, and a non-zero value is what marks the page vertical (`Page::isVertical`): the page draws in the turned frame, and its elements are positioned in that frame.
-- A line (`TextBlock::serialize`) has a flags byte: bit 0 the word sizes are stored, bit 1 the line has annotations (ruby, emphasis or combined words), bit 2 the line is vertical (its words run down a column), bit 3 its marks are centred (a vertical line built under the Traditional Chinese punctuation profile: 、。，． are drawn centred in their cell, not in its top-right corner), bits 4-7 the number of word fonts.
+- A line (`TextBlock::serialize`) starts with a `u16` word count, whose top bit (0x8000; a line holds at most 10,000 words) says the line has a bidi region. A flags byte follows: bit 0 the word sizes are stored, bit 1 the line has annotations (ruby, emphasis or combined words), bit 2 the line is vertical (its words run down a column), bit 3 its marks are centred (a vertical line built under the Traditional Chinese punctuation profile: 、。，． are drawn centred in their cell, not in its top-right corner), bits 4-7 the number of word fonts. Then the `u16` text size, the `u16` annotation size when bit 1 is set, and the `u16` bidi size when the word count's top bit is.
 - A line with annotations writes a `u16` byte count after its text size, and its word arena ends with the annotation region: a `u16` record count, then 10-byte records (`u16 firstWord`, `u16 wordCount`, `s16 x`, `u16 width`, `u8 kind`, `u8 len`) in `firstWord` order, then the ruby texts back to back (`TextBlock.h`). Kind 1 is Ruby (`len` bytes of ruby text over the words, `x`/`width` its box), kind 2 Emphasis (`len` is the mark, no text). Kind 3 is Combine, on a vertical line only: one word set upright as one block (tate-chu-yoko, from `text-combine-upright`), `x` and `width` its one-em cell along the column, `len` 0 and no text. Ruby and Emphasis reserve the annotation band beside the column (above a horizontal line); Combine reserves no band, so a line whose only records are Combine is as wide as one without annotations. A record of any other kind fails the line's read (`TextBlock::annotationsValid`).
+- A line with a bidi region (a right-to-left line, one with right-to-left words, or one with shaped words) ends its word arena with it, after the annotation region: a `u8 parts` byte (bit 0 display forms, bit 1 logical order, bit 2 glyph forms; bits 3-7 reserved and rejected), then, with bit 0 or bit 2, a `u16` offset per word into the texts that follow (0xFFFF: the word has none) and the forms; then, with bit 1, a `u8` per word, its place in reading order. A word has one form at most, and its text stays its logical text. A display form is UTF-8, NUL-terminated: what the word is drawn as (its characters in visual order), kept only where it differs from the word's text. A glyph form is what a shaped word is drawn as, by glyph ID (writing modes step 2, decision 4): 0xFF (which no UTF-8 form starts with), a `u16` glyph count (little-endian), the glyph records, then 0x00. A record is `u16 glyph`, then a `u16` whose bit 15 says an offset follows and whose bits 0-14 are the advance in 12.4 pixels (two's complement), then `i8 dx`, `i8 dy` (whole pixels, y down) when it does: 4 bytes, or 6 with an offset (`GlyphRun.h`), in the pixels the word is drawn at. The order is kept only when it is not the stored order, and only on a line of at most 255 words. The words stay in visual order, drawn at their x. The line's read fails (`TextBlock::bidiValid`) on a region whose parts are 0 or set a bit past bit 2, whose sizes do not add up, with an offset outside the texts, texts that do not end with a NUL, a forms bit with none of its forms set, a 0xFF form without bit 2 or another without bit 0, a glyph form that is not at least one glyph's whole records followed by its 0x00 inside the texts, a glyph form on a vertical line, or an order that is not a permutation. A line without a region writes the bytes it did before v108, and one without glyph forms the bytes it did before them.
 - An image (`ImageBlock::serialize`) ends with a flags byte whose bit 0 says the image is turned, as on a vertical page. A turned image stores the size it is decoded and drawn at, upright in the reader's frame; the box it takes on the page is that size with width and height swapped (`ImageBlock::getWidth`, `getHeight`).
 
 ### Paragraph LUT entry
@@ -369,6 +370,7 @@ u16 chapterPage         1-based page within the TOC chapter, as the status bar s
 u16 chapterTotal        0: unknown
 u8  printedPageLength   0 when the label is longer than 15 bytes
     printedPage         the status bar's printed-page label, e.g. "(42)"
+u32 visibleOffset       where the page starts in the chapter's text (VisibleText.h), under any layout
 ```
 
 Everything after `percent` is optional. The reader writes the first 7 bytes as pages turn, and the paragraph and the status-bar tail when it closes the book (`EpubReaderActivity::onExit`); the tail is for the sleep screen, which cannot lay the book out to count pages itself. `EpubProgressRecord::decode` accepts 4, 6, 7, 9 and 14 or more bytes: a 5-byte file is a torn write and is rejected, and a record torn inside the tail keeps what came before it. The progress badge in book lists reads only the percent byte (`BookProgressPresentation`).
@@ -560,21 +562,24 @@ produces; a power cut leaves at worst bytes nothing references.
 
 | Offset | Size | Contents |
 |---|---|---|
-| 0 | 4 KB sector | `Header`, written last at install: `u32` magic `CPTT`, `u16` version, `u16` header bytes, the set's 16-byte identity, the `Geometry` (style count, the regions' offsets and sizes, `segmentBytes`), 8 `StyleInfo` (a style block's offset, size and mode; in SD mode also its file and outlines, below), then `u32` FNV-1a over all of it |
+| 0 | 4 KB sector | `Header`, written last at install: `u32` magic `CPTT`, `u16` version, `u16` header bytes, the set's 16-byte identity, the `Geometry` (style count, the regions' offsets and sizes, `segmentBytes`), 8 `StyleInfo` (a style block's offset, size, mode and file size; in SD mode also its file's stamp and its outlines, below), then `u32` FNV-1a over all of it |
 | 4 KB | 4 KB sector | The state: 32 face entries `{u32 face, u32 claimed}`, then the `u32` wipe word, then the rebuild journal: 479 entries `{u32 base, u32 done}` |
 | 64 KB | 64 KB pages | The style blocks, each family's styles in the set's order, each on its own page so one maps alone; the SD-mode blocks after every flash-mode one |
 | `indexOffset` | whole pages | Glyph index: 8-byte slots `{u32 key, u32 value}`, open addressing, at most 128 probes |
 | `pairOffset` | 64 KB | Kerning pairs: `{u32 left << 16 \| right, u32 pairStyle << 16 \| i16 font units}` |
 | `logOffset` | whole pages | The log, a ring of equal segments (`segmentBytes` each, a whole number of 4 KB sectors; 4 to 64 of them): each opens with a 16-byte `SegmentHeader`, then glyph records, append only: `u32 key`, the 16-byte `EpdGlyph`, the 2-bit bitmap, padded to 4 bytes |
 
-- **A style block's mode.** Flash mode: the style's whole TTF file. SD mode (a family too large for flash mode, or
-  beside others that fill the font area): a font of its own made of the file's tables but `glyf` (`cmap`, `head`,
-  `hhea`, `hmtx`, `loca`, `maxp`, `OS/2`, `GPOS`, `GSUB`, `kern`, and the first 32 bytes of `post`, whichever it
-  has), each 4-byte aligned behind a table directory whose `glyf` record points past the block
-  (`SdOutlines::fontOffset`); the outlines are read from the file on the card there (`SdOutlines::fileOffset`,
-  `length`). An SD-mode `StyleInfo` also holds the file's stamp (`FileSource::stamp`: FNV-1a over its path and
-  modification time) and size; a file that no longer matches them installs the set again. Flash-mode blocks map one
-  at a time, the SD-mode ones together.
+- **A style block's mode.** Flash mode: the style's whole TTF file, `StyleInfo::fileSize` bytes, then, for a font
+  that shapes, from `align4(fileSize)` to the block's end its `CPac` ([below](#cpac-in-a-style-block)); a block the
+  file's size has none, as every other font's. SD mode (a family too large for flash mode, or beside others that fill the font area): a font of its own made
+  of the file's tables but `glyf` (`cmap`, `head`, `hhea`, `hmtx`, `loca`, `maxp`, `OS/2`, `GPOS`, `GSUB`, `kern`,
+  the first 32 bytes of `post`, and `GDEF`, whichever it has), each 4-byte aligned behind a table directory whose
+  `glyf` record points past the block (`SdOutlines::fontOffset`); the outlines are read from the file on the card
+  there (`SdOutlines::fileOffset`, `length`). A shaping font's `CPac` is a made table of that directory (checksum 0),
+  after every copied table and before the outline table (an OpenType CFF file's rebuilt `CFF ` table ends the block). An SD-mode
+  `StyleInfo` also holds the file's stamp (`FileSource::stamp`: FNV-1a over its path and modification time); a file
+  that no longer matches its stamp and size installs the set again. Flash-mode blocks map one at a time, the SD-mode
+  ones together.
 - **A face** is a family at one size: `face = family << 24 | ppem` (26.6 pixels per em; the family is its index in
   the set). An entry is in use once `claimed` reads 0. A glyph key is `codepoint | style << 21 | faceIndex << 23`,
   bits 28-31 zero, so a key never reads as erased. The 32 entries are every family's; taking the last one, or asking
@@ -619,12 +624,56 @@ produces; a power cut leaves at worst bytes nothing references.
     segment gets an epoch that far past the base until the index is rebuilt, in idle time if need be.
 - **The identity** is FNV-1a over the families' identities in the set's order (`ttf::setIdentity`); a family's is
   FNV-1a over each style file's name, size and modification time and the engine's render version
-  (`ttf::kRenderVersion`, 3; `ttf::familyIdentity`). A store of another identity, or one whose header fails its
+  (`ttf::kRenderVersion`, 4; `ttf::familyIdentity`). A store of another identity, or one whose header fails its
   check, is installed again.
 
 Version 1 held one family: four style blocks, and a size table of bare ppems with pairs keyed by style alone.
 Version 2 had the mode in the `Geometry`, the store's, and a table map in each `StyleInfo` (1,240 B headers).
 Version 3 moved the mode into each `StyleInfo`, with the SD-mode outlines. Its log was one append-only run, emptied
 by a wipe when full, and a slot's value was the bare `dataOffset`; version 4 has the ring of segments, the packed
-slot value and the journal.
+slot value and the journal. Version 5 ends the style block of a font that shapes with its `CPac` (writing modes step
+2), keeps `GDEF` in an SD-mode block, and sets `StyleInfo::fileSize` in both modes.
 An older header reads as not installed, so the first load installs the set over it.
+
+### `CPac` in a style block
+
+`CPac` holds the lookup filters `lib/OtShaper` reads (`ot::Face`), so a face shaping from a style block skips the
+lookups and subtables that cannot match without computing them on the device. The format is crosspoint-reader
+#3787's (`docs/file-formats.md` there, at `dd45ba61`). Every field is big-endian except the digest records:
+
+| Field | Type | Meaning |
+|---|---|---|
+| version | `u16` | 1 |
+| reserved | `u16` | 0 |
+| gsubLookups, gposLookups | `u16` each | lookups in GSUB and GPOS |
+| gsubSubtables, gposSubtables | `u32` each | subtables across those lookups |
+
+Then, for GSUB and then GPOS:
+
+1. one digest record per lookup: the glyphs any of its subtables can start at;
+2. one `u32` per lookup: the index of its first subtable record;
+3. one digest record per subtable.
+
+A digest record is HarfBuzz's set digest: three 64-bit masks (bit `(glyph >> shift) & 63`, shifts 4, 0 and 6), stored
+as little-endian `u64`s so the device can copy them into memory as they are. A table is 16 + 28 a lookup + 24 a
+subtable bytes. A face uses it only when every count and first-subtable index matches its own lookups.
+
+- **Which fonts carry one.** Only a font that can shape: one whose GSUB or GPOS `ScriptList` names a script the
+  shaper handles, an Indic tag of `lib/OtShaper`'s own list (`ot::isShapedScriptTag`: the old, new and v3 tags of
+  Devanagari to Malayalam, such as `deva`, `dev2` and `dev3`, and Sinhala's `sinh`), or `arab` for the Arabic shaper
+  to come. Every other font (Latin,
+  CJK, Hebrew) reserves no room and has no `CPac`: its flash-mode block is the file alone, its SD-mode block has no
+  `CPac` record. The probe reads each layout table's first 128 bytes, its header and (as fonts lay it out) its
+  `ScriptList` with it, and at most 8 more reads of a longer or a distant list; one past them names no script.
+- **The room.** For such a font, the probe (`ttf::filterTableBytes`) counts each file's GSUB and GPOS lookups and the
+  subtables they declare, and reserves that much; none past 4,096 lookups or 16,384 subtables in a table, or past its
+  read budget.
+- **Writing it.** The install copies a block's bytes before the room, maps them, and makes an `ot::Face` over their
+  tables (flash mode: the file's; SD mode: the block's directory, whose `CPac` record lies past them).
+  `ot::FilterTableWriter` then writes the table into the room a piece at a time; SD mode's rebuilt `CFF ` table is
+  copied after it. A table larger than its room (a crafted font: an Extension lookup mixing types, a second GSUB or
+  GPOS record) is not written: the room stays erased, its version reads 0xFFFF, and the face computes its filters.
+- **Checking it.** A block already in place is kept only when its bytes outside the room match the file's (in SD mode,
+  the block's made from it), and its room holds what the install would write there: the table is made again from the
+  flash's copy of the tables and compared a half buffer at a time. A `CPac` torn by a power cut (the header is written
+  after every block) does not match, and the block is erased and written again.

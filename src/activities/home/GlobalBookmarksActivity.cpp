@@ -21,6 +21,7 @@
 namespace fui = freeink::ui;
 
 void GlobalBookmarksActivity::onEnter() {
+  indexHold.emplace();
   GLOBAL_BOOKMARKS.reconcile();
   rebuildRows();
 
@@ -57,6 +58,7 @@ void GlobalBookmarksActivity::onEnter() {
 void GlobalBookmarksActivity::onExit() {
   buttonNavigator.clearSelectablePredicate();
   rows.clear();
+  indexHold.reset();
   UiListActivity::onExit();
 }
 

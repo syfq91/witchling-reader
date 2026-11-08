@@ -15,11 +15,12 @@ add_executable(CjkLayoutTest
   ${REPO_ROOT}/lib/Epub/Epub/hyphenation/LiangHyphenation.cpp
   ${REPO_ROOT}/lib/Epub/Epub/hyphenation/HyphenationCommon.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
+  ${BIDI_LAYOUT_SOURCES}
 )
 
 # Include order matters: test/word_size_layout's GfxRenderer.h shim must win over the
 # real lib/GfxRenderer (which drags in HalDisplay); lib/GfxRenderer is therefore
-# deliberately absent from the include path.
+# listed last, for GlyphRun.h only.
 target_include_directories(CjkLayoutTest PRIVATE
   ${REPO_ROOT}/test/word_size_layout
   ${REPO_ROOT}/test/shims
@@ -29,6 +30,8 @@ target_include_directories(CjkLayoutTest PRIVATE
   ${REPO_ROOT}/lib/Logging
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/lib/Serialization
+  ${BIDI_LAYOUT_INCLUDES}
+  ${REPO_ROOT}/lib/GfxRenderer
 )
 
 target_link_libraries(CjkLayoutTest PRIVATE

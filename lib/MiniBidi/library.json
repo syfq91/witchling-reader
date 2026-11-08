@@ -1,0 +1,11 @@
+{
+  "name": "MiniBidi",
+  "version": "1.0.0",
+  "build": {
+    "srcFilter": [
+      "+<minibidi.c>",
+      "+<BidiUtils.cpp>"
+    ],
+    "includeDir": "."
+  }
+}

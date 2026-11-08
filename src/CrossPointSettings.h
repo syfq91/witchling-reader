@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "components/themes/PanelMetrics.h"
+
 class CrossPointSettings {
  private:
   // Private constructor for singleton
@@ -14,6 +16,8 @@ class CrossPointSettings {
 
   // Static instance
   static CrossPointSettings instance;
+
+  void applyDeviceButtonDefaults();
 
  public:
   // Delete copy constructor and assignment
@@ -137,7 +141,7 @@ class CrossPointSettings {
 
   /// Reader sizes are stored as POINT SIZES: fontPointSize, txtFontPointSize and a book's
   /// fontSizeOverride. FONT_SIZE survives only as the built-in ladder, i.e. which faces exist.
-  static constexpr uint8_t DEFAULT_FONT_POINT_SIZE = 14;
+  static constexpr uint8_t DEFAULT_FONT_POINT_SIZE = PanelMetrics::capped(14, 10);
   /// Bounds for a stored point size. A book's override is an int8_t with -1 for "follow the
   /// default", which caps it at 127. No .cpfont comes near that: the converter refuses a line
   /// height over 255 px, about 100 pt at 150 DPI. 1 is what SdCardFontRegistry::parseFilename()
@@ -352,17 +356,16 @@ class CrossPointSettings {
   uint8_t statusBarPrintedPage = 1;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
+  // The interval Auto Turn last ran at, in seconds: where its picker opens. The reader starts it from the menu.
+  uint8_t autoTurnSeconds = 30;
+#if defined(FREEINK_DEVICE_MURPHY) && FREEINK_DEVICE_MURPHY && !FREEINK_MURPHY_GRAY
+  uint8_t textAntiAliasing = 0;  // the panel has no gray: the pass would only cost time
+#else
   uint8_t textAntiAliasing = 1;
-  // X3-only: when on, the AA refresh uses the 7-frame community grayscale LUT
-  // (~130 ms panel time) instead of the OEM 53-frame LUT (~2.4 s). Mid-tones
-  // run slightly darker than X4. Matches what papyrix-reader has shipped since
-  // 2025-11. Default on — the 2.2 s/page win dwarfs the subtle mid-tone shift.
-  // No effect on X4.
-  //
-  // JSON key was bumped from "fastAntiAliasing" to "fastAntiAliasingV2" when
-  // the default flipped to 1: existing settings files with the old key are
-  // ignored, so every device picks up the new C++ default on next load.
-  uint8_t fastAntiAliasing = 1;
+#endif
+  // Where the panel offers it, a text page and its grays go up in one refresh instead of the B/W page
+  // and then the gray pass: no second flicker, at the price of one gray level instead of two.
+  uint8_t onePassTextAa = 0;
   // Text darkness (0 = normal, 1 = dark, 2 = extra dark). Default 1 preserves
   // historical AA rendering (both grayscale shades drawn in the MSB pass).
   uint8_t textDarkness = DARKNESS_DARK;
@@ -394,10 +397,15 @@ class CrossPointSettings {
   // Auto-sleep timeout in minutes (0 = never sleep, 1-60).
   uint8_t sleepTimeoutMinutes = 10;
   // Full-refresh frequency in pages (0 = never full-refresh, 1-60).
+#if defined(FREEINK_DEVICE_MURPHY) && FREEINK_DEVICE_MURPHY
+  uint8_t refreshFrequencyPages = 5;
+#else
   uint8_t refreshFrequencyPages = 15;
+#endif
   // Perform a half refresh on the page immediately following an EPUB page that displayed images.
   uint8_t halfRefreshAfterImagePage = 1;
-  uint8_t hyphenationEnabled = 0;
+  // A 240 px column leaves wide gaps without it.
+  uint8_t hyphenationEnabled = PanelMetrics::COMPACT ? 1 : 0;
   // Widow and orphan control: a page ends early rather than leave a paragraph's first or last line alone on it.
   // Off, every page fills (#579: on a page of ten lines the rule could leave two empty). Disabled.
   uint8_t widowOrphanControl = 0;
@@ -468,6 +476,9 @@ class CrossPointSettings {
   // Action when the computed tilt value crosses the negative threshold.
   uint8_t tiltNegativeAction = TILT_ACT_PREV_PAGE;
 
+  // Tracks button-action enum ordering and board-specific keymap defaults.
+  static constexpr uint8_t BUTTON_ACTIONS_VERSION = 1;
+
   // Enable synthetic TOC fallback for malformed/sparse TOC books (enabled by default; removed from settings)
   uint8_t syntheticTocFallback = 1;
   // Expand semantic EPUB footnote references with a short inline preview. Disabled by default; removed from settings.
@@ -532,6 +543,7 @@ class CrossPointSettings {
     BTN_IGNORE,
     BTN_DICTIONARY,
     BTN_SYNC_PROGRESS,
+    BTN_BACK,
     BUTTON_ACTION_COUNT
   };
 

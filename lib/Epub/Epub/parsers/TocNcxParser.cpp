@@ -90,6 +90,8 @@ void TocNcxParser::startElement(void* userData, const char* name, const char** a
   // </navPoint>
 
   auto* self = static_cast<TocNcxParser*>(userData);
+  if (self->state == START) self->prefix_.note(atts);
+  name = self->prefix_.strip(name);
 
   if (self->state == START && strcmp(name, "ncx") == 0) {
     self->state = IN_NCX;
@@ -187,6 +189,7 @@ void TocNcxParser::characterData(void* userData, const char* s, const int len) {
 
 void TocNcxParser::endElement(void* userData, const char* name) {
   auto* self = static_cast<TocNcxParser*>(userData);
+  name = self->prefix_.strip(name);
 
   if (self->state == IN_NAV_LABEL_TEXT && strcmp(name, "text") == 0) {
     self->state = IN_NAV_LABEL;

@@ -58,7 +58,10 @@ class MappedInputManager {
   [[nodiscard]] static Button frontStripPrevious() { return buttonFor(frontStripDirections().previous); }
   [[nodiscard]] static Button frontStripNext() { return buttonFor(frontStripDirections().next); }
 
-  void update() const { gpio.update(); }
+  void update() const {
+    syntheticPressedMask_ = 0;
+    gpio.update();
+  }
   bool wasPressed(Button button) const;
   bool wasReleased(Button button) const;
   bool isPressed(Button button) const;
@@ -70,6 +73,22 @@ class MappedInputManager {
   bool wasAnyReleased() const;
   unsigned long getHeldTime() const;
   const GfxRenderer& getRenderer() const { return renderer; }
+
+  bool hasTouch() const { return false; }
+  void setTouchEventsEnabled(bool) const {}
+  bool touchEventsEnabled() const { return false; }
+  bool wasScreenTapped(int&, int&) const { return false; }
+  bool wasScreenTouchPressed(int&, int&) const { return false; }
+  bool wasScreenTouchDown(int&, int&) const { return false; }
+  bool peekScreenLongPress(int&, int&) const { return false; }
+  void suppressTouchContact() const {}
+  bool isScreenTouchHeld(int&, int&) const { return false; }
+  bool wasScreenTouchReleased() const { return false; }
+  unsigned long lastTouchHeldMs() const { return 0; }
+  void flushTouchEvents() const {}
+  bool wasHomeGesture() const { return false; }
+  bool wasMenuGesture() const { return false; }
+  bool wasLightPanelGesture() const { return false; }
 
   // Front-strip hints for a screen that labels only the front buttons.
   Labels mapLabels(const char* back, const char* confirm, const char* previous, const char* next) const;
@@ -84,6 +103,16 @@ class MappedInputManager {
 
   // Synthesize a press of a RAW hardware button.
   void injectRawPress(uint8_t rawButtonIndex, bool longPress = false, uint32_t atMs = 0) const;
+  // Synthesize a logical one-frame press without asserting a raw hardware pin.
+  // Used by the assignable Back action on boards without a physical Back key.
+  void injectLogicalPress(Button button) const {
+    syntheticPressedMask_ |= static_cast<uint16_t>(1u << static_cast<uint8_t>(button));
+  }
+  // With a double action on Confirm, a screen polling it would act on the first tap: Weather opened
+  // its settings, the screen change dropped the gesture, and the double press never became Back.
+  // While this is set the real key stays hidden from wasPressed() and wasReleased(), and main.cpp
+  // hands the press on as a logical one once ButtonEventManager has classified it.
+  void setConfirmWaitsForGesture(const bool waits) const { confirmWaitsForGesture_ = waits; }
   // When the touch event this cycle happened, on the sampler's clock; 0 if there was none.
   uint32_t lastTouchEventAtMs() const { return 0; }
   // Drain one queued raw button edge from the background sampler (FIFO). Returns
@@ -94,6 +123,8 @@ class MappedInputManager {
 
  private:
   HalGPIO& gpio;
+  mutable uint16_t syntheticPressedMask_ = 0;
+  mutable bool confirmWaitsForGesture_ = false;
   const GfxRenderer& renderer;
   static ScreenOrientation (*orientationProvider)();
 

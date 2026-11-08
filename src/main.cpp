@@ -26,7 +26,6 @@
 #include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
 #include <esp_private/esp_clk.h>
-#include <hal/usb_serial_jtag_ll.h>
 #include <soc/rtc.h>
 
 #include <algorithm>
@@ -43,6 +42,7 @@
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "SerialBuffers.h"
 #include "SerialTestApi.h"
 #include "SilentRestart.h"
 #include "UiFontScale.h"
@@ -137,6 +137,15 @@ EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, 
 
 EpdFont smallFont(&notosans_8_regular);
 EpdFontFamily smallFontFamily(&smallFont);
+
+#if FREEINK_DEVICE_MURPHY
+EpdFont murphySmall6Font(&notosans_6_regular);
+EpdFontFamily murphySmall6FontFamily(&murphySmall6Font);
+
+EpdFont ui8RegularFont(&inter_ui_8_regular);
+EpdFont ui8BoldFont(&inter_ui_8_bold);
+EpdFontFamily ui8FontFamily(&ui8RegularFont, &ui8BoldFont);
+#endif
 
 EpdFont ui10RegularFont(&inter_ui_10_regular);
 EpdFont ui10BoldFont(&inter_ui_10_bold);
@@ -452,15 +461,14 @@ void enterDeepSleep(bool fromTimeout = false, BootDiag::SleepTrigger trigger = B
   powerManager.startDeepSleep(gpio, false);
 }
 
-// The UI font ladder. Each logical slot holds the next family up at the LARGE step; the ladder
-// stays inside Inter (plus Noto Sans 8 at the bottom of the default step) on purpose, because
-// every alternative built-in face is a COMPRESSED 2-bit font. UI screens do not prewarm the
-// glyph cache the way the reader does, so a compressed UI font would inflate a whole DEFLATE
-// group per glyph on every menu repaint — the regression that stalled crosspoint-reader#3083.
+// The UI font ladder. Murphy uses 6/8/10 pt for its Small/Normal/Large roles at Normal, then
+// 8/10/12 pt at Large. Other boards keep their 8/10/12 and 10/12/14 pt steps. The ladder stays
+// in 1-bit Inter/Noto faces because UI screens do not prewarm glyphs: a compressed 2-bit face
+// would inflate a whole DEFLATE group per glyph on each repaint, the regression that stalled
+// crosspoint-reader#3083.
 //
-// Line heights are 23/25/30 px at the default step and 25/30/35 px at the large one, so the two
-// larger slots each gain a clean 5 px. UiFontLadder::applyTo() adds those pixels to every metric
-// that has to hold a line of the text in question.
+// UiFontLadder::STEPS records the actual line heights for each device's choices; applyTo() adds
+// each step's growth to the metrics that have to hold its text.
 void applyUiFontScale() {
   renderer.replaceFont(SMALL_FONT_ID, smallFontFamily);
   renderer.replaceFont(UI_10_FONT_ID, ui10FontFamily);
@@ -500,9 +508,15 @@ void setupDisplayAndFonts(bool seamless = false, bool skipSdFontDiscovery = fals
   renderer.setFontCacheManager(&fontCacheManager);
   // Bound once and never rebound: applyUiFontScale() leaves these alone, because their whole
   // purpose is to be the size that does not move when the ladder does.
+#if FREEINK_DEVICE_MURPHY
+  renderer.insertFont(FIT_SMALL_FONT_ID, murphySmall6FontFamily);
+  renderer.insertFont(FIT_BODY_FONT_ID, ui8FontFamily);
+  renderer.insertFont(FIT_TITLE_FONT_ID, ui10FontFamily);
+#else
   renderer.insertFont(FIT_SMALL_FONT_ID, smallFontFamily);
   renderer.insertFont(FIT_BODY_FONT_ID, ui10FontFamily);
   renderer.insertFont(FIT_TITLE_FONT_ID, ui12FontFamily);
+#endif
   renderer.insertFont(BOOKERLY_14_FONT_ID, bookerly14FontFamily);
   renderer.insertFont(BOOKERLY_10_FONT_ID, bookerly10FontFamily);
   renderer.insertFont(BOOKERLY_12_FONT_ID, bookerly12FontFamily);
@@ -531,6 +545,11 @@ void setupDisplayAndFonts(bool seamless = false, bool skipSdFontDiscovery = fals
   // CJK glyphs behind every UI face, so a Chinese, Japanese or Korean UI draws, and the language
   // picker draws those languages' names whatever the UI language is. See CjkUiFonts.h.
   CjkUiFonts::attach(smallFont, 8);
+#if FREEINK_DEVICE_MURPHY
+  CjkUiFonts::attach(murphySmall6Font, 6);
+  CjkUiFonts::attach(ui8RegularFont, 8);
+  CjkUiFonts::attach(ui8BoldFont, 8);
+#endif
   CjkUiFonts::attach(ui10RegularFont, 10);
   CjkUiFonts::attach(ui10BoldFont, 10);
   CjkUiFonts::attach(ui12RegularFont, 12);
@@ -614,8 +633,8 @@ bool chooseEpubFonts(const char* path, const bool wait, const bool opening,
   } else if (book.fontFamilyOverride >= 0) {
     family = "";  // per-book built-in font override: no SD font needed; unload if one was active
   }
-  // A CJK book whose font has none of its script takes a Noto CJK family of its region; a Noto CJK family loads as
-  // its sibling for the book's language. Both are the face the reader's resolvers hand out for it.
+  // A CJK or Indic book whose font has none of its script takes a Noto family of its region or script; a Noto CJK
+  // family loads as its sibling for a CJK book's language. Both are the face the reader's resolvers hand out for it.
   sdFontSystem.selectLanguageFamily(ownFont ? nullptr : family);
   if (sdFontSystem.languageFamily()[0] != '\0') family = sdFontSystem.languageFamily();
   body = sdFontSystem.effectiveReaderFamily(family);
@@ -1038,7 +1057,15 @@ void setup() {
   // this bridges the two, and is queried live so it can never go stale.
   // See MappedInputManager::buttonFor and issue #87.
   MappedInputManager::setOrientationProvider([] {
-    switch (renderer.getHeldOrientation()) {
+    const auto held = renderer.getHeldOrientation();
+    // Landscape swaps the key roles because a physical strip then stands vertically. A virtual strip
+    // has no such place to stand, and swapping turned the real Up and Down keys into Left and Right:
+    // Rename and Delete on the Starred Pages list, with nothing on screen to say so.
+    if (HalCapabilities::frontStripIsVirtual() && (held == GfxRenderer::Orientation::LandscapeClockwise ||
+                                                   held == GfxRenderer::Orientation::LandscapeCounterClockwise)) {
+      return MappedInputManager::ScreenOrientation::Portrait;
+    }
+    switch (held) {
       case GfxRenderer::Orientation::LandscapeClockwise:
         return MappedInputManager::ScreenOrientation::LandscapeClockwise;
       case GfxRenderer::Orientation::PortraitInverted:
@@ -1122,9 +1149,7 @@ void setup() {
   // needs it (RecentBooksStore::Hold). Loaded at boot it split the largest free block for the
   // session -- the reader opened every book with 45 KB of it instead of 61 KB (X3).
   logStartupMemory("after_recent_books");
-  GLOBAL_BOOKMARKS.load();
-  logStartupMemory("after_bookmarks");
-
+  // Nor is the bookmark index, for the same reason: GlobalBookmarkIndex::Hold.
   BootDiag::markPhase(BootPhase::StoreLoad);
 
   if (recoveryFirmwareMode) {
@@ -1199,7 +1224,7 @@ void setup() {
 void loop() {
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
-  gpio.update();
+  mappedInputManager.update();
   buttonEventManager.update();
 
   // Must follow the drain above and precede every power consumer below.
@@ -1429,6 +1454,11 @@ void loop() {
         case BA::BTN_GO_HOME:
           activityManager.goHome();
           break;
+        case BA::BTN_BACK:
+          mappedInputManager.injectLogicalPress(B::Back);
+          buttonEventManager.pushEventFront(
+              {B::Back, ButtonEventManager::PressType::Short, millis(), /*bypassActionMapping=*/true});
+          break;
         case BA::BTN_SLEEP:
           enterDeepSleep(/*fromTimeout=*/false, BootDiag::SleepTrigger::ButtonAction);
           // enterDeepSleep() never returns; report it anyway rather than relying
@@ -1504,16 +1534,27 @@ void loop() {
       return true;
     };
 
+    const bool confirmWaits =
+        buttonEventManager.hasDoubleAction(B::Confirm) && !activityManager.currentKeepsConfirmGestures();
+    mappedInputManager.setConfirmWaitsForGesture(confirmWaits);
+
     ButtonEventManager::ButtonEvent ev;
     std::vector<ButtonEventManager::ButtonEvent> defaultEvents;
     defaultEvents.reserve(8);
     while (buttonEventManager.consumeEvent(ev)) {
+      if (ev.bypassActionMapping) {
+        defaultEvents.push_back(ev);
+        continue;
+      }
       const uint8_t action = actionFor(ev);
       // Fall through to the activity when the event has no global effect here: either an
       // explicit Default mapping, or a reader-scoped action while not in the reader -- unless the
-      // screen on top takes that action from this button (Activity::takesButtonAction()).
-      if (action == BA::BTN_DEFAULT || (isReaderScopedAction(action) && !activityManager.currentTakesButtonAction(
-                                                                            static_cast<BA>(action), ev.button))) {
+      // screen on top takes that action from this button (Activity::takesButtonAction()) -- or a
+      // Confirm the screen keeps for itself (Activity::keepsConfirmGestures()).
+      const bool keptByScreen = ev.button == B::Confirm && activityManager.currentKeepsConfirmGestures();
+      if (keptByScreen || action == BA::BTN_DEFAULT ||
+          (isReaderScopedAction(action) &&
+           !activityManager.currentTakesButtonAction(static_cast<BA>(action), ev.button))) {
         defaultEvents.push_back(ev);
         continue;
       }
@@ -1521,6 +1562,10 @@ void loop() {
     }
 
     for (auto it = defaultEvents.rbegin(); it != defaultEvents.rend(); ++it) {
+      if (confirmWaits && it->button == B::Confirm && !it->offeredToPolling) {
+        mappedInputManager.injectLogicalPress(B::Confirm);
+        it->offeredToPolling = true;
+      }
       buttonEventManager.pushEventFront(*it);
     }
   }

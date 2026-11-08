@@ -1,6 +1,7 @@
 #pragma once
 
 #include <HalCapabilities.h>
+#include <HalDisplay.h>
 #include <HalGPIO.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -76,6 +77,14 @@ struct RowSink {
   void operator()(SettingInfo&& row) const { take(visitor, row); }
 };
 
+// Carousel's fixed 340x540 centre tile is bigger than a compact panel. A stored choice is out of
+// range here, so loading turns it into the field's default.
+inline std::vector<StrId> uiThemeChoices() {
+  std::vector<StrId> themes = {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED};
+  if (!PanelMetrics::COMPACT) themes.push_back(StrId::STR_THEME_LYRA_CAROUSEL);
+  return themes;
+}
+
 // Every settings row in order, built one at a time and handed to `emit`. Nothing here holds the
 // list: see forEachSetting().
 inline void buildSettings(const RowSink& emit) {
@@ -102,7 +111,8 @@ inline void buildSettings(const RowSink& emit) {
                                                StrId::STR_BTN_ACT_QUICK_OVERRIDES,
                                                StrId::STR_BTN_ACT_IGNORE,
                                                StrId::STR_DICTIONARY,
-                                               StrId::STR_BTN_ACT_SYNC_PROGRESS};
+                                               StrId::STR_BTN_ACT_SYNC_PROGRESS,
+                                               StrId::STR_BACK};
 
   // Prepend the per-button default action to the shared options list.
   assert(1 + btnActionOptions.size() == static_cast<size_t>(CrossPointSettings::BUTTON_ACTION_COUNT) &&
@@ -204,7 +214,14 @@ inline void buildSettings(const RowSink& emit) {
            .withSubmenu(StrId::STR_MENU_READER_FONT));
   emit(SettingInfo::Toggle(StrId::STR_TEXT_AA, &CrossPointSettings::textAntiAliasing, "textAntiAliasing",
                            StrId::STR_CAT_READER)
-           .withSubmenu(StrId::STR_MENU_READER_FONT));
+           .withSubmenu(StrId::STR_MENU_READER_FONT)
+           .requiring(SettingRequires::GrayscalePanel));
+  // Global on purpose: a book's Text Anti-Aliasing override still turns AA off, but how the panel
+  // draws it is one choice for the device, so there is no per-book override of this.
+  emit(SettingInfo::Toggle(StrId::STR_ONE_PASS_AA, &CrossPointSettings::onePassTextAa, "onePassTextAa",
+                           StrId::STR_CAT_READER)
+           .withSubmenu(StrId::STR_MENU_READER_FONT)
+           .requiring(SettingRequires::OnePassTextPanel));
   emit(SettingInfo::Enum(
            StrId::STR_TEXT_DARKNESS, &CrossPointSettings::textDarkness,
            {StrId::STR_NORMAL, StrId::STR_DARK, StrId::STR_EXTRA_DARK, StrId::STR_MAX_DARK, StrId::STR_LIGHTER},
@@ -396,10 +413,13 @@ inline bool boardHas(const SettingRequires capability) {
     // This build carries no digitiser, no tilt sensor, no reading light and no
     // swappable grayscale LUT, so every row behind one of those is filtered out
     // rather than offered and then answered "off" on the device.
+    case SettingRequires::GrayscalePanel:
+      return HalCapabilities::panelShowsGray();
+    case SettingRequires::OnePassTextPanel:
+      return display.supportsOnePassText();
     case SettingRequires::TouchPanel:
     case SettingRequires::MultiTouchPanel:
     case SettingRequires::TiltSensor:
-    case SettingRequires::SelectableGrayscaleLut:
     case SettingRequires::ReadingLight:
     case SettingRequires::WarmLight:
       return false;
@@ -424,9 +444,13 @@ inline bool boardKeeps(const SettingRequires capability) {
       return HalCapabilities::hasTouch();
     case SettingRequires::MultiTouchPanel:
       return HalCapabilities::hasMultiTouch();
+    case SettingRequires::OnePassTextPanel:
+      // The settings load before the display comes up, so the driver cannot be asked yet, and a row
+      // missing from that load would go from the next save. A spare row costs a board nothing.
+      return true;
     case SettingRequires::Nothing:
     case SettingRequires::TiltSensor:
-    case SettingRequires::SelectableGrayscaleLut:
+    case SettingRequires::GrayscalePanel:
     case SettingRequires::ReadingLight:
     case SettingRequires::WarmLight:
     case SettingRequires::SunlightFadingPanel:

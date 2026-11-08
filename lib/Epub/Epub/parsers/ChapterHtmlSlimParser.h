@@ -29,6 +29,7 @@
 // pull Page.h in anyway.
 #include "../Page.h"
 #include "../ParsedText.h"
+#include "../WordShapeCache.h"
 #include "../blocks/ImageBlock.h"
 #include "../blocks/TextBlock.h"
 #include "../css/CssParser.h"
@@ -105,6 +106,55 @@ class ChapterHtmlSlimParser final : public Print {
   // leave one char at end for null pointer
   char partWordBuffer[MAX_WORD_SIZE + 1] = {};
   int partWordBufferIndex = 0;
+  // partWordBuffer holds bidi controls that count nowhere (BidiLine::isUncountedControl) and nothing else. They are
+  // held for the next word, which they open: no word of their own, no visible offset (consumeText), and dropped where
+  // their block ends.
+  bool partWordControlsOnly_ = false;
+  // partWordBuffer holds a word's text, not just controls held for one.
+  bool partWordHasText() const { return partWordBufferIndex > 0 && !partWordControlsOnly_; }
+  // partWordBuffer's text without the controls held before it and those put in after its last byte:
+  // [partWordTextBegin_, partWordTextEnd_), valid while partWordHasText(). The parse-time reads of a word's first and
+  // last character look there: a pass that needs no bidi drops the controls, and what it lays out must not depend on
+  // them.
+  int partWordTextBegin_ = 0;
+  int partWordTextEnd_ = 0;
+  // partWordTextEnd_ within the buffer, which a word cut at a split character ends short of.
+  int partWordTextEnd() const {
+    return partWordTextEnd_ < partWordBufferIndex ? partWordTextEnd_ : partWordBufferIndex;
+  }
+  // Where the last word went (flushPartWordBuffer), while nothing but tags and controls has come since: no whitespace,
+  // no text, no new block. A bidi closer arriving then ends that word (closeBidiEdges), as it does when no nested end
+  // tag sent the word out first. It may outlive its target (a drained cell): it is only compared with the live
+  // wordTarget() and read when they are equal, and every flush into a target and every new block resets it.
+  ParsedText* flushedWordTarget_ = nullptr;
+  // Appends `byte`, text of the word in partWordBuffer from `offset`: the word's first such byte sets its visible
+  // offset.
+  void appendPartWordText(const char byte, const uint32_t offset) {
+    if (!partWordHasText()) {
+      partWordVisibleOffset_ = offset;
+      partWordControlsOnly_ = false;
+      partWordTextBegin_ = partWordBufferIndex;
+    }
+    partWordBuffer[partWordBufferIndex++] = byte;
+    partWordTextEnd_ = partWordBufferIndex;
+  }
+  // Puts the bidi control in the `length` bytes at `bytes` in partWordBuffer (consumeText). False when the stream
+  // failed.
+  bool keepBidiControl(const char* bytes, int length);
+  // Drops controls held for a word that did not come: they end with their block. So does the open elements' bidi
+  // markup (bidiEdges_), spent here. Not with a word in hand: a table cell drained under its flush goes on in fresh
+  // text, where the word takes its opener (a closer whose opener went out with the drained text does nothing there,
+  // UAX #9 X6a and X7).
+  void dropHeldBidiControls() {
+    if (partWordHasText()) return;
+    for (uint8_t i = 0; i < bidiEdgeCount_; ++i) bidiEdges_[i].count = 0;
+    if (!partWordControlsOnly_) return;
+    partWordBufferIndex = 0;
+    partWordControlsOnly_ = false;
+  }
+  // A no-break space (U+00A0 or U+202F) at `offset`, a token of its own glued to both neighbours (consumeText). False
+  // when the stream failed.
+  bool addNoBreakSpace(uint32_t offset);
   // The tokens partWordBuffer's CJK run will become: its CJK codepoints, plus one for each run of
   // non-CJK characters after the first CJK codepoint. consumeText flushes the run at
   // kCjkRunCodepoints of them.
@@ -114,6 +164,32 @@ class ChapterHtmlSlimParser final : public Print {
   bool partWordLastWasCjk_ = false;
   // The last codepoint of the last word flushed, kept across whitespace (set by flushPartWordBuffer).
   uint32_t lastTextCodepoint_ = 0;
+  // Deviation 8. The last text code point consumeText took, kept across calls and inline element edges (0 after
+  // whitespace and at a block's start); and a ZWJ or ZWNJ held after a shaped-script letter until the next code point
+  // says whether it is alone.
+  uint32_t joinerLookBehind_ = 0;
+  uint32_t heldJoiner_ = 0;         // 0, U+200C or U+200D
+  bool droppingJoinerRun_ = false;  // a second joiner came: it, the held one and the rest of the run go
+  // Puts the held joiner into the word buffer ahead of the text code point at `offset` (`nextLen` bytes), which sets
+  // the word's offset if the joiner opens it. A word with no room for the joiner and that code point is flushed first,
+  // so the two stay together. False when the stream failed.
+  bool releaseHeldJoiner(uint32_t offset, int nextLen);
+  // Ends the held joiner's wait at a word's end: it goes last in the word in the buffer; when an inline end sent that
+  // word out already and no space came since, onto its last token; else it goes.
+  void settleHeldJoiner();
+  // Hands on, as text, a split-sequence tail that never got its rest (malformed text), at an element's edge.
+  void deliverSplitTail();
+  // The joiner's context ends with the text: a block's or a table cell's end, a block's start.
+  void endJoinerContext() {
+    settleHeldJoiner();
+    joinerLookBehind_ = 0;
+    droppingJoinerRun_ = false;
+  }
+  // The start of a 3-byte sequence (E0 or E2 lead) a SAX chunk ended inside, with the visible offset of its first byte;
+  // characterData completes it from the next chunk, so a letter or joiner is never read in halves.
+  char splitTail_[2] = {};
+  uint8_t splitTailLen_ = 0;
+  uint32_t splitTailOffset_ = 0;
   // A whitespace run with a line break in it followed unspaced CJK text or a quotation mark
   // (lastTextCodepoint_). If the next word starts with unspaced CJK, or with a quote after unspaced
   // CJK (flushPartWordBuffer decides), the run vanishes instead of becoming a space (CSS Text 3
@@ -393,6 +469,9 @@ class ChapterHtmlSlimParser final : public Print {
     uint16_t contentWidth = 0;
     int depth = 0;          // nesting depth; > 1 means we're inside a nested table
     bool hasBorder = true;  // false when border="0" on the <table> element
+    // The table runs right to left (its element's direction, else the book's): its columns are laid out from the
+    // right, the first cell of a row being the rightmost.
+    bool rtl = false;
     // This table can never be a grid (nested table, rowspan, low heap): every cell from here on
     // is emitted as a paragraph at </td>. Latched -- degrading is one-way.
     bool degraded = false;
@@ -595,6 +674,10 @@ class ChapterHtmlSlimParser final : public Print {
   // above the section's feed-chunk block and below nothing that outlives the page (a mid-build
   // draw's font-slot scope opens and closes between two slices): strictly LIFO.
   BuildArena::Block pageBlock_;
+  // The build's cache of shaped words, in buildArena_'s free tail (WordShapeCache.h): armed in setup() after the SAX
+  // state is taken, bound to each ParsedText beside its line arena, disarmed at the end of finalize(), before the
+  // section releases the feed-chunk block. Unarmed (no lent arena, or no room for it), every lookup is bypassed.
+  WordShapeCache wordCache_;
 
   // Streaming state for the Print-derived parsing API.
   size_t totalStreamSize = 0;
@@ -608,6 +691,8 @@ class ChapterHtmlSlimParser final : public Print {
   // Set when any table row was demoted to paragraphs (degradeRow), for any reason: the pages
   // are usable but the cache holds a layout the heap chose, not the book. See tableRowDegraded().
   bool tableRowDegradedAny_ = false;
+  // Set by any ParsedText of this parse that laid a shaped-script run out unshaped. See shapingDegraded().
+  bool shapingDegradedAny_ = false;
   // Fixed-capacity limits this parse ran into that changed its output (memory audit 2026-09,
   // R4). Each is logged at ERR once per parse and the union is latched into the section status
   // byte (Section::isSimplified) -- a deterministic condition, so nothing rebuilds on it; the
@@ -698,6 +783,73 @@ class ChapterHtmlSlimParser final : public Print {
   // increments it last).
   FlowEntry enterFlow(const CssStyle& style);
 
+  // The open elements whose bidi markup put controls in the text (design deviation 5), innermost last: what each puts
+  // in at its end tag. An element nested past the eighth, or whose opener a run of held controls has no room for
+  // (kMaxHeldControlBytes), inserts nothing, neither opener nor closer. Where a paragraph ends, the open ones are spent
+  // (count 0): the next paragraph gets no closer whose opener it does not hold. Where a <br> or a <pre> newline starts
+  // the next block within the same elements, they open its text again (startNewTextBlockWithinElements).
+  struct BidiEdge {
+    int16_t depth = 0;
+    uint8_t count = 0;  // closers still to go in; 0 once spent
+    uint8_t openerCount = 0;
+    uint16_t openers[2] = {};  // in the order they went in
+    uint32_t closers[2] = {};  // in the order they go in
+  };
+  BidiEdge bidiEdges_[kMaxFlowEntries] = {};
+  uint8_t bidiEdgeCount_ = 0;
+  // startNewTextBlock for a <br> or a <pre> newline, which splits a block, not the elements open in it: the open
+  // elements' markup goes on, outermost first, at the new block's start. An edge whose openers the held run has no room
+  // for is spent, and every edge inside it with it.
+  void startNewTextBlockWithinElements(const BlockStyle& blockStyle);
+  // Puts the controls the element opening now asks for (CSS Writing Modes 3, 2.4.2: its unicode-bidi and computed
+  // direction, elementFlow_) at the start of its text, and pushes the edge with their closers. An inline element takes
+  // them all; one laid out as its own block (`inlineElement` false) only an override, as its other values set its
+  // paragraph's direction. Nothing where its text is not laid out (an rt's, a nested table's, a transparent run's).
+  void openBidiEdge(const CssStyle& style, bool inlineElement);
+  // At the end tag of the element at `elementDepth`: its closers go in, and those of any edge left deeper.
+  void closeBidiEdges(int elementDepth);
+  // Puts the 3-byte control `cp` in partWordBuffer, flushing a full word first. It counts nowhere: no visible offset is
+  // taken at it, and on an empty buffer it is held for the next word (partWordControlsOnly_).
+  void appendBidiControl(uint32_t cp);
+  // The direction a block built for `style` records: Auto for unicode-bidi: plaintext, else the element's computed one
+  // (elementFlow_, so call it while startElement resolves the element).
+  [[nodiscard]] CssDirection blockDirection(const CssStyle& style) const {
+    return style.unicodeBidi == CssUnicodeBidi::Plaintext ? CssDirection::Auto : elementFlow_.direction;
+  }
+  // The direction the element at `elementDepth` sits in: its nearest ancestor's computed one, which the flow stack
+  // holds (an entry for every ancestor that changes a flow value); Unset when none sets one. At a start tag or after
+  // endElement's depth step, `depth` is the element's own.
+  [[nodiscard]] CssDirection directionAround(const int elementDepth) const {
+    for (int i = flowCount_ - 1; i >= 0; --i) {
+      if (flows_[i].depth < elementDepth) return flows_[i].direction;
+    }
+    return CssDirection::Unset;
+  }
+  // The alignment of a block the book sets no text-align for: the reader's, Justify under the book's own.
+  [[nodiscard]] CssTextAlign readerAlignment() const {
+    return paragraphAlignment == static_cast<uint8_t>(CssTextAlign::None)
+               ? CssTextAlign::Justify
+               : static_cast<CssTextAlign>(paragraphAlignment);
+  }
+  // Whether a block keeps the book's text-align. Under the book's own alignment every value does. The reader's setting
+  // says how running text is set, so it replaces left and justify; centre and the end side are the book placing
+  // something, a section break or a signature, and stay. The end side, not "right": right is how Arabic and Hebrew text
+  // runs, and the setting has to reach it.
+  [[nodiscard]] bool booksAlignmentStands(const CssStyle& cssStyle) const {
+    if (!embeddedStyle || !cssStyle.hasTextAlign()) return false;
+    if (paragraphAlignment == static_cast<uint8_t>(CssTextAlign::None)) return true;
+    const CssTextAlign align = cssStyle.textAlign;
+    return align == CssTextAlign::Center || align == CssTextAlign::End ||
+           align == (startSideIsRight() ? CssTextAlign::Left : CssTextAlign::Right);
+  }
+  // The direction the parser knows: right to left from dir or CSS, or (unset or auto) from the book's language. The
+  // side a float:left cap, a hanging indent or a gutter calls its start.
+  [[nodiscard]] bool startSideIsRight() const {
+    return elementFlow_.direction == CssDirection::Rtl ||
+           ((elementFlow_.direction == CssDirection::Unset || elementFlow_.direction == CssDirection::Auto) &&
+            typography_.direction == TypographyProfile::Direction::RightToLeft);
+  }
+
   // The section's writing mode (spec 5.1): decided once, at the first element outside <html>'s own tag and outside
   // any <head> (normally <body>), from the mode in effect there (its own, else html's), the request and the book's
   // ppd. A vertical-rl section is laid out as a horizontal page in the turned frame (spec 5.2), so the viewport's width
@@ -776,6 +928,13 @@ class ChapterHtmlSlimParser final : public Print {
     lastTextCodepoint_ = 0;
   }
   void clearSpentBlockHeadingStyle();
+  // The empty block a rule or a table drains and keeps, or a closing block leaves, hands the next paragraph the
+  // direction around the element at `elementDepth`, not the spent paragraph's: the next paragraph merges into it
+  // (startNewTextBlock), and the merge takes the parent's direction when the child sets none
+  // (BlockStyle::getCombinedBlockStyle). The same goes for what the spent direction did to an alignment the book did
+  // not set (a right-to-left paragraph turns the reader's Left to Right): it is the reader's again, as the close-tag
+  // reset of an empty block leaves it.
+  void clearSpentBlockDirection(int elementDepth);
   // Depth of the header/block element whose start tag set up the current text block, or -1 once
   // that element has closed. A <br> inside it splits the element into more blocks, which keep its
   // font size; after it has closed, what it leaves behind must not lend that size to a sibling.
@@ -788,6 +947,8 @@ class ChapterHtmlSlimParser final : public Print {
   // heading text and takes both (applyHeadingScope): otherwise only the first such block got them,
   // by merging into the heading's still-empty block. INT_MAX when no heading is open.
   int headingDepth_ = INT_MAX;
+  // The outermost open <center>: every block inside it is centred (startElement).
+  int centerDepth_ = INT_MAX;
   CssTextAlign headingAlignment_ = CssTextAlign::Center;
   float headingFontSizeMultiplier_ = 1.0f;
   void applyHeadingScope(BlockStyle& blockStyle, const CssStyle& cssStyle) const;
@@ -809,6 +970,7 @@ class ChapterHtmlSlimParser final : public Print {
   void endBlockSpan();
   bool heapAllowsTableRowLayout() const;
   bool flushPartWordBuffer();
+  bool flushPartWordGlued();
   void makePages();
   // Puts currentTextBlock's top spacing on the current page, once per logical paragraph. Both
   // places that lay the block out call it first: makePages() and the long-block split in
@@ -865,7 +1027,8 @@ class ChapterHtmlSlimParser final : public Print {
   // picture when the element closes. See BackgroundImageScope.
   void noteBackgroundImage(const char* name, const std::string& classAttr, const std::string& idAttr,
                            const std::string& styleAttr);
-  void placeBackgroundImage(const std::string& resolvedPath);
+  // `elementDepth`: the depth of the element whose picture it is.
+  void placeBackgroundImage(const std::string& resolvedPath, int elementDepth);
   // Place an already-built ImageBlock as a centered, full-width block element, page-breaking if needed.
   void placeImageBlockAsBlock(std::unique_ptr<ImageBlock> image);
   // In a vertical section an image is sized in the content frame as its turned self: native width and height swap
@@ -953,6 +1116,12 @@ class ChapterHtmlSlimParser final : public Print {
   // reader can rebuild the chapter once when memory allows, instead of keeping the demoted
   // layout for good (memory audit 2026-09, F3/R3).
   [[nodiscard]] bool tableRowDegraded() const { return tableRowDegradedAny_; }
+  // True when a shaped-script run was laid out unshaped (no memory for it, or the font could not shape it).
+  // Latched into the section status byte; the reader rebuilds once, as for tableRowDegraded().
+  [[nodiscard]] bool shapingDegraded() const { return shapingDegradedAny_; }
+  // The word cache's counters, and the tail it was armed with (0: never armed), for the build's log line.
+  [[nodiscard]] const WordShapeCache::Stats& wordCacheStats() const { return wordCache_.stats(); }
+  [[nodiscard]] size_t wordCacheBytes() const { return wordCache_.bytes(); }
   enum CapOverflow : uint8_t {
     kCapFootnotesPerPage = 1u << 0,   // Page::MAX_FOOTNOTES_PER_PAGE: later links on the page dropped
     kCapAnchorsPerChapter = 1u << 1,  // MAX_ANCHORS_PER_CHAPTER, or no heap for resident ones: ids dropped
@@ -971,7 +1140,8 @@ class ChapterHtmlSlimParser final : public Print {
   size_t write(const uint8_t* buffer, size_t size) override;
 
   ParsedText::LineProcessResult addLineToPage(std::unique_ptr<TextBlock> line, bool lineEndsWithHyphenatedWord,
-                                              bool suppressHyphenationRetry, uint32_t lineVisibleOffset);
+                                              bool suppressHyphenationRetry, uint32_t lineVisibleOffset,
+                                              uint32_t lineTokenCount);
   // Anchors reach the section cache through the spill file, not through this vector: see
   // setAnchorSpillPath. Non-empty only when the spill could not be opened, in which case these
   // are all the anchors there are and the finalizer writes them itself.
@@ -1036,6 +1206,8 @@ class ChapterHtmlSlimParser final : public Print {
       label += len + 1;
     }
   }
+  // The page `offset` falls on, once a later page starts past it: until then a page still to come may hold it.
+  bool lookupVisibleOffsetInActiveBuild(uint32_t offset, uint16_t& page) const;
   const ParagraphLut& getParagraphLutPerPage() const { return paragraphLutPerPage; }
 
   // Supplies printed-page labels from NCX <pageList> for this chapter. `anchors` maps

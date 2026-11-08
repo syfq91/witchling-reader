@@ -20,8 +20,8 @@ struct TypographyProfile {
   enum class Justify : uint8_t { WordSpaces, BetweenCharacters };
   // The punctuation width table (CjkPunctuation.h).
   enum class Punctuation : uint8_t { SimplifiedChinese, TraditionalChinese, Japanese };
-  // Which way characters run inside a line. Only LeftToRight is laid out yet; RightToLeft (Arabic, Hebrew)
-  // will land in the base direction CompiledContent.h reserves.
+  // Which way characters run inside a line: the book's language decides (Hebrew, Arabic, Persian, Urdu, Yiddish run
+  // RightToLeft). A paragraph with no letter of its own, and no dir, takes this.
   enum class Direction : uint8_t { LeftToRight, RightToLeft };
 
   Breaking breaking = Breaking::AtSpaces;
@@ -39,8 +39,13 @@ struct TypographyProfile {
   // spaces). Not a layout rule: the reader asks it what a chapter's glyphs cost a font drawn on demand
   // (InPlaceBuildGate.h).
   bool cjkRepertoire = false;
+  // The language is written in a script the shaper shapes (the ten Indic scripts). Not a layout rule: the reader asks
+  // it whether a chapter's build shapes on the heap (InPlaceBuildGate.h).
+  bool shapedScript = false;
   // The language's hyphenation patterns, null when it has none.
   const LanguageHyphenator* hyphenator = nullptr;
+  // ot::languageTagsFor(the tag): the OpenType language systems a shaped word tries; null: the script's default.
+  const uint32_t* shapingLanguage = nullptr;
 
   // The profile for a BCP 47 tag ("ja", "zh-Hant-TW", "zh_CN", "en-US"); Latin rules for an empty or unknown
   // one. Case and '-'/'_' do not matter.

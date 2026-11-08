@@ -6,7 +6,9 @@
 
 #include "GlyphFallback.h"
 #include "GlyphProvider.h"
+#include "MarkOverlay.h"
 #include "SmallCaps.h"
+#include "UnicodeSpace.h"
 
 // Scale a 12.4 fixed-point advance by the small-caps factor, rounding to nearest.
 static inline int32_t scaleAdvanceFP(const int32_t advanceFP) {
@@ -33,7 +35,7 @@ void EpdFont::getTextBounds(const char* string, const int startX, const int star
   uint32_t cp;
   uint32_t prevCp = 0;
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&string)))) {
-    const bool isCombining = utf8IsCombiningMark(cp);
+    const bool isCombining = overlaysItsBase(cp);
 
     // No ligatures under small caps, as EpdFontFamily::applyLigatures() for the renderer.
     if (!isCombining && !useSmallCaps) {
@@ -57,7 +59,9 @@ void EpdFont::getTextBounds(const char* string, const int startX, const int star
     const int glyphTop = folded ? static_cast<int>(glyph.top * smallCaps::SCALE) : glyph.top;
     const int glyphHeight = folded ? static_cast<int>(glyph.height * smallCaps::SCALE + 0.5f) : glyph.height;
 
-    const int raiseBy = isCombining ? combiningMark::raiseAboveBase(glyphTop, glyphHeight, lastBaseTop) : 0;
+    const int raiseBy =
+        isCombining ? combiningMark::raiseAboveBase(combiningMark::anchorFor(cp), glyphTop, glyphHeight, lastBaseTop)
+                    : 0;
 
     if (!isCombining && prevCp != 0) {
       auto kernFP = static_cast<int32_t>(getKerning(prevCp, cp));  // 4.4 fixed-point kern
@@ -65,9 +69,9 @@ void EpdFont::getTextBounds(const char* string, const int startX, const int star
       lastBaseX += fp4::toPixel(prevAdvanceFP + kernFP);
     }
 
-    const int glyphBaseX =
-        isCombining ? combiningMark::centerOver(lastBaseX, lastBaseLeft, lastBaseWidth, glyphLeft, glyphWidth)
-                    : lastBaseX;
+    const int glyphBaseX = isCombining ? combiningMark::anchorOver(combiningMark::anchorFor(cp), lastBaseX,
+                                                                   lastBaseLeft, lastBaseWidth, glyphLeft, glyphWidth)
+                                       : lastBaseX;
     const int glyphBaseY = startY - raiseBy;
 
     *minX = std::min(*minX, glyphBaseX + glyphLeft);
@@ -265,6 +269,17 @@ EpdGlyphRef EpdFont::findGlyph(const uint32_t cp) const {
 EpdGlyphRef EpdFont::getGlyphSlow(const uint32_t cp) const {
   // The SD on-demand loader, which findGlyph() consults after the intervals.
   if (const EpdGlyphRef glyph = findGlyph(cp)) return glyph;
+
+  // A blank the font lacks is the font's word space at the blank's own width (UnicodeSpace.h). 'M' stands for the em.
+  // It is looked up first: an SD font may reuse a glyph slot for the next lookup, and the space's ref must be the last.
+  if (const unicode_space::Width width = unicode_space::widthOf(cp); width.denominator != 0) {
+    const EpdGlyphRef m = findGlyph('M');
+    const uint32_t em = m && width.numerator != 0 ? m.advanceX : 0;
+    if (EpdGlyphRef space = findGlyph(' ')) {
+      if (em != 0) space.advanceX = static_cast<uint16_t>(em * width.numerator / width.denominator);
+      return space;
+    }
+  }
 
   // The font does not have it. Before giving up and drawing a box, try a close
   // relative that most fonts do carry — a dictionary's phonetic transcription is

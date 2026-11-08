@@ -253,7 +253,8 @@ There are three ways to get framebuffer memory back. Prefer the first.
 The third way, releasing **both** buffers, is only for sessions that end in a reboot (Scenario 2).
 
 Borrowers today: Home cover loading, the Library's titles, covers and book-index build
-(`FileBrowserActivity`), the font selector's previews (`FontSelectionActivity`), first-open indexing
+(`FileBrowserActivity`), the font selector's previews (`FontSelectionActivity`), the word screen's
+dictzip lookups (`DictionaryWordSelectActivity`), first-open indexing
 in `ReaderActivity`, the reader's Background-B and Background-C builds, the blocking build when it can
 lend, the reader's image warm and image lane, and the image-header walk. Releasers:
 `trimMemoryForNetworkSession()` (network sessions, which reboot), `SerialTransferActivity` under low
@@ -309,7 +310,7 @@ renderer.setSingleBufferFastDiff(false);
 (`fastRefreshNeedsHostFrame()` false, the X3) there is no RED to seed and it returns at once.
 
 **Pattern 1b — borrow as an arena** (`HomeActivity`, `FileBrowserActivity`, `FontSelectionActivity`,
-`ReaderActivity`):
+`ReaderActivity`, `DictionaryWordSelectActivity`):
 
 ```cpp
 renderer.syncWriteBufferFromDisplayed();     // only if you will draw over the current screen

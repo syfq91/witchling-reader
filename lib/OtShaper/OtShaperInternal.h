@@ -1,0 +1,113 @@
+#pragma once
+
+// Shared by the shaping pipeline (OtShaper.cpp, OtNormalize.cpp) and the
+// Indic and USE shapers (OtIndic.cpp, OtUse.cpp). Not part of the public API.
+
+#include <cstdint>
+
+#include "OtBuffer.h"
+#include "OtCategories.h"
+#include "OtFace.h"
+#include "OtPlan.h"
+#include "OtSyllableMachines.h"
+
+namespace ot {
+
+constexpr uint32_t DOTTED_CIRCLE = 0x25CC;
+
+// Per-codepoint data from OtUnicodeData.h.
+struct CharData {
+  uint8_t genCat;
+  uint8_t ccc;  // modified combining class
+  uint8_t indicCategory;
+  uint8_t indicPosition;
+  uint8_t useCategory;
+  bool ignorable;
+};
+CharData charData(uint32_t cp);
+
+// The Arabic joining types, HarfBuzz's values; C folds into D as JOINING_TYPE_C
+// does, and X is resolved when the table is generated (T for Mn, Me and Cf, else U).
+// witchhunt: deviation 11
+enum class JoiningType : uint8_t { U = 0, L = 1, R = 2, D = 3, Alaph = 4, DalathRish = 5, T = 6 };
+JoiningType joiningType(uint32_t cp);
+
+// Sets unicodeProps from the codepoint (_hb_glyph_info_set_unicode_props).
+void setUnicodeProps(GlyphInfo& info, Buffer& buffer);
+
+// Normalization and vowel constraints (OtNormalize.cpp).
+void preprocessVowelConstraints(Script script, Buffer& buffer);
+void normalize(const Face& face, const Plan& plan, Buffer& buffer);
+
+// Calls `f(start, end)` for each syllable (a run of equal syllable bytes).
+template <typename F>
+void forEachSyllable(const Buffer& buffer, F f) {
+  const unsigned len = buffer.len();
+  unsigned start = 0;
+  while (start < len) {
+    unsigned end = start + 1;
+    while (end < len && buffer.info[end].syllable == buffer.info[start].syllable) end++;
+    f(start, end);
+    start = end;
+  }
+}
+
+// hb_syllabic_insert_dotted_circles(): a dotted circle in each broken
+// syllable, after any leading repha. The circle gets `category` and, when
+// `setPosition`, `position`.
+void insertDottedCircles(const Face& face, Buffer& buffer, uint8_t brokenSyllableType, uint8_t category,
+                         uint8_t rephaCategory, bool setPosition, uint8_t position);
+
+// Longest syllable at the start of a category sequence, by one of the
+// generated scanners (OtSyllableMachines.h): the Ragel semantics HarfBuzz
+// uses, longest match first and the earlier pattern on a tie. `category(i)`
+// is the category of the i-th character. Returns the length, 0 when no
+// pattern matches (every scanner has a one-character catch-all, so only
+// for an empty sequence), and the syllable type.
+template <typename Category>
+unsigned scanSyllable(const uint8_t* classes, const uint8_t classCount, const uint8_t* transitions,
+                      const uint8_t* accept, const unsigned available, Category category, uint8_t* type) {
+  unsigned state = 0;
+  unsigned best = 0;
+  for (unsigned i = 0; i < available; i++) {
+    const uint8_t c = category(i);
+    state = transitions[state * classCount + (c < machines::CATEGORY_COUNT ? classes[c] : 0)];
+    if (state == machines::NO_TRANSITION) break;
+    if (accept[state] != machines::NO_ACCEPT) {
+      best = i + 1;
+      *type = accept[state];
+    }
+  }
+  return best;
+}
+
+// The Indic shaper (hb-ot-shaper-indic.cc).
+// consonant_position_from_face(): BASE_C, BELOW_C or POST_C for the glyph
+// `consonant` next to the font's `virama` glyph, from the would-substitute
+// walks of the plan's blwf, vatu, pstf and pref stages.
+// witchhunt: deviation 13 - declared here for Plan::consonantPosition(), which remembers its answers.
+uint8_t consonantPositionFromFace(const Face& face, const Plan& plan, uint32_t consonant, uint32_t virama);
+void indicSetupMasks(Buffer& buffer);
+void indicSetupSyllables(Buffer& buffer);
+void indicInitialReordering(const Face& face, const Plan& plan, Buffer& buffer);
+void indicFinalReordering(const Face& face, const Plan& plan, Buffer& buffer);
+
+// The Arabic shaper (hb-ot-shaper-arabic.cc). Joining actions, HarfBuzz's order: the index into
+// Plan::arabicMasks, kept in GlyphInfo::position (HarfBuzz's shared aux byte).
+// witchhunt: deviation 11
+namespace arabic {
+constexpr uint8_t ISOL = 0, FINA = 1, FIN2 = 2, FIN3 = 3, MEDI = 4, MED2 = 5, INIT = 6, NONE = 7;
+}
+// Runs the joining machine over `buffer.info`, context code points included, and ORs in the form masks.
+void arabicSetupMasks(const Plan& plan, Buffer& buffer);
+// reorder_marks_arabic(): moves the modifier combining marks of one sorted mark run [start, end) to its front.
+void reorderMarksArabic(Buffer& buffer, unsigned start, unsigned end);
+
+// The Universal Shaping Engine (hb-ot-shaper-use.cc).
+void useSetupMasks(Buffer& buffer);
+void useSetupSyllables(const Plan& plan, Buffer& buffer);
+void useRecordRphf(const Plan& plan, Buffer& buffer);
+void useRecordPref(Buffer& buffer);
+void useReorder(const Face& face, Buffer& buffer);
+
+}  // namespace ot

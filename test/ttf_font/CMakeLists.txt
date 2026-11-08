@@ -6,10 +6,13 @@ add_executable(TtfFontTest
   TtfRegistryTest.cpp
   TtfOpenTypeTest.cpp
   TtfMapsCodepointTest.cpp
+  TtfShapingTest.cpp
   ShippedFamiliesTest.cpp
   ${REPO_ROOT}/lib/EpdFont/SdCardFontRegistry.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/TtfFamily.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/TtfFont.cpp
+  ${REPO_ROOT}/lib/EpdFont/ttf/TtfShaping.cpp
+  ${REPO_ROOT}/lib/EpdFont/ShapingFace.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/TtfOpenType.cpp
   # the SDK's OpenType layout readers TtfOpenType uses (the firmware links them through FreeInkOpenType)
   ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/src/Gpos.cpp
@@ -25,7 +28,11 @@ add_executable(TtfFontTest
   ${REPO_ROOT}/lib/EpdFont/ttf/TtfFace.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/TtfRasterizer.cpp
   ${REPO_ROOT}/lib/EpdFont/ttf/third_party/freetype/ftgrays.c
+  # the shaper's engine: the install writes each block's CPac with it (TtfFont.cpp), the probe reserves a room only
+  # for a font naming one of its scripts (TtfFamily.cpp), and the tests compare that room with its writer
+  ${OT_SHAPER_SOURCES}
   ${REPO_ROOT}/lib/EpdFont/EpdFont.cpp
+  ${BIDI_MARK_SOURCES}
   ${REPO_ROOT}/lib/EpdFont/EpdFontFamily.cpp
   ${REPO_ROOT}/lib/EpdFont/GlyphFallback.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
@@ -34,9 +41,13 @@ add_executable(TtfFontTest
 
 # test/shims before lib/hal: the host HalStorage, but the real NorFlash.h.
 target_include_directories(TtfFontTest PRIVATE
+  ${BIDI_MARK_INCLUDES}
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${REPO_ROOT}/test/ttf_rasterizer
   ${REPO_ROOT}/test/glyph_store
+  ${REPO_ROOT}/test/ot_shaper_port
+  ${REPO_ROOT}/test/complex_shaper
+  ${REPO_ROOT}/test/text_shaping  # FixtureShapingFace.h
   ${REPO_ROOT}/test/shims
   ${REPO_ROOT}/lib/hal
   ${REPO_ROOT}/lib/EpdFont
@@ -45,12 +56,16 @@ target_include_directories(TtfFontTest PRIVATE
   ${REPO_ROOT}/lib/Logging
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/lib/Utf8
+  ${OT_SHAPER_INCLUDE_DIR}
+  ${REPO_ROOT}/lib/GfxRenderer  # last: only for GlyphRun.h, the records a shaped run is drawn from
 )
 
 target_compile_definitions(TtfFontTest PRIVATE
   TTF_FONT_DIR="${REPO_ROOT}/lib/EpdFont/builtinFonts/source"
   TTF_FIXTURE_DIR="${REPO_ROOT}/test/fixtures/fonts"
+  INDIC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
   SD_FONTS_DIR="${REPO_ROOT}/assets/sd-fonts"
+  SHAPING_FIXTURE_DIR="${REPO_ROOT}/test/complex_shaper/data"
 )
 
 target_link_libraries(TtfFontTest PRIVATE

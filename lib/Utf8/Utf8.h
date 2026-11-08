@@ -10,8 +10,17 @@ int utf8CodepointLen(unsigned char c);
 uint32_t utf8NextCodepoint(const unsigned char** string);
 // Append `cp` encoded as UTF-8 (one to four bytes).
 void utf8AppendCodepoint(std::string& out, uint32_t cp);
+// Upstream's argument order, so ported upstream code compiles unchanged.
+inline void utf8AppendCodepoint(uint32_t cp, std::string& out) { utf8AppendCodepoint(out, cp); }
 // Remove the last UTF-8 codepoint from a std::string and return the new size.
 size_t utf8RemoveLastChar(std::string& str);
+// Where the character before byte offset `pos` starts; 0 at the start of the string.
+inline size_t utf8PrevCharStart(const std::string& s, size_t pos) {
+  if (pos == 0) return 0;
+  pos--;
+  while (pos > 0 && (static_cast<uint8_t>(s[pos]) & 0xC0) == 0x80) pos--;
+  return pos;
+}
 // Truncate string by removing N UTF-8 codepoints from the end.
 void utf8TruncateChars(std::string& str, size_t numChars);
 

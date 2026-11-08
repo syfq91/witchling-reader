@@ -10,9 +10,9 @@ add_executable(SettingInfoOptionsTest
 add_dependencies(SettingInfoOptionsTest i18n_generated)
 
 target_include_directories(SettingInfoOptionsTest PRIVATE
+  ${I18N_GENERATED_DIR}
   ${REPO_ROOT}/src
   ${REPO_ROOT}/lib/I18n
-  ${I18N_GENERATED_DIR}
   ${REPO_ROOT}/lib
   ${REPO_ROOT}/test/epub_pipeline
   ${REPO_ROOT}/test/zip_entry_reader

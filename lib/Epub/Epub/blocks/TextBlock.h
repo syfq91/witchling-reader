@@ -1,5 +1,6 @@
 #pragma once
 #include <EpdFontFamily.h>
+#include <GlyphRun.h>
 #include <HalStorage.h>
 
 #include <cstdint>
@@ -42,9 +43,19 @@ class BuildArena;  // lib/Memory -- optional page-scoped storage for the arena b
 //                                 u16 count, then count records of 10 B (u16 firstWord, u16 wordCount, s16 x, u16
 //                                 width, u8 kind, u8 len), then the ruby texts back to back, len bytes each, no NUL.
 //                                 For an Emphasis record len is the mark and no text follows; for a Combine record 0.
+//   bidi region                   present only when bidiBytes_ != 0, after the annotation region, read with memcpy:
+//                                 u8 parts (bit 0 display forms, bit 1 logical order, bit 2 glyph forms; bits 3-7
+//                                 reserved), then [forms, with bit 0 or bit 2: u16 offset[wordCount] into the texts
+//                                 that follow, 0xFFFF for none; then the forms], then [order: u8 position[wordCount]].
+//                                 A display form is UTF-8, NUL-terminated: what a right-to-left line draws for the word
+//                                 (its characters in visual order), kept only where it differs from the word's text. A
+//                                 glyph form is what a shaped word is drawn as (writing modes step 2, decision 4):
+//                                 0xFF, which no UTF-8 form starts with, a u16 glyph count, the compact glyph records
+//                                 (GlyphRun.h), then 0x00. A word has one form at most. The order is each word's place
+//                                 in reading order, kept only when it is not the stored order.
 //
 // Lines without annotations cost nothing: the idea of crosspoint-reader #2772 (Uri Tauber) and #2735 (William Floyd),
-// which drop empty ruby vectors; here the bytes are not written at all.
+// which drop empty ruby vectors; here the bytes are not written at all. The bidi region likewise.
 //
 // Each word is stored NUL-terminated so render() can hand `text + textOff[i]`
 // straight to C APIs (drawText) with no std::string materialization.
@@ -136,10 +147,13 @@ class TextBlock final : public Block {
   bool sizesPresent = false;
   bool isValid = true;
   uint8_t wordFontCount = 0;  // the line's word fonts (see WordFont); 0 on a line in the block's font alone
-  // Both share the struct's pad byte: a line of a vertical-rl page (see setVertical), and whether its 、。 are centred.
+  // Four bits in the struct's pad byte: a line of a vertical-rl page (see setVertical), whether its 、。 are centred,
+  // whether it has a Ruby or Emphasis record (it reserves the band above its base), and whether the arena is ours to
+  // free (see arena).
   bool vertical_ : 1 = false;
   bool centredMarks_ : 1 = false;
-  bool annotationBand_ : 1 = false;  // a Ruby or Emphasis record exists: the line reserves the band above its base
+  bool annotationBand_ : 1 = false;
+  bool arenaOwned_ : 1 = false;
   // The ONLY allocation. Heap by default (nothrow, so OOM yields an invalid block instead of
   // abort() -- bare new is not nothrow with -fno-exceptions). A section build that lends a
   // scratch region (the borrowed secondary framebuffer) hands it in through the range
@@ -147,8 +161,16 @@ class TextBlock final : public Block {
   // not ours to free -- the parser rewinds the block once the page is serialised. Per line
   // this was the largest of three heap allocations, ~7,000 per book (memory audit 2026-09, R2).
   uint8_t* arena = nullptr;
-  bool arenaOwned_ = false;
   uint16_t annotationBytes_ = 0;  // the annotation region's size (see the arena layout); 0: none
+  uint16_t bidiBytes_ = 0;        // the bidi region's size (see the arena layout); 0: none
+  // The bidi region's parts byte, a word without a form, a glyph form's lead byte, and the on-disk word count's flag
+  // for the region.
+  static constexpr uint8_t kBidiDisplayForms = 0x01;
+  static constexpr uint8_t kBidiLogicalOrder = 0x02;
+  static constexpr uint8_t kBidiGlyphForms = 0x04;  // parts bit 2: glyph forms (writing modes step 2, decision 4)
+  static constexpr uint8_t kGlyphFormLead = 0xFF;   // a glyph form's first byte, which no UTF-8 form starts with
+  static constexpr uint16_t kNoDisplayForm = 0xFFFF;
+  static constexpr uint16_t kBidiWordCountBit = 0x8000;
   // Takes the arena bytes from `scratch` when given and it has room, else the heap. False on OOM.
   bool allocArena(size_t size, BuildArena* scratch);
   // Typed views into the arena, bound once after the arena is filled. All
@@ -178,10 +200,17 @@ class TextBlock final : public Block {
 
   TextBlock() = default;  // deserialize() fills the fields directly
   static size_t arenaSize(uint16_t wordCount, bool hasSizes, uint8_t fontCount, uint16_t textBytes,
-                          uint16_t annotationBytes = 0);
+                          uint16_t annotationBytes = 0, uint16_t bidiBytes = 0);
   const uint8_t* annotationRegion() const { return reinterpret_cast<const uint8_t*>(textArr) + textBytes; }
   // Whether the region read from a file is consistent with the line (see deserialize).
   bool annotationsValid() const;
+  const uint8_t* bidiRegion() const { return annotationRegion() + annotationBytes_; }
+  // Whether the bidi region read from a file is consistent with the line (see deserialize).
+  bool bidiValid() const;
+  // The first byte of word i's form, UTF-8 or glyphs, inside the region's texts; nullptr when it has none.
+  const uint8_t* formAt(uint16_t i) const;
+  // Word i's display form; nullptr when it has none (a glyph form is none).
+  const char* displayForm(uint16_t i) const;
   void bindArenaPointers();
 
   // Effective render scale of word i: its font's scale (a word font's own, else the block multiplier) x the word's
@@ -200,6 +229,8 @@ class TextBlock final : public Block {
  public:
   // Spare high bit of the packed style byte: EpdFontFamily::Style only uses bits 0-6.
   static constexpr uint8_t WORD_CONTINUES_BIT = 0x80;
+  // A logical order numbers its words in a byte.
+  static constexpr size_t kMaxOrderedWords = 255;
 
   // Flatten-on-construct: copies the layout-time vectors into the arena; the
   // vectors die with the caller. An all-100% sizes vector is normalized to "no
@@ -216,8 +247,24 @@ class TextBlock final : public Block {
   // per-line vector first. `xpos` is the one array layout computes per line rather than per
   // block, so it is passed separately and is indexed from 0, not from `first`.
   // `sizes` may be empty, meaning every word is at 100%.
+  // A right-to-left line hands over its pieces as views (`wordViews`), with their display forms and the line's logical
+  // order, so it builds no per-line strings: the arena copies the bytes anyway.
   struct WordRange {
     const std::vector<std::string>* words = nullptr;
+    // `count` views, indexed from 0 (with `first` 0): when set, used in place of `words`, and `styles`, `sizes` and
+    // `boundaries` are the line's own vectors too.
+    const std::string_view* wordViews = nullptr;
+    // `count` forms, indexed from 0: what each word is drawn as. Null, or an empty view for a word: none. A form is
+    // kept only where it differs from the word's text (soft hyphens stripped), and never one led by 0xFF (not UTF-8).
+    const std::string_view* displayForms = nullptr;
+    // `count` runs, indexed from 0: what each word is drawn as when it is a shaped run, in drawn pixels. Null, or a run
+    // with count 0: none. A word with a glyph form has no display form. A run that is not exactly `count` whole records
+    // in its `bytes` makes the block invalid.
+    const GlyphRun* glyphForms = nullptr;
+    // `count` positions, indexed from 0: each word's place in reading order. Null: reading order is stored order. Kept
+    // only when it is not the identity; one that is not a permutation of [0, count), or on a line of more than
+    // kMaxOrderedWords words, makes the block invalid.
+    const uint8_t* logicalOrder = nullptr;
     const std::vector<EpdFontFamily::Style>* styles = nullptr;
     const std::vector<WordSize>* sizes = nullptr;  // may be null/empty => uniform 100%, the block's font
     // Layout's per-word boundaries, indexed like `words`; only `continues` is kept (style bit 7).
@@ -252,6 +299,13 @@ class TextBlock final : public Block {
   const RenderStyle& getRenderStyle() const { return renderStyle; }
   bool isEmpty() override { return numWords == 0; }
   bool valid() const { return isValid; }
+  // The size of the line's arena (its words' texts, offsets, positions, styles, sizes and fonts, its annotations and
+  // its bidi region), whether on the heap or in a lent region; the TextBlock object itself is not counted. For the host
+  // dump's page figures; 0 when it has none.
+  size_t arenaBytes() const {
+    return arena != nullptr ? arenaSize(numWords, sizesPresent, wordFontCount, textBytes, annotationBytes_, bidiBytes_)
+                            : 0;
+  }
   // A line of a vertical-rl page: drawn down its column, in the turned frame Page::render sets up (VerticalDraw.h).
   // Set by the page's builder; kept in the cache.
   void setVertical(const bool vertical) { vertical_ = vertical; }
@@ -266,6 +320,21 @@ class TextBlock final : public Block {
     const uint16_t end = (i + 1 < numWords) ? textOffArr[i + 1] : textBytes;
     return end - textOffArr[i] - 1;  // exclude the NUL
   }
+  // What word i is drawn as: its display form (a right-to-left word's characters in visual order), else its text.
+  // NUL-terminated. A line without the bidi region (every Latin and CJK line) is answered inline, with no call. A word
+  // with a glyph form answers its text: the glyphs are drawn from glyphForm, and its text stays its logical text.
+  const char* wordDrawText(const uint16_t i) const {
+    const char* form = bidiBytes_ != 0 ? displayForm(i) : nullptr;
+    return form != nullptr ? form : wordText(i);
+  }
+  bool hasDisplayForm(const uint16_t i) const { return bidiBytes_ != 0 && displayForm(i) != nullptr; }
+  // Whether word i is drawn as a shaped run (its glyph form), and the run, in drawn pixels: count 0 when it has none.
+  // The run's records point into the arena, valid as long as the block.
+  bool hasGlyphForm(uint16_t i) const;
+  GlyphRun glyphForm(uint16_t i) const;  // count 0 when word i has none
+  // Word i's place in reading order; i when the line has no logical order (it reads in stored order).
+  uint8_t logicalPosition(uint16_t i) const;
+  bool hasLogicalOrder() const { return bidiBytes_ != 0 && (bidiRegion()[0] & kBidiLogicalOrder) != 0; }
   int16_t wordXpos(const uint16_t i) const { return xposArr[i]; }
   EpdFontFamily::Style wordStyle(const uint16_t i) const {
     return static_cast<EpdFontFamily::Style>(stylesArr[i] & ~WORD_CONTINUES_BIT);
@@ -314,7 +383,7 @@ class TextBlock final : public Block {
   // shifts smaller words down, and the SUP/SUB offsets all have to agree, or a
   // caller drawing over a word lands beside it. Used by the dictionary's
   // word-selection overlay.
-  // On a vertical line the width is the word's run down its column.
+  // On a vertical line the width is the word's run down its column; a shaped word's is its glyph run's advance.
   struct WordBox {
     int16_t x = 0;
     int16_t y = 0;

@@ -2,10 +2,12 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "CrossPointState.h"
+#include "GlobalBookmarkIndex.h"
 #include "activities/UiListActivity.h"
 
 // Home-screen activity that aggregates bookmarks from every indexed book and
@@ -46,6 +48,7 @@ class GlobalBookmarksActivity final : public UiListActivity {
   };
 
   std::vector<Row> rows;
+  std::optional<GlobalBookmarkIndex::Hold> indexHold;  // from onEnter to onExit: rows index into getEntries()
   ReturnHint restoreHint;
 
   static constexpr size_t LIST_WINDOW_CAPACITY = 24;

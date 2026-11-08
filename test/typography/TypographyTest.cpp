@@ -1,8 +1,12 @@
 // The typography profile a book's language picks (spec section 3), and the punctuation widths of each language's
 // table (spec section 5.2, from JLREQ and CLREQ).
+#include <OtShaper.h>
 #include <gtest/gtest.h>
 
+#include <vector>
+
 #include "Epub/CjkPunctuation.h"
+#include "Epub/LanguageTag.h"
 #include "Epub/TypographyProfile.h"
 
 namespace {
@@ -34,6 +38,105 @@ TEST(TypographyProfile, TraditionalChineseByScriptRegionOrClassicalChinese) {
   EXPECT_EQ(TypographyProfile::forLanguage("zh-Hans-TW").punctuation, Table::SimplifiedChinese);
 }
 
+// The font takes a tag the layout must take too: a book tagged cn drew in the Simplified Chinese font with Latin rules.
+TEST(TypographyProfile, ABookTaggedCnIsLaidOutAsChinese) {
+  for (const char* tag : {"cn", "CN"}) {
+    const TypographyProfile cn = TypographyProfile::forLanguage(tag);
+    EXPECT_EQ(cn.punctuation, Table::SimplifiedChinese) << tag;
+    EXPECT_EQ(cn.breaking, TypographyProfile::Breaking::BetweenCharacters) << tag;
+    EXPECT_EQ(cn.justify, TypographyProfile::Justify::BetweenCharacters) << tag;
+    EXPECT_TRUE(cn.wholeEmGrid) << tag;
+    EXPECT_TRUE(cn.cjkLatinGap) << tag;
+    EXPECT_TRUE(cn.verticalAllowed) << tag;
+    EXPECT_TRUE(cn.cjkRepertoire) << tag;
+  }
+  EXPECT_FALSE(TypographyProfile::forLanguage("cnr").wholeEmGrid) << "Montenegrin";
+}
+
+TEST(TypographyProfile, TheOldDotNetTagsPickTheirScript) {
+  EXPECT_EQ(TypographyProfile::forLanguage("zh-CHT").punctuation, Table::TraditionalChinese);
+  EXPECT_EQ(TypographyProfile::forLanguage("zh_cht").punctuation, Table::TraditionalChinese);
+  EXPECT_EQ(TypographyProfile::forLanguage("zh-CHS").punctuation, Table::SimplifiedChinese);
+}
+
+// SdCardFontSystem::setReaderLanguage maps these one to one, so this table is the font's as well as the layout's.
+TEST(LanguageTag, EveryTagNamesOneCjkRegion) {
+  using language_tag::CjkRegion;
+  using language_tag::cjkRegionOf;
+  for (const char* tag : {"ja", "ja-JP", "JA_jp"}) EXPECT_EQ(cjkRegionOf(tag), CjkRegion::Japanese) << tag;
+  for (const char* tag : {"ko", "ko-KR", "KO_kr"}) EXPECT_EQ(cjkRegionOf(tag), CjkRegion::Korean) << tag;
+  for (const char* tag : {"cn", "CN", "zh-CN", "zh_cn", "zh-SG", "zh-Hans", "zh-Hans-TW", "zh-CHS"}) {
+    EXPECT_EQ(cjkRegionOf(tag), CjkRegion::SimplifiedChinese) << tag;
+  }
+  for (const char* tag : {"zh-TW", "zh_HK", "ZH-mo", "zh-Hant", "zh-Hant-CN", "zh-CHT", "lzh", "zh-yue-HK"}) {
+    EXPECT_EQ(cjkRegionOf(tag), CjkRegion::TraditionalChinese) << tag;
+  }
+  for (const char* tag : {"zh", "ZH", "zh-yue"}) EXPECT_EQ(cjkRegionOf(tag), CjkRegion::ChineseAmbiguous) << tag;
+  for (const char* tag : {"", "en", "en-US", "zhx", "cnr", "cn-x", "kok", "jv", "jav"}) {
+    EXPECT_EQ(cjkRegionOf(tag), CjkRegion::None) << tag;
+  }
+}
+
+TEST(LanguageTag, IndicScriptOfMapsEachLanguageToItsScript) {
+  using language_tag::indicScriptOf;
+  struct Row {
+    std::vector<const char*> languages;
+    const char* name;
+    uint32_t probe;
+  };
+  const Row rows[] = {
+      {{"hi", "mr", "ne", "sa", "kok", "mai", "bho", "awa", "mag", "raj", "doi", "brx", "new"}, "Devanagari", 0x0915},
+      {{"bn", "as", "mni"}, "Bengali", 0x0995},
+      {{"pa"}, "Gurmukhi", 0x0A15},
+      {{"gu"}, "Gujarati", 0x0A95},
+      {{"or"}, "Oriya", 0x0B15},
+      {{"ta"}, "Tamil", 0x0B95},
+      {{"te"}, "Telugu", 0x0C15},
+      {{"kn"}, "Kannada", 0x0C95},
+      {{"ml"}, "Malayalam", 0x0D15},
+      {{"si"}, "Sinhala", 0x0D9A},
+  };
+  for (const Row& row : rows) {
+    for (const char* tag : row.languages) {
+      const indic::ScriptInfo* script = indicScriptOf(tag);
+      ASSERT_NE(script, nullptr) << tag;
+      EXPECT_STREQ(script->name, row.name) << tag;
+      EXPECT_EQ(script->probe, row.probe) << tag;
+    }
+  }
+  for (const char* tag : {"hi-IN", "HI_in"}) {
+    ASSERT_NE(indicScriptOf(tag), nullptr) << tag;
+    EXPECT_STREQ(indicScriptOf(tag)->name, "Devanagari") << tag;
+  }
+  for (const char* tag : {"en", "zh", "he", "ar", ""}) EXPECT_EQ(indicScriptOf(tag), nullptr) << tag;
+}
+
+TEST(LanguageTag, AForeignScriptSubtagIsNotIndic) {
+  using language_tag::indicScriptOf;
+  for (const char* tag : {"sa-Latn", "pa-Arab", "hi-Latn", "mni-Mtei", "hi-Latn-x-deva"})
+    EXPECT_EQ(indicScriptOf(tag), nullptr) << tag;
+  const struct {
+    const char* tag;
+    const char* name;
+  } own[] = {{"hi-Deva", "Devanagari"},
+             {"bn-Beng", "Bengali"},
+             {"pa-Guru", "Gurmukhi"},
+             // Past a singleton the tag is an extension or private use, whose 4-letter subtags name no script.
+             {"bn-u-nu-latn", "Bengali"},
+             {"hi-x-abcd", "Devanagari"}};
+  for (const auto& row : own) {
+    ASSERT_NE(indicScriptOf(row.tag), nullptr) << row.tag;
+    EXPECT_STREQ(indicScriptOf(row.tag)->name, row.name) << row.tag;
+  }
+}
+
+TEST(Typography, AnIndicLanguageSetsShapedScript) {
+  for (const char* tag : {"hi", "doi", "mni", "si"}) {
+    EXPECT_TRUE(TypographyProfile::forLanguage(tag).shapedScript) << tag;
+  }
+  for (const char* tag : {"sa-Latn", "en"}) EXPECT_FALSE(TypographyProfile::forLanguage(tag).shapedScript) << tag;
+}
+
 TEST(TypographyProfile, KoreanKeepsWholeWordsWithoutGridOrGap) {
   const TypographyProfile ko = TypographyProfile::forLanguage("ko-KR");
   EXPECT_EQ(ko.breaking, TypographyProfile::Breaking::KoreanWords);
@@ -42,6 +145,19 @@ TEST(TypographyProfile, KoreanKeepsWholeWordsWithoutGridOrGap) {
   EXPECT_FALSE(ko.wholeEmGrid);
   EXPECT_FALSE(ko.cjkLatinGap);
   EXPECT_TRUE(ko.verticalAllowed) << "KLREQ sets Korean vertically";
+}
+
+TEST(TypographyProfile, HebrewArabicPersianUrduAndYiddishRunRightToLeft) {
+  for (const char* tag : {"he", "he-IL", "HE", "iw", "yi", "ar", "ar-EG", "fa", "ur"}) {
+    const TypographyProfile p = TypographyProfile::forLanguage(tag);
+    EXPECT_EQ(TypographyProfile::Direction::RightToLeft, p.direction) << tag;
+    EXPECT_EQ(nullptr, p.hyphenator) << tag;
+    EXPECT_FALSE(p.verticalAllowed) << tag;
+    EXPECT_FALSE(p.cjkRepertoire) << tag;
+  }
+  for (const char* tag : {"en", "de", "ja", "hy"}) {
+    EXPECT_EQ(TypographyProfile::Direction::LeftToRight, TypographyProfile::forLanguage(tag).direction) << tag;
+  }
 }
 
 TEST(TypographyProfile, OtherLanguagesKeepLatinRulesAndTheirHyphenation) {
@@ -63,6 +179,17 @@ TEST(TypographyProfile, ChineseJapaneseAndKoreanAreWrittenWithTheCjkRepertoire) 
   EXPECT_EQ(TypographyProfile::forLanguage("ko").breaking, TypographyProfile::Breaking::KoreanWords);
   for (const char* tag : {"", "en", "en-US", "de-DE", "vi", "zhx", "kok", "jv"}) {
     EXPECT_FALSE(TypographyProfile::forLanguage(tag).cjkRepertoire) << tag;
+  }
+}
+
+TEST(TypographyProfile, TheIndicLanguagesAreShapedScripts) {
+  for (const char* tag : {"hi", "hi-IN", "mr", "bn-BD", "ta", "ml",  "si",  "KOK", "ne_NP", "pa", "gu",
+                          "or", "te",    "kn", "as",    "sa", "mai", "bho", "awa", "mag",   "raj"}) {
+    EXPECT_TRUE(TypographyProfile::forLanguage(tag).shapedScript) << tag;
+  }
+  // Urdu is written in the Arabic script, which is not shaped.
+  for (const char* tag : {"", "en", "he", "ja", "ur", "ar", "hin", "kok1"}) {
+    EXPECT_FALSE(TypographyProfile::forLanguage(tag).shapedScript) << tag;
   }
 }
 
@@ -203,5 +330,17 @@ TEST(TypographyProfile, OnlyChineseJapaneseAndKoreanMayBeSetVertically) {
   for (const char* tag : {"en", "he", ""}) {
     EXPECT_FALSE(TypographyProfile::forLanguage(tag).verticalAllowed) << tag;
   }
+}
+
+TEST(TypographyProfile, AShapedWordTriesTheBooksLanguageSystems) {
+  // The engine's own table, by address: a plan is kept per language system array (ShapingFace::plan).
+  EXPECT_EQ(TypographyProfile::forLanguage("mr").shapingLanguage, ot::languageTagsFor("mr"));
+  EXPECT_EQ(TypographyProfile::forLanguage("hi-IN").shapingLanguage, ot::languageTagsFor("hi"));
+  EXPECT_EQ(TypographyProfile::forLanguage("NE_np").shapingLanguage, ot::languageTagsFor("ne"));
+  EXPECT_NE(TypographyProfile::forLanguage("mr").shapingLanguage, TypographyProfile::forLanguage("hi").shapingLanguage);
+  // An unknown language or none: the script's default, the engine's empty list.
+  EXPECT_EQ(TypographyProfile::forLanguage("").shapingLanguage, ot::languageTagsFor(""));
+  // A profile the parser never set: Latin rules, and the script's default for a shaped word.
+  EXPECT_EQ(TypographyProfile{}.shapingLanguage, nullptr);
 }
 }  // namespace

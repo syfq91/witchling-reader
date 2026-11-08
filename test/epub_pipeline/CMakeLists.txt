@@ -49,6 +49,7 @@ set(PIPELINE_SOURCES
   ${REPO_ROOT}/lib/uzlib/src/tinflate.c
   ${REPO_ROOT}/lib/FsHelpers/BookCache.cpp
   ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
+  ${REPO_ROOT}/lib/FsHelpers/FileReplace.cpp
   ${REPO_ROOT}/lib/FsHelpers/SidecarFiles.cpp
   ${REPO_ROOT}/lib/CooperativeAbort/CooperativeAbort.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
@@ -59,6 +60,8 @@ set(PIPELINE_SOURCES
   ${REPO_ROOT}/lib/PngToBmpConverter/PngToBmpConverter.cpp
   ${REPO_ROOT}/lib/PngDecoder/PngStreamDecoder.cpp
   ${REPO_ROOT}/lib/TJpgDec/src/tjpgd.c
+  # ParsedText's bidi line pass
+  ${BIDI_LAYOUT_SOURCES}
 )
 
 set(PIPELINE_INCLUDES
@@ -90,7 +93,12 @@ set(PIPELINE_INCLUDES
   ${REPO_ROOT}/lib/PngDecoder
   ${REPO_ROOT}/lib/ProgressiveJpeg
   ${REPO_ROOT}/lib/TJpgDec/src
+  # FixtureShapingFace.h: the shaping face a Profile may install in the stub renderer's seam
+  ${REPO_ROOT}/test/text_shaping
+  ${BIDI_LAYOUT_INCLUDES}
 )
+set_source_files_properties(PipelineRunner.cpp PROPERTIES
+  COMPILE_DEFINITIONS SHAPING_FONT_DIR="${REPO_ROOT}/test/fixtures/fonts")
 
 add_executable(EpubPipelineTest
   EpubPipelineTest.cpp
@@ -107,6 +115,7 @@ add_executable(EpubPipelineTest
   FootnotePreviewStoreTest.cpp
   FootnoteResolveSliceTest.cpp
   ParagraphAnchorTest.cpp
+  SavedPositionRestoreTest.cpp
   KeptReadingStateTest.cpp
   ParsedTextOffsetTest.cpp
   LowHeapLoadTest.cpp
@@ -119,6 +128,7 @@ add_executable(EpubPipelineTest
   ImageExtractionTest.cpp
   ImageManifestTest.cpp
   ImageWrapperWidthTest.cpp
+  BookAlignmentLayoutTest.cpp
   HeadingBlockLayoutTest.cpp
   WritingModeLayoutTest.cpp
   LineSpacingLayoutTest.cpp
@@ -126,6 +136,9 @@ add_executable(EpubPipelineTest
   KeepTogetherTest.cpp
   NativeSizeLayoutTest.cpp
   RootFontSizeTest.cpp
+  PrefixedPackageTest.cpp
+  BlockElementsTest.cpp
+  DashBreakTest.cpp
   FontFamilyLayoutTest.cpp
   SpineCacheLayoutTest.cpp
   SaxStateInArenaTest.cpp
@@ -140,6 +153,11 @@ add_executable(EpubPipelineTest
   ImageOnlyPageTest.cpp
   VerticalLayoutTest.cpp
   VerticalRulesTest.cpp
+  BidiRulesTest.cpp
+  ShapingRulesTest.cpp
+  JoinerParseTest.cpp
+  IndicRulesTest.cpp
+  ShapingStatusTest.cpp
   CoverPipelineTest.cpp
   CoverWrapperTest.cpp
   CoverFallbackTest.cpp
@@ -151,6 +169,8 @@ add_executable(EpubPipelineTest
   # A book's embedded body font (Publisher Fonts): the probe and the extraction. Its SHA-1 comes from
   # test/shims/wolfssl, standing in for wolfCrypt.
   ${REPO_ROOT}/lib/Epub/Epub/BookFonts.cpp
+  # The reader's navigation target: resolves a saved position against a built Section.
+  ${REPO_ROOT}/src/activities/reader/EpubNavigationTarget.cpp
   # No-op HeapTrack: PipelineRunner brackets the dump read-back with pause/resume, and the gtest
   # binary must NOT get the real one (it overrides malloc/free process-wide). The two dump
   # targets pick their own implementation, so this cannot be moved into PIPELINE_SOURCES.
@@ -213,8 +233,8 @@ endif()
 # Exact allocation inventory of section builds (memory audit 2026-09): the heap profiler's
 # per-build window plus BuildArena's host-only trace hooks, with debug info and frame pointers so
 # every site symbolizes to file:line (inline chains included). See InventoryMain.cpp and
-# inventory_report.py. Not a test; run it by hand.
-add_executable(epub_build_inventory
+# inventory_report.py. Not a test: built on request (--target epub_build_inventory), and run by hand.
+add_executable(epub_build_inventory EXCLUDE_FROM_ALL
   InventoryMain.cpp
   HeapTrack.cpp
   ${PIPELINE_SOURCES}
@@ -234,8 +254,8 @@ target_link_libraries(epub_build_inventory PRIVATE
 
 # Same dump tool without the process-wide malloc/free override, which deadlocks
 # under the MinGW runtime. --bench heap numbers read 0 here; everything else is
-# identical, so this is the variant to use when diagnosing layout on Windows.
-add_executable(epub_pipeline_dump_noheap
+# identical, so this is the variant to use when diagnosing layout on Windows. Built on request, like the inventory.
+add_executable(epub_pipeline_dump_noheap EXCLUDE_FROM_ALL
   DumpMain.cpp
   HeapTrackStub.cpp
   ${PIPELINE_SOURCES}

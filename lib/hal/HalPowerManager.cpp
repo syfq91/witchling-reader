@@ -391,6 +391,11 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
   // ADC pin from the profile for X4.
   static const BatteryMonitor battery;
 
+  const unsigned long now = millis();
+  if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
+    return _batteryCachedPercent / 10;
+  }
+  _batteryLastPollMs = now;
   // Smooth the battery % with a 1/10-weight IIR. The cache stores the value
   // scaled ×10 so integer math keeps enough precision. Seed explicitly on the
   // first real sample; using 0 as a sentinel caused a second seed whenever a

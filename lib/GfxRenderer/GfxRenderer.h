@@ -5,6 +5,7 @@
 
 class FontCacheManager;
 class SdCardFont;
+struct GlyphRun;
 
 #include <atomic>
 #include <cstring>
@@ -16,6 +17,7 @@ class SdCardFont;
 
 #include "Bitmap.h"
 #include "FontLookup.h"
+#include "ScaledGlyphResample.h"
 #include "TextWrap.h"
 
 // Color representation: uint8_t mapped to 4x4 Bayer matrix dithering levels
@@ -92,7 +94,8 @@ class GfxRenderer {
   // Mutable because a lookup from a const draw or measure call may register a font the resolver
   // supplies on demand (findFontFamily). Same compromise as sdCardFonts_ below.
   mutable std::map<int, EpdFontFamily> fontMap;
-  static inline void (*beforePushHook_)() = nullptr;  // setBeforePushHook()
+  static inline void (*beforePushHook_)() = nullptr;      // setBeforePushHook()
+  static inline void (*shapingFaceRelease_)() = nullptr;  // setShapingFaceRelease()
   FontResolverHook<EpdFontFamily> fontResolver_;
   // The one place a font ID becomes a family: fontMap, then the resolver for an unknown ID.
   const EpdFontFamily* findFontFamily(const int fontId) const {
@@ -145,22 +148,16 @@ class GfxRenderer {
   // serialises behind RenderLock — the same lock that protects the framebuffer
   // these masks are blitted into.
   //
-  // Keyed by (font, codepoint, scale, sel), NOT by EpdGlyph address: SD-card
-  // fonts rebuild their glyph array every page and serve overflow codepoints
+  // Keyed by (font, codepoint or glyph ID, scale, sel), NOT by EpdGlyph address:
+  // SD-card fonts rebuild their glyph array every page and serve overflow codepoints
   // from an 8-entry ring, so the same address means different glyphs over time.
   // The resampled pixels are a pure function of this key, which makes it both
   // stable and exact. Style is deliberately absent: EpdFontFamily::getData() and
   // getGlyph() both resolve through getFont(style), so the EpdFontData pointer
   // already identifies the variant.
-  struct ScaledGlyphEntry {
-    const void* fontData;  // EpdFontData for the style (stable per font object)
-    uint32_t scaleBits;    // exact float bits of the scale factor (no quantisation)
-    uint16_t cp;           // codepoint; above the BMP renders uncached (see alloc)
-    uint16_t offset;       // byte offset into scaledGlyphArena_
-    uint8_t sel;           // the drawMask the glyph was resampled for
-    uint8_t w;
-    uint8_t h;
-  };
+  //
+  // The entry and its match (scaledGlyphEntryMatches) live in ScaledGlyphResample.h, so the host tests check them.
+  using ScaledGlyphEntry = ::ScaledGlyphEntry;
   // Keeps the documented budget honest if a field is ever added.
   static_assert(sizeof(ScaledGlyphEntry) <= 16, "scaled-glyph entry grew; update the cache budget comment");
   // Sized from measurement, not guesswork: a page of this corpus needs 45-58
@@ -448,6 +445,10 @@ class GfxRenderer {
   // lent from the secondary buffer for it goes back now (SdCardFontSystem's glyph lend), and the push runs with both
   // buffers. One hook; nullptr removes it.
   static void setBeforePushHook(void (*hook)()) { beforePushHook_ = hook; }
+  /// Frees every shaping face and its plans (TtfFontSet::releaseShapingFaces, installed by SdCardFontSystem); nothing
+  /// without the hook. A section build's end and the dictionary's pages call it, under RenderLock.
+  static void setShapingFaceRelease(void (*release)()) { shapingFaceRelease_ = release; }
+  static void releaseShapingFaces();
   void setNextDisplayRefreshMode(HalDisplay::RefreshMode refreshMode) const;
   // True if a setNextDisplayRefreshMode() override is armed but not yet consumed. Peek only —
   // does NOT consume it (unlike consumeRefreshOverride). Lets a caller that is about to issue an
@@ -479,7 +480,9 @@ class GfxRenderer {
   // after a framebuffer release, a reader exit -- are armed through setNextDisplayRefreshMode(),
   // and consumeRefreshOverride() replaces the requested mode outright, so they are unreachable
   // from here and cannot be suppressed.
-  bool ghostClearingHalfWorthwhile() const { return fastRefreshesSinceFull_ >= GHOST_CLEARING_FAST_BUDGET; }
+  bool ghostClearingHalfWorthwhile(const uint8_t fastRefreshBudget = GHOST_CLEARING_FAST_BUDGET) const {
+    return fastRefreshesSinceFull_ >= fastRefreshBudget;
+  }
   // Make the write framebuffer match the currently displayed frame. Call before
   // a partial repaint that patches a few regions and re-displays without
   // re-rendering the full frame: displayBuffer() ends with swapBuffers(), so
@@ -496,6 +499,7 @@ class GfxRenderer {
   bool releaseSecondaryBuffer() const { return display.releaseSecondaryBuffer(); }
   bool reallocSecondaryBuffer() const { return display.reallocSecondaryBuffer(); }
   bool hasSecondaryBuffer() const { return display.hasSecondaryBuffer(); }
+  bool keepsPreviousFrame() const { return display.keepsPreviousFrame(); }
   // Borrow/return variant of release/realloc: the block never enters the heap,
   // so nothing can allocate inside it and the return cannot fail. See
   // FreeInkDisplay::borrowSecondaryBuffer.
@@ -685,6 +689,12 @@ class GfxRenderer {
   /// Whether `fontId` has a glyph of its own for `cp`, not a lookalike or U+FFFD (which getGlyphInk and every
   /// measure fall back to). Layout asks it for 一 before treating a font as a CJK font.
   bool hasGlyph(int fontId, uint32_t cp, EpdFontFamily::Style style) const;
+  /// The face a shaper reads for `fontId`'s `style` (the TrueType file that draws it, a synthetic style's source),
+  /// and the pixels per em (26.6) its glyphs are drawn at before the font's base scale; nullptr for every other font,
+  /// and for a TrueType face the heap refused, which sets `*refused` as well (when `refused` is not null; it is left
+  /// as it is otherwise). Under RenderLock, as ShapingFace::current() is; the face is freed by
+  /// TtfFontSet::releaseShapingFaces() and by the font set's next load, so the plans built on it go first.
+  ShapingFace* shapingFace(int fontId, EpdFontFamily::Style style, uint32_t* ppem26_6, bool* refused = nullptr) const;
   int getFontAscenderSize(int fontId) const;
   int getLineHeight(int fontId) const;
   std::string truncatedText(int fontId, const char* text, int maxWidth,
@@ -692,9 +702,25 @@ class GfxRenderer {
   /// Word-wrap \p text into at most \p maxLines lines, each no wider than
   /// \p maxWidth pixels, breaking at spaces and at the word breaker's offsets.
   /// Overflowing words and excess lines are UTF-8-safely truncated with an
-  /// ellipsis (U+2026).
+  /// ellipsis (U+2026). \p whole, when given, says whether all of \p text made
+  /// it into the lines.
   std::vector<std::string> wrappedText(int fontId, const char* text, int maxWidth, int maxLines,
-                                       EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+                                       EpdFontFamily::Style style = EpdFontFamily::REGULAR,
+                                       bool* whole = nullptr) const;
+
+  /// Draws a shaped run at (x, y), y the line's top as drawText takes it. Each record's glyph comes by ID from
+  /// `fontId`'s `style` (findGlyphKey: no fallbacks) and is drawn at the pen plus its offset; the pen moves by the
+  /// record's advance. No kerning, ligatures or tracking. `scale` is drawTextScaled's: the glyphs are drawn at it
+  /// times the font's base scale, through renderCharAtScale's path (sup/sub keep its dark threshold); the records'
+  /// advances and offsets are in drawn pixels already, so SUP/SUB halve nothing here. A record whose glyph the font
+  /// lacks draws nothing but still moves the pen. A font that draws no glyph keys draws nothing (logged once).
+  /// While the page is scanned, records the run's glyph IDs instead (FontCacheManager::recordGlyphs).
+  void drawGlyphRun(int fontId, int x, int y, const GlyphRun& run, bool black = true,
+                    EpdFontFamily::Style style = EpdFontFamily::REGULAR, float scale = 1.0f) const;
+  /// How far drawGlyphRun's pen moves: glyphRunAdvance, accumulated when scale x the base scale is not 1.
+  int glyphRunWidth(int fontId, const GlyphRun& run, float scale = 1.0f) const;
+  /// The glyph-ID prefetch for a section build's warm step: the run's glyphs, 64 at a time (128 B on the stack).
+  void prefetchGlyphRun(int fontId, const GlyphRun& run, EpdFontFamily::Style style) const;
 
   // Helper for drawing rotated text (90 degrees clockwise, for side buttons)
   void drawTextRotated90CW(int fontId, int x, int y, const char* text, bool black = true,
@@ -827,6 +853,16 @@ class GfxRenderer {
   // pointer afterwards for the same reason triggerDisplay() does: the display
   // swaps buffers, and every later draw must target the new write buffer.
   void displayGrayscaleFrame(HalDisplay::RefreshMode mode) const;
+  // One-pass text composed in the frame buffers (the X3, the X4): see HalDisplay::beginOnePassMask(). While the
+  // mask is out, drawing lands in it; displayOnePassFrame() puts the page and its gray up in one refresh,
+  // deferred like triggerDisplay(), so the caller owes completeDisplay().
+  bool composesOnePassText() const { return display.composesOnePassText(); }
+  bool beginOnePassMask() const {
+    uint8_t* mask = display.beginOnePassMask();
+    if (mask) frameBuffer = mask;
+    return mask != nullptr;
+  }
+  void displayOnePassFrame(HalDisplay::RefreshMode mode) const;
   // Deferred form: see HalDisplay::triggerGrayscaleFrame. Caller owes completeDisplay().
   void triggerGrayscaleFrame(HalDisplay::RefreshMode mode) const;
 
@@ -842,7 +878,7 @@ class GfxRenderer {
   // write buffer then keeps the last plane.
   //
   // renderFn is called twice (LSB, MSB). The RenderMode argument tells it which
-  // pass is running. The caller sets setFastGrayscaleLut() before calling.
+  // pass is running.
   //
   // Returns wall-clock timings for each of the three phases.
   //
@@ -903,8 +939,12 @@ class GfxRenderer {
   // Caller contract: an async refresh MUST be in flight, and the glyphs the
   // renderFn draws must already be prewarmed (a cache miss would issue SD reads
   // — allowed — but a display/SPI call in renderFn is not).
-  template <typename RenderFn, typename AbortFn>
-  GrayscaleTimings renderGrayscalePlanesInterleaved(RenderFn renderFn, AbortFn shouldAbort) {
+  //
+  // settle() runs once the BW page is on screen, before the pass commits to anything the reader
+  // has to wait for. It is the caller's chance to give a press time to arrive: shouldAbort() is
+  // asked right after it returns.
+  template <typename RenderFn, typename AbortFn, typename SettleFn>
+  GrayscaleTimings renderGrayscalePlanesInterleaved(RenderFn renderFn, AbortFn shouldAbort, SettleFn settle) {
     GrayscaleTimings t;
     const unsigned long t0 = millis();
 
@@ -915,6 +955,7 @@ class GfxRenderer {
 
     // Waveform still running: sleep out the remainder (power hooks active).
     display.finishDisplayAsync();
+    settle();
     const unsigned long tWaveDone = millis();
 
     // Abort point. This is the ideal place for it on the interleaved path: the BW page is now
@@ -954,8 +995,6 @@ class GfxRenderer {
 
   // X3-only: trade AA visual fidelity for ~2.2 s faster page-flip wall clock.
   // No effect on X4 (its single grayscale LUT already runs at ~500 ms).
-  void setFastGrayscaleLut(bool fast) const { display.setFastGrayscaleLut(fast); }
-  bool getFastGrayscaleLut() const { return display.getFastGrayscaleLut(); }
 
   // Active pixel-write target for raw writers that bypass drawPixel for speed.
   // Returns the full framebuffer and its extent ([0, panelHeight)).
@@ -1033,7 +1072,9 @@ class GfxRenderer {
   // pipeline lives in free functions in GfxRenderer.cpp; treat as internal.
   // find returns the cached mask for an exact key match, alloc reserves a zeroed
   // mask of w*h bits for the caller to fill, or nullptr when the glyph is too
-  // large to cache or the arena could not be allocated.
+  // large to cache or the arena could not be allocated. `cp` is a codepoint or a
+  // glyph key (GlyphKey.h); scaledGlyphKeyOf makes the entry's (id, kind) of it,
+  // and one it cannot key renders uncached.
   const uint8_t* findScaledGlyphMask(const void* fontData, uint32_t cp, float scale, uint8_t sel, int w, int h) const;
   uint8_t* allocScaledGlyphMask(const void* fontData, uint32_t cp, float scale, uint8_t sel, int w, int h) const;
 

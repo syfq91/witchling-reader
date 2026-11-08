@@ -102,9 +102,6 @@ static_assert(!usbPresenceFromFuelGauge(BoardConfig::XTEINK_X4) &&
 // Settle passes after a half refresh (UC8253 quirk, X4 does not need this).
 inline bool panelNeedsHalfRefreshSettle() { return false; }
 
-// Grayscale from a swappable LUT (X4 does not use this).
-inline bool hasSelectableGrayscaleLut() { return false; }
-
 // The panel visibly fades in direct sunlight unless it is powered down between
 // refreshes, so the "sunlight fading fix" is worth offering here.
 //
@@ -130,6 +127,10 @@ inline bool hasBackAndConfirmButtons() { return true; }
 // The physical button topology.
 inline BoardConfig::InputStyle inputStyle() { return BoardConfig::ACTIVE.inputStyle; }
 
+// The front strip's Left and Right are touch targets on the panel rather than keys in the case, so
+// they turn with the screen while the real keys stay Up and Down (Murphy).
+inline bool frontStripIsVirtual() { return false; }
+
 // True when the SD card is reached over SPI (always true on X4).
 inline bool sdUsesSpi() { return true; }
 
@@ -148,6 +149,18 @@ inline bool upKeyIsBootStrap() { return false; }
 
 // Chrome scale factor for finger-sized targets. 1.0 on button boards.
 inline float uiScale() { return 1.0f; }
+
+// FAST ghosts badly enough on this panel that the UI cannot rely on each screen's own cleaning:
+inline bool clearsGhostsOnEveryScreen() { return false; }
+
+// The panel can show gray at all.
+inline bool panelShowsGray() { return true; }
+
+// Every S3 build: the secondary framebuffer is never given up...
+inline bool keepsSecondaryBuffer() { return false; }
+
+// True when an image decode can run through a refresh...
+inline bool decodesThroughRefresh() { return false; }
 
 // A frontlight is present (none on X4).
 inline bool hasFrontlight() { return false; }

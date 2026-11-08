@@ -92,9 +92,8 @@ int getHomeCoverRenderHeight(const HomeScreenLayout& layout) { return std::max(1
 void HomeActivity::rebuildMenuEntries() {
   menuEntries.clear();
   menuEntries.reserve(7);
-  const HomeMenuAvailability availability{.hasBookmarks = !GLOBAL_BOOKMARKS.isEmpty()};
+  const HomeMenuAvailability availability{.hasBookmarks = GLOBAL_BOOKMARKS.hasAny()};
   collectHomeMenuEntries(HomeMenuPlacement::Home, availability, menuEntries);
-  menuEntriesDirty = false;
 }
 
 void HomeActivity::loadRecentBooks(int maxBooks) {
@@ -483,6 +482,11 @@ void HomeActivity::onEnter() {
   if (recentBooks.empty()) {
     recentsLoaded = true;
   }
+  // Built here, once per entry, before the first render is requested. render() runs on the render
+  // task and loop() on this one; when both rebuilt the list on a dirty flag, they could run at once,
+  // each clearing and then appending, and Home showed every entry twice. The rebuild also reads the
+  // bookmark index off the card.
+  rebuildMenuEntries();
 
   // Apply focus: book path takes priority, else combined selector index (covers
   // "return to the menu entry I was on").
@@ -498,7 +502,6 @@ void HomeActivity::onEnter() {
     focusBookPath.clear();
   }
   if (!focused && focusSelectorIndex >= 0) {
-    rebuildMenuEntries();  // need menu count to clamp; rebuild is idempotent
     const int combinedSize = static_cast<int>(recentBooks.size() + menuEntries.size());
     if (combinedSize > 0) {
       selectorIndex = std::min(focusSelectorIndex, combinedSize - 1);
@@ -507,7 +510,6 @@ void HomeActivity::onEnter() {
   focusSelectorIndex = -1;
 
   // Trigger first update
-  menuEntriesDirty = true;
   requestUpdate();
 }
 
@@ -567,11 +569,6 @@ void HomeActivity::loop() {
     if (app.invalidated()) requestUpdate();
     if (touch) return;
   }
-
-  if (menuEntriesDirty) {
-    rebuildMenuEntries();
-  }
-
   const bool inputWaiting =
       mappedInput.hasPendingInput() || mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased();
 
@@ -623,10 +620,6 @@ void HomeActivity::loop() {
 void HomeActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect contentRect = UITheme::getContentRect(renderer, true, false);
-
-  if (menuEntriesDirty) {
-    rebuildMenuEntries();
-  }
 
   const int menuCount = static_cast<int>(menuEntries.size());
 
@@ -743,10 +736,6 @@ void HomeActivity::handleAction(const freeink::ui::ActionEvent& event) {
 void HomeActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const ::Rect contentRect = UITheme::getContentRect(renderer, true, false);
-
-  if (menuEntriesDirty) {
-    rebuildMenuEntries();
-  }
 
   const int menuCount = static_cast<int>(menuEntries.size());
   const HomeScreenLayout layout = computeHomeScreenLayout(metrics, contentRect.height, menuCount);

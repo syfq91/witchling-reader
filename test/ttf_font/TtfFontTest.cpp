@@ -28,14 +28,17 @@
 
 using namespace ttf_test;
 
+// The bytes the program's news hold now: what a loaded family keeps is the difference across its load. Declared in
+// TtfFontTestUtil.h, for the other test files of this program.
+size_t heapBytesHeld = 0;
+// The next nothrow new of one object of exactly this many bytes fails, once: an SD-mode plan's or read's page cache
+// (ttf::CffBlock::planBytes(), readBytes()), or a shaping face, on a heap without room for it at that moment. Declared
+// in TtfFontTestUtil.h as well.
+size_t refuseNextObjectBytes = 0;
+
 namespace {
 // A nothrow array new of exactly this many bytes fails, as the scratch block's does on a heap without room for it.
 size_t refuseArrayBytes = 0;
-// The next nothrow new of one object of exactly this many bytes fails, once: an SD-mode plan's or read's page cache
-// (ttf::CffBlock::planBytes(), readBytes()) on a heap without room for it at that moment.
-size_t refuseNextObjectBytes = 0;
-// The bytes the program's news hold now: what a loaded family keeps is the difference across its load.
-size_t heapBytesHeld = 0;
 
 // A block with its size in front of it (malloc and free underneath, which the sanitizers pair as they pair any other).
 constexpr size_t kSizeHeader = alignof(std::max_align_t);
@@ -92,47 +95,6 @@ constexpr uint8_t kItalic = 2;
 constexpr uint8_t kBoldItalic = 3;
 constexpr uint8_t kIdentityA[glyphstore::kIdentityBytes] = {'f', 'a', 'm', 'i', 'l', 'y', '-', 'A'};
 constexpr uint8_t kIdentityB[glyphstore::kIdentityBytes] = {'f', 'a', 'm', 'i', 'l', 'y', '-', 'B'};
-
-/// What the rasterizer draws for `cp` at `points`, straight from the file: what a stored glyph must equal.
-struct Reference {
-  EpdGlyph metrics{};
-  std::vector<uint8_t> bitmap;
-};
-
-/// The same at a pixels-per-em (26.6).
-Reference referenceAt(const std::vector<uint8_t>& file, const uint32_t cp, const uint32_t ppem) {
-  FontBytes bytes(file.data(), static_cast<uint32_t>(file.size()));
-  ttf::Face face;
-  EXPECT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(bytes, &face));
-  ttf::Rasterizer rasterizer;
-  EXPECT_TRUE(rasterizer.allocate(
-      ttf::planScratch(face, static_cast<uint32_t>(TtfFont::kMaxNativePx) << 6, ttf::kPoolBytesFlash)));
-  Reference ref;
-  EXPECT_EQ(ttf::Status::Ok, rasterizer.render(bytes, face, ttf::glyphIndex(bytes, face, cp), ppem, &ref.metrics));
-  ref.bitmap.assign(rasterizer.output(), rasterizer.output() + ref.metrics.dataLength);
-  return ref;
-}
-
-Reference reference(const std::vector<uint8_t>& file, const uint32_t cp, const uint8_t points) {
-  return referenceAt(file, cp, ttf::ppemFromPoints(points));
-}
-
-/// What the rasterizer draws for `cp` at a pixels-per-em (26.6), emboldened at the engine's strength: what a glyph of
-/// a synthetic bold style must equal.
-Reference emboldenedAt(const std::vector<uint8_t>& file, const uint32_t cp, const uint32_t ppem) {
-  FontBytes bytes(file.data(), static_cast<uint32_t>(file.size()));
-  ttf::Face face;
-  EXPECT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(bytes, &face));
-  ttf::Rasterizer rasterizer;
-  EXPECT_TRUE(rasterizer.allocate(
-      ttf::planScratch(face, static_cast<uint32_t>(TtfFont::kMaxNativePx) << 6, ttf::kPoolBytesFlash, true)));
-  Reference ref;
-  EXPECT_EQ(ttf::Status::Ok, rasterizer.load(bytes, face, ttf::glyphIndex(bytes, face, cp), ppem, &ref.metrics));
-  EXPECT_EQ(ttf::Status::Ok, rasterizer.embolden(ttf::emboldenStrength(ppem), &ref.metrics));
-  EXPECT_EQ(ttf::Status::Ok, rasterizer.rasterize(rasterizer.output()));
-  ref.bitmap.assign(rasterizer.output(), rasterizer.output() + ref.metrics.dataLength);
-  return ref;
-}
 
 Reference emboldened(const std::vector<uint8_t>& file, const uint32_t cp, const uint8_t points) {
   return emboldenedAt(file, cp, ttf::ppemFromPoints(points));
@@ -191,25 +153,6 @@ Reference drawnAt(const std::vector<uint8_t>& file, const uint32_t cp, const uin
   }
   ADD_FAILURE() << "U+" << std::hex << cp << " draws in no form";
   return ref;
-}
-
-constexpr uint32_t px(const uint32_t pixels) { return pixels << 6; }
-
-/// A glyph's bitmap, wherever TtfFont keeps it: the ring, or the store's log.
-std::vector<uint8_t> bitmapOf(const TtfFont& font, const uint8_t style, const EpdGlyph* glyph) {
-  const uint8_t* bitmap = nullptr;
-  if (!font.ownsBitmap(glyph, bitmap)) bitmap = font.font(style)->data->bitmap + glyph->dataOffset;
-  return bitmap ? std::vector<uint8_t>(bitmap, bitmap + glyph->dataLength) : std::vector<uint8_t>{};
-}
-
-void expectDrawnAs(const Reference& ref, const TtfFont& font, const uint8_t style, const EpdGlyph* glyph) {
-  ASSERT_NE(nullptr, glyph);
-  EXPECT_EQ(ref.metrics.width, glyph->width);
-  EXPECT_EQ(ref.metrics.height, glyph->height);
-  EXPECT_EQ(ref.metrics.left, glyph->left);
-  EXPECT_EQ(ref.metrics.top, glyph->top);
-  EXPECT_EQ(ref.metrics.advanceX, glyph->advanceX);
-  EXPECT_EQ(ref.bitmap, bitmapOf(font, style, glyph));
 }
 
 int yields = 0;
@@ -1664,7 +1607,8 @@ TEST_F(TtfFontSetTest, AFamilyTooLargeForFlashModeIsDrawnFromTheCardAsFlashModeD
     EXPECT_GT(set->sdPageReads(), 0u);
   }
   // The next boot draws them from the store: neither rendered again nor read from the card, but for the table
-  // directory the open compares with the block's.
+  // directory the open compares with the block's, and the heads of GSUB and GPOS, whose script lists say the block has
+  // no CPac room.
   for (MemoryFile& file : files) file.offsets.clear();
   const auto set = openFamilies(chip, {files}, busy);
   ASSERT_NE(nullptr, set);
@@ -1674,7 +1618,20 @@ TEST_F(TtfFontSetTest, AFamilyTooLargeForFlashModeIsDrawnFromTheCardAsFlashModeD
   const std::vector<uint8_t>& bold = files[kBold].bytes;
   const uint32_t directoryEnd = 12 + 16u * static_cast<uint32_t>(bold[4] << 8 | bold[5]);
   ASSERT_FALSE(files[kBold].offsets.empty());
-  for (const uint32_t offset : files[kBold].offsets) EXPECT_LT(offset, directoryEnd);
+  const auto layoutTable = [&bold](const char* name) {
+    const size_t at = findRecord(bold, name);
+    const auto word = [&](const size_t from) {
+      return static_cast<uint32_t>(bold[from]) << 24 | bold[from + 1] << 16 | bold[from + 2] << 8 | bold[from + 3];
+    };
+    return std::pair<uint32_t, uint32_t>{word(at + 8), word(at + 8) + word(at + 12)};
+  };
+  const auto gsub = layoutTable("GSUB");
+  const auto gpos = layoutTable("GPOS");
+  for (const uint32_t offset : files[kBold].offsets) {
+    const bool layout =
+        (offset >= gsub.first && offset < gsub.second) || (offset >= gpos.first && offset < gpos.second);
+    EXPECT_TRUE(offset < directoryEnd || layout) << offset;
+  }
   expectWrittenOnce(chip);
 }
 
@@ -1885,8 +1842,9 @@ TEST_F(TtfFontSetTest, APowerCutInAnSdModeInstallIsInstalledWholeAtTheNextLoad) 
 
 TEST_F(TtfFontSetTest, AWholeReaderFontAndThreeAccentFamiliesOnTheCardFitTogether) {
   // The X4 case of phase 3: Bookerly whole as the reader's font, and a book's three accent families (Inter in two
-  // styles, Noto Sans Italic, Ubuntu Bold). Whole, they need 56 of the font area's 53 pages, and phase 3 left two of
-  // them out; with their tables on the card all four load, eight style blocks.
+  // styles, Noto Sans Italic, Ubuntu Bold). Whole, they need 57 of the font area's 53 pages (Noto Sans Italic's block
+  // with its CPac, as it shapes Devanagari), and phase 3 left two of them out; with their tables on the card all four
+  // load, eight style blocks.
   MemoryFile script[4];
   MemoryFile code[4];
   script[kRegular].bytes = readFont("NotoSans/NotoSans-Italic.ttf");
@@ -2474,22 +2432,21 @@ TEST_F(TtfFontSetTest, APlanWithoutMemoryInAnInstallErasesNothingAndAsksForNoFew
   expectWrittenOnce(chip);
 }
 
-TEST_F(TtfFontTest, AProbeThatCannotPlanForNowLeavesACffFamilyListed) {
-  // Discovery plans a CFF file's block to learn its size. Without the memory this once, or with the card failing
-  // past the file's first sector, the size is not known: the family stays listed for its load to decide, rather than
-  // be dropped as too large until the next scan.
+TEST_F(TtfFontTest, ACffFileWithoutMemoryToPlanStaysListedAndOneWhoseLayoutCannotBeCountedIsNot) {
+  // Discovery plans a CFF file's block to learn its size. Without the memory this once, the size is not known: the
+  // family stays listed for its load to decide, rather than be dropped as too large until the next scan. With the
+  // card failing past the file's first sector, the layout tables' script lists cannot be read (whether it has a CPac
+  // room): not a font for now.
   MemoryFile cjk;
   cjk.bytes = tooLargeForFlashMode("NotoSerifJP-CffFlat.otf");
   const uint32_t fileBytes = static_cast<uint32_t>(cjk.bytes.size());
   refuseNextObjectBytes = ttf::CffBlock::planBytes();
   const ttf::FileProbe withoutMemory = ttf::probeFile(cjk.source());
+  EXPECT_EQ(0, withoutMemory.style);
+  EXPECT_EQ(ttf::kSdBytesUnknown, withoutMemory.sdBytes);
+  EXPECT_TRUE(ttf::fitsStore(&fileBytes, &withoutMemory.sdBytes, 1, kSdOnlyBytes, 24));
   cjk.readsTo = ttf::SdPageCache::kPageBytes;
-  const ttf::FileProbe withoutReads = ttf::probeFile(cjk.source());
-  for (const ttf::FileProbe& probe : {withoutMemory, withoutReads}) {
-    EXPECT_EQ(0, probe.style);
-    EXPECT_EQ(ttf::kSdBytesUnknown, probe.sdBytes);
-    EXPECT_TRUE(ttf::fitsStore(&fileBytes, &probe.sdBytes, 1, kSdOnlyBytes, 24));
-  }
+  EXPECT_EQ(-1, ttf::probeFile(cjk.source()).style);
   // A file too large for flash mode that can have no block is not listed; one that can, by its size.
   const uint32_t none = UINT32_MAX;
   EXPECT_FALSE(ttf::fitsStore(&fileBytes, &none, 1, kSdOnlyBytes, 24));
@@ -2599,6 +2556,12 @@ struct TtfFontTestAccess {
   static void chooseAgain(TtfFont& font) { font.chooseSynthetic(); }
   static bool draws(const TtfFont& font, const uint8_t style) { return font.draws(style); }
   static uint8_t source(const TtfFont& font, const uint8_t style) { return font.source_[style]; }
+  /// What firmware that drew nothing for U+FFFD left in the store: `cp` marked as not in the font.
+  static bool markMissing(TtfFont& font, const uint8_t style, const uint32_t cp) {
+    uint32_t key = 0;
+    return font.storeKey(font.body_, style, cp, &key) &&
+           font.set_.store_.markNoGlyph(key) == FlashGlyphStore::Commit::Stored;
+  }
 };
 
 TEST_F(TtfFontTest, ChoosingSyntheticStylesAgainGivesTheSameChoice) {
@@ -3054,4 +3017,161 @@ TEST_F(TtfFontSetTest, SyntheticItalicInSdModeIsDrawnFromTheRegularFile) {
   EXPECT_EQ(10u, font.renders());  // stored by the batch
   expectDrawnAs(reference(serif[kRegular].bytes, 0x3042, 14), font, kRegular, font.glyph(kRegular, 0x3042));
   expectWrittenOnce(chip);
+}
+
+// --- A character the font has not got, in a font without U+FFFD ---
+
+namespace {
+constexpr uint32_t kHan = 0x4E2D;  // 中, in neither of the fonts below
+constexpr uint32_t kReplacement = 0xFFFD;
+
+// The two kinds of outline, each a real font that does not map U+FFFD.
+constexpr const char* kTrueTypeWithoutReplacement = "Inter/Inter-Regular.ttf";
+constexpr const char* kCffWithoutReplacement = "OpenDyslexic/OpenDyslexic-Regular.otf";
+
+/// A family of one style: its glyph 0 a box, glyph 1 'a'. No U+FFFD.
+Font boxedFont() {
+  Font built;
+  built.glyphs.resize(2);
+  built.glyphs[0].contours = {rect(50, 0, 450, 700)};
+  built.glyphs[1].contours = {rect(100, 0, 300, 400)};
+  built.cmap = {{'a', 1}};
+  return built;
+}
+}  // namespace
+
+class TtfFontNotdefTest : public TtfFontTest {
+ protected:
+  /// The family `path`, regular only, loaded.
+  Loaded openOnly(const char* path) {
+    files[kRegular].bytes = readFont(path);
+    for (int s = 1; s < 4; ++s) files[s].bytes.clear();
+    return open();
+  }
+
+  /// The font must have what the tests below need of it: no U+FFFD, not `kHan`, a .notdef with a shape.
+  void expectNotMapped(const std::vector<uint8_t>& file) {
+    FontBytes bytes(file.data(), static_cast<uint32_t>(file.size()));
+    ttf::Face face;
+    ASSERT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(bytes, &face));
+    ASSERT_EQ(0u, ttf::glyphIndex(bytes, face, kReplacement));
+    ASSERT_EQ(0u, ttf::glyphIndex(bytes, face, kHan));
+  }
+
+  void expectNotdefStandsIn(const Loaded& font) {
+    const Reference box = reference(files[kRegular].bytes, kReplacement, 14);  // glyph 0: U+FFFD is not mapped
+    ASSERT_GT(box.metrics.advanceX, 0u);
+    ASSERT_GT(box.metrics.width, 0u);  // a shape, so the character shows
+    const EpdFontFamily family(font->font(0), font->font(1), font->font(2), font->font(3));
+    const EpdGlyphRef drawn = family.getGlyph(kHan, EpdFontFamily::REGULAR);
+    ASSERT_TRUE(static_cast<bool>(drawn));
+    EXPECT_EQ(box.metrics.advanceX, drawn.advanceX);
+    EXPECT_EQ(box.metrics.width, drawn.width);
+    EXPECT_EQ(box.metrics.height, drawn.height);
+    expectDrawnAs(box, *font, kRegular, font->glyph(kRegular, kReplacement));
+  }
+};
+
+TEST_F(TtfFontNotdefTest, TrueTypeDrawsItsNotdefForAMissingCharacter) {
+  const auto font = openOnly(kTrueTypeWithoutReplacement);
+  ASSERT_NE(nullptr, font);
+  expectNotMapped(files[kRegular].bytes);
+  expectNotdefStandsIn(font);
+}
+
+TEST_F(TtfFontNotdefTest, CffDrawsItsNotdefForAMissingCharacter) {
+  const auto font = openOnly(kCffWithoutReplacement);
+  ASSERT_NE(nullptr, font);
+  expectNotMapped(files[kRegular].bytes);
+  expectNotdefStandsIn(font);
+}
+
+// The missing character itself stays marked: only U+FFFD stands in. Glyph 0 is never served under its own codepoint, or
+// a character the font lacks would count as one it has (hasGlyph) and the lookalike below would never be tried.
+TEST_F(TtfFontNotdefTest, TheMissingCharacterItselfStaysMissing) {
+  const auto font = openOnly(kTrueTypeWithoutReplacement);
+  ASSERT_NE(nullptr, font);
+  EXPECT_EQ(nullptr, font->glyph(kRegular, kHan));
+  const EpdFontFamily family(font->font(0), font->font(1), font->font(2), font->font(3));
+  EXPECT_FALSE(family.hasGlyph(kHan, EpdFontFamily::REGULAR));
+}
+
+// A close relative comes before the box: a transcription stays readable (GlyphFallback.h).
+TEST_F(TtfFontNotdefTest, ALookalikeComesBeforeTheNotdef) {
+  useBuiltFont(boxedFont());
+  const auto font = open();
+  ASSERT_NE(nullptr, font);
+  const EpdFontFamily family(font->font(0), font->font(1), font->font(2), font->font(3));
+  const EpdGlyphRef relative = family.getGlyph(0x0251, EpdFontFamily::REGULAR);  // ɑ, drawn as a
+  const EpdGlyphRef letter = family.getGlyph('a', EpdFontFamily::REGULAR);
+  ASSERT_TRUE(static_cast<bool>(relative));
+  EXPECT_EQ(letter.advanceX, relative.advanceX);
+  EXPECT_EQ(letter.width, relative.width);
+  EXPECT_EQ(letter.height, relative.height);
+}
+
+// A font with a U+FFFD of its own keeps drawing it.
+TEST_F(TtfFontNotdefTest, AFontsOwnReplacementGlyphIsDrawnNotItsNotdef) {
+  const auto font = open();  // Bookerly maps U+FFFD
+  ASSERT_NE(nullptr, font);
+  const std::vector<uint8_t>& file = files[kRegular].bytes;
+  FontBytes bytes(file.data(), static_cast<uint32_t>(file.size()));
+  ttf::Face face;
+  ASSERT_EQ(ttf::FaceStatus::Ok, ttf::parseFace(bytes, &face));
+  ASSERT_NE(0u, ttf::glyphIndex(bytes, face, kReplacement));
+  expectDrawnAs(reference(file, kReplacement, 14), *font, kRegular, font->glyph(kRegular, kReplacement));
+}
+
+// Stored once, like any glyph: a page of missing characters is one render.
+TEST_F(TtfFontNotdefTest, TheNotdefIsStoredAndFoundAgain) {
+  const auto font = openOnly(kTrueTypeWithoutReplacement);
+  ASSERT_NE(nullptr, font);
+  ASSERT_NE(nullptr, font->glyph(kRegular, kReplacement));
+  const uint32_t renders = font->renders();
+  const uint32_t writes = flash.programCalls();
+  ASSERT_NE(nullptr, font->glyph(kRegular, kReplacement));
+  EXPECT_EQ(renders, font->renders());
+  EXPECT_EQ(writes, flash.programCalls());
+}
+
+// A text that holds U+FFFD itself, as a badly converted book does: prefetch takes the same way.
+TEST_F(TtfFontNotdefTest, PrefetchDrawsTheNotdefForAReplacementCharacterInTheText) {
+  const auto font = openOnly(kTrueTypeWithoutReplacement);
+  ASSERT_NE(nullptr, font);
+  font->prefetch(kRegular, "a\xEF\xBF\xBD");
+  const uint32_t renders = font->renders();
+  EXPECT_EQ(2u, renders);
+  expectDrawnAs(reference(files[kRegular].bytes, kReplacement, 14), *font, kRegular,
+                font->glyph(kRegular, kReplacement));
+  EXPECT_EQ(renders, font->renders());  // the batch stored it
+}
+
+// A store from firmware that drew nothing here holds U+FFFD's mark for good: a slot is never programmed twice, and
+// find() stops at it. The box still draws, from the ring, and costs no flash: a record behind the mark could never be
+// found, so one written for each draw would only fill the log.
+TEST_F(TtfFontNotdefTest, AnOlderStoresMarkDoesNotHideTheNotdefAndCostsNoWrites) {
+  const auto font = openOnly(kTrueTypeWithoutReplacement);
+  ASSERT_NE(nullptr, font);
+  ASSERT_TRUE(TtfFontTestAccess::markMissing(*font, kRegular, kReplacement));
+  const uint32_t writes = flash.programCalls();
+  const Reference box = reference(files[kRegular].bytes, kReplacement, 14);
+  expectDrawnAs(box, *font, kRegular, font->glyph(kRegular, kReplacement));
+  expectDrawnAs(box, *font, kRegular, font->glyph(kRegular, kReplacement));
+  EXPECT_EQ(writes, flash.programCalls());
+}
+
+// In SD mode the .notdef's outline is read from the card like any other. A failed read is transient: U+FFFD must not be
+// marked as not in the font, or the box would be gone until the store is wiped.
+TEST_F(TtfFontSetTest, ACardReadErrorDrawingTheNotdefIsAskedAgain) {
+  SimNorFlash chip{42 * kPage};  // as in TheBodyStaysInFlashModeWhileTheAccentFamilyGoesToTheCard
+  const auto set = openFamilies(chip, {files, accent}, busy);
+  ASSERT_NE(nullptr, set);
+  TtfFont& inter = *set->font(1);  // does not map U+FFFD
+  ASSERT_TRUE(inter.readsCard());
+  accent[kRegular].failReads = true;
+  EXPECT_EQ(nullptr, inter.glyph(kRegular, kReplacement));
+  accent[kRegular].failReads = false;
+  expectDrawnAs(reference(accent[kRegular].bytes, kReplacement, 14), inter, kRegular,
+                inter.glyph(kRegular, kReplacement));
+  EXPECT_FALSE(set->ringMode());
 }

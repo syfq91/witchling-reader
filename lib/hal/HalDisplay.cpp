@@ -8,7 +8,33 @@
 #include <XteinkDetect.h>  // applyXteinkDisplayController() — see begin()
 #include <esp_heap_caps.h>
 
+#include <atomic>
+
 #include "HalSpiBus.h"
+
+namespace {
+const char* displayControllerName(BoardConfig::DisplayController controller) {
+  switch (controller) {
+    case BoardConfig::DisplayController::SSD1677:
+      return "SSD1677";
+    case BoardConfig::DisplayController::UC8253:
+      return "UC8253";
+    case BoardConfig::DisplayController::ED2208:
+      return "ED2208";
+    case BoardConfig::DisplayController::LgfxEpd:
+      return "LgfxEpd";
+    case BoardConfig::DisplayController::IT8951:
+      return "IT8951";
+    case BoardConfig::DisplayController::UC8279:
+      return "UC8279";
+    case BoardConfig::DisplayController::UC8179:
+      return "UC8179";
+    case BoardConfig::DisplayController::UC8279C:
+      return "UC8279C";
+  }
+  return "unknown";
+}
+}  // namespace
 
 // Global HalDisplay instance, bracketed by static-init heap probes (slots 0/1).
 static BootHeapProbe s_probePreDisplay(0);
@@ -39,6 +65,25 @@ HalDisplay::HalDisplay()
 HalDisplay::~HalDisplay() {}
 
 void HalDisplay::begin(bool seamless) {
+  const BoardConfig::BoardProfile& profile = BoardConfig::ACTIVE;
+  const BoardConfig::DisplayPins& pins = profile.display;
+  LOG_DBG("DISP",
+          "Profile=%s controller=%s framebuffer=%ux%u SPI=%luHz (0=driver default) pins SCLK=%d MOSI=%d CS=%d DC=%d "
+          "RST=%d BUSY=%d mirror=%d/%d",
+          profile.name, displayControllerName(profile.displayController), profile.displayWidth, profile.displayHeight,
+          static_cast<unsigned long>(profile.displaySpiHz), pins.sclk, pins.mosi, pins.cs, pins.dc, pins.rst, pins.busy,
+          profile.orientation.mirrorX, profile.orientation.mirrorY);
+  LOG_DBG("DISP",
+          "Touch profile: controller=%u SDA=%d SCL=%d addr=0x%02X IRQ=%d reset/power=%d; env capability=%d bus=%u "
+          "SDA=%d SCL=%d addr=0x%02X",
+          static_cast<unsigned>(profile.touch.controller), profile.touch.sda, profile.touch.scl,
+          profile.touch.i2cAddress, profile.touch.irq, profile.touch.reset, FREEINK_CAP_TEMP_HUMIDITY,
+          profile.sensors.i2cBus, profile.sensors.i2cSda, profile.sensors.i2cScl, profile.sensors.tempHumidityAddr);
+  if (profile.board == BoardConfig::Board::MurphyM3) {
+    LOG_DBG("DISP", "Murphy M3 geometry map: framebuffer=%ux%u, UC8253 controller RAM=240x416, 90-degree rotation",
+            profile.displayWidth, profile.displayHeight);
+  }
+
 #if !FREEINK_MCU_C3
   // Resolve which panel controller this unit actually carries, before
   // einkDisplay.begin() picks a driver from it.
@@ -61,6 +106,11 @@ void HalDisplay::begin(bool seamless) {
     HalSpiBus::Lock spiLock;
     einkDisplay.begin();
   }
+  LOG_DBG("DISP", "Runtime framebuffer=%ux%u stride=%u bytes buffer=%lu bytes", einkDisplay.getDisplayWidth(),
+          einkDisplay.getDisplayHeight(), einkDisplay.getDisplayWidthBytes(),
+          static_cast<unsigned long>(einkDisplay.getBufferSize()));
+  LOG_DBG("DISP", "Controller after init=%s variant=0x%02X", displayControllerName(profile.displayController),
+          profile.displayControllerVariant);
 
   // Request resync after specific wakeup events to ensure clean display state.
   // Skip when seamless=true so the current panel content is preserved (e.g. reader resume).
@@ -192,6 +242,8 @@ uint8_t* HalDisplay::getFrameBuffer() const { return einkDisplay.getFrameBuffer(
 void HalDisplay::syncWriteBufferFromActive() const { einkDisplay.syncWriteBufferFromActive(); }
 
 void HalDisplay::releaseBuffers() {
+  // GfxRenderer drops its own pointer either way, so nothing paints until the reboot.
+  if (HalCapabilities::keepsSecondaryBuffer()) return;
   HalSpiBus::Lock spiLock;
   einkDisplay.releaseBuffers();
 }
@@ -211,6 +263,7 @@ static const char* redSyncedLabel(const bool hasRed, const bool synced) {
 }
 
 bool HalDisplay::releaseSecondaryBuffer() {
+  if (HalCapabilities::keepsSecondaryBuffer()) return false;
   HalSpiBus::Lock spiLock;  // see the note above borrowSecondaryBuffer()
   // Double-release guard. releaseSecondaryBuffer() returning false means the
   // secondary buffer was already gone — i.e. a caller released it without
@@ -262,7 +315,20 @@ bool HalDisplay::reallocSecondaryBuffer() {
   return ok;
 }
 
-bool HalDisplay::hasSecondaryBuffer() const { return einkDisplay.hasSecondaryBuffer(); }
+namespace {
+// Room for everything the lent framebuffer holds on the big panels (48 KB) several times over, and
+// about 3 % of the PSRAM.
+constexpr size_t PSRAM_ARENA_BYTES = 256 * 1024;
+// Atomic, not behind the SPI bus lock: lending the arena must not wait for a refresh (see below).
+std::atomic<bool> psramArenaLent{false};
+}  // namespace
+
+// False while the PSRAM arena is out, though the display's own buffer is still there. "No secondary
+// buffer" is how every borrower tells a lend is in progress: the reader's recovery only gives the
+// region back on seeing it, and reporting true left the arena out for good. The panel paths that
+// care about the buffer itself ask einkDisplay directly.
+bool HalDisplay::hasSecondaryBuffer() const { return einkDisplay.hasSecondaryBuffer() && !psramArenaLent; }
+bool HalDisplay::keepsPreviousFrame() const { return einkDisplay.hasSecondaryBuffer(); }
 
 // The four buffer-ownership transitions below all take the SPI bus lock, for two reasons that
 // both trace back to them running on the LOOP task (reader background builds) while the render
@@ -278,7 +344,25 @@ bool HalDisplay::hasSecondaryBuffer() const { return einkDisplay.hasSecondaryBuf
 //
 // The mutex is recursive, so a caller that already holds it is unaffected, and the lock is
 // uncontended on the normal path — this costs nothing when nothing else is on the bus.
+//
+// Neither reason applies to the PSRAM arena, which is why lending and returning it stay outside the
+// lock: no display work, no frame buffer moved, and a refresh holds the bus for its whole waveform,
+// which a decode for the page on screen would otherwise sit out.
 uint8_t* HalDisplay::borrowSecondaryBuffer(size_t* size) {
+  // The PSRAM arena touches no bus, so it does not wait for one: the refresh in flight holds it.
+  if (HalCapabilities::keepsSecondaryBuffer()) {
+    // Allocated on first use and kept: PSRAM has the room, and a block that never goes back to the
+    // heap cannot fragment it. If it cannot be had, the framebuffer below is still a valid answer.
+    static uint8_t* const arena =
+        static_cast<uint8_t*>(heap_caps_malloc(PSRAM_ARENA_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (arena) {
+      if (psramArenaLent.exchange(true)) return nullptr;  // one borrower at a time, as with the framebuffer
+      if (size) *size = PSRAM_ARENA_BYTES;
+      LOG_INF("FBUF", "borrowSecondary -> PSRAM arena (size=%lu)", static_cast<unsigned long>(PSRAM_ARENA_BYTES));
+      return arena;
+    }
+    LOG_ERR("FBUF", "No PSRAM arena; lending the framebuffer");
+  }
   HalSpiBus::Lock spiLock;
   uint8_t* buf = einkDisplay.borrowSecondaryBuffer(size);
   LOG_INF("FBUF", "borrowSecondary -> %d (size=%lu hasSecondary=%d)", buf ? 1 : 0,
@@ -287,6 +371,10 @@ uint8_t* HalDisplay::borrowSecondaryBuffer(size_t* size) {
 }
 
 bool HalDisplay::returnSecondaryBuffer() {
+  if (psramArenaLent.exchange(false)) {
+    LOG_INF("FBUF", "returnSecondary -> PSRAM arena");
+    return true;
+  }
   HalSpiBus::Lock spiLock;
   const bool ok = einkDisplay.returnSecondaryBuffer();
   LOG_INF("FBUF", "returnSecondary -> %d (hasSecondary=%d)", ok ? 1 : 0, einkDisplay.hasSecondaryBuffer() ? 1 : 0);
@@ -388,6 +476,28 @@ void HalDisplay::cleanupGrayscaleWithPreviousBuffer() {
 }
 
 bool HalDisplay::supportsGrayFrame() const { return einkDisplay.supportsGrayFrame(); }
+
+bool HalDisplay::supportsOnePassText() const { return einkDisplay.supportsOnePassText(); }
+
+// No bus lock: this sets a flag, and a refresh in flight must not hold up the page that follows it.
+void HalDisplay::setReaderRefresh(const bool reading) { einkDisplay.setReaderRefresh(reading); }
+
+bool HalDisplay::composesOnePassText() const { return einkDisplay.composesOnePassText(); }
+
+uint8_t* HalDisplay::beginOnePassMask() {
+  HalSpiBus::Lock spiLock;  // it may wait out a refresh in flight
+  return einkDisplay.beginOnePassMask();
+}
+
+void HalDisplay::displayOnePassFrame(const RefreshMode refreshMode, const bool turnOffScreen) {
+  HalSpiBus::Lock spiLock;
+  lastRefreshMode = refreshMode;
+  lastDisplayModeByte = refreshModeToByte(refreshMode);
+  LOG_DBG(
+      "DISP", "#%lu displayOnePassFrame mode=%s", static_cast<unsigned long>(++panelSeq),
+      refreshMode == RefreshMode::FAST_REFRESH ? "FAST" : (refreshMode == RefreshMode::HALF_REFRESH ? "HALF" : "FULL"));
+  einkDisplay.displayOnePassFrame(convertRefreshMode(refreshMode), turnOffScreen);
+}
 
 bool HalDisplay::supportsAbsoluteGrayPlanes() const {
   return einkDisplay.grayscaleCapabilities(freeink::GrayscaleMode::Absolute).supported();
@@ -496,10 +606,6 @@ bool HalDisplay::fastRefreshNeedsHostFrame() const { return einkDisplay.fastRefr
 bool HalDisplay::asyncRefreshHoldsFrameBuffer() const { return einkDisplay.asyncRefreshHoldsFrameBuffer(); }
 
 bool HalDisplay::ghostsUnderFastRefresh() const { return einkDisplay.ghostsUnderFastRefresh(); }
-
-void HalDisplay::setFastGrayscaleLut(bool fast) { einkDisplay.setFastGrayscaleLut(fast); }
-
-bool HalDisplay::getFastGrayscaleLut() const { return einkDisplay.getFastGrayscaleLut(); }
 
 uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
 

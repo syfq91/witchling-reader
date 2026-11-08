@@ -143,10 +143,10 @@ TEST(SettingsGrouping, ASubmenuWhoseRowsAgreeStillHeadsItsOwnRow) {
 // "Reader Font" heading below both font submenus, over Font Manager, the first row of the section still in the tab.
 TEST(SettingsGrouping, ASubmenuWhoseFirstRowAloneNamesAHeadingHeadsItsOwnRow) {
   std::vector<SettingInfo> tab;
-  tab.push_back(row(StrId::STR_GEST_SWIPE_LEFT, kSubmenu, kGroupA));
-  tab.push_back(row(StrId::STR_GEST_SWIPE_RIGHT, kSubmenu, StrId::STR_NONE_OPT));
-  tab.push_back(row(StrId::STR_GEST_TAP_LEFT, kSubmenu, StrId::STR_NONE_OPT));
-  tab.push_back(row(StrId::STR_GEST_TAP_RIGHT, StrId::STR_NONE_OPT, kGroupA));
+  tab.push_back(row(kRowA1, kSubmenu, kGroupA));
+  tab.push_back(row(kRowA2, kSubmenu, StrId::STR_NONE_OPT));
+  tab.push_back(row(kRowB1, kSubmenu, StrId::STR_NONE_OPT));
+  tab.push_back(row(kRowB2, StrId::STR_NONE_OPT, kGroupA));
   std::vector<SettingInfo::SubmenuData> submenus;
   buildLikeTheSettingsScreen(tab, submenus);
 
@@ -155,7 +155,7 @@ TEST(SettingsGrouping, ASubmenuWhoseFirstRowAloneNamesAHeadingHeadsItsOwnRow) {
   EXPECT_EQ(tab[0].nameId, kGroupA);
   EXPECT_FALSE(tab[1].isSeparator);
   EXPECT_EQ(tab[1].subcategory, kGroupA);
-  EXPECT_EQ(tab[2].nameId, StrId::STR_GEST_TAP_RIGHT) << "the section's next row went under a second heading";
+  EXPECT_EQ(tab[2].nameId, kRowB2) << "the section's next row went under a second heading";
   EXPECT_EQ(strandedHeadings(tab), 0);
 
   // The heading went above the row that opens the submenu, so it is not repeated inside, under the submenu's own

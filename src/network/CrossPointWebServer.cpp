@@ -20,6 +20,7 @@
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
 #include "HttpFileStreamer.h"
+#include "MultipartRoute.h"
 #include "OpdsServerStore.h"
 #include "SdCardFontGlobals.h"
 #include "SdCardFontRegistry.h"
@@ -37,6 +38,7 @@
 #include "html/SettingsPageHtml.generated.h"
 #include "html/js/jszip_minJs.generated.h"
 #include "network/HttpDownloader.h"
+#include "util/UrlUtils.h"
 
 // Log free heap + max contiguous block at a named point.
 #define LOG_WEB_MEM(tag)                                                                             \
@@ -141,15 +143,21 @@ void clearBookCachesInDirectory(const String& dirPath) {
     if (dir) dir.close();
     return;
   }
-  char name[500];
+  // A name that did not fit would come back empty, and a folder's child would be the folder itself.
+  const auto name = makeUniqueNoThrow<char[]>(FsHelpers::MAX_FILE_NAME_BYTES);
+  if (!name) {
+    LOG_ERR("WEB", "OOM: name buffer for %s", dirPath.c_str());
+    dir.close();
+    return;
+  }
   FsFile entry = dir.openNextFile();
   while (entry) {
     HalSystem::feedWatchdog();
     yield();
-    entry.getName(name, sizeof(name));
+    entry.getName(name.get(), FsHelpers::MAX_FILE_NAME_BYTES);
     String childPath = dirPath;
     if (!childPath.endsWith("/")) childPath += "/";
-    childPath += name;
+    childPath += name.get();
     if (entry.isDirectory()) {
       entry.close();
       clearBookCachesInDirectory(childPath);
@@ -203,10 +211,36 @@ bool isSafePathComponent(const String& s) {
 
 }  // namespace
 
-// File listing page template - now using generated headers:
-// - HomePageHtml (from html/HomePage.html)
-// - FilesPageHeaderHtml (from html/FilesPageHeader.html)
-// - FilesPageFooterHtml (from html/FilesPageFooter.html)
+namespace {
+
+// NetworkClient::write gives up after ten seconds without progress and returns a short count, but
+// WebServer ignores it and goes on to the next chunk, so a client that stops reading a chunked reply
+// held the server, and the whole device with it, for ten seconds a chunk. Closing the client makes
+// the later writes fail at once. Ported from crosspoint-reader (#4285 by Arthur Tazhitdinov).
+class CrossPointHttpServer final : public WebServer {
+ public:
+  explicit CrossPointHttpServer(const uint16_t port) : WebServer(port) {}
+
+ protected:
+  size_t _currentClientWrite(const char* b, const size_t l) override {
+    return closeIfStalled(l, WebServer::_currentClientWrite(b, l));
+  }
+  size_t _currentClientWrite_P(PGM_P b, const size_t l) override {
+    return closeIfStalled(l, WebServer::_currentClientWrite_P(b, l));
+  }
+
+ private:
+  size_t closeIfStalled(const size_t wanted, const size_t sent) {
+    if (sent < wanted && _currentClient.connected()) {
+      LOG_ERR("WEB", "Client stalled after %u of %u bytes, closing it", static_cast<unsigned>(sent),
+              static_cast<unsigned>(wanted));
+      _currentClient.stop();
+    }
+    return sent;
+  }
+};
+
+}  // namespace
 CrossPointWebServer::CrossPointWebServer() {}
 
 CrossPointWebServer::~CrossPointWebServer() { stop(); }
@@ -236,7 +270,7 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "Creating web server on port %d...", port);
   // Nothrow: the build is -fno-exceptions, so a bare `new` would abort() on a
   // fragmented heap instead of letting the check below report the failure.
-  server = makeUniqueNoThrow<WebServer>(port);
+  server = makeUniqueNoThrow<CrossPointHttpServer>(port);
   if (!server) {
     LOG_ERR("WEB", "Failed to create WebServer!");
     return;
@@ -251,8 +285,31 @@ void CrossPointWebServer::begin() {
 
   LOG_DBG("WEB", "[MEM] Free heap after WebServer allocation: %d bytes", ESP.getFreeHeap());
 
+  // Sends the OS's captive-portal checks to the home page, so joining the hotspot opens it (see
+  // https://en.wikipedia.org/wiki/Captive_portal#Detection). Middleware because WebDAV claims every
+  // GET, so an unmatched check never reaches onNotFound. Checks are GET or HEAD; another method's body
+  // is already handled by now. Ported from crosspoint-reader (#4211 by Arthur Tazhitdinov).
+  if (apMode) {
+    server->addMiddleware([](WebServer& s, Middleware::Callback next) {
+      const bool check = s.method() == HTTP_GET || s.method() == HTTP_HEAD;
+      if (!check || !UrlUtils::isForeignHost(s.header("Host").c_str())) return next();
+      s.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+      s.send(302, "text/plain", "");
+      return true;
+    });
+  }
+
   // Setup routes
   LOG_DBG("WEB", "Setting up routes...");
+  // Ownership passes to the WebServer, which deletes the handler when stopped.
+  const auto addMultipartRoute = [this](const char* path, MultipartRoute::Action finished,
+                                        MultipartRoute::Action part) {
+    if (auto route = makeUniqueNoThrow<MultipartRoute>(path, std::move(finished), std::move(part))) {
+      server->addHandler(route.release());
+    } else {
+      LOG_ERR("WEB", "OOM: route %s not available", path);
+    }
+  };
   server->on("/", HTTP_GET, [this] { handleRoot(); });
   server->on("/files", HTTP_GET, [this] { handleRoot(); });
   server->on("/systeminfo", HTTP_GET, [this] { handleSystemInfoPage(); });
@@ -264,7 +321,7 @@ void CrossPointWebServer::begin() {
   server->on("/download", HTTP_GET, [this] { handleDownload(); });
 
   // Upload endpoint with special handling for multipart form data
-  server->on("/upload", HTTP_POST, [this] { handleUploadPost(upload); }, [this] { handleUpload(upload); });
+  addMultipartRoute("/upload", [this] { handleUploadPost(upload); }, [this] { handleUpload(upload); });
 
   // Create folder endpoint
   server->on("/mkdir", HTTP_POST, [this] { handleCreateFolder(); });
@@ -285,7 +342,7 @@ void CrossPointWebServer::begin() {
 
   server->on("/fonts", HTTP_GET, [this] { handleFontsPage(); });
   server->on("/api/fonts", HTTP_GET, [this] { handleFontList(); });
-  server->on("/api/fonts/upload", HTTP_POST, [this] { handleFontUpload(); }, [this] { handleFontUploadData(); });
+  addMultipartRoute("/api/fonts/upload", [this] { handleFontUpload(); }, [this] { handleFontUploadData(); });
   server->on("/api/fonts/delete", HTTP_POST, [this] { handleFontDelete(); });
 
   // OPDS server endpoints
@@ -301,9 +358,12 @@ void CrossPointWebServer::begin() {
   server->onNotFound([this] { handleNotFound(); });
   LOG_DBG("WEB", "[MEM] Free heap after route setup: %d bytes", ESP.getFreeHeap());
 
-  // Collect WebDAV headers and register handler
-  const char* davHeaders[] = {"Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout"};
-  server->collectHeaders(davHeaders, 6);
+  // Collect the WebDAV headers, If-None-Match for the bundle's ETags (WebAssets::serve()), Referer
+  // for the upload log and Host for the captive-portal check, then register the handler.
+  // collectHeaders() replaces the list, so it is called once.
+  const char* collectedHeaders[] = {"Depth",   "Destination",   "Overwrite", "If",  "Lock-Token",
+                                    "Timeout", "If-None-Match", "Referer",   "Host"};
+  server->collectHeaders(collectedHeaders, sizeof(collectedHeaders) / sizeof(collectedHeaders[0]));
   // Ownership passes to the WebServer, which deletes the handler when stopped.
   // On OOM the HTTP server still comes up; only WebDAV is unavailable.
   if (auto davHandler = makeUniqueNoThrow<WebDAVHandler>()) {
@@ -656,11 +716,17 @@ void CrossPointWebServer::scanFiles(const char* path, const FileVisitor visitor,
 
   LOG_DBG("WEB", "Scanning files in: %s", path);
 
+  auto name = makeUniqueNoThrow<char[]>(FsHelpers::MAX_FILE_NAME_BYTES);
+  if (!name) {
+    LOG_ERR("WEB", "OOM: name buffer for %s", path);
+    root.close();
+    return;
+  }
+
   FsFile file = root.openNextFile();
-  char name[500];
   while (file) {
-    file.getName(name, sizeof(name));
-    auto fileName = String(name);
+    file.getName(name.get(), FsHelpers::MAX_FILE_NAME_BYTES);
+    auto fileName = String(name.get());
 
     // Dot items only when the user has asked for hidden files; the system folders never.
     // The same rules isProtectedWebPath() enforces, so nothing listed here is refused
@@ -722,15 +788,12 @@ void CrossPointWebServer::handleFileListData() const {
   server->send(200, "application/json", "");
   HalSystem::feedWatchdog();
   ChunkedJsonArray out(server.get());
-  char output[512];
-  constexpr size_t outputSize = sizeof(output);
   JsonDocument doc;
 
   struct FileListContext {
     ChunkedJsonArray* out;
-    char* output;
     JsonDocument* doc;
-  } context{&out, output, &doc};
+  } context{&out, &doc};
 
   scanFiles(
       currentPath.c_str(),
@@ -742,13 +805,9 @@ void CrossPointWebServer::handleFileListData() const {
         (*ctx.doc)["size"] = info.size;
         (*ctx.doc)["isDirectory"] = info.isDirectory;
         (*ctx.doc)["isEpub"] = info.isEpub;
-
-        const size_t written = serializeJson(*ctx.doc, ctx.output, outputSize);
-        if (written >= outputSize) {
-          LOG_DBG("WEB", "Skipping file entry with oversized JSON for name: %s", info.name.c_str());
-          return;
-        }
-        ctx.out->addEntry(ctx.output, written);
+        // Straight into the reply: through a buffer, a name of ~150 CJK characters did not fit and
+        // was left out of the list. Found by Arthur Tazhitdinov (crosspoint-reader #4285).
+        serializeJson(*ctx.doc, ctx.out->nextEntry());
       },
       &context);
 

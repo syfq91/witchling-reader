@@ -110,11 +110,20 @@ class HalDisplay {
 
   // Returns true when the secondary (previous-frame) buffer is allocated.
   bool hasSecondaryBuffer() const;
+  // The display itself still holds its previous frame, which a PSRAM arena lend leaves in place
+  // even though hasSecondaryBuffer() is false. For code that wants that frame, not the lend state.
+  bool keepsPreviousFrame() const;
 
   // Borrow/return variant of release/realloc: the display drops to the same
   // single-buffer mode, but the block stays owned by the display and is lent to
   // the caller as scratch — it never enters the heap, so nothing can allocate
   // inside it and returnSecondaryBuffer() cannot fail. See FreeInkDisplay.
+  //
+  // Where HalCapabilities::keepsSecondaryBuffer() says so, the region is a block of PSRAM instead and the
+  // display stays double-buffered, but callers see the same contract: one borrower at a time, a
+  // second borrow gets nullptr, and hasSecondaryBuffer() is false until the region comes back.
+  // Everything a borrower does around the call for the framebuffer's sake (seeding RED,
+  // single-buffer fast diff) is harmless there, so callers need not ask.
   uint8_t* borrowSecondaryBuffer(size_t* size);
   bool returnSecondaryBuffer();
 
@@ -172,6 +181,17 @@ class HalDisplay {
   // not merely slower but wrong: a self-normalizing grey column expects the
   // pixel it drives not to have been driven already.
   bool supportsGrayFrame() const;
+  // One-pass text: whether this panel can do it, and the switch for it. While it is on, supportsGrayFrame()
+  // answers yes and copyGrayscale*Buffers() stage planes instead of uploading them, so hold it only around
+  // a page that goes out through a gray frame: see ReaderUtils::OnePassTextScope.
+  bool supportsOnePassText() const;
+  void setReaderRefresh(bool reading);
+  // One-pass text on a board without the memory to stage planes (the X3, the X4): see
+  // FreeInkDisplay::beginOnePassMask(). The mask is the buffer that held the frame on screen; null sends the
+  // caller down its two-pass path.
+  bool composesOnePassText() const;
+  uint8_t* beginOnePassMask();
+  void displayOnePassFrame(RefreshMode refreshMode, bool turnOffScreen);
   // Compose the intact B/W framebuffer with the LSB/MSB planes staged by
   // copyGrayscale*Buffers() and display the result in one refresh. Falls back to
   // a plain displayBuffer() on a panel that cannot, so callers need no branch of
@@ -216,10 +236,6 @@ class HalDisplay {
   bool asyncRefreshHoldsFrameBuffer() const;
   // Repeated FAST refreshes leave residue only a HALF clears (the X3's UC8253 / UC8279d).
   bool ghostsUnderFastRefresh() const;
-
-  // Fast-grayscale LUT preference, held by the SDK facade (see FreeInkDisplay::setFastGrayscaleLut).
-  void setFastGrayscaleLut(bool fast);
-  bool getFastGrayscaleLut() const;
 
   // Runtime geometry passthrough
   uint16_t getDisplayWidth() const;

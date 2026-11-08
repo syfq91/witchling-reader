@@ -15,9 +15,9 @@ add_executable(KeyboardLayoutSetTest
 # members and the settings instance KeyboardLayoutSet reaches; nothing here
 # draws a key.
 target_include_directories(KeyboardLayoutSetTest PRIVATE
+  ${I18N_GENERATED_DIR}
   ${REPO_ROOT}/src
   ${REPO_ROOT}/lib/I18n
-  ${I18N_GENERATED_DIR}
   ${REPO_ROOT}/lib
   ${REPO_ROOT}/test/epub_pipeline
   ${REPO_ROOT}/test/zip_entry_reader

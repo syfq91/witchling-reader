@@ -10,6 +10,7 @@
 #include "ReaderFontSizes.h"
 #include "activities/settings/SettingInfo.h"
 #include "components/UITheme.h"
+#include "components/themes/PanelMetrics.h"
 
 class EpubReaderMenuActivity final : public TabbedUiListActivity {
  public:
@@ -38,9 +39,9 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
   };
 
   explicit EpubReaderMenuActivity(
-      GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title, const int currentPage,
-      const int totalPages, const int bookProgressPercent, const uint8_t currentOrientation, const bool hasFootnotes,
-      const int8_t initialEmbeddedStyleOverride, const int8_t initialImageRenderingOverride,
+      GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title, const std::string& chapterTitle,
+      const int currentPage, const int totalPages, const int bookProgressPercent, const uint8_t currentOrientation,
+      const bool hasFootnotes, const int8_t initialEmbeddedStyleOverride, const int8_t initialImageRenderingOverride,
       const int8_t initialFontFamilyOverride, const std::string& initialSdFontFamilyOverride,
       const int8_t initialFontSizeOverride, const uint8_t initialTextDarkness,
       const int8_t initialParagraphAlignmentOverride, const int8_t initialTextAntiAliasingOverride,
@@ -63,6 +64,7 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
 
   bool currentPageStarred = false;
   void finishWithAction(MenuAction action);
+  void openAutoTurnPicker();
 
   // UiListActivity / TabbedUiListActivity overrides
   int listCount() const override { return static_cast<int>(activeMenuItems().size()); }
@@ -116,6 +118,9 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
   int8_t pendingPublisherFontsOverride = -1;
 
   std::string title = "Reader Menu";
+  // Empty for a place the table of contents does not name. A compact panel has no room for the line.
+  std::string chapterTitle;
+  [[nodiscard]] bool hasChapterLine() const { return !PanelMetrics::COMPACT && !chapterTitle.empty(); }
   int currentPage = 0;
   int totalPages = 0;
   int bookProgressPercent = 0;

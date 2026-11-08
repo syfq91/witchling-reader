@@ -48,6 +48,10 @@ void UiListActivity::rowActionTrampoline(const fui::ActionEvent& event, void* us
   auto* self = static_cast<UiListActivity*>(user);
   const int index = self->indexForActionValue(event.value);
   if (index < 0 || index >= self->listCount()) return;
+  if (event.longPress) {
+    self->onRowLongPress(index);
+    return;
+  }
   self->onRowAction(index);
 }
 
@@ -67,7 +71,7 @@ void UiListActivity::onRowAction(const int index) {
 
 bool UiListActivity::routeListTouch() {
 #if CP_TOUCH_UI
-  const auto route = UiAppHost::routeTouch(mappedInput);
+  const auto route = UiAppHost::routeTouch(mappedInput, /*routeHeld=*/false, rowsTakeLongPress());
   if (route.routed && app.invalidated()) requestUpdate();
   return static_cast<bool>(route);
 #else

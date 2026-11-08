@@ -9,6 +9,21 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Release means -O3, which this suite cannot use: it runs in under 20 s, and -O3 costs a clean build a quarter of its
+# time. The firmware builds at -Os, so -O3 is no closer to the device. Timing work on the host tools wants it all the
+# same: configure with -DHOST_TEST_OPT=-O3.
+set(HOST_TEST_OPT "-O1" CACHE STRING "Optimization level of a Release host test build")
+string(REPLACE "-O3" "${HOST_TEST_OPT}" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+string(REPLACE "-O3" "${HOST_TEST_OPT}" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+
+# A compile cache, when the machine has one. CI keeps its cache between runs; on a desk, a branch switch stops costing a
+# rebuild of everything it touched.
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+  set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+  set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+endif()
+
 # On 32-bit x86 hosts (e.g. MinGW i686) GCC defaults to -mfpmath=387. The x87 FPU
 # evaluates float expressions at 80-bit extended precision and rounds only on
 # store, so a result that is exactly 460.0 under SSE can be 459.99999... here --
@@ -35,6 +50,46 @@ set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# What EpdFont.cpp needs to tell a mark that overlays its letter (lib/EpdFont/MarkOverlay.h): minibidi and BidiUtils.
+# Every target that compiles EpdFont.cpp lists these.
+set(BIDI_MARK_SOURCES
+  ${REPO_ROOT}/lib/MiniBidi/minibidi.c
+  ${REPO_ROOT}/lib/MiniBidi/BidiUtils.cpp
+)
+set(BIDI_MARK_INCLUDES
+  ${REPO_ROOT}/lib/MiniBidi
+  ${REPO_ROOT}/lib/Memory
+)
+
+file(GLOB OT_SHAPER_SOURCES ${REPO_ROOT}/lib/OtShaper/*.cpp)
+# lib/Memory is ours: a plan's tables are made with its makeUniqueNoThrow (deviation 1).
+set(OT_SHAPER_INCLUDE_DIR ${REPO_ROOT}/lib/OtShaper ${REPO_ROOT}/lib/Memory)
+
+# The bidi line pass (lib/Epub/Epub/BidiLine) and what it runs on: minibidi, BidiUtils and the shaping layer, with the
+# Indic module, the engine and the faces it shapes through, the paragraph store of shaped tokens and the build's cache of
+# shaped words. Every target that lays out text through ParsedText lists these, so they are set before the
+# subdirectories.
+set(BIDI_LAYOUT_SOURCES
+  ${BIDI_MARK_SOURCES}
+  ${REPO_ROOT}/lib/TextShaping/TextShaping.cpp
+  ${REPO_ROOT}/lib/TextShaping/HebrewShaper.cpp
+  ${REPO_ROOT}/lib/TextShaping/IndicShaper.cpp
+  ${REPO_ROOT}/lib/Utf8/IndicReorder.cpp
+  ${OT_SHAPER_SOURCES}
+  ${REPO_ROOT}/lib/EpdFont/ShapingFace.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/BidiLine.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/ShapedStore.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/WordShapeCache.cpp
+)
+# lib/GfxRenderer last, for GlyphRun.h only: a target's own GfxRenderer.h stub comes before it.
+set(BIDI_LAYOUT_INCLUDES
+  ${BIDI_MARK_INCLUDES}
+  ${REPO_ROOT}/lib/TextShaping
+  ${OT_SHAPER_INCLUDE_DIR}
+  ${REPO_ROOT}/lib/EpdFont
+  ${REPO_ROOT}/lib/GfxRenderer
+)
 
 add_library(crosspoint_test_common INTERFACE)
 target_include_directories(crosspoint_test_common INTERFACE
@@ -123,6 +178,7 @@ add_subdirectory(book_cache)
 add_subdirectory(file_replace)
 add_subdirectory(book_details_cache)
 add_subdirectory(path_containment)
+add_subdirectory(multipart_route)
 add_subdirectory(protected_paths)
 add_subdirectory(firmware_board_tag)
 add_subdirectory(upload_buffer)
@@ -132,6 +188,7 @@ add_subdirectory(list_grammar)
 add_subdirectory(double_action_wait)
 add_subdirectory(inline_list_function_ref)
 add_subdirectory(keyboard_layouts)
+add_subdirectory(password_mask)
 add_subdirectory(differential_rounding)
 add_subdirectory(hyphenation_eval)
 add_subdirectory(url_utils)
@@ -168,7 +225,7 @@ add_subdirectory(font_group_stream)
 add_subdirectory(font_cache_manager)  # after font_group_stream: links its uzlib_font_ring
 add_subdirectory(gif_decoder)
 add_subdirectory(jpeg_decoder)
-add_subdirectory(serial_command_grammar)
+add_subdirectory(serial_line_buffer)
 add_subdirectory(idle_gate)
 add_subdirectory(indexing_progress_gate)
 add_subdirectory(opds_filename)
@@ -197,10 +254,20 @@ add_subdirectory(status_bar_settings)
 add_subdirectory(setting_info_options)
 add_subdirectory(epub_progress_record)
 add_subdirectory(home_menu)
+add_subdirectory(bookmarks)
+add_subdirectory(spine_size_lookup)
 add_subdirectory(ui_font_ladder)
+add_subdirectory(unicode_space)
 add_subdirectory(text_truncation)
 add_subdirectory(text_wrap)
 add_subdirectory(default_ignorable)
+add_subdirectory(minibidi)
+add_subdirectory(minibidi_arabic)
+add_subdirectory(text_shaping)
+add_subdirectory(bidi_line)
+add_subdirectory(indic_text)
+add_subdirectory(ot_shaper)
+add_subdirectory(ot_shaper_port)
 add_subdirectory(utf8_compose)
 add_subdirectory(utf8_lower)
 add_subdirectory(adaptive_tone)
@@ -215,10 +282,12 @@ add_subdirectory(ttf_rasterizer)
 add_subdirectory(ttf_font)
 # After zip_entry_reader: reuses its inflate_reader_host target and HalStorage shim.
 add_subdirectory(dictionary)
-add_subdirectory(font_manifest_parser)
 add_subdirectory(folder_count_memo)
 add_subdirectory(folder_walk)
 add_subdirectory(bitmap_rows)
 add_subdirectory(xtc_parser)
 add_subdirectory(usb_link_debounce)
 add_subdirectory(vertical_text)
+add_subdirectory(glyph_run)
+add_subdirectory(shaped_store)
+add_subdirectory(word_shape_cache)

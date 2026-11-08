@@ -47,6 +47,16 @@ constexpr int mainMenuIconSize = 32;
 constexpr int listIconSize = 24;
 constexpr int mainMenuColumns = 2;
 constexpr int minAdaptiveMenuRowHeight = 40;
+// The faces the home card's title and author may take, largest first. Logical slots, so they
+// follow the UI font size. The title stops at the last face every board has in bold: below that it
+// would sit under the author in thin type, hard to read on the selection's dither. Its smaller face
+// gets a fourth line instead, at about the height of three lines of the larger one.
+struct CardFace {
+  int fontId;
+  int maxLines;
+};
+constexpr CardFace kTitleFaces[] = {{UI_12_FONT_ID, 3}, {UI_10_FONT_ID, 4}};
+constexpr CardFace kAuthorFaces[] = {{UI_10_FONT_ID, 2}, {SMALL_FONT_ID, 2}};
 
 int coverWidth = 0;
 
@@ -203,7 +213,7 @@ void LyraTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
     int truncatedSubtitleWidth = renderer.getTextWidth(SMALL_FONT_ID, truncatedSubtitle.c_str());
     renderer.drawText(SMALL_FONT_ID,
                       rect.x + rect.width - LyraMetrics::values.contentSidePadding - truncatedSubtitleWidth,
-                      rect.y + 50, truncatedSubtitle.c_str(), true);
+                      rect.y + LyraMetrics::values.batteryBarHeight + 10, truncatedSubtitle.c_str(), true);
   }
 }
 
@@ -287,6 +297,7 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
 }
 
 void LyraTheme::drawSideButtonHints(GfxRenderer& renderer, const char* upBtn, const char* downBtn) const {
+  if (LyraMetrics::values.sideButtonHintsWidth == 0) return;  // no side column on this panel
   // Panel coordinates and the inverted mirroring, for the reasons spelled out in
   // BaseTheme::drawSideButtonHints — including why LandscapeCounterClockwise draws inverted too.
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
@@ -424,10 +435,8 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     // percent badge on this layout — the percentage now lives in the text line.
     const std::string statusLine = BookProgressPresentation::formatStatus(book, progressPercent);
 
-    auto titleLines = renderer.wrappedText(UI_12_FONT_ID, book.title.c_str(), textWidth, 3, EpdFontFamily::BOLD);
     auto authorLines = renderer.wrappedText(UI_10_FONT_ID, book.author.c_str(), textWidth, 2);
 
-    const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
     const int smallLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
 
     // What you have put into the book, under what is left of it. This column is only the part of
@@ -443,12 +452,35 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     const int gap = smallLineHeight / 2;
     constexpr int tightGap = 4;
     CardTextFit::Parts parts{};
-    parts[CardTextFit::Title] = {titleLineHeight, static_cast<int>(titleLines.size()), 0};
     parts[CardTextFit::Author] = {smallLineHeight, static_cast<int>(authorLines.size()), gap};
     parts[CardTextFit::Series] = {smallLineHeight, 0, 0};  // no series here, by the home card's design
     parts[CardTextFit::Status] = {smallLineHeight, statusLine.empty() ? 0 : 1, gap};
     parts[CardTextFit::History] = {historyLineHeight, static_cast<int>(historyLines.size()), gap};
-    const CardTextFit::Result fit = CardTextFit::fit(parts, tileHeight - 2 * hPaddingInSelection, tightGap);
+
+    // A title or author that loses words steps down a face, whether its own lines ran out or the
+    // tile took some of them. A narrow column needs this: three lines of the largest face cut "The
+    // Book That Wouldn't Burn" at its last word in Murphy's 110 px. With no face to hold it whole
+    // the smallest stands, because that one cuts the least.
+    CardTextFit::Result fit;
+    const auto settleFace = [&](const CardTextFit::PartId part, const auto& faces, const std::string& text,
+                                const EpdFontFamily::Style style, std::vector<std::string>& lines) {
+      int font = 0;
+      for (const CardFace& face : faces) {
+        bool whole = false;
+        font = face.fontId;
+        lines = renderer.wrappedText(font, text.c_str(), textWidth, face.maxLines, style, &whole);
+        parts[part].lineHeight = renderer.getLineHeight(font);
+        parts[part].lines = static_cast<int>(lines.size());
+        fit = CardTextFit::fit(parts, tileHeight - 2 * hPaddingInSelection, tightGap);
+        if (whole && fit.lines[part] == parts[part].lines) break;
+      }
+      return font;
+    };
+    std::vector<std::string> titleLines;
+    const int titleFont = settleFace(CardTextFit::Title, kTitleFaces, book.title, EpdFontFamily::BOLD, titleLines);
+    // The title goes first: a smaller author can only leave it more room, never less.
+    const int authorFont =
+        settleFace(CardTextFit::Author, kAuthorFaces, book.author, EpdFontFamily::REGULAR, authorLines);
 
     const auto rewrap = [&](std::vector<std::string>& lines, const CardTextFit::PartId part, const int fontId,
                             const std::string& text, const EpdFontFamily::Style style) {
@@ -456,8 +488,8 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
         lines = renderer.wrappedText(fontId, text.c_str(), textWidth, fit.lines[part], style);
       }
     };
-    rewrap(titleLines, CardTextFit::Title, UI_12_FONT_ID, book.title, EpdFontFamily::BOLD);
-    rewrap(authorLines, CardTextFit::Author, UI_10_FONT_ID, book.author, EpdFontFamily::REGULAR);
+    rewrap(titleLines, CardTextFit::Title, titleFont, book.title, EpdFontFamily::BOLD);
+    rewrap(authorLines, CardTextFit::Author, authorFont, book.author, EpdFontFamily::REGULAR);
     if (fit.lines[CardTextFit::History] < static_cast<int>(historyLines.size())) {
       historyLines.clear();
       if (fit.lines[CardTextFit::History] > 0) {
@@ -478,11 +510,13 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
         y += parts[part].lineHeight;
       }
     };
-    drawPart(titleLines, CardTextFit::Title, UI_12_FONT_ID, EpdFontFamily::BOLD);
-    drawPart(authorLines, CardTextFit::Author, UI_10_FONT_ID, EpdFontFamily::REGULAR);
+    drawPart(titleLines, CardTextFit::Title, titleFont, EpdFontFamily::BOLD);
+    drawPart(authorLines, CardTextFit::Author, authorFont, EpdFontFamily::REGULAR);
     if (!statusLine.empty()) {
-      renderer.drawText(UI_10_FONT_ID, textX, blockY + fit.tops[CardTextFit::Status], statusLine.c_str(), true,
-                        EpdFontFamily::BOLD);
+      renderer.drawText(
+          UI_10_FONT_ID, textX, blockY + fit.tops[CardTextFit::Status],
+          renderer.truncatedText(UI_10_FONT_ID, statusLine.c_str(), textWidth, EpdFontFamily::BOLD).c_str(), true,
+          EpdFontFamily::BOLD);
     }
     drawPart(historyLines, CardTextFit::History, FIT_SMALL_FONT_ID, EpdFontFamily::REGULAR);
   } else {
@@ -546,12 +580,13 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
         iconBitmap = iconForName(icon, iconSize);
       }
       if (iconBitmap != nullptr) {
-        renderer.drawIcon(iconBitmap, textX, textY + 3, iconSize, iconSize);
+        renderer.drawIcon(iconBitmap, textX, tileRect.y + (rowHeight - iconSize) / 2, iconSize, iconSize);
         textX += iconSize + hPaddingInSelection + 2;
       }
     }
 
-    renderer.drawText(UI_12_FONT_ID, textX, textY, label, true);
+    renderer.drawText(UI_12_FONT_ID, textX, textY,
+                      renderer.truncatedText(UI_12_FONT_ID, label, tileRect.x + tileRect.width - textX).c_str(), true);
   }
 }
 
@@ -563,7 +598,10 @@ Rect LyraTheme::drawPopup(const GfxRenderer& renderer, const char* message, cons
   if (overlayDisplayedFrame) renderer.syncWriteBufferFromDisplayed();
   constexpr int y = 132;
   constexpr int outline = 2;
-  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, message, EpdFontFamily::REGULAR);
+  // The box has to stay on the panel, or it loses its frame and both ends of the message.
+  const std::string fitted = renderer.truncatedText(
+      UI_12_FONT_ID, message, renderer.getScreenWidth() - (popupMarginX + outline) * 2, EpdFontFamily::REGULAR);
+  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, fitted.c_str(), EpdFontFamily::REGULAR);
   const int textHeight = renderer.getLineHeight(UI_12_FONT_ID);
   const int w = textWidth + popupMarginX * 2;
   const int h = textHeight + popupMarginY * 2;
@@ -575,7 +613,7 @@ Rect LyraTheme::drawPopup(const GfxRenderer& renderer, const char* message, cons
 
   const int textX = x + (w - textWidth) / 2;
   const int textY = y + popupMarginY - 2;
-  renderer.drawText(UI_12_FONT_ID, textX, textY, message, false, EpdFontFamily::REGULAR);
+  renderer.drawText(UI_12_FONT_ID, textX, textY, fitted.c_str(), false, EpdFontFamily::REGULAR);
   shipPopup(renderer, ship);
 
   return Rect{x, y, w, h};

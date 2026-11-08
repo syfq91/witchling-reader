@@ -8,9 +8,9 @@ add_executable(SettingsGroupingTest
 add_dependencies(SettingsGroupingTest i18n_generated)
 
 target_include_directories(SettingsGroupingTest PRIVATE
+  ${I18N_GENERATED_DIR}
   ${REPO_ROOT}/src
   ${REPO_ROOT}/lib/I18n
-  ${I18N_GENERATED_DIR}
   ${REPO_ROOT}/lib
   ${REPO_ROOT}/lib/Epub
   # I18n.h stub, and the stdio-backed HalStorage CrossPointSettings.h pulls in.

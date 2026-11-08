@@ -8,6 +8,7 @@
 #include <Wire.h>
 #include <XteinkDetect.h>
 #include <esp_sleep.h>
+#include <soc/soc_caps.h>
 
 // Global HalGPIO instance
 HalGPIO gpio;
@@ -466,10 +467,19 @@ bool HalGPIO::canDetectUsbElectrically() const {
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   const auto wakeupCause = esp_sleep_get_wakeup_cause();
   const auto resetReason = esp_reset_reason();
+#if SOC_PM_SUPPORT_EXT1_WAKEUP
+  const uint64_t ext1WakeMask = wakeupCause == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0ULL;
+#else
+  constexpr uint64_t ext1WakeMask = 0;  // no EXT1 wake source on the C3, and no such function to link
+#endif
 
   const bool usbConnected = isUsbConnected();
-  LOG_DBG("GPIO", "getWakeupReason: wakeupCause=%d, resetReason=%d, usbConnected=%d", static_cast<int>(wakeupCause),
-          static_cast<int>(resetReason), usbConnected);
+  LOG_DBG(
+      "GPIO",
+      "getWakeupReason: wakeupCause=%d, resetReason=%d, usbConnected=%d ext1WakeMask=0x%llX powerPin=%d rawPower=%d",
+      static_cast<int>(wakeupCause), static_cast<int>(resetReason), usbConnected,
+      static_cast<unsigned long long>(ext1WakeMask), InputManager::POWER_BUTTON_PIN,
+      InputManager::POWER_BUTTON_PIN >= 0 ? digitalRead(InputManager::POWER_BUTTON_PIN) : -1);
 
   // A GPIO deep-sleep wake means POWER_BUTTON_PIN was pulled LOW, which is a button press by
   // definition — whatever the power source. This clause used to also require usbConnected, on the

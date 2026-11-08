@@ -1,6 +1,7 @@
 #include "JsonSettingsIO.h"
 
 #include <ArduinoJson.h>
+#include <BoardConfig.h>
 #include <HalStorage.h>
 #include <HeapFit.h>
 #include <Logging.h>
@@ -194,6 +195,8 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   // Font family uses a DynamicEnumCtx in SettingsList (no valuePtr) so the generic
   // loop above skips it. Save manually.
   doc["fontFamily"] = s.fontFamily;
+  // See CrossPointSettings::BUTTON_ACTIONS_VERSION.
+  doc["buttonActionsV"] = CrossPointSettings::BUTTON_ACTIONS_VERSION;
   // Which meaning the fontSize value below carries (point sizes since version 2).
   // See CrossPointSettings::FONT_SIZE_ORDER_VERSION.
   doc["fontSizeOrderV"] = CrossPointSettings::FONT_SIZE_ORDER_VERSION;
@@ -258,6 +261,16 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   };
 #endif
 
+  const bool staleButtonActions =
+      doc["buttonActionsV"].as<int>() < static_cast<int>(CrossPointSettings::BUTTON_ACTIONS_VERSION);
+  if (staleButtonActions && needsResave) *needsResave = true;
+
+  const auto isButtonActionKey = [](const char* key) {
+    if (key == nullptr) return false;
+    return std::strncmp(key, "btnShort", 8) == 0 || std::strncmp(key, "btnDouble", 9) == 0 ||
+           std::strncmp(key, "btnLong", 7) == 0 || std::strncmp(key, "gest", 4) == 0;
+  };
+
   forEachPersistedSetting([&](const SettingInfo& info) {
     if (!info.key) return;
     // See the matching comment in saveSettings.
@@ -298,6 +311,17 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
     } else {
       const uint8_t fieldDefault = s.*field;  // struct-initializer default, read before we overwrite it
       uint8_t v = doc[info.key] | fieldDefault;
+      if (staleButtonActions && isButtonActionKey(info.key) && !doc[info.key].isNull()) {
+        const bool isConfirmDoubleOrLong =
+            std::strcmp(info.key, "btnDoubleConfirm") == 0 || std::strcmp(info.key, "btnLongConfirm") == 0;
+        if (BoardConfig::isMurphyM3() && isConfirmDoubleOrLong && v == CrossPointSettings::BTN_DEFAULT) {
+          // On Murphy the Confirm double/long defaults replace missing Back and
+          // Power keys. Keep explicit custom mappings, but migrate the old
+          // built-in values to the board's keymap defaults.
+          s.*field = fieldDefault;
+          return;
+        }
+      }
       if (info.persistPtr) {
         // A slider's range is its own; anything past it falls back rather than driving the
         // hardware (or the sleep timer) somewhere the UI would never have offered.
