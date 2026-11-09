@@ -250,6 +250,28 @@ void bindWorkspace(void* buffer) {
 }
 
 // witchhunt: deviation 11
+int plainClass(const uint32_t cp) {
+  if (cp == 0 || cp == REPLACEMENT_GLYPH) return -1;
+  switch (bidi_class(cp)) {
+    case L:
+      return 0;
+    case R:
+    case AL:
+      return 1;
+    case ON:
+    case CS:
+    case ES:
+      return mirror(cp) == cp ? 2 : -1;
+    default:
+      return -1;
+  }
+}
+
+bool workspaceAvailable() {
+  const std::lock_guard<std::mutex> lock(bidiMutex);
+  return getWorkspace() != nullptr;
+}
+
 bool heapWorkspaceHeld() {
   const std::lock_guard<std::mutex> lock(bidiMutex);
   return static_cast<bool>(bidiWorkspace);
@@ -339,10 +361,23 @@ bool orderLine(const uint32_t* cps, const size_t count, const int paragraphLevel
   return true;
 }
 
-bool computeVisualWordOrder(const std::vector<std::string>& words, bool paragraphIsRtl,
+namespace {
+// witchhunt: the code point at p, which advances, within a view that no NUL ends; 0 (p at end) for a sequence the
+// view cuts short.
+uint32_t nextCodepointWithin(const unsigned char*& p, const unsigned char* const end) {
+  const int len = utf8CodepointLen(*p);
+  if (p + len > end) {
+    p = end;
+    return 0;
+  }
+  return utf8NextCodepoint(&p);
+}
+}  // namespace
+
+bool computeVisualWordOrder(const std::string_view* words, const size_t wordCount, bool paragraphIsRtl,
                             std::vector<uint16_t>& visualOrder) {
   visualOrder.clear();
-  const size_t nWords = words.size();
+  const size_t nWords = wordCount;
   if (nWords <= 1 || nWords > BIDI_MAX_LINE) return false;
   const std::lock_guard<std::mutex> lock(bidiMutex);
 
@@ -353,14 +388,18 @@ bool computeVisualWordOrder(const std::vector<std::string>& words, bool paragrap
   bool truncated = false;
 
   for (size_t w = 0; w < nWords && !truncated; w++) {
-    auto* p = reinterpret_cast<const unsigned char*>(words[w].c_str());
-    while (*p) {
+    const auto* p = reinterpret_cast<const unsigned char*>(words[w].data());
+    const unsigned char* const end = p + words[w].size();
+    while (p < end) {
       if (count >= BIDI_MAX_LINE) {
         truncated = true;
         break;
       }
-      const uint32_t cp = utf8NextCodepoint(&p);
+      const uint32_t cp = nextCodepointWithin(p, end);
       if (!cp || cp == REPLACEMENT_GLYPH) break;
+      // witchhunt: a transparent mark is not a character of the line here: BidiLine's fallback used to strip them
+      // from copies of the words; now it hands the words themselves.
+      if (isTransparentMark(cp)) continue;
       line[count].origwc = line[count].wc = cp;
       line[count].index = static_cast<uint16_t>(w);
       line[count].joiners = 0;

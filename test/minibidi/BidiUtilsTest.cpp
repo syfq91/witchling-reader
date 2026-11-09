@@ -15,6 +15,10 @@
 #include "BidiUtils.h"
 #include "Utf8.h"
 
+extern "C" {
+#include "minibidi.h"
+}
+
 namespace {
 
 using CP = std::vector<uint32_t>;
@@ -90,11 +94,17 @@ TEST(BidiUtils, TheWorkspaceComesBackAfterRelease) {
   EXPECT_EQ(visual(logical), expected);
 }
 
+// The words as the line pass hands them: views of their text.
+bool wordOrder(const std::vector<std::string>& texts, const bool paragraphIsRtl, std::vector<uint16_t>& order) {
+  const std::vector<std::string_view> words(texts.begin(), texts.end());
+  return BidiUtils::computeVisualWordOrder(words.data(), words.size(), paragraphIsRtl, order);
+}
+
 TEST(BidiUtils, ComputeVisualWordOrderReversesARightToLeftLine) {
   const std::vector<std::string> words{encode({0x05E9, 0x05DC, 0x05D5, 0x05DD}),
                                        encode({0x05E2, 0x05D5, 0x05DC, 0x05DD})};
   std::vector<uint16_t> order;
-  ASSERT_TRUE(BidiUtils::computeVisualWordOrder(words, true, order));
+  ASSERT_TRUE(wordOrder(words, true, order));
   EXPECT_EQ(order, (std::vector<uint16_t>{1, 0}));
 }
 
@@ -102,8 +112,22 @@ TEST(BidiUtils, ComputeVisualWordOrderKeepsAnEmbeddedLatinRun) {
   const std::vector<std::string> words{"abc", encode({0x05E9, 0x05DC, 0x05D5, 0x05DD}),
                                        encode({0x05E2, 0x05D5, 0x05DC, 0x05DD}), "def"};
   std::vector<uint16_t> order;
-  ASSERT_TRUE(BidiUtils::computeVisualWordOrder(words, false, order));
+  ASSERT_TRUE(wordOrder(words, false, order));
   EXPECT_EQ(order, (std::vector<uint16_t>{0, 2, 1, 3}));
+}
+
+TEST(BidiUtils, ComputeVisualWordOrderSkipsTheTransparentMarks) {
+  // A point (U+05B8) and a fatha (U+064E) inside the words: the same order as without them, and a view's bytes
+  // past its end are never read (the texts carry no NUL of their own).
+  const std::vector<std::string> words{"abc", encode({0x05E9, 0x05B8, 0x05DC, 0x05D5, 0x05DD}),
+                                       encode({0x0639, 0x064E, 0x0631, 0x0628}), "def"};
+  std::vector<uint16_t> order;
+  ASSERT_TRUE(wordOrder(words, false, order));
+  EXPECT_EQ(order, (std::vector<uint16_t>{0, 2, 1, 3}));
+  // A word that is marks alone counts as no character: the line is its other words.
+  const std::vector<std::string> marksOnly{encode({0x05B8}), encode({0x05E9, 0x05DC}), encode({0x05E2, 0x05DC})};
+  ASSERT_TRUE(wordOrder(marksOnly, true, order));
+  EXPECT_EQ(order, (std::vector<uint16_t>{2, 1, 0}));
 }
 
 TEST(BidiUtils, L4MirrorsInLogicalOrderBeforeTheLineIsReordered) {
@@ -290,4 +314,17 @@ TEST(BidiUtils, AnNsmAfterAChangedBracketTakesItsType) {
   const auto r = order(in, 1);
   ASSERT_TRUE(r.ok);
   EXPECT_EQ(r.visual, (Idx{11, 10, 2, 3, 4, 5, 6, 7, 8, 9, 1, 0}));
+}
+
+TEST(BidiUtils, ArabicSupplementAndExtendedAreStrongRtl) {
+  EXPECT_EQ(bidi_class(0x0750), AL);  // Arabic Supplement
+  EXPECT_EQ(bidi_class(0x08A0), AL);  // Extended-A
+  EXPECT_EQ(bidi_class(0x088F), AL);  // letter, added in Unicode 17
+  EXPECT_EQ(bidi_class(0x08CA), NSM);
+  EXPECT_EQ(bidi_class(0x08F0), NSM);
+  EXPECT_EQ(bidi_class(0x0897), NSM);
+  EXPECT_EQ(bidi_class(0x0890), AN);  // number sign
+  EXPECT_EQ(bidi_class(0x08E2), AN);  // end of ayah
+  EXPECT_EQ(bidi_class(0xFDF2), AL);  // ligature allah
+  EXPECT_EQ(bidi_class(0xFDFA), AL);
 }

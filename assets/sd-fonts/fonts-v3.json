@@ -611,6 +611,50 @@
       ]
     },
     {
+      "name": "NotoNaskhArabic",
+      "description": "Arabic, Persian, Urdu, serif",
+      "format": "ttf",
+      "inDownloadAll": false,
+      "styles": [
+        "bold",
+        "regular"
+      ],
+      "files": [
+        {
+          "name": "NotoNaskhArabic/NotoNaskhArabic-Bold.ttf",
+          "size": 261352,
+          "crc32": 2488840503
+        },
+        {
+          "name": "NotoNaskhArabic/NotoNaskhArabic-Regular.ttf",
+          "size": 261600,
+          "crc32": 3703577629
+        }
+      ]
+    },
+    {
+      "name": "NotoSansArabic",
+      "description": "Arabic, Persian, Urdu, sans serif",
+      "format": "ttf",
+      "inDownloadAll": false,
+      "styles": [
+        "bold",
+        "regular"
+      ],
+      "files": [
+        {
+          "name": "NotoSansArabic/NotoSansArabic-Bold.ttf",
+          "size": 233044,
+          "crc32": 2275605681
+        },
+        {
+          "name": "NotoSansArabic/NotoSansArabic-Regular.ttf",
+          "size": 232704,
+          "crc32": 381995503
+        }
+      ]
+    },
+    {
       "name": "NotoSansBengali",
       "description": "Bengali, Assamese, sans serif",
       "format": "ttf",
@@ -733,6 +777,28 @@
           "name": "NotoSansGurmukhi/NotoSansGurmukhi-Regular.ttf",
           "size": 116768,
           "crc32": 1210157278
+        }
+      ]
+    },
+    {
+      "name": "NotoSansHebrew",
+      "description": "Hebrew, Yiddish, sans serif",
+      "format": "ttf",
+      "inDownloadAll": false,
+      "styles": [
+        "bold",
+        "regular"
+      ],
+      "files": [
+        {
+          "name": "NotoSansHebrew/NotoSansHebrew-Bold.ttf",
+          "size": 109840,
+          "crc32": 957899077
+        },
+        {
+          "name": "NotoSansHebrew/NotoSansHebrew-Regular.ttf",
+          "size": 109196,
+          "crc32": 195019135
         }
       ]
     },
@@ -1055,6 +1121,28 @@
           "name": "NotoSerifGurmukhi/NotoSerifGurmukhi-Regular.ttf",
           "size": 128592,
           "crc32": 687237679
+        }
+      ]
+    },
+    {
+      "name": "NotoSerifHebrew",
+      "description": "Hebrew, Yiddish, serif",
+      "format": "ttf",
+      "inDownloadAll": false,
+      "styles": [
+        "bold",
+        "regular"
+      ],
+      "files": [
+        {
+          "name": "NotoSerifHebrew/NotoSerifHebrew-Bold.ttf",
+          "size": 122348,
+          "crc32": 620040609
+        },
+        {
+          "name": "NotoSerifHebrew/NotoSerifHebrew-Regular.ttf",
+          "size": 122272,
+          "crc32": 2684793000
         }
       ]
     },

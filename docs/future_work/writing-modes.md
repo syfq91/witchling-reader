@@ -21,17 +21,22 @@ Each step is its own plan and PR (spec section 7). After step 0, steps 1-2 and 3
 |---|---|---|
 | 0 | Parse every trigger (`writing-mode`, `text-orientation`, `text-combine-upright`, `direction`, `unicode-bidi`, `start`/`end`, `dir` with `<bdo>`/`<bdi>`, OPF ppd); CSS boxes along the writing mode, `start`/`end` along the direction; `line-height` parsed as CSS means it and kept through the cache; fixture books | shipped (#560) ([plan](../superpowers/plans/2026-10-26-writing-modes-step0.md)) |
 | 1 | Bidi core and Hebrew; bidi controls from `unicode-bidi`, `<bdo>`, `<bdi>`; the horizontal right-to-left case of FlowContext and page progression, which step 3 built for vertical text ([below](#what-step-1-takes-from-step-3)) | in progress: PR 1 #599 merged (the library: bidi core, shaping layer, Hebrew divine-name rule); PR 2 #613 merged (layout and drawing: right-to-left lines, niqqud, lists and tables, bidi markup); PR 3 is reading a Hebrew book ([design](../superpowers/specs/2026-11-02-writing-modes-step1-design.md), [PR 1 plan](../superpowers/plans/2026-11-02-writing-modes-step1-pr1.md), [PR 2 plan](../superpowers/plans/2026-11-02-writing-modes-step1-pr2.md)) |
-| 2 | Arabic script; before its plan, decide on one shaper for Arabic and the Indic scripts ([below](#complex-shaping-arabic-and-the-indic-scripts)) | in progress: PR 1 #603, PR 2 #624 merged; PR 3 #642 (Indic books: shaped text laid out and drawn); PR 3b #645 (the Font Manager's Indic families: 20 Noto families, chosen by the book's language); PR 4a #651 (the Arabic shaper in the engine: Arabic, Persian and Urdu shape right to left and match HarfBuzz; layout does not use it yet); PR 4b (Arabic books: layout and the Font Manager's Arabic families) ([design](../superpowers/specs/2026-11-02-writing-modes-step2-design.md), [measurements](../superpowers/specs/2026-11-02-writing-modes-step2-measurements.md), [PR 1 plan](../superpowers/plans/2026-11-02-writing-modes-step2-pr1.md), [PR 2 plan](../superpowers/plans/2026-11-04-writing-modes-step2-pr2.md), [PR 3 plan](../superpowers/plans/2026-11-05-writing-modes-step2-pr3.md), [PR 3b plan](../superpowers/plans/2026-11-06-writing-modes-step2-pr3b.md), [PR 4a plan](../superpowers/plans/2026-11-07-writing-modes-step2-pr4a.md), [reference](../text-shaping.md)) |
+| 2 | Arabic script; before its plan, decide on one shaper for Arabic and the Indic scripts ([below](#complex-shaping-arabic-and-the-indic-scripts)) | in progress: PR 1 #603, PR 2 #624 merged; PR 3 #642 (Indic books: shaped text laid out and drawn); PR 3b #645 (the Font Manager's Indic families: 20 Noto families, chosen by the book's language); PR 4a #651 (the Arabic shaper in the engine: Arabic, Persian and Urdu shape right to left and match HarfBuzz); PR 4b #656 (Arabic books: Arabic, Persian and Urdu shape and join on the page, Indic words shape inside bidi paragraphs, and the Font Manager offers NotoNaskhArabic and NotoSansArabic; the 2x build-time line is missed at 3.17x) ([design](../superpowers/specs/2026-11-02-writing-modes-step2-design.md), [measurements](../superpowers/specs/2026-11-02-writing-modes-step2-measurements.md), [PR 1 plan](../superpowers/plans/2026-11-02-writing-modes-step2-pr1.md), [PR 2 plan](../superpowers/plans/2026-11-04-writing-modes-step2-pr2.md), [PR 3 plan](../superpowers/plans/2026-11-05-writing-modes-step2-pr3.md), [PR 3b plan](../superpowers/plans/2026-11-06-writing-modes-step2-pr3b.md), [PR 4a plan](../superpowers/plans/2026-11-07-writing-modes-step2-pr4a.md), [PR 4b plan](../superpowers/plans/2026-11-07-writing-modes-step2-pr4b.md), [reference](../text-shaping.md)) |
 | 3 | Vertical frame (from the spike); the vertical decision and its settings; FlowContext and page progression | shipped (#577) ([plan](../superpowers/plans/2026-10-28-writing-modes-step3.md)) |
 | 4 | Vertical typography: widows and orphans off and lone images centred (PR 1); 、。 and small kana placed from glyph ink, A3a along the column, Traditional Chinese marks (PR 2); tate-chu-yoko (PR 3); the dictionary on vertical pages (PR 4) | shipped (#594, #595, #597, #598) ([design](../superpowers/specs/2026-10-30-writing-modes-step4-design.md), [PR 1 plan](../superpowers/plans/2026-10-30-writing-modes-step4-pr1.md), [PR 2 plan](../superpowers/plans/2026-10-31-writing-modes-step4-pr2.md), [PR 3 plan](../superpowers/plans/2026-11-01-writing-modes-step4-pr3.md), [PR 4 plan](../superpowers/plans/2026-11-02-writing-modes-step4-pr4.md)) |
 | 5 | Visual strings for titles and TOC; bidi in TXT and MD | open |
 
-**Next step.** Step 4 is done (#594, #595, #597 and #598 merged). Step 1's PR 1 (the bidi library) and PR 2 (layout
+**Next step.** The open items, in a working order and with how to measure them, are in
+[writing-modes-handover.md](writing-modes-handover.md). Step 4 is done (#594, #595, #597 and #598 merged). Step 1's PR 1 (the bidi library) and PR 2 (layout
 and drawing, #613) are merged; its PR 3 (reading a Hebrew book) comes next. Step 2's engine (#603) and TrueType faces
 (#624) are merged, and PR 3 (#642) shapes Indic books on the page ([reference](../text-shaping.md)). Then PR 3b (#645)
-adds the Font Manager's 20 Indic families (a book takes an installed one of its script by itself), and PR 4a (#651) the Arabic shaper in the engine (matching HarfBuzz; nothing in layout uses it yet). PR 4b then lays Arabic out, which also brings shaping into
-paragraphs that need bidi. A later PR speeds the shaping engine up: a chapter of real Hindi prose still builds in 2.6
-times a Latin chapter's time on the X3, against the design's 2x (the measurements' "Real Hindi prose"). Line spacing (`cjk.md`, step 10), which reads the `line-height` step 0 keeps, has shipped.
+adds the Font Manager's 20 Indic families (a book takes an installed one of its script by itself), and PR 4a (#651) the Arabic shaper in the engine (matching HarfBuzz). PR 4b (#656) lays Arabic out, which also brings
+shaping into paragraphs that need bidi, and adds the Font Manager's two Arabic families. Step 2 is then complete but for
+speed: a later PR speeds the shaping engine up, since a chapter of real Hindi prose builds in 2.6 times a Latin
+chapter's time on the X3 and one of Arabic prose in 3.17 times, against the design's 2x (the measurements' "Real Hindi
+prose" and "PR 4b: Arabic on the page"). Its other follow-up was the ShapedStore's heap: the store's index, not its chunks, held three quarters of it, and
+is now 16 B an entry and reserved to the pass's count (the handover's item 1 has the measurement and why the lent
+arena's free room is not the place for the rest). Line spacing (`cjk.md`, step 10), which reads the `line-height` step 0 keeps, has shipped.
 
 ## What step 1 takes from step 3
 
@@ -41,13 +46,12 @@ right-to-left case to them.
   `pageProgressionRtl` (`Section::flowContext()`). The reader's `pageProgressionRtl_` follows it: the tap zones, the page
   swipes, the progress bars and the percent picker mirror when it is set, and the Left and Right buttons too under
   Page Turn Buttons = Follow Book (`mirrorsLeftRight`).
-- **What stops a horizontal right-to-left book today.** `FlowContext::requestFor` returns Off for a language that
-  is never set vertically (`TypographyProfile::verticalAllowed`: Chinese, Japanese and Korean), and
-  `pageProgressionRtlFor` returns false for Off. A Hebrew or Arabic book with OPF
-  `page-progression-direction="rtl"` therefore turns its pages left to right. Step 1 must give
-  `pageProgressionRtlFor` the ppd and the base direction, not only the request. The request is also in the
-  section's property hash and header (Off adds nothing), so a Latin book's cache key stays off the vertical
-  setting; step 1 must not change that for a book that is not set vertically.
+- **A horizontal right-to-left book (done 2026-11-08).** `FlowContext::requestFor` returns Off for a language that
+  is never set vertically, so `pageProgressionRtlFor` now takes the book's direction too (`FlowContext::bookIsRtl`:
+  its language runs right to left, or its OPF says rtl and its language is never set vertically). Such a book turns
+  right to left unless its OPF says ltr; a book under Off that is not right to left still turns left to right
+  whatever its ppd (a CJK book read horizontally). The request stays out of the cache key: page progression is the
+  reader's alone, read from `Section::flowContext()` at a section's load.
 - **A left-to-right ppd** is ignored for a section set vertically (spec 5.5): its pages turn right to left.
 
 ## Complex shaping: Arabic and the Indic scripts

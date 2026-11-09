@@ -15,8 +15,8 @@
 // visual order. A piece is a run of one token's characters that is unbroken both on the line and in the text, so a
 // word whose characters land apart is split into glued pieces. Isolates are ordered on their own; transparent marks
 // ride on their base; past kMaxCodepoints slots the line takes upstream's result (#2541's computeVisualWordOrder with
-// per-word forms). Pure: no renderer and no fonts; a line that fits allocates nothing beyond the Line's own buffers,
-// whose capacity the caller keeps.
+// per-word forms, a token with cuts a form per run of a segment). Pure: no renderer and no fonts; a line that fits
+// allocates nothing beyond the Line's own buffers, whose capacity the caller keeps.
 namespace BidiLine {
 
 inline constexpr size_t kMaxCodepoints = BidiUtils::kMaxLineCodepoints;  // slots: marks ride on their base
@@ -47,7 +47,16 @@ struct OpenControls {
 struct Token {
   std::string_view text;
   bool spaceBefore;  // TokenBoundary::hasSpace
+  // The token's cut points (its shaped pieces' edges): the bytes where each segment after the first begins,
+  // ascending, inside the text and on code point boundaries; the caller keeps them for the call. None: one segment.
+  // A list that breaks this (cutsAreValid false) is ignored: the token is laid out as one without cuts.
+  uint16_t cutCount = 0;
+  const uint16_t* cuts = nullptr;
 };
+
+// Whether the token's cuts keep their contract: strictly ascending, each inside (0, text.size()) and on a code point
+// boundary (not a UTF-8 continuation byte). True for a token without cuts. O(cutCount).
+bool cutsAreValid(const Token& token);
 
 enum class Gap : uint8_t { None, Glued, Space };
 
@@ -56,8 +65,12 @@ struct Piece {
   uint16_t begin, end;  // bytes of that token's text; a token's pieces, in logical order, cover it exactly
   uint16_t displayBegin, displayLength;  // the drawn form in Line::display
   Gap gapBefore;                         // from the piece drawn left of it; None for the first
-  uint16_t spaceToken;                   // Gap::Space: the token whose word space it is (else the piece's own token)
-  uint8_t readingIndex;                  // its place in reading order
+  // How many of the line's pieces draw characters of this piece's segment (of its token, when the token has no
+  // cuts), 255 for 255 or more. A caller that draws a segment as one form of its own (glyphs, a reordered form)
+  // must degrade a segment whose pieces count more than 1: that form would be drawn once a piece.
+  uint8_t segmentPieces;
+  uint16_t spaceToken;   // Gap::Space: the token whose word space it is (else the piece's own token)
+  uint8_t readingIndex;  // its place in reading order
 };
 
 struct Line {
@@ -69,9 +82,10 @@ struct Line {
   bool fallback = false;   // over kMaxCodepoints slots or kMaxUnits units
   void clear();            // keeps capacity
 
-  // The fallback's working copies (its words without their marks, and their order with its inverse), kept with their
-  // capacity across lines; not part of the result.
-  std::vector<std::string> fallbackWords;
+  // The fallback's working arrays (views of its tokens' text, and their order followed by each token's first piece),
+  // 8 and 4 B a token on the device, kept with their capacity across lines; not part of the result. The fallback
+  // copies no word: computeVisualWordOrder skips the marks itself.
+  std::vector<std::string_view> fallbackViews;
   std::vector<uint16_t> fallbackOrder;
 };
 
@@ -92,7 +106,8 @@ struct Scratch {
   uint8_t order[kMaxCodepoints];          // the slots in visual order; a span's order sits on its own slots
   uint8_t expanded[kMaxCodepoints];       // one span's order while its children are expanded; then each slot's rank
   uint32_t passCp[kMaxCodepoints];        // one span's outer sequence: its direct bases, U+FFFC per child span
-  uint16_t passEntry[kMaxCodepoints];     // each entry's slot, or a flag above the slots; then one run's slots
+  uint16_t passEntry[kMaxCodepoints];     // each entry's slot, or a flag above the slots; then one run's slots. In a
+                                          // token's own form, each entry's byte in the token
   uint16_t passVisual[kMaxCodepoints];    // orderLine's visual order of the pass; then the pieces in reading order
   uint32_t passDrawn[kMaxCodepoints];     // and what it draws there
   Span spans[kMaxCodepoints];             // in the order they open
@@ -101,10 +116,26 @@ struct Scratch {
 static_assert(kMaxCodepoints <= 128, "slots and spans are indexed by uint8_t");
 
 // Lays one line out: pieces in visual order, each with its bytes, its drawn form and the gap before it. False (out
-// cleared) only when BidiUtils has no workspace, for a line past the limit too: the caller lays the line out without
-// bidi. `paragraphLevel` is 0 or 1.
+// cleared) only when BidiUtils has no workspace, for a line past the limit too, or when a token's cuts break their
+// contract and there is no memory for the line's tokens without them: the caller lays the line out without bidi.
+// `paragraphLevel` is 0 or 1.
 // Tokens are fewer than 65,535 and each shorter than 64 KB; a line past 256 pieces (only a fallback line can be one)
 // has no exact readingIndex.
+// A token with cuts (Token::cuts) is cut at them too, so each piece draws the characters of one segment only:
+// - a transparent mark or a joiner rides on its base only inside one segment; across a cut it takes a slot of its
+//   own, and the order resolves it as any NSM or BN (a mark is drawn right after its base, a piece of its own);
+// - a segment that draws nothing gives no piece: its bytes join the token's piece before it in the text, or the
+//   token's first piece when they lead it. A piece that opens a segment begins at the segment's start;
+// - past the limit, the fallback gives the token's pieces glued to one another, in the order of its own form
+//   (tokenForm's pass): a piece for each run of one segment's characters there, so a segment another one interrupts
+//   gives a piece on each side; for a token past kMaxCodepoints itself, one piece for each segment that draws, in
+//   logical order at its level 0 and reversed at its level 1, each segment formed alone.
+// So a piece's bytes hold one segment's drawn characters, and at most the undrawn segments beside it. But a segment
+// can give several pieces, on a line that fits and on the fallback's: when its characters land apart (at two levels,
+// or around an isolate), or when the next segment's mark across the cut is drawn right after its base, inside the
+// segment. The caller must read Piece::segmentPieces and degrade a segment it draws as one form (glyphs, a reordered
+// form) that gave more than one piece.
+// A token whose cuts break their contract (cutsAreValid false) is laid out as a token without cuts.
 bool layoutLine(const Token* tokens, size_t count, const OpenControls& open, uint8_t paragraphLevel, Scratch& scratch,
                 Line& out);
 
@@ -116,8 +147,14 @@ bool layoutLine(const Token* tokens, size_t count, const OpenControls& open, uin
 // - With none open: at detectParagraphLevel(token, paragraphLevel), with every open embedding and override prepended.
 // False, out untouched, when the form is the token's text byte for byte. `out` is the caller's reused string, and
 // `token` must not view it.
+// A plain token, with no control open, takes a short path: letters of one strong class (L, or R and AL), with only
+// such neutrals among them as take the direction around them and are never mirrored (punctuation, quotes), and
+// those only when the letters run the paragraph's way. Its form is its code points, reversed at level 1, which no
+// neighbour changes, and the line pass's piece of it is that form too. `plain` (when given) says so: the width
+// measured of its form, or of its text when the form is the text, is the width of the piece the line pass places,
+// so the placed line need not measure it again.
 bool tokenForm(std::string_view token, const OpenControls& open, uint8_t paragraphLevel, Scratch& scratch,
-               std::string& out);
+               std::string& out, bool* plain = nullptr);
 
 // Lends a block of `arena` holding the workspace and a Scratch for one scope; unbinds and releases it on destruction.
 // scratch() is null with no arena or no room (the caller then uses heapScratch()). Its block nests LIFO with
@@ -125,17 +162,22 @@ bool tokenForm(std::string_view token, const OpenControls& open, uint8_t paragra
 // workspace, whoever bound it.
 class ArenaWorkspace {
  public:
-  explicit ArenaWorkspace(BuildArena* arena);
+  // With `tokenCount`, room for the line's tokens beside the scratch (16 B each on the device, which a kept heap
+  // vector held before): all or nothing, so a line the arena cannot hold whole takes the heap for both.
+  explicit ArenaWorkspace(BuildArena* arena, size_t tokenCount = 0);
   ~ArenaWorkspace();
   ArenaWorkspace(const ArenaWorkspace&) = delete;
   ArenaWorkspace& operator=(const ArenaWorkspace&) = delete;
 
   Scratch* scratch() const { return scratch_; }
+  // The line's tokens, uninitialised; null without a scratch or when none were asked for.
+  Token* tokens() const { return tokens_; }
 
  private:
   BuildArena* arena_ = nullptr;
   BuildArena::Block block_;
   Scratch* scratch_ = nullptr;
+  Token* tokens_ = nullptr;
 };
 
 // The build's one heap Scratch, for a pass the arena lends no room for. The line pass runs one line at a time under

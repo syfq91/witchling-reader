@@ -23,6 +23,7 @@
 #include "util/SerialCommandGrammar.h"
 
 #if SERIAL_TEST_API
+#include <ArabicScripts.h>
 #include <EpdFontFamily.h>
 #include <Epub/Page.h>
 #include <FileReplace.h>
@@ -36,7 +37,6 @@
 #include <IndicScripts.h>
 #include <Memory.h>
 #include <OtShaper.h>
-#include <OtShaperInternal.h>
 #include <ProtectedPaths.h>
 #include <SerialTransfer/SerialTransferProtocol.h>
 #include <ShapingFace.h>
@@ -59,6 +59,10 @@
 #include "util/CjkLookupRun.h"
 #include "util/Dictionary.h"
 #include "util/IdleGate.h"
+#endif
+
+#if SERIAL_TEST_API
+extern GfxRenderer renderer;  // main.cpp: CMD:LAB draws into its frame buffer
 #endif
 
 namespace SerialTestApi {
@@ -948,16 +952,6 @@ constexpr unsigned kShapeSlots = 112;         // the shaper's buffer: room to gr
 // Rounds a 26.6 value to whole pixels, halves away from zero.
 int roundPixels(const int32_t v) { return v >= 0 ? (v + 32) / 64 : -((-v + 32) / 64); }
 
-// An Arabic letter or mark of the blocks the shaper's fixtures cover (Arabic, Supplement, Extended-B and -A): general
-// category Lo, Lm or a mark. Digits, punctuation and the number signs are not.
-bool isArabicLetterOrMark(const uint32_t cp) {
-  if (!((cp >= 0x0600 && cp <= 0x06FF) || (cp >= 0x0750 && cp <= 0x077F) || (cp >= 0x0870 && cp <= 0x08FF))) {
-    return false;
-  }
-  const uint8_t cat = ot::charData(cp).genCat;
-  return cat == ot::gc::OTHER_LETTER || cat == ot::gc::MODIFIER_LETTER || ot::gc::isMark(cat);
-}
-
 // Shapes the first Indic or Arabic run of `text` with the body family's regular style at the body size, as a section
 // build would, and times each step. Every block it makes is freed on return, the plan before the caller lets go of the
 // shaping faces. Under RenderLock.
@@ -978,22 +972,22 @@ void shapeWord(TtfFontSet& set, TtfFont& font, const std::string_view language, 
 
   unsigned count = 0;
   const indic::ScriptInfo* script = nullptr;
-  bool arabic = false;
+  bool inArabic = false;
   for (const unsigned char* p = reinterpret_cast<const unsigned char*>(utf8.get());
        *p && count < kShapeRunCodepoints;) {
     const uint32_t cp = utf8NextCodepoint(&p);
-    if (!script && !arabic) {
+    if (!script && !inArabic) {
       script = indic::scriptOf(cp);
-      arabic = !script && isArabicLetterOrMark(cp);
+      inArabic = !script && arabic::isRunMember(cp) && !arabic::isMark(cp);  // a run starts at a base
     }
-    if (arabic && !isArabicLetterOrMark(cp) && cp != 0x200C && cp != 0x200D) break;  // the Arabic run ends here
-    if (script || arabic) cps[count++] = cp;
+    if (inArabic && !arabic::isRunMember(cp) && cp != arabic::ZWNJ && cp != arabic::ZWJ) break;  // the run ends here
+    if (script || inArabic) cps[count++] = cp;
   }
-  if (!script && !arabic) {
-    r.error = "no Indic letter";
+  if (!script && !inArabic) {
+    r.error = "no Indic or Arabic letter";
     return;
   }
-  r.script = arabic ? "Arabic" : script->name;
+  r.script = inArabic ? "Arabic" : script->name;
 
   ShapingFace* const face = font.shapingFace(0);
   const EpdFont* const regular = font.font(0);
@@ -1030,7 +1024,7 @@ void shapeWord(TtfFontSet& set, TtfFont& font, const std::string_view language, 
   otFace = face->current();
   start = micros();
   const bool planned =
-      otFace && plan->build(*otFace, arabic ? ot::Script::Arabic : static_cast<ot::Script>(indic::indexOf(*script)),
+      otFace && plan->build(*otFace, inArabic ? ot::Script::Arabic : static_cast<ot::Script>(indic::indexOf(*script)),
                             ot::languageTagsFor(tag));
   r.planUs = micros() - start;
   if (!planned) {
@@ -1794,6 +1788,109 @@ void cmdFs(const std::string_view arg) {
 
 // ---- Power ----------------------------------------------------------------------------------
 
+// CMD:LAB, development builds only: frames for the gray lab's X4 tests (tools/murphy-gray-lab/x4lab.py).
+//   LAB:LUT:<hex>   the external LUT that LAB:DRAW:LUT sends, in the panel driver's own layout
+//   LAB:DRAW:<FULL|LUT>:<bg>:<x>,<y>,<w>,<h>,<c>;...   both planes from rectangles in panel RAM
+//                   coordinates, each code c (and the background bg) being RED * 2 + BW. FULL draws the BW
+//                   bit and runs a normal full refresh; LUT sends both planes with the LUT. LAB_OK:<ms>.
+namespace lab {
+uint8_t lut[128];
+size_t lutLength = 0;
+
+int hexDigit(const char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// The next number up to `separator` (or the end), consumed from `text`.
+bool takeNumber(std::string_view& text, const char separator, long& out) {
+  const size_t end = std::min(text.find(separator), text.size());
+  if (end == 0) return false;
+  long value = 0;
+  for (size_t i = 0; i < end; ++i) {
+    if (text[i] < '0' || text[i] > '9') return false;
+    value = value * 10 + (text[i] - '0');
+  }
+  out = value;
+  text.remove_prefix(std::min(end + 1, text.size()));
+  return true;
+}
+
+void fill(uint8_t* bw, uint8_t* red, const uint16_t width, const uint16_t height, const uint16_t widthBytes,
+          const long x0, const long y0, const long w, const long h, const long code) {
+  const long x1 = std::min<long>(x0 + w, width), y1 = std::min<long>(y0 + h, height);
+  for (long y = std::max<long>(y0, 0); y < y1; ++y) {
+    uint8_t* bwRow = bw + y * widthBytes;
+    uint8_t* redRow = red ? red + y * widthBytes : nullptr;
+    for (long x = std::max<long>(x0, 0); x < x1; ++x) {
+      const uint8_t mask = 0x80 >> (x & 7);
+      bwRow[x >> 3] = (code & 1) ? (bwRow[x >> 3] | mask) : (bwRow[x >> 3] & ~mask);
+      if (redRow) redRow[x >> 3] = (code & 2) ? (redRow[x >> 3] | mask) : (redRow[x >> 3] & ~mask);
+    }
+  }
+}
+}  // namespace lab
+
+void cmdLab(std::string_view arg) {
+  if (arg.substr(0, 4) == "LUT:") {
+    const std::string_view hex = arg.substr(4);
+    if (hex.empty() || hex.size() % 2 != 0 || hex.size() / 2 > sizeof(lab::lut)) return reply("LAB_ERROR:bad lut");
+    for (size_t i = 0; i < hex.size() / 2; ++i) {
+      const int high = lab::hexDigit(hex[2 * i]), low = lab::hexDigit(hex[2 * i + 1]);
+      if (high < 0 || low < 0) return reply("LAB_ERROR:bad lut");
+      lab::lut[i] = static_cast<uint8_t>(high << 4 | low);
+    }
+    lab::lutLength = hex.size() / 2;
+    return replyf("LAB_OK:lut %u", static_cast<unsigned>(lab::lutLength));
+  }
+  if (arg.substr(0, 5) != "DRAW:") return reply("LAB_ERROR:LUT or DRAW");
+  arg.remove_prefix(5);
+  const bool full = arg.substr(0, 5) == "FULL:";
+  if (!full && arg.substr(0, 4) != "LUT:") return reply("LAB_ERROR:FULL or LUT");
+  arg.remove_prefix(full ? 5 : 4);
+  if (!full && lab::lutLength == 0) return reply("LAB_ERROR:no lut");
+  long background = 0;
+  if (!lab::takeNumber(arg, ':', background) || background > 3) return reply("LAB_ERROR:bad background");
+
+  const uint16_t width = display.getDisplayWidth(), height = display.getDisplayHeight();
+  const uint16_t widthBytes = display.getDisplayWidthBytes();
+  RenderLock lock;  // the frame buffer is the render task's
+  uint8_t* bw = renderer.getFrameBuffer();
+  uint8_t* red = nullptr;
+  if (!bw) return reply("LAB_ERROR:no frame buffer");
+  if (!full) {
+    // The display's second frame buffer: a third 48 KB block is more than a C3 has free.
+    size_t lent = 0;
+    red = renderer.borrowSecondaryBuffer(&lent);
+    if (!red || lent < display.getBufferSize()) {
+      if (red) renderer.returnSecondaryBuffer();
+      return reply("LAB_ERROR:no second buffer");
+    }
+  }
+  lab::fill(bw, red, width, height, widthBytes, 0, 0, width, height, background);
+  while (!arg.empty()) {
+    long x = 0, y = 0, w = 0, h = 0, code = 0;
+    if (!lab::takeNumber(arg, ',', x) || !lab::takeNumber(arg, ',', y) || !lab::takeNumber(arg, ',', w) ||
+        !lab::takeNumber(arg, ',', h) || !lab::takeNumber(arg, ';', code) || code > 3) {
+      if (red) renderer.returnSecondaryBuffer();
+      return reply("LAB_ERROR:bad rectangle");
+    }
+    lab::fill(bw, red, width, height, widthBytes, x, y, w, h, code);
+  }
+  const unsigned long start = millis();
+  bool shown = true;
+  if (full) {
+    renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+  } else {
+    shown = display.displayLabFrame(bw, red, lab::lut);
+  }
+  if (red) renderer.returnSecondaryBuffer();
+  if (!shown) return reply("LAB_ERROR:no lab path on this panel");
+  replyf("LAB_OK:%lu", millis() - start);
+}
+
 void cmdSleep(std::string_view /*arg*/) {
   reply("SLEEP_OK");
   powerRequest = PowerRequest::Sleep;
@@ -1829,7 +1926,7 @@ constexpr Command kCommands[] = {
     {"IDLE", &cmdIdle},       {"EVENTS", &cmdEvents}, {"GET", &cmdGet},     {"SET", &cmdSet},
     {"LOG", &cmdLog},         {"TOUCH", &cmdTouch},   {"SWIPE", &cmdSwipe}, {"SLEEP", &cmdSleep},
     {"REBOOT", &cmdReboot},   {"HEAP", &cmdHeap},     {"TTF", &cmdTtf},     {"FS", &cmdFs},
-    {"PAGE", &cmdPage},
+    {"PAGE", &cmdPage},       {"LAB", &cmdLab},
 #endif
 };
 
