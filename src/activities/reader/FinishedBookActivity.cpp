@@ -651,7 +651,7 @@ void FinishedBookActivity::activateIndex(const int index) {
 
 void FinishedBookActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+  const Rect contentRect = listContentRect();
 
   screen.setContentMarginFromScreen(
       fui::Insets{static_cast<int16_t>(contentRect.y + metrics.topPadding + metrics.headerHeight),
@@ -746,7 +746,7 @@ void FinishedBookActivity::buildScreen(UiScreen& screen) {
 
 void FinishedBookActivity::afterUiRender() {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect contentRect = UITheme::getContentRect(renderer, true, false);
+  const Rect contentRect = listContentRect();
 
   const int lineH10 = renderer.getLineHeight(UI_10_FONT_ID);
   const int lineH12 = renderer.getLineHeight(UI_12_FONT_ID);

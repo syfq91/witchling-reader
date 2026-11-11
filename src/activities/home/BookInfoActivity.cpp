@@ -162,9 +162,13 @@ void BookInfoActivity::actionTrampoline(const freeink::ui::ActionEvent& event, v
 }
 
 void BookInfoActivity::buildScreen(UiScreen& screen) {
-  screen.header(tr(STR_INFO));
+  const Rect fullRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
+  screen.setContentMarginFromScreen(freeink::ui::Insets{
+      static_cast<int16_t>(fullRect.y), static_cast<int16_t>(renderer.getScreenWidth() - (fullRect.x + fullRect.width)),
+      static_cast<int16_t>(renderer.getScreenHeight() - (fullRect.y + fullRect.height)),
+      static_cast<int16_t>(fullRect.x)});
 
-  screen.takeBottom(screen.theme().footerHeight);
+  screen.header(tr(STR_INFO));
 
   bodyRect_ = screen.body();
 }
