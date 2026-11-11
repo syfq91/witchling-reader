@@ -42,13 +42,15 @@ static const esp_partition_t* findPartition() {
   return part;
 }
 
-// Ceiling for font data: the partition minus the language slot at its tail.
+// Ceiling for font data: the partition minus the hyphenation region and the language slot at its tail.
 static size_t usableSizeOf(const esp_partition_t* part) {
-  if (!part || part->size <= LANG_RESERVED_BYTES) return 0;
-  return static_cast<size_t>(part->size) - LANG_RESERVED_BYTES;
+  if (!part || part->size <= LANG_RESERVED_BYTES + HYPH_RESERVED_BYTES) return 0;
+  return static_cast<size_t>(part->size) - LANG_RESERVED_BYTES - HYPH_RESERVED_BYTES;
 }
 
 size_t fontUsableSize() { return usableSizeOf(findPartition()); }
+
+size_t hyphRegionOffset() { return HYPH_RESERVED_BYTES == 0 ? 0 : usableSizeOf(findPartition()); }
 
 // Read the raw index from flash into a caller-supplied buffer.
 // Returns true and fills `count` with the number of valid entries.
@@ -100,7 +102,7 @@ bool beginWrite(const char* familyName) {
     LOG_ERR("FFP", "beginWrite: partition is mmap'd — call unmap() first");
     return false;
   }
-  if (EspNorFlash::liveMappings() > 0) {
+  if (EspNorFlash::liveFontAreaMappings() > 0) {
     LOG_ERR("FFP", "beginWrite: the TTF glyph store is open on this partition — close it first");
     return false;
   }
@@ -265,7 +267,7 @@ bool mmap(const char* familyName, uint8_t pointSize, const uint8_t** outPtr, siz
     LOG_ERR("FFP", "mmap: write session still active");
     return false;
   }
-  if (EspNorFlash::liveMappings() > 0) {
+  if (EspNorFlash::liveFontAreaMappings() > 0) {
     LOG_ERR("FFP", "mmap: the TTF glyph store is open on this partition — close it first");
     return false;
   }

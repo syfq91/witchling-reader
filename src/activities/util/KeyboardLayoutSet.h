@@ -11,9 +11,14 @@
 // the screen, and one reading Russian books under an English interface switches
 // ЙЦУКЕН on there.
 //
-// Only the layouts our UI fonts can draw are listed. The SDK also has Hebrew and
-// Arabic, but Inter UI carries neither script and the UI text path does no bidi
-// or shaping, so offering them would put boxes on the keys.
+// Hebrew and Arabic are UI languages too, so a Hebrew or Arabic interface opens
+// its keyboard on its own layout. Greek is a script the interface is not
+// translated into: only that screen switches it on, and a keyboard never opens
+// on it. Persian has no layout of its own (the Arabic one lacks its four extra
+// letters), so a Persian interface opens on English. Right-to-left keys and the
+// text typed with them are drawn through the UI text path, which orders
+// right-to-left text, from the UI faces: Arabic joined, in the presentation
+// forms the faces carry.
 
 #include <I18n.h>
 #include <components/keyboard/keyboard.h>
@@ -22,12 +27,16 @@
 
 namespace keyboard_layouts {
 
+// A layout for a script the interface is not translated into.
+inline constexpr Language NO_UI_LANGUAGE = Language::_COUNT;
+
 struct LayoutInfo {
   freeink::ui::KeyboardLayoutId id;
   const char* label;
 };
 
-// Table position is the bit a layout occupies in the enabled() mask.
+// Table position is the bit a layout occupies in the enabled() mask, kept from the
+// first build that wrote it: a new layout is appended, never inserted.
 inline constexpr LayoutInfo ALL[] = {
     {freeink::ui::KeyboardLayoutId::QwertyEn, "English"},
     {freeink::ui::KeyboardLayoutId::AzertyFr, "Français"},
@@ -37,6 +46,9 @@ inline constexpr LayoutInfo ALL[] = {
     {freeink::ui::KeyboardLayoutId::CyrillicUk, "Українська"},
     {freeink::ui::KeyboardLayoutId::CyrillicBe, "Беларуская"},
     {freeink::ui::KeyboardLayoutId::CyrillicKk, "Қазақша"},
+    {freeink::ui::KeyboardLayoutId::HebrewIl, "עברית"},
+    {freeink::ui::KeyboardLayoutId::ArabicAr, "العربية"},
+    {freeink::ui::KeyboardLayoutId::GreekEl, "Ελληνικά"},
 };
 inline constexpr uint8_t COUNT = sizeof(ALL) / sizeof(ALL[0]);
 static_assert(COUNT <= 16, "the enabled-layout mask is uint16_t");
@@ -55,5 +67,8 @@ freeink::ui::KeyboardLayoutId startingLayout();
 
 // The enabled layout after `current`, wrapping; `current` when it is the only one.
 freeink::ui::KeyboardLayoutId next(freeink::ui::KeyboardLayoutId current);
+
+// ALL[i]'s name on the Keyboard Layouts screen: its language's, in that language.
+const char* name(uint8_t i);
 
 }  // namespace keyboard_layouts

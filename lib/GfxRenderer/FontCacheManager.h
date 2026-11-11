@@ -2,6 +2,7 @@
 
 #include <BuildArena.h>
 #include <EpdFontFamily.h>
+#include <InflateReader.h>
 
 #include <cstdint>
 #include <map>

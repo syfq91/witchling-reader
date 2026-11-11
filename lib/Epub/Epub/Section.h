@@ -207,10 +207,21 @@ class Section {
     uint16_t viewportWidth = 0;
     uint16_t viewportHeight = 0;
     bool hyphenationEnabled = false;
+    // The book's hyphenation patterns (Hyphenator::layoutKey): 0 for those the image carried before hyphenation
+    // packs, else the pack's CRC, or a key for none. Hashed only when not 0, so the layouts made with the image's
+    // patterns keep their key; a pack installed, changed or missing gets a layout of its own. 0 with hyphenation off:
+    // such a layout breaks by the patterns only a word wider than the whole line (ParsedText's fallback), so it keeps
+    // its cache through a pack's install, update or removal rather than laying out every chapter again, and that
+    // rare word keeps the break it was laid out with until the chapter is built again for another reason.
+    uint32_t hyphenationLayoutKey = 0;
     // Widow and orphan control (ChapterHtmlSlimParser::keepTogetherBreak), the reader's "Avoid Widows & Orphans".
     // Hashed only when off, so the variants laid out with it keep their key. A vertical section ignores it.
     bool widowOrphanControl = true;
     bool fontSizeNormalization = true;
+    // The size of the book's running text in percent of the reader's (BodySize::read): with fontSizeNormalization
+    // and embeddedStyle on, the book's sizes are taken relative to it (ChapterHtmlSlimParser::setBodySizePct).
+    // Hashed only when it does that, so a book whose text is at the reader's size keeps its key.
+    uint8_t bodySizePct = 100;
     bool embeddedStyle = false;
     bool bionicReadingEnabled = false;
     bool inlineFootnotePreviews = false;

@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "BidiUtils.h"
 #include "EpdFont.h"
 #include "FallbackFaceProvider.h"
 #include "FontDecompressor.h"
@@ -24,13 +25,13 @@
 
 namespace {
 
-constexpr uint32_t ZH_ONLY = 0x8BBE;      // 设: in the Chinese set, not the Japanese
-constexpr uint32_t ZH_AND_JA = 0x5B9A;    // 定: in both, with each region's glyph form
-constexpr uint32_t JA_ONLY = 0x66F8;      // 書
-constexpr uint32_t HANGUL = 0xC124;       // 설
-constexpr uint32_t IN_NO_FACE = 0x9F98;   // 龘
-constexpr uint32_t GREEK_ALPHA = 0x03B1;  // in no face, and no CJK face's to answer for
-constexpr uint32_t STAND_IN = 0x25A1;     // □, which every CJK UI face carries
+constexpr uint32_t ZH_ONLY = 0x8BBE;       // 设: in the Chinese set, not the Japanese
+constexpr uint32_t ZH_AND_JA = 0x5B9A;     // 定: in both, with each region's glyph form
+constexpr uint32_t JA_ONLY = 0x66F8;       // 書
+constexpr uint32_t HANGUL = 0xC124;        // 설
+constexpr uint32_t IN_NO_FACE = 0x9F98;    // 龘
+constexpr uint32_t ARMENIAN_AYB = 0x0531;  // in no face, and no CJK face's to answer for
+constexpr uint32_t STAND_IN = 0x25A1;      // □, which every CJK UI face carries
 
 using Bytes = std::vector<uint8_t>;
 
@@ -166,7 +167,7 @@ TEST_F(FallbackFaceProviderTest, AClaimedCharacterNoFaceHasDrawsAsTheStandIn) {
 TEST_F(FallbackFaceProviderTest, AStandInLeavesCoveredAndUnclaimedCharactersAlone) {
   provider.setStandIn(STAND_IN, &claimsHan);
   EXPECT_EQ(drawn(ui, EpdFont(&ui).getGlyph(ZH_ONLY)), faceBytes(cjk_ui_zh_10, ZH_ONLY));
-  EXPECT_FALSE(EpdFont(&ui).getGlyph(GREEK_ALPHA));
+  EXPECT_FALSE(EpdFont(&ui).getGlyph(ARMENIAN_AYB));
 }
 
 TEST_F(FallbackFaceProviderTest, ARecordStaysOwnedWhileLaterMissesFillTheRestOfTheRing) {
@@ -290,9 +291,9 @@ struct ReaderFace final : GlyphProvider {
 const EpdFontData* noFace(void* /*ctx*/) { return nullptr; }
 
 TEST_F(FallbackFaceProviderTest, TheReaderFaceServesWhatTheUiFacesLackAsItsInk) {
-  ReaderFace reader({GREEK_ALPHA}, 11, 14);
+  ReaderFace reader({ARMENIAN_AYB}, 11, 14);
   provider.setReaderFace(&ReaderFace::source, &reader);
-  const EpdGlyphRef glyph = EpdFont(&ui).getGlyph(GREEK_ALPHA);
+  const EpdGlyphRef glyph = EpdFont(&ui).getGlyph(ARMENIAN_AYB);
   ASSERT_TRUE(glyph);
   EXPECT_EQ(glyph.width, 11);
   EXPECT_EQ(glyph.height, 14);
@@ -317,13 +318,13 @@ TEST_F(FallbackFaceProviderTest, ForACjkUiLanguageItsOwnFaceGoesFirstAndTheReade
 TEST_F(FallbackFaceProviderTest, WithoutAReaderFaceNowTheUiFacesServeAsBefore) {
   provider.setReaderFace(&noFace, nullptr);
   EXPECT_EQ(drawn(ui, EpdFont(&ui).getGlyph(ZH_ONLY)), faceBytes(cjk_ui_zh_10, ZH_ONLY));
-  EXPECT_FALSE(EpdFont(&ui).getGlyph(GREEK_ALPHA));
+  EXPECT_FALSE(EpdFont(&ui).getGlyph(ARMENIAN_AYB));
 }
 
 TEST_F(FallbackFaceProviderTest, ACharacterNoFaceHasStaysMissingThoughTheReaderFaceHasAReplacementGlyph) {
-  ReaderFace reader({REPLACEMENT_GLYPH}, 11, 14);  // a Latin book font: U+FFFD, but no Greek here
+  ReaderFace reader({REPLACEMENT_GLYPH}, 11, 14);  // a Latin book font: U+FFFD, but no Armenian here
   provider.setReaderFace(&ReaderFace::source, &reader);
-  EXPECT_FALSE(EpdFont(&ui).getGlyph(GREEK_ALPHA));
+  EXPECT_FALSE(EpdFont(&ui).getGlyph(ARMENIAN_AYB));
 }
 
 TEST_F(FallbackFaceProviderTest, AClaimedCharacterNoFaceHasDrawsAsTheCjkFacesStandInNotTheReaderFaces) {
@@ -334,13 +335,13 @@ TEST_F(FallbackFaceProviderTest, AClaimedCharacterNoFaceHasDrawsAsTheCjkFacesSta
 }
 
 TEST_F(FallbackFaceProviderTest, AReaderGlyphTooLargeToPackIsLeftToTheNextFace) {
-  ReaderFace reader({ZH_ONLY}, 40, 40);  // 200 B of ink
+  ReaderFace reader({ZH_ONLY}, 48, 48);  // 288 B of ink
   provider.setReaderFace(&ReaderFace::source, &reader);
   EXPECT_EQ(drawn(ui, EpdFont(&ui).getGlyph(ZH_ONLY)), faceBytes(cjk_ui_zh_10, ZH_ONLY));
 }
 
 TEST_F(FallbackFaceProviderTest, TextTheUiFaceCoversNeverAsksForTheReaderFace) {
-  ReaderFace reader({GREEK_ALPHA}, 11, 14);
+  ReaderFace reader({ARMENIAN_AYB}, 11, 14);
   provider.setReaderFace(&ReaderFace::source, &reader);
   for (const uint32_t cp : {static_cast<uint32_t>('A'), static_cast<uint32_t>('z'), 0xE9u}) {
     ASSERT_TRUE(EpdFont(&ui).getGlyph(cp));
@@ -388,7 +389,7 @@ TEST_F(FallbackFaceProviderTest, ForACjkUiLanguageATranslationKeepsItsOwnFace) {
 }
 
 TEST_F(FallbackFaceProviderTest, TextTheUiFaceCoversPreparesNothing) {
-  ReaderFace reader({GREEK_ALPHA}, 11, 14);
+  ReaderFace reader({ARMENIAN_AYB}, 11, 14);
   provider.setPrimaryFace(&inter_ui_10_regular);
   provider.setReaderFace(&ReaderFace::source, &reader);
   provider.beginText("Caf\xC3\xA9 au lait");
@@ -405,6 +406,51 @@ BuildArena* countingLender(const size_t bytes) {
   ++lendCalls;
   lentFor = bytes;
   return kRegion;
+}
+
+// --- Arabic UI text: the UI faces carry the presentation forms, so it is formed (GfxRenderer, formsArabic()) ---
+
+namespace {
+
+constexpr uint32_t BEH = 0x0628;
+constexpr uint32_t BEH_INITIAL = 0xFE91;
+constexpr uint32_t LAM_ALEF_FINAL = 0xFEFC;
+
+std::vector<uint32_t> codepointsOf(const std::string& utf8) {
+  std::vector<uint32_t> cps;
+  const auto* p = reinterpret_cast<const uint8_t*>(utf8.c_str());
+  while (const uint32_t cp = utf8NextCodepoint(&p)) cps.push_back(cp);
+  return cps;
+}
+
+}  // namespace
+
+TEST_F(FallbackFaceProviderTest, TheUiFacesFormArabicWithoutAnyFontOnTheCard) {
+  EXPECT_TRUE(provider.formsArabic());
+  provider.setReaderFace(&noFace, nullptr);
+  EXPECT_TRUE(provider.formsArabic());
+}
+
+TEST_F(FallbackFaceProviderTest, AFormedTitleDrawsFromTheUiFaceItself) {
+  // بلا formed: Beh initial, then the final Lam-Alef in the Lam's place. A reader face that maps the forms too is not
+  // asked: the UI face's own table answers first.
+  const std::vector<uint32_t> formed = codepointsOf(BidiUtils::arabicUiForms("\xD8\xA8\xD9\x84\xD8\xA7"));
+  ASSERT_EQ(formed, (std::vector<uint32_t>{BEH_INITIAL, LAM_ALEF_FINAL}));
+  ReaderFace reader({BEH_INITIAL, LAM_ALEF_FINAL}, 11, 14);
+  provider.setReaderFace(&ReaderFace::source, &reader);
+  for (const uint32_t cp : formed) {
+    const EpdGlyphRef glyph = EpdFont(&ui).getGlyph(cp);
+    ASSERT_TRUE(glyph) << std::hex << cp;
+    EXPECT_EQ(glyph.sdRecord, nullptr) << std::hex << cp;  // not a provider's record
+    EXPECT_EQ(drawn(ui, glyph), drawn(inter_ui_10_regular, EpdFont(&inter_ui_10_regular).getGlyph(cp)));
+  }
+  EXPECT_EQ(reader.asked, 0);
+}
+
+TEST_F(FallbackFaceProviderTest, AnArabicLetterLeftUnformedIsNotDrawn) {
+  // The faces hold the forms, not the letters: text that is not formed draws nothing of its Arabic, as before.
+  provider.setReaderFace(&noFace, nullptr);
+  EXPECT_FALSE(EpdFont(&ui).getGlyph(BEH));
 }
 
 TEST(GlyphMissLend, TheFirstMissLendsAndTheReturnEndsItForTheRestOfThePass) {

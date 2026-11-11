@@ -194,7 +194,7 @@ inline void buildSettings(const RowSink& emit) {
   // side (SettingsActivity / CrossPointWebServer enrich enumLabels before
   // iterating). The built-in StrIds are kept as a fallback for code paths that
   // don't enrich enumLabels.
-  emit(SettingInfo::DynamicEnum(StrId::STR_FONT_FAMILY, {StrId::STR_BOOKERLY, StrId::STR_NOTO_SANS},
+  emit(SettingInfo::DynamicEnum(StrId::STR_FONT_FAMILY, {StrId::STR_SERIF, StrId::STR_NOTO_SANS},
                                 fontFamilyDynamicGetter, fontFamilyDynamicSetter, "fontFamily", StrId::STR_CAT_READER)
            .withSubcategory(StrId::STR_MENU_READER_FONT)
            .withSubmenu(StrId::STR_MENU_READER_FONT)
@@ -228,6 +228,7 @@ inline void buildSettings(const RowSink& emit) {
            "textDarkness", StrId::STR_CAT_READER)
            .withSubmenu(StrId::STR_MENU_READER_FONT)
            .withSelectorActivity());
+
   // A book's embedded fonts (BookFonts), in the order of CrossPointSettings::PUBLISHER_FONTS: Stage A's toggle stored
   // 0/1, which stay Off and Body Text. The setting follows crosspoint-reader PR #3934 (Justin Mitchell), reworked for
   // the TTF engine. They apply only while Embedded Style (Layout, below) is on.

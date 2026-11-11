@@ -43,11 +43,11 @@ the observed symptom, so none has device evidence yet.
 **Lesson.** The first fix was chosen from a story, not from a test that separates causes, and it
 changed nothing. Re-audit each defect against its own trigger before re-landing it.
 
-**Where the written fixes are.** Only as unreachable commits: firmware `c17d939ab` (a docs commit;
-the fixes are its ancestors `a6276195f` D2, `1989118a6` D5, `195bcd5d4` D3 and `d2ddab827` D4), SDK
-`96f031d` (D1) and `08222e1` (D5). No branch holds them, so `git gc` will eventually drop them.
+**Where the written fixes are.** Nowhere any more. They were unreachable commits: firmware `c17d939ab` (a docs
+commit; the fixes were its ancestors `a6276195f` D2, `1989118a6` D5, `195bcd5d4` D3 and `d2ddab827` D4), SDK
+`96f031d` (D1) and `08222e1` (D5). None of them exists now, locally, in the SDK or on GitHub (checked 2026-11-09).
 
-**Next.** Tag the commits if the code is wanted; otherwise rewrite from the descriptions below.
+**Next.** Rewrite each fix from its description below, after the re-audit.
 
 ## D2: the reader's exit hook repairs only the pre-render case
 
@@ -88,6 +88,9 @@ the next full-frame refresh composites onto that frame.
 
 **Tried.** `_displayedFrameValid`, set only by `swapBuffers()` and exposed as `hasDisplayedFrame()`,
 with `syncWriteBufferFromActive()` returning whether it copied. Host-tested, reverted (SDK `08222e1`).
+Since then the SDK keeps a private `_activeMatchesGlass` (`FreeInkDisplay.h:505`), set only where a display
+leaves on the glass the frame it showed: roughly what D5 wanted, read only by the one-pass path
+(`beginOnePassMask()`).
 
 **Next.** List the consumers that can run between a return or realloc and the next full-frame refresh.
 Re-land only if one exists.
@@ -97,10 +100,10 @@ Re-land only if one exists.
 **Open.** The rule "before drawing on top of the panel, the write buffer must hold what the panel
 shows" lives at each call site, and each does it differently:
 - `ActivityManager::dispatchLightPanelGesture()` runs `syncWriteBufferFromDisplayed()` and then
-  `prepareFramebufferForCapture()`. Its comment says the screenshot path does the same; it does not.
-- The POWER+DOWN screenshot path in `main.cpp` runs only `prepareFramebufferForCapture()`, so
-  outside the reader's pre-render case it saves whatever the write buffer holds (see D2). The serial
-  `CMD:SCREENSHOT` path runs neither.
+  `prepareFramebufferForCapture()`.
+- The POWER+DOWN screenshot and the serial `CMD:SCREENSHOT` both go through `ScreenshotUtil::service`,
+  which does the same, sync then prepare (`ScreenshotUtil.cpp:50-51`; `d36e0f382`, #479, 2026-10-16,
+  refined in `ba4fefaa7`).
 - The `overlayDisplayedFrame` popups (`BaseTheme::drawPopup()`, `drawBusyIndicator()`,
   `LyraTheme::drawPopup()`) run only the sync, as do the screens that call
   `syncWriteBufferFromDisplayed()` themselves (Home, the file browser, book info, the sleep cover,
@@ -160,7 +163,7 @@ use it in `showBusyIndicator()`. Design state 3 when a second consumer needs it.
 
 **Open.** `FreeInkDisplay::PanelSel` (`X4`, `X3`, `M5`; default `X4`) picks the driver and also stands
 for "this controller keeps a host-managed previous frame", which is true of the SSD1677 only. Every
-board that is not an X3 reads as `X4`: X4 and X4 Pro units on UC8179 or UC8279, and the T5S3.
+board that is not an X3 reads as `X4`: X4 and X4 Pro units on UC8179 or UC8279, the T5S3, and the Murphy M3.
 - `resolveReleasedMode()` turns FAST into HALF while the secondary is away (unless
   `setSingleBufferFastDiff(true)`), also on drivers that ignore `prev` and keep their own baseline.
 - `isRedRamSynced()` reports a RED plane that UC8179, UC8279 X4 and LGFX do not have.
@@ -173,7 +176,9 @@ board that is not an X3 reads as `X4`: X4 and X4 Pro units on UC8179 or UC8279, 
 
 The SDK's `displayCommitted()` and `abortPostRefresh()` / `postRefreshAborted()` are still unused: the
 reader hand-rolls `aaPreemptedByNavigation()`, and the refresh cadence assumes every submit commits.
-Also open: whether the PSRAM boards (X4 Pro, T5S3) need to borrow or release the secondary at all.
+Whether the PSRAM boards need to release the secondary at all is settled by #614: no S3 board does
+(`HalCapabilities::keepsSecondaryBuffer()`, `HalCapabilities.h:221`). So the FAST-to-HALF downgrade during a
+borrow now matters only on C3 X4 units with a UC8179 or UC8279.
 
 **Why it matters.** A downgraded FAST costs a HALF waveform: on an X4, ~1755 ms instead of ~476 ms
 (2026-08-19, during a Background-B borrow).
@@ -305,7 +310,8 @@ pre-rendered page.
 
 **Status.** The T5S3 now sends AA as a single push in normal reading, so the measured case no longer
 happens there. The X3 is the board left on the deferred path, and A runs there again as of
-2026-10-08 (item above). That log shows the order on every page: the deferred AA (planes ~296 +
+2026-10-08 (item above). On the X3, the opt-in One-Pass Anti-Aliasing (#648, 2026-11-07) sends a text page
+with its gray in one refresh and no deferred pass; the default and image pages are unchanged. That log shows the order on every page: the deferred AA (planes ~296 +
 gray ~357 + restore ~50 ms), then the pre-render (~70 ms).
 
 **Next.** Measure how often a quick turn on the X3 lands inside the AA window. Reordering needs a C3
@@ -372,3 +378,63 @@ released. The reader goes on with a null frame.
 - Next step: either give both buffers back on that refusal (a `HalDisplay`/`GfxRenderer` realloc), or
   let `enterDeepSleep()`'s guard test the display's own buffer, as `GfxRenderer::displayBuffer()` does,
   so a sleep requested during the pass reboots into sleep.
+
+## One-pass text AA
+
+**Open.** One-pass text AA shipped as an opt-in setting on the X4 Pro with UC8179, the Murphy M3, the X3 and the X4
+(#646, #648, #650). How each board does it, and what was measured:
+[grayscale-aa-rendering.md](../grayscale-aa-rendering.md#one-pass-text-aa-board-by-board).
+
+**Next.**
+1. Run a long read on the X4 Pro with the option on: ghosting over many pages, and in the cold.
+2. The same on the Murphy M3 and the X3, by eye first. The Murphy also needs a long read for how it reads.
+3. The X4 (SSD1677) by eye, and whether its hold row should rest. The hold row nudges the background 2 frames of VSL
+   every page; whether rest looks better is untried, but testable: since #655 (2026-11-08) `x4lab.py` drives frames
+   through the reader's `CMD:LAB` (`SerialTestApi.cpp:1789`), and Test 11 ran on the X4.
+4. Run `kUc8279X3_Xth4`'s tail fix on a UC8279 X3. It applies directly to `Uc8279X3Luts.h`, which lacks it, but is
+   unverified against stock.
+
+**A Background-B borrow forces two passes (X3, X4).** When a background build finishes, the reader redraws the page
+on screen to update its page count. Background-B borrowed the second buffer for that build, so the frame on screen is
+unknown and the redraw takes two passes: one second refresh per chapter build. On the X4 a borrow between two turns
+sends the next turn down the two-pass path too (once in 10 slow turns). Fixing it needs the frame on screen kept
+somewhere a borrower does not write.
+
+**Other controllers.** On the X4 Pro the option shows on UC8179 units only, the one we have tested. The branch has
+tables for SSD1677 and UC8279, and UC8279 also writes `0x01` and `0x82` without restoring them, which may affect later
+B/W refreshes. Effect unproven: our unit is a UC8179.
+
+**Smaller items on the X4 Pro.**
+- **History wiped by any B/W frame.** The charge map goes although the panel keeps its charge, so the page after a HALF
+  takes 2632 ms and drives nearly the whole panel white. A menu has the same effect on the next page, by code reading.
+- **Temperature.** The LUT is fixed, so the waveform does not follow the panel's temperature.
+- **Static black.** One-pass re-drives every black pixel on every page, and the branch's SSD2677 comment says re-driving
+  static text builds ghosts. None seen so far.
+
+**Smaller items on the X3.**
+- A gray pixel that a menu turns black gets only FAST's 2-frame nudge, as no plane says it was gray.
+- A forced refresh override arriving after the mask was built shows that page in B/W only.
+- A pixel staying black is driven 18 frames every page. Measured clean over 500 pages and the hour after; what the DC
+  that adds does to the panel over weeks is not measured. Raised upstream on Free-Ink#184.
+
+## Murphy M3 gray
+
+**Open.** Murphy builds have four-level gray (`-DFREEINK_MURPHY_GRAY`); what was decided and why is in
+[grayscale-aa-rendering.md](../grayscale-aa-rendering.md#murphy-m3-gray-and-its-bw-waveforms), the measurements in
+[tools/murphy-gray-lab/README.md](../../tools/murphy-gray-lab/README.md). All of it comes from one panel, at room
+temperature.
+
+**Long-term DC.** A fringe pixel does the ordinary cycle, white to black, a net-zero nudge, black to white. Gray that
+stays black takes 15 frames toward black that nothing pays back, through the marks
+`Uc8253MurphyDriver::writeOldPlane()` adds. Lab Test 11 on this Murphy (#654, 2026-11-08) measured part of it: black
+held for 500 pages under the per-page VSH 15 re-drive fades by 14.5 and, driven white, comes back 8 points lighter
+than the white around it; rest and the FAST row leave about 1 point (`tools/murphy-gray-lab/README.md`, Test 11). The
+one-pass path rests such pixels, so on text pages with One-Pass Anti-Aliasing on this gets smaller, not larger. What
+weeks of reading do is still unmeasured.
+- Next step: read for some weeks, then compare a clean white and black with the shots kept from the lab.
+
+**Temperature.** The waveforms were measured at room temperature, which was not recorded. The OTP is blank, so the
+controller has no temperature ranges to fall back on, and the driver does not read the sensor.
+
+**Upstream.** The lent block is offered as Free-Ink/freeink-sdk#175, still open, and not in use here: the firmware
+still lends its block from `HalDisplay`. The Murphy's one-pass text is Free-Ink #183, open.

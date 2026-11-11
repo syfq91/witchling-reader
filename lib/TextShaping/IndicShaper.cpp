@@ -19,7 +19,8 @@
 // Upstream shapes in the renderer, through a run cache; here a token is shaped once at section build, into pieces, in
 // the call's own memory (writing modes step 2, deviations 2, 6, 7 and 9). PR 4b shapes Arabic runs through the same
 // loop, each run under its own script's policy (ScriptPolicy); upstream's loop is written for left-to-right runs, and
-// takes a right-to-left run's pieces from its end.
+// takes a right-to-left run's pieces from its end. The Myanmar design's PR 2 shapes Myanmar runs through it too,
+// between the syllables of myanmar::breakAllowed, with one syllable of a glued neighbour as context, as Indic is.
 namespace IndicShaper {
 
 namespace {
@@ -28,8 +29,8 @@ namespace {
 // MAX_LENGTH_EXTRA).
 constexpr unsigned kGrowthFactor = 2;
 constexpr unsigned kGrowthExtra = 16;
-// A run's code points take 2 bytes of UTF-8 at least: an Arabic letter or mark 2; the letters of U+0900-0DFF, the
-// dandas, the joiners and the dotted circle 3.
+// A run's code points take 2 bytes of UTF-8 at least: an Arabic letter or mark 2; the letters of U+0900-0DFF and of the
+// Myanmar blocks, the dandas, the joiners and the dotted circle 3.
 constexpr size_t kRunCodepointBytes = 2;
 constexpr size_t kJoinerBytes = 3;  // U+200C and U+200D
 
@@ -93,8 +94,9 @@ constexpr int64_t roundPixels(const int64_t v) { return v >= 0 ? (v + 32) / 64 :
 // The glyphs `buffer` holds into `sink` as records, rounded as upstream's appendGlyphs rounds them: the advance from
 // 26.6 to 12.4 pixels, the offsets to whole pixels with y down, in visual order. False when a record falls outside its
 // fields (refused, never clamped) or the sink has no room.
-bool appendGlyphs(const ot::Buffer& buffer, PieceSink& sink) {
-  for (unsigned i = 0; i < buffer.len(); i++) {
+// The records of buffer glyphs [from, to), in buffer order, into `sink`.
+bool appendRecords(const ot::Buffer& buffer, const unsigned from, const unsigned to, PieceSink& sink) {
+  for (unsigned i = from; i < to; i++) {
     const ot::GlyphPosition& pos = buffer.pos[i];
     const uint32_t glyph = buffer.info[i].codepoint;
     const int64_t advance = (static_cast<int64_t>(pos.xAdvance) + 2) >> 2;
@@ -114,22 +116,51 @@ bool appendGlyphs(const ot::Buffer& buffer, PieceSink& sink) {
   return true;
 }
 
+bool appendGlyphs(const ot::Buffer& buffer, PieceSink& sink) { return appendRecords(buffer, 0, buffer.len(), sink); }
+
+// A number run's glyphs, written left to right. Its sign and digits are numbers, on an even level, so a digit the font
+// does not draw inside the sign follows it, as HarfBuzz places it when it shapes the run left to right; the engine
+// shapes Arabic right to left (deviation 11), which puts that digit before the sign. Its output keeps each zero-advance
+// glyph at the pen of the advancing glyph after it (the digits drawn inside the sign come before the sign), so the
+// units -- the zero-advance glyphs and the advancing glyph after them -- are written last first, each as it came: every
+// glyph keeps its place against its unit, and the units read left to right. make_arabic_number_fixtures.py checks
+// that this draws each glyph where HarfBuzz's left-to-right run does.
+bool appendGlyphsLeftToRight(const ot::Buffer& buffer, PieceSink& sink) {
+  const unsigned count = buffer.len();
+  unsigned starts[2 * arabic::kNumberSignDigits + 2];  // a sign and its digits make few glyphs
+  unsigned units = 0;
+  unsigned start = 0;
+  for (unsigned i = 0; i < count; i++) {
+    if (buffer.pos[i].xAdvance == 0 && i + 1 < count) continue;  // the last glyph closes a unit whatever it is
+    if (units == sizeof(starts) / sizeof(starts[0])) return false;
+    starts[units++] = start;
+    start = i + 1;
+  }
+  for (unsigned u = units; u-- > 0;) {
+    if (!appendRecords(buffer, starts[u], u + 1 < units ? starts[u + 1] : count, sink)) return false;
+  }
+  return true;
+}
+
 // What a Glyphs run takes from its script: the plan's script and direction, the letter a face that draws the script
 // maps (upstream's coverage probe), where a long run may be split (between Indic syllables, between Arabic base
-// clusters: a letter with the marks and joiners after it), and the context, of a piece and of a glued neighbour: the
-// syllable for Indic, upstream's. A piece of an Arabic run takes two clusters on either side, as a letter's glyph can
-// follow its neighbour's joining form, which follows the neighbour's own neighbour (Noto's alef takes another glyph
-// after a medial lam than after an initial one). A glued Arabic neighbour gives its whole clusters, as many as fit in
-// kArabicContextCodepoints: both halves of a word cut by a style span then see the whole word, and a ligature across
-// the cut (Allah, four letters) forms alike on both and is drawn once. The context test is the script's: ofScript or
-// ofArabic.
+// clusters: a letter with the marks and joiners after it, between Myanmar syllables), and the context, of a piece and
+// of a glued neighbour: the syllable for Indic, upstream's, and for Myanmar, where the design measured a syllable on
+// either side to shape as the whole phrase does. A piece of an Arabic run takes two clusters on either side, as a
+// letter's glyph can follow its neighbour's joining form, which follows the neighbour's own neighbour (Noto's alef
+// takes another glyph after a medial lam than after an initial one). A glued Arabic neighbour gives its whole clusters,
+// as many as fit in kArabicContextCodepoints: both halves of a word cut by a style span then see the whole word, and a
+// ligature across the cut (Allah, four letters) forms alike on both and is drawn once. The context test is the
+// script's: ofScript, ofArabic or ofMyanmar.
 struct ScriptPolicy {
+  RunKind kind;
   ot::Script script;
   bool backward;  // right to left, as the engine's plan for the script is (Plan::backward): the last code point's
                   // glyphs come out first
   uint32_t probe;
-  const indic::ScriptInfo* indic;  // the Indic script; null for Arabic
-  bool (*clusterBreak)(uint32_t prev, uint32_t cp);
+  const indic::ScriptInfo* indic;  // the Indic script; null for Arabic and Myanmar
+  // Whether a run may be split before cps[i] of cps[0, count), 0 < i < count.
+  bool (*clusterBreak)(const uint32_t* cps, unsigned count, unsigned i);
   uint8_t contextClusters;    // on either side of a piece of a long run, and of a token from its glued neighbours
   uint8_t contextCodepoints;  // a glued neighbour's context, at most: kContextCodepoints, kArabicContextCodepoints
 };
@@ -139,21 +170,64 @@ constexpr uint8_t kArabicContextClusters = 2;
 constexpr unsigned kMaxContextCodepoints = kArabicContextCodepoints;
 static_assert(kMaxContextCodepoints >= kContextCodepoints && kArabicContextCodepoints <= UINT8_MAX);
 
+bool indicBreak(const uint32_t* cps, unsigned /*count*/, const unsigned i) {
+  return indic::syllableBreakAllowed(cps[i - 1], cps[i]);
+}
+
+bool arabicBreak(const uint32_t* cps, unsigned /*count*/, const unsigned i) {
+  return arabic::isClusterBreak(cps[i - 1], cps[i]);
+}
+
+// A number run is drawn as one: the sign is shaped around all its digits.
+bool numberBreak(const uint32_t* /*cps*/, unsigned /*count*/, unsigned /*i*/) { return false; }
+
+// The break rule reads the code point after cps[i] past any dot below.
+bool myanmarBreak(const uint32_t* cps, const unsigned count, const unsigned i) {
+  unsigned next = i + 1;
+  while (next < count && cps[next] == myanmar::DOT_BELOW) next++;
+  return myanmar::breakAllowed(cps[i - 1], cps[i], next < count ? cps[next] : 0);
+}
+
 ScriptPolicy policyOf(const Run& run) {
-  if (run.arabic) {
-    return {.script = ot::Script::Arabic,
-            .backward = true,
-            .probe = arabic::kProbe,
-            .indic = nullptr,
-            .clusterBreak = arabic::isClusterBreak,
-            .contextClusters = kArabicContextClusters,
-            .contextCodepoints = kArabicContextCodepoints};
+  switch (run.kind) {
+    case RunKind::Arabic:
+      return {.kind = RunKind::Arabic,
+              .script = ot::Script::Arabic,
+              .backward = true,
+              .probe = arabic::kProbe,
+              .indic = nullptr,
+              .clusterBreak = arabicBreak,
+              .contextClusters = kArabicContextClusters,
+              .contextCodepoints = kArabicContextCodepoints};
+    case RunKind::ArabicNumber:
+      // Shaped as Arabic, with no context: a sign joins nothing, and its run is a number, on a level of its own. The
+      // face is asked for the sign itself (shapeToken), which it may lack while it maps beh.
+      return {.kind = RunKind::ArabicNumber,
+              .script = ot::Script::Arabic,
+              .backward = true,
+              .probe = 0x06DD,
+              .indic = nullptr,
+              .clusterBreak = numberBreak,
+              .contextClusters = 0,
+              .contextCodepoints = 0};
+    case RunKind::Myanmar:
+      return {.kind = RunKind::Myanmar,
+              .script = ot::Script::Myanmar,
+              .backward = false,
+              .probe = myanmar::kProbe,
+              .indic = nullptr,
+              .clusterBreak = myanmarBreak,
+              .contextClusters = 1,
+              .contextCodepoints = kContextCodepoints};
+    case RunKind::Indic:
+      break;
   }
-  return {.script = static_cast<ot::Script>(indic::indexOf(*run.script)),
+  return {.kind = RunKind::Indic,
+          .script = static_cast<ot::Script>(indic::indexOf(*run.script)),
           .backward = false,
           .probe = run.script->probe,
           .indic = run.script,
-          .clusterBreak = indic::syllableBreakAllowed,
+          .clusterBreak = indicBreak,
           .contextClusters = 1,
           .contextCodepoints = kContextCodepoints};
 }
@@ -179,15 +253,52 @@ bool ofScript(const uint32_t* cps, const unsigned count, const indic::ScriptInfo
   return letter;
 }
 
-// The last syllable of `text` (glued before the token) into `out` (room for kContextCodepoints), when it is of
-// `script`; none otherwise.
-Context lastSyllable(const std::string_view text, const indic::ScriptInfo& script, uint32_t* out) {
+// Whether a Myanmar context is Myanmar: each code point a member, a joiner or the dotted circle, and one of them a
+// member.
+bool ofMyanmar(const uint32_t* cps, const unsigned count) {
+  bool member = false;
+  for (unsigned i = 0; i < count; i++) {
+    if (myanmar::isRunMember(cps[i])) {
+      member = true;
+    } else if (!myanmar::isShared(cps[i])) {
+      return false;
+    }
+  }
+  return member;
+}
+
+// Whether a context of `policy` (Indic or Myanmar) is of its script.
+bool ofPolicy(const ScriptPolicy& policy, const uint32_t* cps, const unsigned count) {
+  return policy.kind == RunKind::Myanmar ? ofMyanmar(cps, count) : ofScript(cps, count, *policy.indic);
+}
+
+// The code point of `text` at byte `pos` or after it that is not the dot below, 0 at the text's end: what
+// myanmar::breakAllowed reads after the code point before `pos`.
+uint32_t nextPastDotBelow(const std::string_view text, size_t pos) {
+  while (pos < text.size()) {
+    const uint32_t cp = TextShaping::decodeAt(text, pos);
+    if (cp != myanmar::DOT_BELOW) return cp;
+  }
+  return 0;
+}
+
+// Whether a syllable of `policy`'s script (Indic or Myanmar) starts at `cp`, after `previous`; `end` is the byte of
+// `text` just past `cp`.
+bool syllableStarts(const ScriptPolicy& policy, const std::string_view text, const uint32_t previous, const uint32_t cp,
+                    const size_t end) {
+  if (policy.kind == RunKind::Myanmar) return myanmar::breakAllowed(previous, cp, nextPastDotBelow(text, end));
+  return indic::syllableBreakAllowed(previous, cp);
+}
+
+// The last syllable of `text` (glued before the token) into `out` (room for kContextCodepoints), when it is of the
+// policy's script (Indic or Myanmar); none otherwise.
+Context lastSyllable(const std::string_view text, const ScriptPolicy& policy, uint32_t* out) {
   Context context;
   uint32_t previous = 0;
   for (size_t pos = 0; pos < text.size();) {
     const bool first = pos == 0;
     const uint32_t cp = TextShaping::decodeAt(text, pos);
-    if (!first && indic::syllableBreakAllowed(previous, cp)) context = Context{};
+    if (!first && syllableStarts(policy, text, previous, cp, pos)) context = Context{};
     if (context.count == kContextCodepoints) {
       memmove(out, out + 1, (kContextCodepoints - 1) * sizeof(uint32_t));
       context.count--;
@@ -196,17 +307,17 @@ Context lastSyllable(const std::string_view text, const indic::ScriptInfo& scrip
     out[context.count++] = cp;
     previous = cp;
   }
-  return ofScript(out, context.count, script) ? context : Context{};
+  return ofPolicy(policy, out, context.count) ? context : Context{};
 }
 
-// The first syllable of `text` (glued after the token) into `out` (room for kContextCodepoints), when it is of
-// `script`; none otherwise.
-Context firstSyllable(const std::string_view text, const indic::ScriptInfo& script, uint32_t* out) {
+// The first syllable of `text` (glued after the token) into `out` (room for kContextCodepoints), when it is of the
+// policy's script (Indic or Myanmar); none otherwise.
+Context firstSyllable(const std::string_view text, const ScriptPolicy& policy, uint32_t* out) {
   Context context;
   uint32_t previous = 0;
   for (size_t pos = 0; pos < text.size();) {
     const uint32_t cp = TextShaping::decodeAt(text, pos);
-    if (context.count > 0 && indic::syllableBreakAllowed(previous, cp)) break;
+    if (context.count > 0 && syllableStarts(policy, text, previous, cp, pos)) break;
     if (context.count == kContextCodepoints) {
       context.cut = true;
       break;
@@ -214,7 +325,7 @@ Context firstSyllable(const std::string_view text, const indic::ScriptInfo& scri
     out[context.count++] = cp;
     previous = cp;
   }
-  return ofScript(out, context.count, script) ? context : Context{};
+  return ofPolicy(policy, out, context.count) ? context : Context{};
 }
 
 // Whether an Arabic context cluster is Arabic: each code point a run member or a joiner, and one of them a letter (a
@@ -306,7 +417,9 @@ bool shapeRun(ShapingFace& face, const Request& request, const ScriptPolicy& pol
   const bool withContext = before.count != 0 || after.count != 0;
   const Attempt whole = attempt(0, count, ot::RunContext{before.count, after.count, before.cut || after.cut});
   if (whole != Attempt::TooLong) {
-    return whole == Attempt::Shaped && (buffer.len() != 0 || withContext) && appendGlyphs(buffer, sink);
+    const bool leftToRight = policy.kind == RunKind::ArabicNumber;
+    return whole == Attempt::Shaped && (buffer.len() != 0 || withContext) &&
+           (leftToRight ? appendGlyphsLeftToRight(buffer, sink) : appendGlyphs(buffer, sink));
   }
 
   // Upstream's piecewise loop: as many clusters as the buffer holds, or one when it holds fewer. Each piece shapes
@@ -318,7 +431,7 @@ bool shapeRun(ShapingFace& face, const Request& request, const ScriptPolicy& pol
   const unsigned runBegin = before.count;
   const unsigned runEnd = count - after.count;
   const auto breakAt = [&](const unsigned i) {
-    return i == 0 || i == count || i == runBegin || i == runEnd || policy.clusterBreak(cps[i - 1], cps[i]);
+    return i == 0 || i == count || i == runBegin || i == runEnd || policy.clusterBreak(cps, count, i);
   };
   const auto prevBreak = [&](unsigned i) {
     do i--;
@@ -412,18 +525,19 @@ size_t joinersBefore(const std::string_view text, size_t at, const unsigned most
 // `run` of the token as a Glyphs piece's records, shaped into `sink`: its code points, with context, at most
 // policy.contextCodepoints on either side. Before it, an Arabic run takes the joiners just before it in the token (a
 // run starts at a letter, and a ZWJ there joins it); a run from the token's start, those joiners included, takes the
-// glued neighbour's last syllable (Indic) or last clusters (Arabic, as many as fit) before them. After it, a run to the
-// token's end takes the neighbour's first syllable or first clusters.
+// glued neighbour's last syllable (Indic, Myanmar) or last clusters (Arabic, as many as fit) before them. After it, a
+// run to the token's end takes the neighbour's first syllable or first clusters.
 bool shapeGlyphs(const std::string_view text, const Run& run, const ScriptPolicy& policy, const Request& request,
                  const RunMemory& memory, PieceSink& sink) {
   uint32_t* const cps = memory.codepoints;
   const unsigned room = policy.contextCodepoints;  // at most kMaxContextCodepoints: CallMemory's room holds both sides
-  const size_t lead = run.arabic ? joinersBefore(text, run.begin, room) : run.begin;
+  const bool arabicRun = run.kind == RunKind::Arabic;
+  const size_t lead = arabicRun ? joinersBefore(text, run.begin, room) : run.begin;
   const auto joiners = static_cast<unsigned>((run.begin - lead) / kJoinerBytes);  // at most `room`
   Context before;
-  if (lead == 0 && !request.before.empty()) {
-    before = run.arabic ? lastArabicClusters(request.before, room - joiners, cps)
-                        : lastSyllable(request.before, *run.script, cps);
+  if (lead == 0 && !request.before.empty() && run.kind != RunKind::ArabicNumber) {
+    before =
+        arabicRun ? lastArabicClusters(request.before, room - joiners, cps) : lastSyllable(request.before, policy, cps);
   }
   for (size_t pos = lead; pos < run.begin;) cps[before.count++] = TextShaping::decodeAt(text, pos);
   unsigned count = before.count;  // at most `room`
@@ -432,11 +546,26 @@ bool shapeGlyphs(const std::string_view text, const Run& run, const ScriptPolicy
     cps[count++] = TextShaping::decodeAt(text, pos);
   }
   Context after;
-  if (run.end == text.size() && !request.after.empty()) {
-    after = run.arabic ? firstArabicClusters(request.after, room, cps + count)
-                       : firstSyllable(request.after, *run.script, cps + count);
+  if (run.end == text.size() && !request.after.empty() && run.kind != RunKind::ArabicNumber) {
+    after = arabicRun ? firstArabicClusters(request.after, room, cps + count)
+                      : firstSyllable(request.after, policy, cps + count);
   }
   return shapeRun(*request.face, request, policy, cps, count + after.count, before, after, memory.buffer, sink);
+}
+
+// The number run starting at `begin`, at a number sign: the sign and the digits after it, at most
+// arabic::kNumberSignDigits. Returns its end; `begin` when no digit follows the sign: then there is no run.
+size_t numberRunEnd(const std::string_view text, const size_t begin) {
+  size_t pos = begin;
+  if (!arabic::isNumberSign(TextShaping::decodeAt(text, pos))) return begin;
+  unsigned digits = 0;
+  while (pos < text.size() && digits < arabic::kNumberSignDigits) {
+    size_t next = pos;
+    if (!arabic::isNumberSignDigit(TextShaping::decodeAt(text, next))) break;
+    pos = next;
+    digits++;
+  }
+  return digits > 0 ? pos : begin;
 }
 
 // The Arabic run starting at `begin`: members and, after one, ZWJ and ZWNJ. Returns its end.
@@ -449,6 +578,24 @@ size_t arabicRunEnd(const std::string_view text, const size_t begin) {
     pos = next;
   }
   return pos;
+}
+
+// Where the Myanmar run that starts at byte `begin` ends: members, with the joiners and dotted circles among them and
+// around them. `begin` when no member follows the joiners and dotted circles there: no Myanmar run starts at it.
+size_t myanmarRunEnd(const std::string_view text, const size_t begin) {
+  size_t pos = begin;
+  bool member = false;
+  while (pos < text.size()) {
+    size_t next = pos;
+    const uint32_t cp = TextShaping::decodeAt(text, next);
+    if (myanmar::isRunMember(cp)) {
+      member = true;
+    } else if (!myanmar::isShared(cp)) {
+      break;
+    }
+    pos = next;
+  }
+  return member ? pos : begin;
 }
 
 // The first Arabic run of `text` at or after byte `from`, as scanRuns finds it: [begin, end), both text.size() when
@@ -508,9 +655,19 @@ size_t scanRuns(std::string_view text, Run* out) {
   while (pos < text.size() && count < room) {
     size_t next = pos;
     const uint32_t first = TextShaping::decodeAt(text, next);
+    if (const size_t end = myanmarRunEnd(text, pos); end > pos) {
+      out[count++] = Run{static_cast<uint16_t>(pos), static_cast<uint16_t>(end), nullptr, RunKind::Myanmar};
+      pos = end;
+      continue;
+    }
+    if (const size_t end = numberRunEnd(text, pos); end > pos) {
+      out[count++] = Run{static_cast<uint16_t>(pos), static_cast<uint16_t>(end), nullptr, RunKind::ArabicNumber};
+      pos = end;
+      continue;
+    }
     if (arabic::isRunMember(first) && !arabic::isMark(first)) {
       const size_t end = arabicRunEnd(text, pos);
-      out[count++] = Run{static_cast<uint16_t>(pos), static_cast<uint16_t>(end), nullptr, true};
+      out[count++] = Run{static_cast<uint16_t>(pos), static_cast<uint16_t>(end), nullptr, RunKind::Arabic};
       pos = end;
       continue;
     }
@@ -544,21 +701,43 @@ bool holdsIndic(std::string_view text) {
   return false;
 }
 
-bool holdsShaped(std::string_view text) { return holdsIndic(text) || arabic::holdsArabic(text.data(), text.size()); }
+bool holdsShaped(std::string_view text) {
+  return holdsIndic(text) || arabic::holdsArabic(text.data(), text.size()) ||
+         myanmar::holdsMyanmar(text.data(), text.size());
+}
+
+namespace {
+
+// A piece's bytes are uint16_t, and ot::Buffer numbers at most 65536 slots.
+bool callFits(const size_t tokenBytes, const unsigned runCodepoints) {
+  return tokenBytes <= UINT16_MAX && runCodepoints <= (UINT16_MAX - kGrowthExtra) / kGrowthFactor;
+}
+
+// A call without a face writes IndicReorder's form and nothing else, so it takes the form's room alone: a book in such
+// a font holds a heap block of the longest token's form (in 512 B steps), not the 6.5 KB a shaping call takes on the
+// C3. The code points: a run's (at most tokenBytes / kRunCodepointBytes) and the context on either side (an Arabic
+// run's joiners before it count in its context).
+Sizes callSizes(const size_t tokenBytes, const CallKind kind, const unsigned runCodepoints) {
+  const bool shapes = kind == CallKind::Shape;
+  return Sizes{shapes, shapes ? ot::Buffer::bytesFor(kGrowthFactor * runCodepoints + kGrowthExtra) : 0,
+               shapes ? maxRuns(tokenBytes) : 0,
+               shapes ? tokenBytes / kRunCodepointBytes + 2 * kMaxContextCodepoints : 0, 3 * tokenBytes + 1};
+}
+
+}  // namespace
+
+size_t CallMemory::bytesFor(const size_t tokenBytes, const CallKind kind, const unsigned runCodepoints) {
+  if (!callFits(tokenBytes, runCodepoints)) return 0;
+  Carver measure;
+  layOut(measure, callSizes(tokenBytes, kind, runCodepoints));
+  return measure.bytes();
+}
 
 CallMemory::CallMemory(BuildArena* const arena, const size_t tokenBytes, const CallKind kind,
                        const unsigned runCodepoints) {
-  // A piece's bytes are uint16_t, and ot::Buffer numbers at most 65536 slots.
-  if (tokenBytes > UINT16_MAX || runCodepoints > (UINT16_MAX - kGrowthExtra) / kGrowthFactor) return;
-  // A call without a face writes IndicReorder's form and nothing else, so it takes the form's room alone: a book in
-  // such a font holds a heap block of the longest token's form (in 512 B steps), not the 6.5 KB a shaping call takes
-  // on the C3.
-  // The code points: a run's (at most tokenBytes / kRunCodepointBytes) and the context on either side (an Arabic
-  // run's joiners before it count in its context).
+  if (!callFits(tokenBytes, runCodepoints)) return;
   const bool shapes = kind == CallKind::Shape;
-  const Sizes sizes{shapes, shapes ? ot::Buffer::bytesFor(kGrowthFactor * runCodepoints + kGrowthExtra) : 0,
-                    shapes ? maxRuns(tokenBytes) : 0,
-                    shapes ? tokenBytes / kRunCodepointBytes + 2 * kMaxContextCodepoints : 0, 3 * tokenBytes + 1};
+  const Sizes sizes = callSizes(tokenBytes, kind, runCodepoints);
   Carver measure;
   layOut(measure, sizes);
 
@@ -606,7 +785,8 @@ bool CallMemory::valid() const { return reorder_ != nullptr; }
 
 Outcome shapeToken(const std::string_view text, const Request& request, CallMemory& memory, PieceSink& sink) {
   if (!holdsShaped(text)) return Outcome::Plain;
-  // Without a face, Arabic is drawn unjoined (decision 5), so only Indic text needs a form.
+  // Without a face, Arabic is drawn unjoined (decision 5) and Myanmar as its code points, so only Indic text needs a
+  // form.
   if (request.face == nullptr && !holdsIndic(text)) return Outcome::Plain;
   if (!memory.valid() || text.size() > memory.tokenBytes_) return Outcome::Degraded;
   const auto size = static_cast<uint16_t>(text.size());  // tokenBytes_ is at most UINT16_MAX
@@ -624,16 +804,19 @@ Outcome shapeToken(const std::string_view text, const Request& request, CallMemo
   bool formed = false;
   for (size_t r = 0; r < runCount; r++) {
     const Run& run = runs[r];
-    if (!run.arabic && run.script == nullptr) continue;  // shared code points alone: Text
+    if (run.kind == RunKind::Indic && run.script == nullptr) continue;  // shared code points alone: Text
     const ScriptPolicy policy = policyOf(run);
     const ot::Face* const shaping = request.face->current();
     if (shaping == nullptr) return Outcome::Degraded;
     uint32_t probe = 0;
-    const bool mapped = shaping->nominalGlyph(policy.probe, &probe);  // upstream's coverage
-    // A script the face does not draw: an Arabic run is Text, unjoined as step 1 draws it (decision 5); an Indic run
-    // is Reordered where IndicReorder changes it, else Text.
-    if (!mapped && (run.arabic || !indicReorderForDisplay(text.data() + run.begin, run.end - run.begin, form,
-                                                          memory.reorderRoom(), &formBytes))) {
+    size_t signEnd = run.begin;
+    // A number run asks for its sign, which a face may lack while it maps beh.
+    const uint32_t probeCp = run.kind == RunKind::ArabicNumber ? TextShaping::decodeAt(text, signEnd) : policy.probe;
+    const bool mapped = shaping->nominalGlyph(probeCp, &probe);  // upstream's coverage
+    // A script the face does not draw: an Arabic run is Text, unjoined as step 1 draws it (decision 5), and so is a
+    // Myanmar run, as its code points; an Indic run is Reordered where IndicReorder changes it, else Text.
+    if (!mapped && (run.kind != RunKind::Indic || !indicReorderForDisplay(text.data() + run.begin, run.end - run.begin,
+                                                                          form, memory.reorderRoom(), &formBytes))) {
       continue;
     }
     if (run.begin > textFrom && !sink.beginPiece(PieceKind::Text, textFrom, run.begin)) return Outcome::Degraded;
@@ -650,10 +833,10 @@ Outcome shapeToken(const std::string_view text, const Request& request, CallMemo
   return Outcome::Formed;
 }
 
-bool drawsArabic(ShapingFace& face) {
+bool draws(ShapingFace& face, const uint32_t probe) {
   const ot::Face* const shaping = face.current();
   uint32_t glyph = 0;
-  return shaping == nullptr || shaping->nominalGlyph(arabic::kProbe, &glyph);
+  return shaping == nullptr || shaping->nominalGlyph(probe, &glyph);
 }
 
 }  // namespace IndicShaper

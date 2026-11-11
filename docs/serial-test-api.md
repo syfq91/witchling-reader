@@ -190,7 +190,7 @@ Reply: `ACT_OK`, or `ACT_ERROR:<reason>` (`no such file <path>`, `bad position <
 > CMD:IDLE:60000:SCREEN
 < IDLE:2458
 > CMD:STATE
-< STATE:activity=EpubReader stack="" book="/test/The Anarchy - Dalrymple, William.epub" spine=20/40 page=5/40 font=Bookerly font_pt=14 chapter="1. THE BRITISH" chapter_page=5/40 percent=1 heap=64616 maxblock=57332
+< STATE:activity=EpubReader stack="" book="/test/The Anarchy - Dalrymple, William.epub" spine=20/40 page=5/40 font=Serif font_pt=14 chapter="1. THE BRITISH" chapter_page=5/40 percent=1 heap=64616 maxblock=57332
 ```
 
 ### What is on screen: `STATE`
@@ -488,7 +488,14 @@ SET_ERROR:bad value <value>
   language picker shows it (`Deutsch`, `简体中文`), or its index in the build's language list
   (English is 0).
 - `SET` makes the switch the language picker makes, saves it, and redraws the screen on display.
-  A screen that built its rows when it opened keeps them until it is opened again.
+  A screen that built its rows when it opened keeps them until it is opened again. It asks no
+  download offer: every language but English reads its pack from `/.crosspoint/lang/<code>.cplang`
+  ([i18n.md](i18n.md#how-the-strings-reach-the-screen)), and without one the reply names the
+  language while the strings stay English. The log says which: `I18N: language pack de active`,
+  with `FLP: language 3 built: ...` when the slot was built from the card or `FLP: language 3: the
+  slot holds this pack, nothing built` when it was not, and `I18N: language de: no pack on the card`
+  otherwise. `FS:PUT` a pack there, then `SET` the language again, to try one without the Font
+  Manager.
 - Change it back afterwards: the setting persists, and the next session reads it.
 
 ```
@@ -702,6 +709,7 @@ shaper itself is linked into every build.
 ```
 CMD:FS:LS:<folder>
 CMD:FS:RM:<path>
+CMD:FS:RMF:<path>
 CMD:FS:PUT:<path>:<size>:<crc32hex>
 CMD:FS:GET:<path>
 CMD:FS:HASH:<path>
@@ -711,7 +719,7 @@ CMD:FS:MV:<from>:<to>
 
 Every path is a path on the card and starts with `/`. A FAT name cannot hold `:`, so the fields
 around one are never in doubt. An unknown verb, or a path that does not start with `/`, gets
-`FS_ERROR:expected LS, RM, PUT, GET, HASH, MKDIR or MV, then :/<path>`; a verb with the wrong
+`FS_ERROR:expected LS, RM, RMF, PUT, GET, HASH, MKDIR or MV, then :/<path>`; a verb with the wrong
 arguments gets `FS_ERROR:expected <its form>`.
 
 `LS` lists a folder, one line an entry, then the count:
@@ -724,6 +732,11 @@ FS_END:2
 
 `RM` removes a file, or a folder with everything in it: `FS_OK:removed <path>`. Errors: `FS_ERROR:protected
 <path>`, `FS_ERROR:not found <path>`, `FS_ERROR:not a folder <path>`, `FS_ERROR:could not remove <path>`.
+
+`RMF` is `RM` without the protection below: it also removes a dot-named item (`/.crossink`, even `/.crosspoint` with
+the settings and the credential stores in it), a system folder and a credential store, for a test that must clean up
+what it made there. It still refuses the root, and any path with a segment spelled like an 8.3 alias (`FS_ERROR:protected
+<path>`), which might remove another entry than the one it names. Nothing asks twice: name the path exactly.
 
 `PUT` uploads a file, from any screen:
 
@@ -841,7 +854,7 @@ deleting a book's section cache (`/.crosspoint/epub_<hash>/spines/...`) forces a
 folder under `/.crosspoint/fonts` can be looked at or removed between runs, and the web bundle, test fonts and
 dictionaries go onto the card with `PUT`. Hidden folders can be reached; the credential stores (`wifi.json`,
 `opds.json`, `koreader.json`), a dot-named item itself (`/.crosspoint` cannot be removed or moved) and any path
-spelled with an 8.3 alias are refused (`lib/FsHelpers/ProtectedPaths.h`). Removing, replacing or moving what an
+spelled with an 8.3 alias are refused (`lib/FsHelpers/ProtectedPaths.h`), but for `RMF`'s removal. Removing, replacing or moving what an
 open book is using is not guarded: do it from Home. On the USB Transfer screen a command line is at most 127 bytes.
 Development builds only.
 

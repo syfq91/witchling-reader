@@ -20,6 +20,7 @@
 #include "Epub/FontSizeLadder.h"
 #include "Epub/ParsedText.h"
 #include "Epub/blocks/TextBlock.h"
+#include "Epub/hyphenation/Hyphenator.h"
 #include "GfxRenderer.h"
 
 namespace {
@@ -494,8 +495,8 @@ TEST(WordSizeSerialization, EmptyBlockRoundTrips) {
 // ---------------------------------------------------------------------------
 
 namespace {
-// Bookerly body at 14 pt: rungs 10/12/14/16/18 pt as percent of the body.
-FontSizeLadder bookerly14Ladder() {
+// Serif body at 14 pt: rungs 10/12/14/16/18 pt as percent of the body.
+FontSizeLadder serif14Ladder() {
   FontSizeLadder ladder;
   ladder.addRung(101, 71);   // 10 pt
   ladder.addRung(102, 85);   // 12 pt
@@ -514,7 +515,7 @@ TEST(FontSizeLadderTest, EmptyLadderKeepsScaleFallback) {
 }
 
 TEST(FontSizeLadderTest, SnapsToNearestRungWithResidual) {
-  const auto ladder = bookerly14Ladder();
+  const auto ladder = serif14Ladder();
   // h1 default 160% → nearest rung is 18 pt (128%), residual 160/128.
   const auto h1 = ladder.resolve(160.0f);
   EXPECT_EQ(h1.fontId, 105);
@@ -530,7 +531,7 @@ TEST(FontSizeLadderTest, SnapsToNearestRungWithResidual) {
 }
 
 TEST(FontSizeLadderTest, NearBodySizesStayOnBodyFont) {
-  const auto ladder = bookerly14Ladder();
+  const auto ladder = serif14Ladder();
   // 105% is nearest the 100% body rung → fontId 0, pure scale (legacy path).
   const auto near = ladder.resolve(105.0f);
   EXPECT_EQ(near.fontId, 0);
@@ -538,7 +539,7 @@ TEST(FontSizeLadderTest, NearBodySizesStayOnBodyFont) {
 }
 
 TEST(FontSizeLadderTest, ResidualDeadZoneSnapsToNativeGlyphs) {
-  const auto ladder = bookerly14Ladder();
+  const auto ladder = serif14Ladder();
   // 87% → 12 pt rung (85%), residual 1.024 — inside the 3% zone → native 12 pt.
   const auto near12 = ladder.resolve(87.0f);
   EXPECT_EQ(near12.fontId, 102);
@@ -628,7 +629,7 @@ TEST(FontSizeLadderTest, AnIncompleteNativeLadderIsIgnored) {
 // scaleOf undoes resolve: the chosen font's size times the residual is the size asked for, which
 // is how the chapter parser puts a body-relative (rem) span into an already resolved block.
 TEST(FontSizeLadderTest, ScaleOfTimesResidualIsTheResolvedSize) {
-  for (const auto& ladder : {bookerly14Ladder(), nativeLadder(), FontSizeLadder{}}) {
+  for (const auto& ladder : {serif14Ladder(), nativeLadder(), FontSizeLadder{}}) {
     for (const float pct : {60.0f, 80.0f, 100.0f, 114.0f, 160.0f, 240.0f}) {
       const auto r = ladder.resolve(pct);
       const float size = ladder.scaleOf(r.fontId) * r.residual;
@@ -636,8 +637,8 @@ TEST(FontSizeLadderTest, ScaleOfTimesResidualIsTheResolvedSize) {
       EXPECT_NEAR(pct / 100.0f, size, pct / 100.0f * FontSizeLadder::kResidualDeadZone) << pct;
     }
   }
-  EXPECT_FLOAT_EQ(1.0f, bookerly14Ladder().scaleOf(0));
-  EXPECT_FLOAT_EQ(1.0f, bookerly14Ladder().scaleOf(12345));  // not a font of the ladder
+  EXPECT_FLOAT_EQ(1.0f, serif14Ladder().scaleOf(0));
+  EXPECT_FLOAT_EQ(1.0f, serif14Ladder().scaleOf(12345));  // not a font of the ladder
 }
 
 // ---------------------------------------------------------------------------
@@ -748,3 +749,104 @@ TEST(WordSizeRender, BlockMultiplierComposesWithWordSize) {
   EXPECT_FLOAT_EQ(renderer.drawCalls[0].scale, 1.5f);   // block multiplier alone
   EXPECT_FLOAT_EQ(renderer.drawCalls[1].scale, 0.75f);  // 1.5 x 50%
 }
+
+
+// ---------------------------------------------------------------------------
+// Guide dots (render-time reading aid; idea from CrossInk)
+// ---------------------------------------------------------------------------
+
+// setGuideDots is a process-wide render option: always reset it so a failing
+// test can't leak the enabled state into unrelated render tests.
+class GuideDotsRender : public ::testing::Test {
+ protected:
+  void SetUp() override { TextBlock::setGuideDots(true); }
+  void TearDown() override { TextBlock::setGuideDots(false); }
+};
+
+TEST_F(GuideDotsRender, DotCenteredInEachGapOnlyBetweenWords) {
+  GfxRenderer renderer;
+  // Fixed-width metrics: "aa"/"bb"/"cc" are 20 px wide, laid out with 5 px gaps.
+  TextBlock line({"aa", "bb", "cc"}, {0, 25, 50},
+                 {EpdFontFamily::REGULAR, EpdFontFamily::REGULAR, EpdFontFamily::REGULAR}, noIndentStyle());
+  line.render(renderer, kFontId, 0, 100);
+
+  // 3 words -> exactly 2 dots: none before the first word, none after the last.
+  ASSERT_EQ(renderer.fillRectCalls.size(), 2u);
+  // ASCENDER=16 -> dotSize 2. Gap [20,25): centered dot at 20 + (5-2)/2 = 21.
+  EXPECT_EQ(renderer.fillRectCalls[0].x, 21);
+  EXPECT_EQ(renderer.fillRectCalls[1].x, 46);
+  // A third of the ascender above the baseline: 100 + 16 - 16/3 - 2/2 = 110.
+  EXPECT_EQ(renderer.fillRectCalls[0].y, 110);
+  EXPECT_EQ(renderer.fillRectCalls[0].w, 2);
+  EXPECT_EQ(renderer.fillRectCalls[0].h, 2);
+  EXPECT_TRUE(renderer.fillRectCalls[0].state);
+}
+
+TEST_F(GuideDotsRender, DisabledDrawsNoDots) {
+  TextBlock::setGuideDots(false);
+  GfxRenderer renderer;
+  TextBlock line({"aa", "bb"}, {0, 25}, {EpdFontFamily::REGULAR, EpdFontFamily::REGULAR}, noIndentStyle());
+  line.render(renderer, kFontId, 0, 100);
+
+  EXPECT_EQ(renderer.fillRectCalls.size(), 0u);
+  EXPECT_EQ(renderer.drawCalls.size(), 2u);  // words still render
+}
+
+TEST_F(GuideDotsRender, CrampedGapGetsNoDot) {
+  GfxRenderer renderer;
+  // Adjacent styled runs of one word: "a" ends at x=10 and "b" starts there,
+  // so there is no empty space to mark.
+  const auto bold = static_cast<EpdFontFamily::Style>(EpdFontFamily::BOLD);
+  TextBlock line({"a", "b"}, {0, 10}, {bold, EpdFontFamily::REGULAR}, noIndentStyle());
+  line.render(renderer, kFontId, 0, 100);
+
+  EXPECT_EQ(renderer.fillRectCalls.size(), 0u);
+}
+
+TEST_F(GuideDotsRender, SingleWordLineGetsNoDot) {
+  GfxRenderer renderer;
+  TextBlock line({"alone"}, {0}, {EpdFontFamily::REGULAR}, noIndentStyle());
+  line.render(renderer, kFontId, 0, 100);
+
+  EXPECT_EQ(renderer.fillRectCalls.size(), 0u);
+}
+
+// The split search measures a kind of prefix (with an inserted hyphen, or without) only until one is too wide, since a
+// longer prefix of that kind is no narrower. What it chooses is unchanged: at every column, the first line ends with
+// the widest candidate of either kind that fits, a tie going to the shorter, as measuring every candidate chose.
+TEST(HyphenationSearch, TheWidestFittingPrefixIsChosenAtEveryColumn) {
+  GfxRenderer renderer;
+  Hyphenator::setPreferredLanguage("de");
+  for (const std::string word : {"Quadratkilometerstand", "Kilometer_Quadratwurzelrechnung"}) {
+    const std::vector<Hyphenator::BreakInfo> breaks = Hyphenator::breakOffsets(word, /*includeFallback=*/true);
+    ASSERT_GE(breaks.size(), 3u) << word;
+    for (int column = 30; column < static_cast<int>(word.size()) * GfxRenderer::GLYPH_W; column += 5) {
+      // The oracle: every candidate measured, as the shim measures (each code point a glyph, the hyphen one more).
+      int bestWidth = -1;
+      size_t bestOffset = 0;
+      bool bestHyphen = false;
+      for (const auto& info : breaks) {
+        if (info.byteOffset == 0 || info.byteOffset >= word.size()) continue;
+        const int width =
+            static_cast<int>(info.byteOffset + (info.requiresInsertedHyphen ? 1 : 0)) * GfxRenderer::GLYPH_W;
+        if (width <= column && width > bestWidth) {
+          bestWidth = width;
+          bestOffset = info.byteOffset;
+          bestHyphen = info.requiresInsertedHyphen;
+        }
+      }
+      ParsedText text(false, /*hyphenationEnabled=*/true, noIndentStyle());
+      text.addWord(word, EpdFontFamily::REGULAR);
+      const auto result = layout(text, renderer, static_cast<uint16_t>(column));
+      ASSERT_FALSE(result.lines.empty()) << word << " at " << column;
+      const std::string first = result.lines[0]->wordText(0);
+      if (bestWidth < 0) {
+        EXPECT_EQ(word.substr(0, first.size()), first) << word << " at " << column;  // not split at a candidate
+        continue;
+      }
+      EXPECT_EQ(word.substr(0, bestOffset) + (bestHyphen ? "-" : ""), first) << word << " at " << column;
+    }
+  }
+  Hyphenator::setPreferredLanguage("");
+}
+

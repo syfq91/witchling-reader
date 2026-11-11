@@ -14,6 +14,9 @@ uint8_t indexOf(const freeink::ui::KeyboardLayoutId id) {
   return COUNT;
 }
 
+freeink::ui::KeyboardLayoutId forLanguage(const Language /*language*/) {
+  return freeink::ui::KeyboardLayoutId::QwertyEn;
+}
 uint16_t layoutBit(const freeink::ui::KeyboardLayoutId id) {
   const uint8_t i = indexOf(id);
   return i < COUNT ? bitAt(i) : 0;
@@ -52,6 +55,11 @@ freeink::ui::KeyboardLayoutId next(const freeink::ui::KeyboardLayoutId current) 
     if (mask & bitAt(i)) return ALL[i].id;
   }
   return current;
+}
+
+const char* name(const uint8_t i) {
+  if (i >= COUNT) return "";
+  return ALL[i].label;
 }
 
 }  // namespace keyboard_layouts

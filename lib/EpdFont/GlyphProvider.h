@@ -131,6 +131,11 @@ class GlyphProvider {
   /// Anything else must not be asked for one.
   virtual bool drawsGlyphKeys() const { return false; }
 
+  /// True when the font draws Arabic UI text in its contextual presentation forms (BidiUtils::arabicUiForms): the
+  /// built-in UI faces, which carry the forms (FallbackFaceProvider). GfxRenderer then forms a string before it
+  /// measures, fits or draws it; any other font is given the letters as they are.
+  virtual bool formsArabic() const { return false; }
+
   /// The glyph-ID prefetch: prepare the glyphs `glyphs[0..count)` it lacks in one batch, as prefetch() does for text.
   /// Lookups must still work for anything it skipped.
   virtual void prefetchGlyphs(const uint16_t* glyphs, size_t count) {
@@ -146,6 +151,20 @@ class GlyphProvider {
   virtual ShapingFace* shapingFace(uint32_t* ppem26_6, bool* refused) {
     (void)ppem26_6;
     (void)refused;
+    return nullptr;
+  }
+
+  /// Whether this provider's shaping face is made now (shapingFace() would hand out one it holds): asked without
+  /// making it, so a caller can tell a face it made from one a section build holds.
+  virtual bool holdsShapingFace() const { return false; }
+
+  /// The TrueType face behind this provider that draws `probe` (a script's probe letter: indic::ScriptInfo::probe,
+  /// myanmar::kProbe) in the string begun last (beginText()), when its provider draws glyph keys: the face UI text in
+  /// that script can be shaped over (its provider's shapingFace()). This provider then serves that face's glyphs by
+  /// key (glyph_key) through missGlyph(), as it serves its characters. nullptr when no such face would draw `probe`:
+  /// the script is drawn as its characters. Renders nothing; the face's cmap is the caller's to ask.
+  virtual const EpdFontData* shapingSource(uint32_t probe) {
+    (void)probe;
     return nullptr;
   }
 };

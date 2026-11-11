@@ -16,6 +16,7 @@
 
 #include <cstddef>
 
+#include "CjkUiPack.h"
 #include "activities/RenderLock.h"
 
 namespace {
@@ -132,6 +133,20 @@ void orderReaderFace() {
   for (FallbackFaceProvider& provider : providers) provider.setReaderFaceAfterFirst(afterFirst);
 }
 
+// The CJK UI packs at a provider's size (CjkUiPack), `ctx` the index into SIZES.
+// cppcheck-suppress constParameterCallback ; the signature is FallbackFaceProvider::Packs'
+const EpdFontData* cjkPackFace(void* ctx, const uint32_t codepoint) {
+  return CjkUiPack::face(SIZES[reinterpret_cast<uintptr_t>(ctx)], codepoint);
+}
+// cppcheck-suppress constParameterCallback ; the signature is FallbackFaceProvider::Packs'
+bool cjkPackCovers(void* ctx, const uint32_t codepoint) {
+  return CjkUiPack::covers(SIZES[reinterpret_cast<uintptr_t>(ctx)], codepoint);
+}
+// cppcheck-suppress constParameterCallback ; the signature is FallbackFaceProvider::Packs'
+void cjkPackPrepare(void* ctx, const char* utf8Text) {
+  CjkUiPack::prepare(SIZES[reinterpret_cast<uintptr_t>(ctx)], utf8Text);
+}
+
 void orderFaces() {
   for (size_t size = 0; size < SIZE_COUNT; ++size) {
     const EpdFontData* order[LANGUAGE_COUNT];
@@ -190,6 +205,12 @@ uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
     }
   }
   return ~crc;
+}
+
+// In the reader: whether the book's own face maps `codepoint` (FallbackFaceProvider::setReaderMaps), its cmap asked,
+// nothing rendered. Only while that face can be read (readerFaceAt: under the RenderLock).
+bool readerMapsCodepoint(void* ctx, const uint32_t codepoint) {
+  return readerFaceAt(ctx) && readerFont->mapsCodepoint(codepoint);
 }
 
 // Feeds inflated glyphs to the slot, checking them against the CRC the generator recorded: a face
@@ -328,6 +349,12 @@ void CjkUiFonts::attach(EpdFont& font, const uint8_t points) {
   const size_t size = sizeIndexFor(points);
   copy.provider = &providers[size];
   providers[size].setReaderFace(&readerFaceAt, reinterpret_cast<void*>(size));
+  FallbackFaceProvider::Packs packs;
+  packs.face = &cjkPackFace;
+  packs.covers = &cjkPackCovers;
+  packs.prepare = &cjkPackPrepare;
+  packs.ctx = reinterpret_cast<void*>(size);
+  providers[size].setPacks(packs);
   // The face of the provider's own size: the first attached (main.cpp attaches the regular before the bold).
   if (points == SIZES[size] && !primaryAttached[size]) {
     providers[size].setPrimaryFace(data);
@@ -348,8 +375,15 @@ void CjkUiFonts::setReaderFont(TtfFont* font) {
   }
 }
 
+void CjkUiFonts::setInReader(const bool inReader) {
+  for (size_t size = 0; size < SIZE_COUNT; ++size) {
+    providers[size].setReaderMaps(inReader ? &readerMapsCodepoint : nullptr, reinterpret_cast<void*>(size));
+  }
+}
+
 void CjkUiFonts::setLanguage(const Language language) {
   uiLanguage = language;
+  CjkUiPack::setLanguage(language);
   languageSet = true;
   orderFaces();
 }

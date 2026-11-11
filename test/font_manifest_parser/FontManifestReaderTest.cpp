@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -56,9 +57,9 @@ struct Outcome {
 };
 
 Outcome read(const std::string& json, FontManifestReader::NameCheck familyCheck = familyNameOk,
-             FontManifestReader::NameCheck fileCheck = fileNameOk) {
+             FontManifestReader::NameCheck fileCheck = fileNameOk, const bool takesPacks = false) {
   HalFile file = HalFile::fromString(json);
-  FontManifestReader reader("TEST", familyCheck, fileCheck);
+  FontManifestReader reader("TEST", familyCheck, fileCheck, takesPacks);
   Outcome out;
   fillStale(out.catalog);
   out.status = reader.read(file, out.catalog, out.baseUrl);
@@ -405,8 +406,8 @@ TEST(FontManifestReaderTest, ReadsTheShippedV3Manifest) {
   const std::vector<std::string> cjk = {"NotoSansJP",  "NotoSansKR",  "NotoSansSC",  "NotoSansTC",
                                         "NotoSerifJP", "NotoSerifKR", "NotoSerifSC", "NotoSerifTC"};
   // Plus the twenty Indic ones.
-  std::vector<std::string> trueTypeFamilies = {"NotoNaskhArabic", "NotoSansArabic", "NotoSansHebrew",
-                                               "NotoSerifHebrew"};
+  std::vector<std::string> trueTypeFamilies = {"NotoNaskhArabic", "NotoSansArabic",  "NotoSansHebrew",
+                                               "NotoSerifHebrew", "NotoSansMyanmar", "NotoSerifMyanmar"};
   for (const char* face : {"NotoSans", "NotoSerif"}) {
     for (const char* script : {"Devanagari", "Bengali", "Gurmukhi", "Gujarati", "Oriya", "Tamil", "Telugu", "Kannada",
                                "Malayalam", "Sinhala"}) {
@@ -415,6 +416,7 @@ TEST(FontManifestReaderTest, ReadsTheShippedV3Manifest) {
   }
   size_t outlines = 0;
   size_t trueType = 0;
+  size_t uiPacks = 0;
   for (size_t i = 0; i < catalog.count(); ++i) {
     const std::string name = catalog.name(i);
     EXPECT_NE(name, "NotoSansCJK");
@@ -440,13 +442,20 @@ TEST(FontManifestReaderTest, ReadsTheShippedV3Manifest) {
       EXPECT_EQ(files[1], name + "/" + name + "-Regular.ttf");
       EXPECT_TRUE(catalog.fileHasCrc32(i, 0)) << name;
       EXPECT_TRUE(catalog.fileHasCrc32(i, 1)) << name;
+    } else if (name == "ChineseUI" || name == "ChineseTradUI" || name == "JapaneseUI" || name == "KoreanUI") {
+      // The CJK UI packs (format "uipack"): .cpfont files the interface draws from, not one of "Download all".
+      ++uiPacks;
+      EXPECT_FALSE(catalog.outline(i)) << name;
+      EXPECT_FALSE(catalog.inDownloadAll(i)) << name;
+      EXPECT_EQ(catalog.fileCount(i), 1u) << name;  // both sizes, one file
     } else {
       EXPECT_FALSE(catalog.outline(i)) << name;
       EXPECT_TRUE(catalog.inDownloadAll(i)) << name;
     }
   }
-  EXPECT_EQ(outlines, 32u);
-  EXPECT_EQ(trueType, 24u);
+  EXPECT_EQ(uiPacks, 4u);
+  EXPECT_EQ(outlines, 34u);
+  EXPECT_EQ(trueType, 26u);
   EXPECT_LE(catalog.blockBytes(), 16u * 1024u);
 }
 
@@ -472,10 +481,57 @@ TEST(FontManifestReaderTest, TheShippedVersion2ManifestListsCpfontFamiliesOnly) 
   }
   const Outcome v3 = read(slurp(FONT_MANIFEST_V3_PATH));
   ASSERT_EQ(v3.status, FontManifestStatus::Ok) << v3.failure;
-  EXPECT_EQ(v2.catalog.count(), v3.catalog.count() - 32);  // the 32 outline families are v3's alone
+  // The 34 outline families and the four UI packs are v3's alone.
+  EXPECT_EQ(v2.catalog.count(), v3.catalog.count() - 34 - 4);
 }
 
 TEST(FontManifestReaderTest, TheManifestUrlIsTheV3ManifestOnMaster) {
   EXPECT_STREQ(FONT_MANIFEST_URL,
                "https://raw.githubusercontent.com/jpirnay/witchhunt-reader/master/assets/sd-fonts/fonts-v3.json");
+}
+
+// The shipped fonts-v3.json as the Font Manager and the web font API read it: after the fonts the 26 UI language
+// packs, each a family of one <code>.cplang, then the 31 hyphenation packs, each of one hyph-<code>.cphyph; flagged,
+// out of "Download all", no outline family. A reader that takes no packs reads it without them.
+TEST(FontManifestReaderTest, TheShippedManifestListsTheLanguageAndHyphenationPacksAfterTheFonts) {
+  std::ifstream in(FONT_MANIFEST_V3_PATH, std::ios::binary);
+  const std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const Outcome fontManager = read(json, familyNameOk, fileNameOk, /*takesPacks=*/true);
+  const Outcome web = read(json);
+  ASSERT_EQ(fontManager.status, FontManifestStatus::Ok);
+  ASSERT_EQ(web.status, FontManifestStatus::Ok);
+  const FontCatalog& all = fontManager.catalog;
+  size_t languages = 0;
+  size_t hyphenation = 0;
+  for (size_t i = 0; i < all.count(); ++i) {
+    if (!all.pack(i)) {
+      EXPECT_EQ(languages + hyphenation, 0u) << "a font after the packs: " << all.name(i);
+      continue;
+    }
+    SCOPED_TRACE(all.name(i));
+    EXPECT_FALSE(all.hyphenation(i) && all.languagePack(i));
+    EXPECT_FALSE(all.outline(i));
+    EXPECT_FALSE(all.inDownloadAll(i));
+    ASSERT_EQ(all.fileCount(i), 1u);
+    const std::string local = all.fileLocalName(i, 0);
+    if (all.languagePack(i)) {
+      EXPECT_EQ(hyphenation, 0u) << "a language pack after the hyphenation packs";
+      ++languages;
+      EXPECT_EQ(std::string(all.name(i)).rfind("Language-", 0), 0u);
+      EXPECT_EQ(local.size(), 9u);  // de.cplang
+      EXPECT_EQ(local.substr(2), ".cplang");
+      continue;
+    }
+    ++hyphenation;
+    EXPECT_EQ(std::string(all.name(i)).rfind("Hyphenation-", 0), 0u);
+    EXPECT_EQ(local.size(), 14u);
+    EXPECT_EQ(local.rfind("hyph-", 0), 0u);
+  }
+  EXPECT_EQ(languages, 29u);
+  EXPECT_EQ(hyphenation, 31u);
+  EXPECT_EQ(web.catalog.count(), all.count() - languages - hyphenation);
+  for (size_t i = 0; i < web.catalog.count(); ++i) EXPECT_FALSE(web.catalog.pack(i));
+  // What the list costs the Font Manager in its one block, against the fonts alone.
+  std::printf("[ INFO ] catalog block: %zu B with the packs, %zu B without\n", all.blockBytes(),
+              web.catalog.blockBytes());
 }

@@ -17,6 +17,7 @@ set(PIPELINE_SOURCES
   ${REPO_ROOT}/lib/Epub/Epub/ParsedText.cpp
   ${REPO_ROOT}/lib/Epub/Epub/TypographyProfile.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/BodySize.cpp
   ${REPO_ROOT}/lib/Epub/Epub/FootnotePreviews.cpp
   ${REPO_ROOT}/lib/Epub/Epub/FootnoteShape.cpp
   ${REPO_ROOT}/lib/Epub/Epub/EpubImageManifest.cpp
@@ -159,11 +160,13 @@ add_executable(EpubPipelineTest
   JoinerParseTest.cpp
   IndicRulesTest.cpp
   ShapingStatusTest.cpp
+  IndicPackHyphenationTest.cpp
   CoverPipelineTest.cpp
   CoverWrapperTest.cpp
   CoverFallbackTest.cpp
   VisibleTextTest.cpp
   BookFontsTest.cpp
+  BodySizeTest.cpp
   FirstOpenIndexingTest.cpp
   FirstChapterTest.cpp
   TocPassTest.cpp
@@ -187,6 +190,7 @@ target_compile_definitions(EpubPipelineTest PRIVATE
   GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/goldens"
   JPEG_FIXTURE_DIR="${REPO_ROOT}/test/jpeg_decoder/fixtures"
   FONT_FIXTURE_DIR="${REPO_ROOT}/lib/EpdFont/builtinFonts/source"
+  HYPHENATION_PACK_DIR="${REPO_ROOT}/assets/sd-fonts"
   ENABLE_SERIAL_LOG=1
   LOG_LEVEL=2
   # LongChapterPageTablesTest refuses build-table chunks on purpose (see ChunkedVector.h). The

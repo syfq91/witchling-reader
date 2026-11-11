@@ -8,7 +8,7 @@
 class FontDecompressor;
 
 /// Serves a font's missing glyphs out of other BUILT-IN faces: the CJK UI faces behind the Inter UI
-/// faces (src/CjkUiFonts.cpp).
+/// faces (src/CjkUiFonts.cpp), and for book text out of the CJK UI packs on the card (setPacks).
 ///
 /// Installed as EpdFontData::provider, so EpdFont asks it only after the font's own interval table
 /// has missed, and the renderer gets the bitmap back through ownsBitmap(). Kerning stays the font's
@@ -24,7 +24,9 @@ class FontDecompressor;
 /// One more face may come from the reader's font (setReaderFace): a 2-bit TrueType face at this size, whose glyphs
 /// are drawn as the ink of their black-and-white pass (packInkMask), so a book title in a script the built-in faces
 /// lack draws in the font the book is read in. It lends real characters only, never its replacement glyph (U+FFFD)
-/// or the stand-in: a character it lacks is the UI faces' to draw or leave out.
+/// or the stand-in: a character it lacks is the UI faces' to draw or leave out. When that face draws glyph keys, an
+/// Indic or Myanmar title is shaped over it (shapingSource(), GfxRenderer's UI text) and its glyphs are served by key,
+/// as the same ink.
 class FallbackFaceProvider final : public GlyphProvider {
  public:
   static constexpr uint8_t MAX_FACES = 4;
@@ -44,6 +46,30 @@ class FallbackFaceProvider final : public GlyphProvider {
     readerCtx_ = ctx;
   }
   void setReaderFaceAfterFirst(const bool afterFirst) { readerAfterFirst_ = afterFirst; }
+
+  /// Script packs on the card at this provider's size: the CJK UI packs (src/CjkUiPack.cpp). Searched after the active
+  /// UI language's own face (for its translations) and before the reader's face and the other faces, whatever book was
+  /// read last. Every hook takes `ctx`.
+  struct Packs {
+    /// The pack face that draws `codepoint` in the string being drawn, opened on first ask; nullptr: none installed
+    /// holds it.
+    const EpdFontData* (*face)(void* ctx, uint32_t codepoint) = nullptr;
+    /// Whether an installed pack holds `codepoint`, without opening one.
+    bool (*covers)(void* ctx, uint32_t codepoint) = nullptr;
+    /// A string is measured or drawn next: the packs order themselves for it and read its characters in one pass.
+    void (*prepare)(void* ctx, const char* utf8Text) = nullptr;
+    void* ctx = nullptr;
+  };
+  void setPacks(const Packs& packs) { packs_ = packs; }
+  /// In the reader (`maps` set, CjkUiFonts::setInReader): the reader's face goes before the packs for a code point
+  /// `maps(ctx, cp)` says it maps, a lookup in its tables that renders nothing; the book's own font is open anyway, and
+  /// a pack opened beside it would cost its heap on the tightest screen there is. nullptr: the packs first.
+  void setReaderMaps(bool (*maps)(void* ctx, uint32_t codepoint), void* ctx) {
+    readerMaps_ = maps;
+    readerMapsCtx_ = ctx;
+  }
+  /// In the reader, whether the book's face maps `codepoint`: what goes to it before any pack.
+  bool readerMaps(const uint32_t codepoint) const { return readerMaps_ && readerMaps_(readerMapsCtx_, codepoint); }
   /// The UI face this provider serves, whose own table beginText() reads to tell which of a string's characters it
   /// lacks: the regular face of the provider's size. Its siblings (bold, other sizes) cover the same characters.
   void setPrimaryFace(const EpdFontData* primary) { primary_ = primary; }
@@ -68,6 +94,12 @@ class FallbackFaceProvider final : public GlyphProvider {
   /// for all of it, before the active language's face too, so a title draws in one font. Its characters the reader's
   /// face is asked for are rendered in one batch (the face's prefetch()).
   void beginText(const char* utf8Text) override;
+  /// True: the UI faces this provider serves carry the Arabic presentation forms (convert-builtin-fonts.sh), so
+  /// GfxRenderer forms their Arabic UI text and they draw it from their own tables, whatever book was read last.
+  bool formsArabic() const override { return true; }
+  /// The reader's face, when serve() would lend it `probe` for the string begun last (no face before it holds the
+  /// probe) and it draws glyph keys; its glyphs then come by key through missGlyph(), from it alone.
+  const EpdFontData* shapingSource(uint32_t probe) override;
 
  private:
   // A served glyph as GlyphProvider hands it out: a full EpdGlyph record (the faces store the 6-byte
@@ -81,8 +113,10 @@ class FallbackFaceProvider final : public GlyphProvider {
     const EpdGlyph* source;  // the reader face's own record, whose 2-bit bitmap ownsBitmap() packs; null otherwise
     uint16_t index;
   };
-  // A reader glyph's 1-bit ink: a 12 pt CJK glyph is about 25 x 26 px, 82 B. Larger glyphs are left to the next face.
-  static constexpr uint16_t kInkBytes = 128;
+  // A reader glyph's 1-bit ink: a 12 pt CJK glyph is about 25 x 26 px, 82 B. At the 12 pt UI em (25 px) 39 of Noto Sans
+  // Myanmar's 452 glyphs need more than 128 B, up to 200 B (its stacked and medial forms, which a shaped title draws),
+  // as do 4 of Noto Sans Tamil's; none passes 256 B. Larger glyphs are left to the next face.
+  static constexpr uint16_t kInkBytes = 256;
   static uint8_t ink_[kInkBytes];
   // EpdFont copies the metrics out at once and the renderer asks for the bitmap before it resolves
   // the next glyph, so one slot would do for that caller. The few more cost 24 B each and keep a
@@ -102,7 +136,13 @@ class FallbackFaceProvider final : public GlyphProvider {
   bool readerAfterFirst_ = false;
   const EpdFontData* primary_ = nullptr;
   bool bookText_ = false;  // beginText(): the string being drawn is book text
+  Packs packs_{};
+  bool (*readerMaps_)(void* ctx, uint32_t codepoint) = nullptr;
+  void* readerMapsCtx_ = nullptr;
+  const EpdFontData* servedPack_ = nullptr;  // the pack face the last pack glyph came from
 
+  uint8_t facesBeforeReader() const;  // serve()'s built-in faces ahead of the reader's: 0 or 1
   const EpdGlyph* serve(uint32_t codepoint);
+  const EpdGlyph* servePack(uint32_t codepoint);
   const EpdGlyph* serveFrom(const EpdFontData* face, uint32_t codepoint, bool reader);
 };

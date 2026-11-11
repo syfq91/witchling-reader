@@ -10,6 +10,7 @@
 #include <IndicScripts.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <MyanmarScript.h>
 #include <SaxParser/SaxParser.h>
 #include <Utf8.h>
 #include <esp_heap_caps.h>
@@ -22,6 +23,7 @@
 #include "../../Epub.h"
 #include "../BidiLine.h"
 #include "../HashUtils.h"
+#include "../HeapGrowth.h"
 #include "../Page.h"
 #include "../converters/ImageDecoderFactory.h"
 #include "../converters/ImageToFramebufferDecoder.h"
@@ -136,6 +138,9 @@ constexpr size_t MAX_ANCHORS_AWAITING_LINE = 16;
 #ifndef EHP_TEXT_LAYOUT_HARD_MIN_FREE_HEAP
 #define EHP_TEXT_LAYOUT_HARD_MIN_FREE_HEAP (9 * 1024)
 #endif
+// A shaped store stops growing above this floor, so shaping degrades before the parse aborts (HeapGrowth.h).
+static_assert(heap_growth::kShapedFreeFloor > EHP_TEXT_LAYOUT_HARD_MIN_FREE_HEAP,
+              "the shaped store's floor must stay above the parse's hard floor");
 
 #ifndef EHP_TEXT_LAYOUT_HARD_MIN_MAX_ALLOC
 #define EHP_TEXT_LAYOUT_HARD_MIN_MAX_ALLOC (6 * 1024)
@@ -330,15 +335,26 @@ bool isWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c
 // 256 entries, a 6 KB block.
 constexpr int kCjkRunCodepoints = 32;
 
-// The codepoint whose first byte is s[0], or 0 when its sequence runs past the `avail` bytes in hand
-// (it continues in the next SAX chunk). Such a character is not counted toward kCjkRunCodepoints, so
-// a run can reach 33 codepoints before it is flushed.
+// The codepoint whose first byte is s[0], or 0 when its sequence runs past the `avail` bytes in hand. characterData
+// hands consumeText whole sequences (cutSequenceTail), so that is malformed text: a lead byte with its sequence
+// missing.
 static uint32_t codepointAt(const char* s, const int avail) {
   const auto lead = static_cast<uint8_t>(s[0]);
   const int length = lead < 0x80 ? 1 : lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : 2;
   if (length > avail) return 0;
   const auto* p = reinterpret_cast<const unsigned char*>(s);
   return utf8NextCodepoint(&p);
+}
+
+// The bytes at the end of the `len` bytes at s that start a UTF-8 sequence cut off there (1 to 3), or 0 when the last
+// sequence is whole, or when no lead byte starts it (malformed text goes on as it came).
+static int cutSequenceTail(const char* s, const int len) {
+  for (int back = 1; back <= 3 && back <= len; ++back) {
+    const auto byte = static_cast<uint8_t>(s[len - back]);
+    if ((byte & 0xC0) == 0x80) continue;  // a continuation byte: its lead is further back
+    return byte >= 0xC0 && utf8CodepointLen(byte) > back ? back : 0;
+  }
+  return 0;
 }
 
 // The first and the last codepoint of the `len` bytes at s, which end on a sequence boundary, past the controls that
@@ -402,10 +418,10 @@ static bool isQuotationMark(const uint32_t cp) {
 // isn't one. Every BMP default-ignorable encodes as 2 bytes (U+034F, U+061C) or 3 bytes, so
 // only those two forms are decoded.
 //
-// A sequence that runs past `len` returns 0 rather than matching on a prefix: the text handler
-// is fed in chunks and may split a codepoint at the boundary. Answering "not ignorable" there
-// is the safe direction — the bytes stay in the word buffer and the next chunk completes them,
-// which is exactly what the U+00A0 / U+202F checks further down already do.
+// A sequence that runs past `len` returns 0 rather than matching on a prefix. characterData hands
+// consumeText whole sequences, so such a sequence is malformed text, and answering "not ignorable"
+// is the safe direction: the bytes stay in the word buffer, as the U+00A0 / U+202F checks further
+// down leave them too.
 int defaultIgnorableLen(const char* s, const int i, const int len) {
   const auto b0 = static_cast<uint8_t>(s[i]);
   // All default-ignorables are >= U+034F, whose lead byte is 0xCD. Anything below that (ASCII,
@@ -442,9 +458,11 @@ static int uncountedControlLen(const char* s, const int i, const int len) {
 }
 
 // Deviation 8: a lone ZWJ or ZWNJ stays in the text after a letter of a script the shaper reads it in (a half form, a
-// chillu, a cluster kept apart, Persian's half-space ZWNJ); after anything else it is dropped with the other
-// default-ignorables. The Indic blocks and the Arabic ones.
-static bool keepsJoinerAfter(const uint32_t cp) { return (cp >= 0x0900 && cp <= 0x0DFF) || arabic::takesJoiner(cp); }
+// chillu, a cluster kept apart, Persian's half-space ZWNJ, a Myanmar stack or medial the joiner steers); after anything
+// else it is dropped with the other default-ignorables. The Indic blocks, the Arabic ones and the Myanmar ones.
+static bool keepsJoinerAfter(const uint32_t cp) {
+  return (cp >= 0x0900 && cp <= 0x0DFF) || arabic::takesJoiner(cp) || myanmar::isRunMember(cp);
+}
 
 // U+200C or U+200D when the 3 bytes at s[i] are one, else 0 (also when the sequence runs past `len`: characterData
 // completes a split one before consumeText sees it).
@@ -612,18 +630,11 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   // the parent element); the block's own font-size lives in BlockStyle, so 100 here
   // means "the block size". Tracked in integer percent to match the per-word channel.
   int sizePct = 100;
+  effectiveSizeFromRoot_ = false;
   // A body-relative size (rem, px, pt) starts over from the body: it is put relative to the
-  // block's own size rather than multiplied in, so nested rem or px spans do not compound. A
-  // resolved block keeps only its residual over a ladder font; scaleOf gives the full size back. (Not over a face
-  // of the book's other families: a block is resolved before its words are laid out, so only a block long enough
-  // to be laid out in parts sees one, and a rem span in it is sized as in a body-size block.)
+  // block's own size rather than multiplied in, so nested rem or px spans do not compound.
   // A block whose own size is body-relative ignores the sizes of the elements it sits in, too.
-  int blockPct = 100;
-  if (currentTextBlock) {
-    const BlockStyle& bs = currentTextBlock->getBlockStyle();
-    blockPct = std::max(
-        1, static_cast<int>(fontSizeLadder_.scaleOf(bs.headingFontId) * bs.fontSizeMultiplier * 100.0f + 0.5f));
-  }
+  const int blockPct = currentBlockSizePct();
   const int blockSizeFromDepth = currentBlockSizeFromRoot_ ? currentBlockOwnerDepth_ : -1;
 
   // Apply inline style stack in order
@@ -664,6 +675,7 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
     if (entry.hasFontSize && entry.depth >= blockSizeFromDepth) {
       sizePct = entry.fontSizeFromRoot ? (entry.fontSizePct * 100 + blockPct / 2) / blockPct
                                        : sizePct * entry.fontSizePct / 100;
+      if (entry.fontSizeFromRoot) effectiveSizeFromRoot_ = entry.fontSizePct != 100;
     }
   }
   // Snap composed word sizes near body to plain body text. When font-size normalization is
@@ -682,6 +694,34 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   }
   effectiveSizePct = static_cast<uint8_t>(
       std::min<int>(std::max<int>(sizePct, ParsedText::MIN_WORD_SIZE_PCT), ParsedText::MAX_WORD_SIZE_PCT));
+}
+
+int ChapterHtmlSlimParser::currentBlockSizePct() const {
+  if (!currentTextBlock) return 100;
+  // A resolved block keeps only its residual over a ladder font; scaleOf gives the full size back. (Not over a face
+  // of the book's other families: a block is resolved before its words are laid out, so only a block long enough
+  // to be laid out in parts sees one, and a rem span in it is sized as in a body-size block.)
+  const BlockStyle& bs = currentTextBlock->getBlockStyle();
+  return std::max(1,
+                  static_cast<int>(fontSizeLadder_.scaleOf(bs.headingFontId) * bs.fontSizeMultiplier * 100.0f + 0.5f));
+}
+
+void ChapterHtmlSlimParser::countCensusWord() {
+  // Running text only: a heading is set apart from it, and a short chapter's titles could outweigh its prose.
+  if (depth > headingDepth_) return;
+  uint32_t chars = 0;
+  const int end = partWordTextEnd();
+  for (int i = partWordTextBegin_; i < end; ++i) {
+    if ((static_cast<uint8_t>(partWordBuffer[i]) & 0xC0) != 0x80) ++chars;  // a UTF-8 lead byte: one character
+  }
+  if (chars == 0) return;
+  // The size the word is set at, the block's times its own. Text whose size Normalize Font Size cannot reach counts as
+  // body text: a block without a size of its own, its words at most scaled by em or % spans (a book wrapping every
+  // paragraph's text in <span style="font-size: 0.8em">). The body size is taken out of block sizes and body-relative
+  // sizes only (normalizeFontSizeForElement), so such text would stay as it is while the headings around it grew.
+  const int blockPct = currentBlockSizePct();
+  const int pct = blockPct != 100 || effectiveSizeFromRoot_ ? (blockPct * effectiveSizePct + 50) / 100 : 100;
+  census_->add(pct, chars);
 }
 
 void ChapterHtmlSlimParser::applyCssFontSizeToEntry(StyleStackEntry& entry, const CssStyle& cssStyle) {
@@ -875,8 +915,26 @@ CssStyle ChapterHtmlSlimParser::normalizeFontSizeForElement(const char* tagName,
   const bool blockLevel = isHeaderOrBlock(tagName) && strcmp(tagName, "br") != 0;
   // A body-relative size on an inline element is on the blocks' scale too (a 1rem span is the
   // prose size), so it takes the same main-text normalisation.
-  if (hasMainTextFontSizeBaseline_ && (blockLevel || cssStyle.fontSizeRootRelative)) {
+  const bool onTextScale = blockLevel || cssStyle.fontSizeRootRelative;
+  if (hasMainTextFontSizeBaseline_ && onTextScale) {
     normalized.fontSizeMultiplier /= mainTextFontSizeBaseline_;
+  }
+  const bool bodyBlock = blockLevel && !matches(tagName, HEADER_TAGS, NUM_HEADER_TAGS);
+  // A size that undoes the dropped root size is the book's body text: Calibre sets <body> to its base size and
+  // sizes every paragraph back down by a class (1.125em x 0.88889em = 1). Dropping only the root's factor left
+  // such paragraphs at 0.889 of the reader's size, drawn as the body face shrunk. Only an exact undo, within 1%:
+  // a size its designer chose below the body text's (0.85em under a 1.2em body, 1.02) is kept. Told by the size as
+  // the book states it, before its body size is taken out below.
+  const float fromRoot = normalized.fontSizeMultiplier * rootFontSizeBaseline_;
+  if (bodyBlock && hasRootFontSizeBaseline_ && fromRoot > 0.99f && fromRoot < 1.01f) {
+    normalized.fontSizeMultiplier = 1.0f;
+  }
+  // The size of the book's running text (setBodySizePct) is the reader's size: a book that sets all its text smaller
+  // or larger is read at the size chosen, its headings and small print in proportion. Every size on the text's scale,
+  // a block's or a body-relative one, is taken relative to it, before the band below; an em or % size of an inline
+  // element is relative to its parent, which already is. Not html's or body's: theirs is the context, made 1 above.
+  if (bodyScale_ != 1.0f && onTextScale && !isRootFontSizeElement(tagName)) {
+    normalized.fontSizeMultiplier /= bodyScale_;
   }
   // Block twin of the per-word near-body snap in updateEffectiveInlineStyle. The same
   // publisher sizing arrives either as a <span style="font-size:1.1em"> wrapping the
@@ -888,8 +946,8 @@ CssStyle ChapterHtmlSlimParser::normalizeFontSizeForElement(const char* tagName,
   // 0.88. Headings are exempt: a heading is meant to stand apart from the prose, so the
   // size its author gave it is kept even when the margin is slim — the point of the band
   // is to spare BODY text a scale nobody asked for, not to flatten the page's hierarchy.
-  // (The main-text baseline division above still applies to them, as it always has.)
-  if (blockLevel && !matches(tagName, HEADER_TAGS, NUM_HEADER_TAGS)) {
+  // (The main-text baseline division and the body size above still apply to them, as the former always has.)
+  if (bodyBlock) {
     const int deadZone = nearBodyDeadZonePct(fontSizeNormalization);
     // Rounded to integer percent like the per-word channel (applyCssFontSizeToEntry), so the
     // same declared size lands the same side of the band edge on either channel — a float
@@ -898,17 +956,17 @@ CssStyle ChapterHtmlSlimParser::normalizeFontSizeForElement(const char* tagName,
     if (pct >= 100 - deadZone && pct <= 100 + deadZone) {
       normalized.fontSizeMultiplier = 1.0f;
     }
-    // A size that undoes the dropped root size is the book's body text: Calibre sets <body> to its base size and
-    // sizes every paragraph back down by a class (1.125em x 0.88889em = 1). Dropping only the root's factor left
-    // such paragraphs at 0.889 of the reader's size, drawn as the body face shrunk. Only an exact undo, within 1%:
-    // a size its designer chose below the body text's (0.85em under a 1.2em body, 1.02) is kept.
-    const float fromRoot = normalized.fontSizeMultiplier * rootFontSizeBaseline_;
-    if (hasRootFontSizeBaseline_ && fromRoot > 0.99f && fromRoot < 1.01f) {
-      normalized.fontSizeMultiplier = 1.0f;
-    }
   }
   return normalized;
 }
+
+void ChapterHtmlSlimParser::setBodySizePct(const uint8_t pct) {
+  // Only with the wide band: off, the book's sizes stay as it states them. A size no word can take is no body size.
+  const bool usable = fontSizeNormalization && pct >= ParsedText::MIN_WORD_SIZE_PCT &&
+                      pct <= ParsedText::MAX_WORD_SIZE_PCT && pct != 100;
+  bodyScale_ = usable ? pct / 100.0f : 1.0f;
+}
+
 CssStyle ChapterHtmlSlimParser::inlineStyleFor(const std::string& styleAttr) {
   const auto it = inlineStyleCache_.find(styleAttr);
   if (it != inlineStyleCache_.end()) return it->second;
@@ -1161,6 +1219,8 @@ void ChapterHtmlSlimParser::closeRt() {
   // consumeText collapsed the whitespace runs; the ends are trimmed here.
   std::string text = std::move(rubyText_);
   rubyText_.clear();
+  // The census keeps a block's first word only, so a reading would find no bases to go over and be counted as text.
+  if (census_) return;
   // A character cut by the byte cap is dropped whole, then the end is trimmed.
   text.resize(static_cast<size_t>(utf8SafeTruncateBuffer(text.data(), static_cast<int>(text.size()))));
   if (!text.empty() && text.back() == ' ') text.pop_back();
@@ -1317,6 +1377,14 @@ bool ChapterHtmlSlimParser::flushPartWordBuffer() {
           return false;
         }
       }
+    }
+  } else if (currentTextBlock && census_) {
+    // Counted, and kept only as the block's first word: what follows depends on whether the block is empty, never on
+    // its words, and a block that is never laid out must not grow with its paragraph.
+    countCensusWord();
+    if (currentTextBlock->isEmpty()) {
+      currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, effectiveSizePct,
+                                partWordVisibleOffset_);
     }
   } else if (currentTextBlock) {
     // If a float image is pending and the block is still empty, attach it now so the
@@ -1559,9 +1627,13 @@ void ChapterHtmlSlimParser::settleHeldJoiner() {
   heldJoiner_ = 0;
   const char bytes[3] = {'\xE2', '\x80', joiner == 0x200D ? '\x8D' : '\x8C'};
   if (partWordHasText()) {
-    if (partWordBufferIndex + 3 > MAX_WORD_SIZE) return;
-    for (const char byte : bytes) appendPartWordText(byte, partWordVisibleOffset_);
-    return;
+    if (partWordBufferIndex + 3 <= MAX_WORD_SIZE) {
+      for (const char byte : bytes) appendPartWordText(byte, partWordVisibleOffset_);
+      return;
+    }
+    // No room left in the buffer: the word goes out now, and the joiner ends its last token below, as at an inline
+    // end. It stays in the token of the letter before it (a chillu's virama), and opens no token of its own.
+    if (!flushPartWordBuffer()) return;
   }
   // The word went out at an inline end (</b>) and only tags and controls came since: the joiner ends its last token,
   // ahead of any controls held after it. It counts nowhere, so the token's offset stays.
@@ -1964,6 +2036,7 @@ bool ChapterHtmlSlimParser::tryStartDropCapCapture(const CssStyle& cssStyle) {
   // reaches the style checks below.
   if (pendingDropCap_.active || deferredDropCapLine_) return false;
   if (currentTable || currentTableCell) return false;
+  if (census_) return false;  // a cap is a line of its own; the census counts its letter as a word
   // A cap is placed by its horizontal ink metrics, which a column does not have: it stays in its line.
   if (vertical_) return false;
   // A float: left cap would cut the paragraph's first letter, the rightmost one, and float it on the left.
@@ -2555,6 +2628,13 @@ void ChapterHtmlSlimParser::startElement(void* userData, const char* name, const
   // included -- is invisible, and an invisible block that still took its space would be a
   // blank page on an e-reader, not fidelity.
   if ((cssStyle.hasDisplay() && cssStyle.display == CssDisplay::None) || cssStyle.isElementHidden()) {
+    self->skipUntilDepth = self->depth;
+    self->depth += 1;
+    return;
+  }
+  // The census leaves tables out, as it does images (it parses with them suppressed): a grid's rows are laid out as
+  // they close, and a table is no running text.
+  if (self->census_ && strcmp(name, "table") == 0) {
     self->skipUntilDepth = self->depth;
     self->depth += 1;
     return;
@@ -3861,11 +3941,11 @@ void ChapterHtmlSlimParser::characterData(void* userData, const char* s, int len
     self->visibleTextOffset_ += static_cast<uint32_t>(VisibleText::visibleBytes(s, len));
   }
 
-  // A 3-byte sequence the last chunk ended inside is completed from this one and read whole, so a letter or a joiner
+  // A sequence the last chunk ended inside is completed from this one and read whole, so a letter or a joiner
   // (deviation 8) is never read in halves. Bytes that do not complete it (malformed text) go on as they came.
   if (self->splitTailLen_ > 0) {
     const int have = self->splitTailLen_;
-    const int need = 3 - have;
+    const int need = utf8CodepointLen(static_cast<uint8_t>(self->splitTail_[0])) - have;
     int take = 0;
     while (take < need && take < len && (static_cast<uint8_t>(s[take]) & 0xC0) == 0x80) ++take;
     if (take == len && take < need) {  // the chunk ends inside it again
@@ -3873,7 +3953,7 @@ void ChapterHtmlSlimParser::characterData(void* userData, const char* s, int len
       self->splitTailLen_ = static_cast<uint8_t>(have + take);
       return;
     }
-    char whole[3];
+    char whole[4];
     memcpy(whole, self->splitTail_, static_cast<size_t>(have));
     memcpy(whole + have, s, static_cast<size_t>(take));
     self->splitTailLen_ = 0;
@@ -3883,15 +3963,9 @@ void ChapterHtmlSlimParser::characterData(void* userData, const char* s, int len
     if (source) base += static_cast<uint32_t>(take);
   }
 
-  // The chunk's own end: a lead byte of a 3-byte sequence (E0: the Indic blocks; E2: the joiners) with its sequence cut
-  // off waits for the next chunk.
-  int tail = 0;
-  if (len >= 1 && (static_cast<uint8_t>(s[len - 1]) == 0xE0 || static_cast<uint8_t>(s[len - 1]) == 0xE2)) {
-    tail = 1;
-  } else if (len >= 2 && (static_cast<uint8_t>(s[len - 2]) == 0xE0 || static_cast<uint8_t>(s[len - 2]) == 0xE2) &&
-             (static_cast<uint8_t>(s[len - 1]) & 0xC0) == 0x80) {
-    tail = 2;
-  }
+  // The chunk's own end: the start of a sequence cut off there (an Arabic letter's 2 bytes, an Indic or Myanmar
+  // letter's or a joiner's 3, a 4-byte one) waits for the next chunk.
+  const int tail = cutSequenceTail(s, len);
   if (tail > 0) {
     len -= tail;
     memcpy(self->splitTail_, s + len, static_cast<size_t>(tail));
@@ -4011,9 +4085,10 @@ void ChapterHtmlSlimParser::consumeText(void* userData, const char* s, const int
       // at the first such codepoint and its text goes back to the word flow, to be shaped whole.
       // Ported from crosspoint-reader PR #3787 ("feat: add Indic language support without HarfBuzz", SSafayet /
       // @SSafayet), commit f0757278.
-      // An Arabic letter would be drawn isolated, so it takes the same road.
-      if ((i + 1 < len && (indic::startsIndic(reinterpret_cast<const unsigned char*>(s + i)) ||
-                           arabic::isRunMember(codepointAt(s + i, len - i)))) ||
+      // An Arabic letter would be drawn isolated, and a Myanmar one unshaped, so they take the same road.
+      if ((i + 1 < len &&
+           (indic::startsIndic(reinterpret_cast<const unsigned char*>(s + i)) ||
+            arabic::isRunMember(codepointAt(s + i, len - i)) || myanmar::isRunMember(codepointAt(s + i, len - i)))) ||
           self->pendingDropCap_.textLen >= static_cast<int>(sizeof(self->pendingDropCap_.text)) - 1) {
         overflow = true;
         break;
@@ -4194,8 +4269,8 @@ void ChapterHtmlSlimParser::consumeText(void* userData, const char* s, const int
       }
     }
 
-    // A codepoint starts here: count it toward the CJK run (kCjkRunCodepoints). A character split
-    // across SAX chunks (cp 0) is not counted.
+    // A codepoint starts here: count it toward the CJK run (kCjkRunCodepoints). A lead byte with its sequence missing
+    // (cp 0, malformed text) is not counted.
     if (c >= 0xC0) {
       const uint32_t cp = codepointAt(s + i, len - i);
       if (self->heldJoiner_ != 0 && !self->releaseHeldJoiner(byteOff, c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : 2)) return;
@@ -4615,7 +4690,7 @@ void ChapterHtmlSlimParser::flushAnchorsAwaitingLine() {
 }
 
 void ChapterHtmlSlimParser::queueAnchorForNextLine(std::string id) {
-  if (id.empty()) return;
+  if (id.empty() || census_) return;  // the census places no line for an anchor to wait for
   // Bounded: an id'd element that never produces a line leaves its entry queued, so a run of them
   // would grow this. Past the cap they are recorded at the current page instead -- the behaviour
   // this replaced, applied only where holding on would cost memory.
@@ -4695,7 +4770,7 @@ void ChapterHtmlSlimParser::recordAnchor(std::string id, const uint16_t page) {
   // The on-disk anchor map counts with a uint16_t, so that is the hard ceiling whatever
   // MAX_ANCHORS_PER_CHAPTER says. Silently dropping past it is the same degradation as the cap:
   // the anchor is not navigable, the chapter still reads.
-  if (anchorCount == UINT16_MAX) {
+  if (anchorCount == UINT16_MAX || census_) {
     return;
   }
   if (anchorSpillWriter.has_value()) {
@@ -4757,7 +4832,8 @@ bool ChapterHtmlSlimParser::setup(const size_t totalInflatedSize) {
     }
     // The word cache takes the arena's free tail, now that what the parse keeps resident is in: from here the cursor
     // only moves with the parse lane's page, call and walk blocks, which may reach the tail (the cache then empties).
-    if (wordCache_.arm(*buildArena_, WordShapeCache::kWordCacheBytes)) {
+    // An S3 board's PSRAM arena gives it a larger tail (WordShapeCache::bytesFor).
+    if (wordCache_.armForBuild(*buildArena_)) {
       LOG_DBG("EHP", "Word cache (%u bytes) in the build arena's tail", static_cast<unsigned>(wordCache_.bytes()));
     }
   }
@@ -5228,6 +5304,15 @@ void ChapterHtmlSlimParser::makePages() {
 
   if (!currentTextBlock) {
     LOG_ERR("EHP", "!! No text block to make pages for !!");
+    return;
+  }
+
+  if (census_) {
+    // Nothing is laid out: the words were counted as they came. The block is left empty, as a layout leaves it, with
+    // its style for a following block to merge into.
+    const BlockStyle style = currentTextBlock->getBlockStyle();
+    currentTextBlock->reset(style);
+    pendingFootnotes.clear();
     return;
   }
 

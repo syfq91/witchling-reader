@@ -7,9 +7,11 @@
 #include <GlyphKey.h>
 #include <GlyphProvider.h>
 #include <HalGPIO.h>
+#include <IndicScripts.h>
 #include <Logging.h>
 #include <MarkOverlay.h>
 #include <Memory.h>
+#include <MyanmarScript.h>
 #include <SdCardFont.h>
 #include <SmallCaps.h>
 #include <TextTruncation.h>
@@ -24,6 +26,7 @@
 #include "FontCacheManager.h"
 #include "GlyphRun.h"
 #include "ScaledGlyphResample.h"
+#include "UiShapedText.h"
 
 const uint8_t* GfxRenderer::getGlyphBitmap(const EpdFontData* fontData, const EpdGlyphRef& glyph) const {
   if (fontData->groups != nullptr) {
@@ -1395,23 +1398,51 @@ static inline int applyBase(const int v, const float scale) {
   return scale == 1.0f ? v : static_cast<int>(v * scale + 0.5f);
 }
 
+// UI text in a face that draws Arabic as its presentation forms (EpdFontFamily::formsArabic): the formed string, kept
+// in `holder`; any other text as it is. Measuring, fitting and drawing all take the formed string, so each sees the
+// glyphs drawn. Formed text forms to itself, so a string fitted here and drawn later is formed once.
+static const char* arabicUiForms(const EpdFontFamily& family, const char* text, const EpdFontFamily::Style style,
+                                 std::string& holder) {
+  if (!text || !BidiUtils::hasArabic(text, strlen(text)) || !family.formsArabic(style)) return text;
+  holder = BidiUtils::arabicUiForms(text);
+  return holder.c_str();
+}
+
+// UI text's Indic syllables in the order the UI draws them unshaped (ui_shaping::reordered): applied only where text is
+// measured or drawn, and never to a string handed back (truncatedText, wrappedText), which its caller draws later.
+static const char* indicUiOrder(const char* text, std::string& holder) { return ui_shaping::reordered(text, holder); }
+
+bool GfxRenderer::shapesUiText(const int fontId, const EpdFontFamily::Style style) const {
+  return fontBaseScale(fontId) == 1.0f && (style & EpdFontFamily::SMALL_CAPS) == 0 &&
+         !(fontCacheManager_ && fontCacheManager_->isScanning());
+}
+
+void GfxRenderer::endUiTextPass() {
+  if (ui_shaping::endPass()) releaseShapingFaces();
+}
+
+bool GfxRenderer::formsArabicUi(const int fontId, const EpdFontFamily::Style style) const {
+  const EpdFontFamily* const family = findFontFamily(fontId);
+  return family && family->formsArabic(style);
+}
+
 int GfxRenderer::rawTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style) const {
   const EpdFontFamily* const family = findFontFamily(fontId);
   if (!family) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
   }
+  std::string formed;
+  text = arabicUiForms(*family, text, style, formed);
 
   if (fontCacheManager_ && fontCacheManager_->isScanning()) {
-    fontCacheManager_->recordText(text, fontId, style);
+    std::string ordered;
+    fontCacheManager_->recordText(indicUiOrder(text, ordered), fontId, style);
     return 0;
   }
 
-  family->beginText(text, style);  // the string decides its glyphs' source (GlyphProvider::beginText)
-
-  int w = 0, h = 0;
-  family->getTextDimensions(text, &w, &h, style);
-  return w;
+  // Indic or Myanmar text shaped over the face behind the UI face, when there is one; else its reordered ink box.
+  return ui_shaping::width(*family, style, text, shapesUiText(fontId, style));
 }
 
 int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style) const {
@@ -1425,7 +1456,15 @@ bool GfxRenderer::getTextInkMetrics(const int fontId, const char* text, const Ep
   if (text == nullptr || *text == '\0') return false;
   const EpdFontFamily* const family = findFontFamily(fontId);
   if (!family) return false;
-  family->beginText(text, style);  // the string decides its glyphs' source (GlyphProvider::beginText)
+  if (shapesUiText(fontId, style) && ui_shaping::wantsShaping(text)) {
+    family->beginText(text, style);
+    if (const ui_shaping::Shaped* const shaped = ui_shaping::shape(*family, style, text)) {
+      return ui_shaping::inkExtents(*family, style, *shaped, aboveBaseline, belowBaseline);  // unscaled: base is 1
+    }
+  }
+  std::string ordered;
+  text = indicUiOrder(text, ordered);  // a two-part vowel's halves are drawn, not the vowel
+  family->beginText(text, style);      // the string decides its glyphs' source (GlyphProvider::beginText)
 
   bool any = false;
   uint32_t cp;
@@ -1463,6 +1502,19 @@ void GfxRenderer::drawCenteredText(const int fontId, const int y, const char* te
 
 void GfxRenderer::drawText(const int fontId, const int x, const int y, const char* text, const bool black,
                            const EpdFontFamily::Style style) const {
+  std::string formed;
+  const EpdFontFamily* const family = findFontFamily(fontId);
+  if (family) text = arabicUiForms(*family, text, style, formed);
+  // Indic or Myanmar text shaped over the face behind the UI face, when there is one (ui_shaping).
+  if (family && shapesUiText(fontId, style) && ui_shaping::wantsShaping(text)) {
+    family->beginText(text, style);
+    if (const ui_shaping::Shaped* const shaped = ui_shaping::shape(*family, style, text)) {
+      drawShapedUiText(fontId, *family, x, y, *shaped, black, style);
+      return;
+    }
+  }
+  std::string ordered;
+  text = indicUiOrder(text, ordered);
   if (text && BidiUtils::hasRtlClass(text, strlen(text))) {
     drawFormedText(fontId, x, y, BidiUtils::visualUiLine(text).c_str(), black, style);
     return;
@@ -1482,16 +1534,6 @@ void GfxRenderer::drawFormedText(const int fontId, const int x, const int y, con
       return;
     }
   }
-  const int yPos = y + getFontAscenderSize(fontId);
-  const int screenWidth = getScreenWidth();
-  const int screenHeight = getScreenHeight();
-  int lastBaseX = x;
-  int lastBaseLeft = 0;
-  int lastBaseWidth = 0;
-  int lastBaseTop = 0;
-  int lastBaseAdvanceFP = 0;  // 12.4 fixed-point
-  int32_t prevAdvanceFP = 0;  // 12.4 fixed-point: prev glyph's advance + next kern for snap
-
   // cannot draw a NULL / empty string
   if (text == nullptr || *text == '\0') {
     return;
@@ -1507,8 +1549,20 @@ void GfxRenderer::drawFormedText(const int fontId, const int x, const int y, con
     LOG_ERR("GFX", "Font %d not found", fontId);
     return;
   }
-  const auto& font = *family;
   family->beginText(text, style);  // the string decides its glyphs' source (GlyphProvider::beginText)
+  drawCodepoints(*family, x, y + getFontAscenderSize(fontId), text, black, style);
+}
+
+void GfxRenderer::drawCodepoints(const EpdFontFamily& font, const int x, const int yPos, const char* text,
+                                 const bool black, const EpdFontFamily::Style style) const {
+  const int screenWidth = getScreenWidth();
+  const int screenHeight = getScreenHeight();
+  int lastBaseX = x;
+  int lastBaseLeft = 0;
+  int lastBaseWidth = 0;
+  int lastBaseTop = 0;
+  int lastBaseAdvanceFP = 0;  // 12.4 fixed-point
+  int32_t prevAdvanceFP = 0;  // 12.4 fixed-point: prev glyph's advance + next kern for snap
   const auto renderModeSnapshot = getRenderMode();
 
   uint32_t cp;
@@ -1594,6 +1648,62 @@ void GfxRenderer::drawFormedText(const int fontId, const int x, const int y, con
   }
 }
 
+void GfxRenderer::drawShapedUiText(const int fontId, const EpdFontFamily& font, const int x, const int y,
+                                   const ui_shaping::Shaped& shaped, const bool black,
+                                   const EpdFontFamily::Style style) const {
+  const int yPos = y + getFontAscenderSize(fontId);  // unscaled: shapesUiText() wants the base scale at 1
+  // The UI face, whose provider chain serves a run's glyphs by key as the ink of the face behind it, exactly as it
+  // serves that face's characters (FallbackFaceProvider): shaped and unshaped glyphs side by side look alike.
+  const EpdFontData* const data = font.getData(style);
+  const EpdFont face(data);
+  // The runs' glyphs the face behind lacks, rendered in one batch (GlyphProvider::prefetchGlyphs), 64 at a time: 128 B
+  // of stack. Glyph 0, the .notdef, is never lent, so never rendered.
+  if (GlyphProvider* const source = shaped.source()->provider) {
+    constexpr size_t kBatch = 64;
+    uint16_t glyphs[kBatch];
+    size_t count = 0;
+    for (const ui_shaping::Segment& segment : shaped) {
+      if (!segment.glyphs) continue;
+      forEachGlyph(segment.run, 0, false, [&](const GlyphRecord& record, int /*penX*/) {
+        if (record.glyph == 0) return;
+        glyphs[count++] = record.glyph;
+        if (count == kBatch) {
+          source->prefetchGlyphs(glyphs, count);
+          count = 0;
+        }
+      });
+    }
+    if (count > 0) source->prefetchGlyphs(glyphs, count);
+  }
+
+  const auto renderModeSnapshot = getRenderMode();
+  const int screenWidth = getScreenWidth();
+  const int screenHeight = getScreenHeight();
+  int pen = x;
+  for (const ui_shaping::Segment& segment : shaped) {
+    if (!segment.glyphs) {
+      drawCodepoints(font, pen, yPos, segment.text, black, style);
+      pen += segment.advance;
+      continue;
+    }
+    // drawGlyphRun's unscaled pen: each record at the pen plus its offset, the pen snapped per record.
+    forEachGlyph(segment.run, pen, false, [&](const GlyphRecord& record, const int penX) {
+      const EpdGlyphRef glyph = face.findGlyph(glyph_key::of(record.glyph));
+      if (!glyph) return;  // one the face lacks, or too large to lend as ink: nothing drawn, and the pen moves on
+      const int glyphPenX = penX + record.dx;
+      const int glyphPenY = yPos + record.dy;
+      const int glyphX = glyphPenX + glyph.left;
+      const int glyphY = glyphPenY - glyph.top;
+      if (glyph.width == 0 || glyph.height == 0 || glyphX >= screenWidth || glyphY >= screenHeight ||
+          glyphX + glyph.width <= 0 || glyphY + glyph.height <= 0) {
+        return;
+      }
+      drawResolvedGlyph<TextRotation::None>(*this, renderModeSnapshot, data, glyph, glyphPenX, glyphPenY, black);
+    });
+    pen += segment.advance;
+  }
+}
+
 // Whether a total scale draws on the unscaled blitter: within 1% of 1 the resample is not worth its blur. One
 // definition for drawTextScaled and for glyph runs, so a shaped run and its unshaped fallback agree.
 static bool drawsUnscaled(const float total) { return total > 0.99f && total < 1.01f; }
@@ -1602,6 +1712,15 @@ static bool drawsUnscaled(const float total) { return total > 0.99f && total < 1
 // heading at 1.6em inside synthesised 24 pt body text is ONE resample at 1.2 x 1.6, not two.
 void GfxRenderer::drawTextScaled(const int fontId, const int x, const int y, const char* text, const bool black,
                                  const EpdFontFamily::Style style, const float scale) const {
+  // Unscaled it is drawText, which forms, shapes or orders the text once (the order is not idempotent).
+  if (drawsUnscaled((scale <= 0.0f ? 1.0f : scale) * fontBaseScale(fontId))) {
+    drawText(fontId, x, y, text, black, style);
+    return;
+  }
+  std::string formed;
+  if (const EpdFontFamily* const family = findFontFamily(fontId)) text = arabicUiForms(*family, text, style, formed);
+  std::string ordered;
+  text = indicUiOrder(text, ordered);
   if (text && BidiUtils::hasRtlClass(text, strlen(text))) {
     drawFormedTextScaled(fontId, x, y, BidiUtils::visualUiLine(text).c_str(), black, style, scale);
     return;
@@ -1616,9 +1735,10 @@ void GfxRenderer::drawFormedTextScaled(const int fontId, const int x, const int 
   // caller passing 0 to mean unscaled.
   const float total = (scale <= 0.0f ? 1.0f : scale) * fontBaseScale(fontId);
   if (drawsUnscaled(total)) {
-    // Exactly 1 after compounding: the unscaled blitter is both faster and sharper. Only reachable
-    // when the font's base is 1, so drawText() cannot bounce back here.
-    drawText(fontId, x, y, text, black, style);
+    // Exactly 1 after compounding: the unscaled blitter is both faster and sharper. The text is formed already (a
+    // page's word or piece), so it is drawn as given: drawText would form, shape or order it again, and the order is
+    // not idempotent.
+    drawFormedText(fontId, x, y, text, black, style);
     return;
   }
   drawTextAtScale(fontId, x, y, text, black, style, total);
@@ -3100,28 +3220,42 @@ std::string GfxRenderer::truncatedText(const int fontId, const char* text, const
     LOG_ERR("GFX", "Font %d not found", fontId);
     return text;
   }
+  std::string formed;
+  text = arabicUiForms(*family, text, style, formed);
+  // Indic and Myanmar text is fitted in its own order and handed back so, for the draw to shape or order it once, and
+  // cut only between syllables (ui_shaping::cutAllowed): from one shaping where a face behind the UI face shapes it
+  // (ui_shaping::truncate), else each candidate measured ordered (getTextWidth), by the loop below rather than
+  // textTruncation's walk.
+  const bool syllabic = indic::containsIndic(text) || myanmar::holdsMyanmar(text, strlen(text));
 
   // Scan pass: record the text and hand back the whole string. The scan has to see every glyph
   // the real pass will draw, and prewarming a truncated string would leave the remainder to the
   // per-glyph fallback. This used to fall out of getTextWidth() returning 0 while scanning, which
   // read as "fits"; now that the measurement happens inside textTruncation, say it explicitly.
   if (fontCacheManager_ && fontCacheManager_->isScanning()) {
-    fontCacheManager_->recordText(text, fontId, style);
+    std::string ordered;
+    fontCacheManager_->recordText(indicUiOrder(text, ordered), fontId, style);
     return text;
   }
 
   family->beginText(text, style);  // the string decides its glyphs' source (GlyphProvider::beginText)
+  if (shapesUiText(fontId, style) && ui_shaping::wantsShaping(text)) {
+    std::string fitted;
+    if (ui_shaping::truncate(*family, style, text, maxWidth, fitted)) return fitted;
+  }
 
   // SMALL_CAPS scales every metric, which the single-pass walk does not model; a font with no
   // U+2026 has nothing to truncate with. Neither case occurs today, so both take the old loop.
-  if (!(style & EpdFontFamily::SMALL_CAPS) && textTruncation::canTruncate(*family, style)) {
+  if (!(style & EpdFontFamily::SMALL_CAPS) && !syllabic && textTruncation::canTruncate(*family, style)) {
     return textTruncation::truncateToWidth(*family, text, maxWidth, style);
   }
 
   std::string item = text;
   int textWidth = getTextWidth(fontId, item.c_str(), style);
   if (textWidth <= maxWidth) return item;
-  while (!item.empty() && getTextWidth(fontId, (item + textTruncation::ELLIPSIS_UTF8).c_str(), style) >= maxWidth) {
+  const std::string_view whole(text);
+  while (!item.empty() && (!ui_shaping::cutAllowed(whole, item.size()) ||
+                           getTextWidth(fontId, (item + textTruncation::ELLIPSIS_UTF8).c_str(), style) >= maxWidth)) {
     utf8RemoveLastChar(item);
   }
   return item.empty() ? textTruncation::ELLIPSIS_UTF8 : item + textTruncation::ELLIPSIS_UTF8;
@@ -3278,17 +3412,29 @@ int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style styl
   return applyBase(fp4::toPixel(spaceGlyph.advanceX), fontBaseScale(fontId));  // 12.4 -> nearest px
 }
 
-int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const uint32_t rightCp,
-                                 const EpdFontFamily::Style style) const {
+int32_t GfxRenderer::spaceGlyphAdvanceFP(const int fontId, const EpdFontFamily::Style style) const {
   const EpdFontFamily* const family = findFontFamily(fontId);
   if (!family) return 0;
-  const auto& font = *family;
-  const EpdGlyphRef spaceGlyph = font.getGlyph(' ', style);
-  const int32_t spaceAdvanceFP = spaceGlyph ? static_cast<int32_t>(spaceGlyph.advanceX) : 0;
+  const EpdGlyphRef spaceGlyph = family->getGlyph(' ', style);
+  return spaceGlyph ? static_cast<int32_t>(spaceGlyph.advanceX) : 0;
+}
+
+int32_t GfxRenderer::kerningFP(const int fontId, const uint32_t leftCp, const uint32_t rightCp,
+                               const EpdFontFamily::Style style) const {
+  const EpdFontFamily* const family = findFontFamily(fontId);
+  return family ? static_cast<int32_t>(family->getKerning(leftCp, rightCp, style)) : 0;
+}
+
+int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const uint32_t rightCp,
+                                 const EpdFontFamily::Style style) const {
+  if (!findFontFamily(fontId)) return 0;
   // Combine space advance + flanking kern into one fixed-point sum before snapping.
   // Snapping the combined value avoids the +/-1 px error from snapping each component separately.
-  const int32_t kernFP = static_cast<int32_t>(font.getKerning(leftCp, ' ', style)) +
-                         static_cast<int32_t>(font.getKerning(' ', rightCp, style));
+  return snapSpaceAdvance(fontId, spaceGlyphAdvanceFP(fontId, style) + kerningFP(fontId, leftCp, ' ', style) +
+                                      kerningFP(fontId, ' ', rightCp, style));
+}
+
+int GfxRenderer::snapSpaceAdvance(const int fontId, const int32_t totalFP) const {
   // Scaled in FIXED POINT, before the snap. This is the inter-word advance ParsedText uses for
   // line breaking and justification, so it has to grow with the glyphs or a synthesised size
   // measures words at its own scale and the gaps between them at its master's -- 83% of the right
@@ -3297,7 +3443,6 @@ int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const 
   // Scaling the combined fixed-point sum rather than the snapped pixel keeps the property the
   // comment above is about: one rounding step, not two.
   const float base = fontBaseScale(fontId);
-  const int32_t totalFP = spaceAdvanceFP + kernFP;
   return fp4::toPixel(base == 1.0f ? totalFP : static_cast<int32_t>(totalFP * base + (totalFP < 0 ? -0.5f : 0.5f)));
 }
 
@@ -3402,46 +3547,8 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   if (baseScale != 1.0f) {
     return scaledTextAdvanceX(*family, text, style, baseScale);
   }
-
-  uint32_t cp;
-  uint32_t prevCp = 0;
-  int widthPx = 0;
-  int32_t prevAdvanceFP = 0;  // 12.4 fixed-point: prev glyph's advance + next kern for snap
-  const auto& font = *family;
-  while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text)))) {
-    if (overlaysItsBase(cp)) {
-      continue;
-    }
-    cp = font.applyLigatures(cp, text, style);
-
-    // Small-caps fold — mirror drawText so measurement and rendering agree exactly.
-    const bool folded = (style & EpdFontFamily::SMALL_CAPS) != 0 && smallCaps::fold(cp);
-
-    // Differential rounding: snap (previous advance + current kern) together,
-    // matching drawText so measurement and rendering agree exactly.
-    if (prevCp != 0) {
-      auto kernFP = static_cast<int32_t>(font.getKerning(prevCp, cp, style));  // 4.4 fixed-point kern
-      if (folded) kernFP = static_cast<int32_t>(kernFP * smallCaps::SCALE + 0.5f);
-      widthPx += fp4::toPixel(prevAdvanceFP + kernFP);  // snap 12.4 fixed-point to nearest pixel
-    }
-
-    const EpdGlyphRef glyph = font.getGlyph(cp, style);
-    if (!glyph) {
-      widthPx += fp4::toPixel(prevAdvanceFP);
-      prevCp = 0;
-      prevAdvanceFP = 0;
-      continue;
-    }
-    prevAdvanceFP = glyph.advanceX;
-    // SUP/SUB no longer halve here — superscript/subscript words are measured at their
-    // explicit per-word scale by the layout code, matching drawTextScaled exactly.
-    if (folded) {
-      prevAdvanceFP = static_cast<int>(prevAdvanceFP * smallCaps::SCALE + 0.5f);
-    }
-    prevCp = cp;
-  }
-  widthPx += fp4::toPixel(prevAdvanceFP);  // final glyph's advance
-  return widthPx;
+  // Unscaled, drawText's own walk: differential rounding, kerning, ligatures and small caps as it draws them.
+  return ui_shaping::codepointAdvance(*family, text, style);
 }
 
 int GfxRenderer::rawFontAscenderSize(const int fontId) const {
@@ -3492,6 +3599,16 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
   if (!family) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return;
+  }
+
+  // As drawText: Arabic in the forms the UI faces carry, then a right-to-left label in visual order, so a
+  // Hebrew, Arabic or Persian side-button label reads as the horizontal one does.
+  std::string formed;
+  text = arabicUiForms(*family, text, style, formed);
+  std::string visual;
+  if (BidiUtils::hasRtlClass(text, strlen(text))) {
+    visual = BidiUtils::visualUiLine(text);
+    text = visual.c_str();
   }
 
   if (fontCacheManager_ && fontCacheManager_->isScanning()) {

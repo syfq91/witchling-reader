@@ -41,12 +41,15 @@ ZWNJ (U+200C): Hindi steers half forms with them, and a Malayalam chillu ends in
   (`arabic::takesJoiner`: a run member that is no AL punctuation), whatever follows (`keepsJoinerAfter`). It is held
   (`heldJoiner_`) until the next code point says it is alone, then put into the word ahead of that code point
   (`releaseHeldJoiner`). At a word's end (whitespace, a no-break space, a block's or a cell's end) `settleHeldJoiner`
-  puts it last in the word, or onto the last token when an inline end sent that word out already.
+  puts it last in the word, or onto the last token when an inline end sent that word out already; a word that leaves
+  the buffer no room for it goes out first, and the joiner onto its last token.
 - A second joiner drops both and the rest of the run (`droppingJoinerRun_`), and a joiner after any other code point
   is dropped as before. Runs of hundreds of joiners between words, a watermark, are still dropped whole.
-- The look-behind (`joinerLookBehind_`) crosses SAX chunks and inline element edges. `characterData` holds a 3-byte
-  sequence a chunk ended inside (`splitTail_`) and completes it from the next chunk, so a letter or a joiner is never
-  read in halves; `deliverSplitTail` hands on a tail that never got its rest.
+- The look-behind (`joinerLookBehind_`) crosses SAX chunks and inline element edges. `characterData` holds any UTF-8
+  sequence a chunk ended inside (`splitTail_`, `cutSequenceTail`: an Arabic letter's 2 bytes, an Indic or Myanmar
+  letter's or a joiner's 3, a 4-byte one) and completes it from the next chunk, so a letter or a joiner is never read
+  in halves, and a word's first letter cut so still sets the look-behind and still stops a drop cap;
+  `deliverSplitTail` hands on a tail that never got its rest.
 - A kept joiner counts in no visible offset inside a word: the offsets KOSync and the paragraph LUT read stay what
   they are without it.
 
@@ -60,11 +63,15 @@ cluster or draw an Arabic letter isolated.
 
 1. **Whether the pass shapes** (`decideShaping`, after `decideBidi`): it does when a token holds a byte sequence of
    U+0900-0DFF (`IndicShaper::holdsIndic`), in a paragraph that needs bidi or not; or when the paragraph needs bidi, a
-   token holds a byte sequence of the Arabic blocks (`arabic::holdsArabic`) and that token has a shaping face that
+   token holds an Arabic run member (`arabic::holdsRunMember`: a byte sequence of the Arabic blocks that is a letter, a
+   mark or AL punctuation, not a digit or a number sign alone; #667) or a number sign with a digit after it
+   (`arabic::holdsNumberSignWithDigit`), and that token has a shaping face that
    maps beh (`IndicShaper::drawsArabic`, the coverage test `shapeToken` makes of each Arabic run; the first such token
    decides, and a face not mapped at that moment counts as one). The book's language does not decide it; its text
    does. An Arabic run starts at an AL letter, which makes the paragraph need bidi, so a Latin paragraph with
-   Arabic-Indic digits or an Arabic comma shapes nowhere. An Arabic paragraph in a bitmap or built-in font, or in a
+   Arabic-Indic digits or an Arabic comma shapes nowhere, and a Hebrew paragraph with Arabic-Indic digits is laid out
+   as without a face (before #667 a ten-paragraph Hebrew test chapter made 240 shaping lookups for its digits on the
+   host, and merged its glued groups). An Arabic paragraph in a bitmap or built-in font, or in a
    TrueType face without Arabic (a Latin reader font with no Arabic family installed), makes no `ShapingState` and
    merges nothing: its lines are those of the line pass alone. A pass that does not shape takes the path it took
    before shaping existed, and its lines keep their bytes.
@@ -207,7 +214,13 @@ shaped-script book for the X4's in-place gate.
   style is mapped, and the face is then re-pointed (`Face::rebase`, deviation 12). Under RenderLock only.
 - **`ShapingFace::plan(script, languageTags)`** builds an `ot::Plan` on first ask and keeps it in the face, by
   `unique_ptr`, never moved, so no plan outlives the face it points into. A face keeps `kMaxPlans` (2); a third key
-  frees the one asked for least recently.
+  frees the one asked for least recently. Its memory is asked of the engine's heap check (`ot::setHeapCheck`): the
+  `Plan` itself, the builder's 3.1 KB scratch, its lists and its lookups' digests (a refusal fails the plan), and its
+  filters for a font without `CPac` (a refusal leaves its subtables unfiltered: slower, the same glyphs). While a
+  layout build runs (`Section::BuildState`, `buildDictionaryHtmlPages`), `ShapingHeapCheck` installs
+  `heap_growth::shapedHeapAllows` there, so a plan leaves the shaped store's free-heap floor
+  (`heap_growth::kShapedFreeFloor`, 12 KB) free; outside every build none is installed, and UI text
+  (`UiShapedText`) takes plans behind nothrow alone (see "What fails how").
 - **The plan's memos** (deviation 13): both leave the output as it is, by construction.
   - Each planned lookup's digest is copied into the plan when it is built, GSUB's then GPOS's (24 B a lookup, from
     `CPac`, else computed). The apply loop tests that copy before it reads the lookup's settings from the font
@@ -216,7 +229,40 @@ shaped-script book for the X4's in-place gate.
   - `consonantPositionFromFace`'s answers are remembered by the plan (`Plan::consonantPosition`): 64 direct-mapped
     slots keyed by the consonant's and the virama's glyph IDs, `mutable` in a const plan, which serves one build at a
     time under RenderLock.
-  - `Plan::testBypassCaches` switches both off, for the tests that compare the output with and without them.
+  - A lookup that passes the digest test is skipped when no glyph of the run both passes its digest and carries its
+    mask (`Plan::mayStart`, deviation 16): the plan holds both, so such a lookup reads nothing of the font.
+  - A lookup of more than 8 subtables also gets, per 8 of them, the low masks of their digest records ORed (8 B a
+    group, and 2 B a planned lookup for the index; deviation 18): a glyph reads a group's records in `CPac` only
+    when its mask may hold the glyph. NotoSansDevanagari's pres/cjct lookup is 114 one-glyph contexts; the groups
+    add 642 B to its plan (NotoSansBengali: 944 B).
+  - A LigatureSubst lookup also gets the low mask of its ligatures' second components (deviation 19, HarfBuzz 14.5's
+    seconds digest for the lookup, 8 B each and a byte per GSUB lookup): when the glyph after the start glyph may not
+    be skipped and the mask cannot hold it, no ligature is read.
+  - Each planned lookup's offset in its LookupList is kept too (2 B a lookup; deviation 20), so applying it reads no
+    entry of the list.
+  - `Plan::testBypassCaches` switches them all off, for the tests that compare the output with and without them.
+- **The cmap cache** (deviation 17): `Face::nominalGlyph` keeps the last face's answers in 64 static slots (256 B),
+  direct-mapped by the code point's low bits and emptied when another face asks. Normalization asks the cmap once or
+  twice a code point, each a binary search over the subtable in flash.
+- **The engine's hottest code in IRAM on the C3 and the S3** (deviation 21, `OtHot.h`). The C3 runs code and reads flash data
+  through one 16 KB cache, and shaping is bound by fetching its own instructions, not by its reads of the font: cutting
+  the font lines read per word by 37-45% made X3 chapter builds only 3-6% faster. `OT_HOT` links into IRAM the 8.7 KB
+  of the engine that executes the most instructions per byte, ranked by emulating the firmware's RV32 build (same
+  flags) over the distinct words of the Hindi and Arabic bench chapters: the table reads, the digest tests,
+  `mayApply`/`mayStart`, the lookup loop and `settings()`, the skipping iterator, coverage and class lookups, the
+  chained-context and GSUB dispatch, and the hot normalization and cmap functions. They execute 91% of the engine's
+  instructions; the whole hot path (15 KB) reaches 92-95%. The S3 links the same functions into IRAM; other targets
+  and the host leave `OT_HOT` empty.
+  - X3, parse ms (median of three cold builds; 2026-11-09): master en 1,147, he 2,217, ar 6,339, hi 5,383; the
+    engine's CPU work alone (no IRAM) ar 6,071, hi 4,950; with `OT_HOT` ar 4,789 (-24%), hi 4,177 (-22%); Latin and
+    Hebrew unchanged.
+  - IRAM is carved from the heap's SRAM on the C3: `OT_HOT` costs 9.2 KB of boot heap (X3: 68,624 -> 59,244 B). The
+    regenerated `sections.ld` (docs/memory-allocation-strategy.md section 10) returns 11.1 KB, so it lands first: with
+    both, 70,484 B, and ar 4,813, hi 4,201.
+  - The S3 (Murphy, X4 Pro, T5S3) fetches its code through a 16 KB instruction cache of its own (8 ways, 32 B lines,
+    `CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE` in the prebuilt core), beside a 32 KB data cache for the font reads and
+    PSRAM, from 80 MHz DIO flash on the Murphy and the X4 Pro, with the core at 240 MHz. Its IRAM comes out of internal
+    RAM that allocations over 4 KB leave alone (they go to PSRAM). Not yet measured on an S3.
 
 ## The word cache
 
@@ -234,6 +280,12 @@ arena's blocks back.
   that room free below the tail too, so the owned 10 KB arena of a released build has no cache and shapes every word.
   The tail is sound because nothing writes an arena's memory except through `alloc()` (memory strategy §6, invariant
   10).
+- **On the S3 boards:** their build arena is the 256 KB PSRAM block `HalDisplay` lends instead of the framebuffer,
+  and on an arena of `kLargeArenaBytes` or more the cache takes `kLargeWordCacheBytes` (128 KB, 1,024 sets) of its
+  tail (`WordShapeCache::armForBuild`), or 16 KB where that does not fit. Chapter 2 of the bench books on the host, hits
+  of the lookups: Zaydan's Arabic 28% in 16 KB, 40% in 128 KB; Gaban's Hindi 51% and 67%, the second at its
+  distinct-word ceiling. The parse lane stays below the large tail (0 clears) and the lines are the same
+  (`ShapingRules.TheWordCacheChangesNoLine`). No C3 arena reaches 256 KB, so the C3 boards keep 16 KB.
 - **Layout:** 2-way sets of 64 B ways (`kWayBytes`), 128 sets. An entry holds the identity (the text's 64-bit hash
   and length, and `keyFor`: the token's `shapeKey` with its language tags folded in) and the token's pieces with their
   records or reordered form. A third entry in a set evicts the way used least recently. An entry of up to
@@ -313,14 +365,23 @@ heap block they take is the longest token's form, in 512 B steps.
 
 **Degraded.** A run that cannot be shaped is laid out as its code points, and the parse is latched:
 - `IndicShaper::Outcome::Degraded`: no block for the call (no arena room and the heap block refused); the face not
-  mapped now, or its plan refused or failed to build; the font's lookups failing the run (growing it past 2n + 16
-  glyphs, nesting too deep, or running past the op budget); a run whose every glyph the font's GSUB deletes; a record
-  outside its fields; the store refusing a piece;
+  mapped now, or its plan refused (by the heap, or by the build's free-heap floor, below) or failed to build; the
+  font's lookups failing the run (growing it past 2n + 16 glyphs, nesting too deep, or running past the op budget); a
+  run whose every glyph the font's GSUB deletes; a record outside its fields; the store refusing a piece;
 - `ParsedText` without room for its `ShapingState`, its store's entries, or a forced split's entry.
 
+**A plan behind the floor.** During a build every plan block (see "The face and its plans") must leave
+`heap_growth::kShapedFreeFloor` free, as the store's growths must (`ShapingHeapCheck`, `heap_growth::shapedHeapAllows`).
+A plan refused so is not built and nothing of it is kept: each run that asks for it is `Degraded` and laid out as its
+code points, the paragraph latches, and the next token asks again. Before the check, nothing but nothrow stood in
+front of a plan's 1-4 KB and the builder's 3.1 KB scratch, so a plan made late in a heavy paragraph could take the
+heap under the store's floor and the parse's hard floor. UI text shapes outside any build: there a plan the heap
+refuses leaves the title reordered, and the plans go at the end of the UI pass.
+
 The shaped layout's own containers grow behind a heap check too (`heapAllows` in `ParsedText.cpp`, the largest free
-block against what the growth asks for, as `ShapedStore::heapAllows` checks its own), since a growth the heap refuses
-aborts under `-fno-exceptions`. Each refusal latches, and takes the unshaped way for what it refused:
+block against what the growth asks for, as the store checks its own with `heap_growth::shapedHeapAllows`), since a
+growth the heap refuses aborts under `-fno-exceptions`. Each refusal latches, and takes the unshaped way for what it
+refused:
 - a merge's text (`mergeGluedGroups`, up to 1 KB): the tokens stay apart, as past the cap;
 - the copy a token's pieces are measured from (`ShapingState::measureScratch`): the token is laid out as its code
   points; a candidate's, in a forced split: the candidate is measured as code points;
@@ -402,9 +463,23 @@ HarfBuzz 14.5, not by this shaper.
 - **AL punctuation and symbols are members** (the Arabic semicolon, question mark and full stop, the percent-like signs:
   U+0608, 060B, 060D, 061B, 061D-061F, 066D, 06D4, 06FD, 06FE, 0888): they are strong right to left, so a run cannot
   straddle a level, and joining gives them no joining. A joiner follows only a letter or a mark (`takesJoiner`).
-- **Not members**: the digits (AN, EN), the number signs (U+0600-0605, U+06DD, U+08E2), the Arabic comma, the neutral
-  symbols and the presentation forms (U+FB50-FDFF, FE70-FEFF), which bidi orders or which are formed already. They are
-  drawn as plain text in the book's font. Brackets and every other mirrored code point are outside by construction.
+- **Not members**: the digits (AN, EN), the number signs (U+0600-0605, U+06DD, U+0890-0891, U+08E2), the Arabic comma,
+  the neutral symbols and the presentation forms (U+FB50-FDFF, FE70-FEFF), which bidi orders or which are formed
+  already. They are drawn as plain text in the book's font, but for a number sign with digits after it (next item).
+  Brackets and every other mirrored code point are outside by construction.
+- **Number runs** (`RunKind::ArabicNumber`): a number sign (Unicode's Prepended_Concatenation_Mark of the blocks:
+  `arabic::isNumberSign`; the end of ayah U+06DD among them) followed by a digit starts a run of the sign and the
+  digits after it (European, Arabic-Indic or Extended Arabic-Indic; at most `arabic::kNumberSignDigits`, 8), which the
+  font draws as the sign around its digits: the shipped Naskh and Sans Arabic families take one to three digits in
+  most signs and four in the year and samvat signs (U+0601, U+0604), and a digit past those is drawn plain beside it.
+  Sign and digits are all number classes, so the run lies on one level, an even one: a letter glued before the sign
+  ends its own run there. It is shaped as Arabic with no context (a sign joins nothing), asked of the face by the sign
+  itself (a face that maps beh may lack it: the run is then Text, as before), never split, and its glyphs are written
+  left to right (`appendGlyphsLeftToRight`): the engine shapes Arabic right to left, which puts a digit the sign does
+  not take before the sign, so the run's units (zero-advance glyphs and the advancing glyph after them) are written
+  last first, each as it came. `make_arabic_number_fixtures.py` checks for each sign and digit set that this draws
+  every glyph where HarfBuzz's left-to-right run of the same text draws it, and records the runs
+  (`ArabicNumberExpected.h`, over a subset of the shipped Naskh font). Section file version 119.
 - **Cheap tests**: `arabic::holdsArabic` is a byte pre-test over the UTF-8 (digit-only text passes it and its scan
   finds no run); `holdsShaped` is Indic or Arabic. `maxRuns` is `bytes / 2 + 1`, since an Arabic run takes 2 bytes.
 - **Context**: an Arabic run is shaped with its glued neighbours' whole clusters nearest the token (a letter with the
@@ -445,9 +520,11 @@ a line's tokens by the bidi levels. PR 4b teaches it to carry shaped pieces.
 
 ## What is not shaped yet
 
-- **Presentation forms and ayah signs**: the code points of U+FB50-FDFF and FE70-FEFF are no run members (they are formed
-  already) and draw as plain text; the end-of-ayah sign (U+06DD) and the other number signs are no run members, so they are drawn as the
-  font's glyph for them, not enclosing the digits that follow; a Quran or tajweed book will show it.
+- **Presentation forms**: the code points of U+FB50-FDFF and FE70-FEFF are no run members (they are formed already) and
+  draw as plain text.
+- **A number sign in a left-to-right paragraph with European digits**: the sign is AN and the digits EN, two levels
+  there, so the run spans two bidi segments and is drawn as its code points; with Arabic-Indic digits, or in a
+  right-to-left paragraph (where the European digits become AN), it is shaped.
 - **Fonts without GPOS**: the engine runs the font's own lookups only. The fallback mark placement and legacy `kern`
   HarfBuzz gives a font without GPOS is not ported, so such a font draws its marks where its advances put them.
 - **A long split word can still lose or double a ligature.** The buffer takes 32 code points of context, run and
@@ -477,11 +554,16 @@ a line's tokens by the bidi levels. PR 4b teaches it to carry shaped pieces.
   Real prose costs under 1 KB more shaped than unshaped at its peak (the long Hindi book, portrait), and passes in
   both orientations. The remaining 10 KB cannot simply move into the lent arena: a store of that size reserved at the
   parse lane's start would stop the word cache arming on the X4 and push the 32 KB image walk stage out of both
-  boards' arenas, and the free tail is for data that may be lost (memory strategy §8.5, rows 17 and 18;
-  [the handover](future_work/writing-modes-handover.md) has the budget).
+  boards' arenas, and the free tail is for data that may be lost (memory strategy §8.5, rows 17 and 18; the
+  measurements are under [The shaped store's heap](#the-shaped-stores-heap)).
 - **Titles, chapter names and the TOC**, on Home, in the Library, in the status bar and the chapter list: the UI
-  faces are bitmap and cannot shape, so these draw unshaped in the face that draws them today. They wait for step 5's
-  visual strings.
+  faces are bitmap and cannot shape. Their Indic and Myanmar runs are shaped over the TrueType face behind the UI face
+  that draws them (`lib/GfxRenderer/UiShapedText`): the book's font in the reader, outside it the last book's family
+  opened read-only, at the UI size, and drawn as that face's 1-bit ink, as its unshaped characters are. A title is fitted
+  from one shaping and cut only between syllables. A face is there only when the last book's family maps the script:
+  with another script's font, before any book is read, or with a bitmap (`.cpfont`) font, a title is reordered only,
+  as in a bitmap font. A line with a right-to-left character keeps its visual order unshaped, Arabic titles their
+  presentation forms, and a string past 255 bytes is shaped only once it is cut to fit.
 - **Bitmap fonts** (`.cpfont`, built-in) and a TrueType family that does not map the script: Indic text is reordered
   only (the vowel signs are placed; conjuncts are not formed, and the virama stays visible), and Arabic letters are
   drawn unjoined, each in its isolated form, as before shaping.
@@ -490,6 +572,116 @@ a line's tokens by the bidi levels. PR 4b teaches it to carry shaped pieces.
 - **A book whose script has no installed family**: it opens in the reader's font and the script's letters draw
   as that font's replacement glyph (a box, for a font without them) until a family of the script is installed. Arabic
   text inside a book of another language does not pick a family; it is shaped when the font in use maps beh.
+
+## The shaped store's heap
+
+A paragraph's shaped records live in its `ShapedStore`, on the heap (memory strategy §8.2). The stress case is
+`test/epubs/test_shaped_arabic.epub`'s chapter 2 in landscape on the X3. #660 shrank the store's index and took four
+more changes (Tier A); #672 added a free-heap floor. Why the rest of the store does not move into the lent arena is
+in memory strategy §8.5, rows 17 and 18; what is left (Tier B and C, a size-aware gate) is in the
+[handover](future_work/writing-modes-handover.md), item 1.
+
+**What failed.** On the X3 in landscape, the test book `test/epubs/test_shaped_arabic.epub` chapter 2 degraded. That
+chapter holds a 400-token paragraph at a quarter of the body size (every Allah split by a span) whose lines hold more
+than 96 tokens, followed by a table. Master at 774e40dfc (with #656), cold cache, Landscape CW, 2026-11-08:
+- Background-C's borrowed build reads 12,220 B free before the stress paragraph, then 9,188 free and 6,388 largest at
+  the table row: the row is demoted and the parse aborts.
+- The released blocking rebuild, from 97 KB free, is down to 16 KB by the long-block splits (the whole build is on the
+  heap there) and aborts at the table too, at 11,292 free and 4,084 largest. The chapter is cached degraded AND
+  truncated: 2 pages of 4, the table and the stress paragraph's tail missing, and the one rebuild per session fails
+  the same way.
+- The allocator's minimum since boot after the open: 6,508 B.
+
+Real prose passes in both orientations: Zaydan's chapter, Background-B's lowest heap 29,204 B in landscape. A
+tajweed-coloured Quran (a span on every word) is the realistic case.
+
+**How it was measured (2026-11-08, Linux host).** `epub_build_inventory` takes `--shaping-font=FILE`
+(and `epub_pipeline_dump --viewport=WxH`), so a shaped build's heap and arena can be inventoried the way the memory
+audit's were:
+
+```
+build/test/epub_pipeline/epub_build_inventory test/epubs/test_shaped_arabic.epub <cache> <out> \
+    --arena=52272 --viewport=770x300 --shaping-font=NotoNaskhArabic-Book-Regular.ttf
+python3 test/epub_pipeline/inventory_report.py build/test/epub_pipeline/epub_build_inventory <out>/spine_1.txt
+```
+
+At the build's heap peak of chapter 2 (the sizes below are the device's; the host's totals run 1.3-1.6x high on
+object-holding sites):
+
+| Site | Before | After |
+|---|---:|---:|
+| `ShapedStore` entries (32 B, doubled to 256; now 16 B, reserved to the pass's count) | 9,216 | 2,416 |
+| `ShapedStore` pieces (16 B; now 14 B) | 4,608 | 3,038 |
+| `ShapedStore` chunks | 4,096 | 4,096 |
+| Heap above the build's base, host (unshaped: 51,869) | 81,510 | 73,203 |
+
+So the first plan's premise was wrong: three quarters of the store's 16.5 KB was its index, not its chunks. #660
+shrinks the index (branch `fix/shaped-store-heap`): a 16 B entry (the text hash folded to 32 bits, halfword
+length, begin and count), a 14 B piece, `reserve()` exact and the growth past it by half again. Real prose moves
+little: the long Hindi chapter (`make_test_shaped_indic.py --long`, portrait) peaks 1.3 KB lower and costs under 1 KB
+more shaped than unshaped. The stress chapter's store is now about 10 KB on the device (5.4 KB index, 4 KB chunks,
+the state).
+
+**Reserves behind the heap check** (#660). Every reserve the bidi line pass makes is behind
+the heap check (`HeapGrowth.h`, one helper for `ParsedText`, `ShapedStore` and `BidiLine`): `layOutBidiLine`'s
+token vector, and `BidiLine`'s Line buffers in `buildPieces` and `fallbackLine`, the fallback's word copies
+included. Refused, the line takes the existing "laid out without bidi" path. Tests: `ShapedStore.ReserveTakes...`,
+`ShapedStore.TheIndexStaysWithinItsHalfwordBounds`, `BidiLine.ALineTheHeapRefuses...`,
+`BidiLine.AFallbackLineTheHeapRefuses...`, `ShapedLayout.ALineWhoseTokensTheHeapRefuses...`. The goldens are
+unchanged (no layout changes).
+
+**The X3 run (2026-11-08, Landscape CW, cold cache; the branch at ac63df86e against master 774e40dfc, both built
+from a worktree with the full serial API, each written to the idle OTA slot and driven with `tools/devctl.py`:
+`ACT:READER:/test/test_shaped_arabic.epub@2:1`):**
+
+| | master | `fix/shaped-store-heap` |
+|---|---|---|
+| Background-C's borrowed build | aborts at the table row (9,188 free, 6,388 largest) | complete, 4 pages |
+| Lowest gate reading in it | 9,188 free / 6,388 largest | 14,484 free / 11,252 largest, before the stress paragraph |
+| Released rebuild | aborts too; cached degraded, 2 pages | none |
+| Arena high water, borrowed build | 33,466 B | 31,618 B |
+| Allocator minimum since boot, after the open | 6,508 B | 5,824 B |
+| The chapter as cached | 2 pages, table missing | 4 pages, the table on page 4 |
+
+The build is 1.8 KB lighter at the gate, and that is the difference between the hard floor and a clean build. No
+`shaping degraded`, no demoted row, no released rebuild; a warm open after a reboot drew all four pages (the stress
+paragraph on page 3, the table on page 4). The allocator's minimum is the build's, not the render's or the book
+index's: a warm open after a reboot left the boot's 17,520 B minimum at 15,416, and a section-only rebuild (book.bin
+kept, `spines/` removed, after a reboot) ended at 5,824 B again. So between the last gate reading and the end of the
+stress paragraph the heap goes about 8.7 KB deeper, 3 KB under the hard floor, with nothing refused: the pass line
+is met on the X3 with about 5.8 KB to spare. Logs and screenshots:
+`~/.local/state/witchhunt-device-backups/x3-20261108-shaped-heap-state/runs/`.
+
+**Tier A (2026-11-08, four commits on the same branch, in #660), measured the same way.** 5.8 KB was not much, and the host
+inventory showed what else the stress paragraph held at the peak besides the store: the word arrays doubled to 256
+entries for a block the parser splits at 175; the bidi fallback copied every token's text into a kept vector of
+strings; the line's token array, which only the pass reads, was a kept heap vector; and all of it stayed until the
+slice's yield, in front of the table. So: the word arrays stop at the parser's split capacity (146 entries, 3.6 KB on
+the device); the fallback hands views and `computeVisualWordOrder` skips the marks itself (2 KB); the tokens come with
+the pass's arena workspace (2 KB); and a paragraph's end gives back line buffers over 2 KB and a store over 8 KB.
+
+| | index fix only (ac63df86e) | Tier A (8c7fe2422) |
+|---|---|---|
+| Host inventory, heap above the build's base at the peak | +73,203 | +62,627 |
+| Borrowed build on the X3 | complete, 4 pages | complete, 4 pages |
+| Lowest gate reading in it | 14,484 free / 11,252 largest | no gate reached |
+| Allocator minimum, section build alone after a reboot | 5,824 B | about 19.8 KB |
+| Arena high water, borrowed build | 31,618 | 26,000 |
+
+The Tier A minimum had to be read with 8 KB of ballast held (`CMD:HEAP:HOLD=8000` before the open), because the build
+no longer reaches the boot's own minimum of 15.4 KB: 11,824 B with the ballast, 11,496 B for the cold open with the
+book index included (19.5 KB). Layout is unchanged on the host (goldens) and the device (4 pages, the table on the
+last).
+
+**The free-heap floor (decided 2026-11-09, #672).** The store's check (`heap_growth::shapedHeapAllows`) also keeps
+`heap_growth::kShapedFreeFloor` (12 KB) free, 3 KB above the parse's hard floor, so a store that would take the heap
+that low refuses: the token is laid out as its code points and the section latches shaping degraded (rebuilt once),
+instead of the parse aborting into a truncated section. The build's shaping plans keep the same floor
+(`ShapingHeapCheck`, "What fails how"). X4 figures that informed it (master 74b8fc803, Landscape CW, cold): the stress chapter built by
+Background-C with no gate reached, lowest free heap 32.9 KB with the book index and 33.2 KB section only (X3: about
+19.8 KB); Zaydan's chapter, Background-B's lowest 47.0 KB landscape, 46.7 KB portrait (X3: 29.2 KB); the in-place
+gate keeps a shaped Arabic book out of an in-place build on the X4 too
+(`heapAllowsInPlaceBuild=0 css=1 cjkTtf=0 shapedTtf=1`).
 
 ## Time
 

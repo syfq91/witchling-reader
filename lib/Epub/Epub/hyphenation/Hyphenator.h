@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -35,12 +36,25 @@ class Hyphenator {
   //      word from overflowing the page width.
   static std::vector<BreakInfo> breakOffsets(const std::string& word, bool includeFallback);
 
+  // Where a line may end inside the Myanmar text of `word`, in ascending order, none drawing a hyphen: between two
+  // syllables of a run, where the fallback's rule allows a cut (myanmar::breakAllowed), whatever the hyphenation
+  // setting. Burmese writes no spaces between words, so a phrase is split at a line end as a Hangul word is
+  // (the Myanmar design's PR 3). Empty for a word without Myanmar text, and between Myanmar and another script.
+  static std::vector<BreakInfo> myanmarLineEndBreaks(const std::string& word);
+
   // Provide a publication-level language hint (e.g. "en", "en-US", "ru") used to select hyphenation rules.
   static void setPreferredLanguage(const std::string& lang);
 
   // The patterns for a language tag ("en", "en-US", "eng"), null when the language has none. The book's
   // TypographyProfile holds this, and the section build installs it with setLanguageHyphenator().
   static const LanguageHyphenator* forLanguage(const std::string& lang);
+  // The code of the language a tag hyphenates by ("de" for "de-AT" or "ger"), whether or not its patterns are
+  // available; null when the firmware does not hyphenate the language. Names its pack (hyph-<code>.cphyph).
+  static const char* languageCode(const std::string& lang);
+  // The patterns' part of a section's cache key for a book in this language (hyphenationLayoutKey in
+  // LanguageRegistry.h): 0 for the patterns the image carried before packs. 0 with hyphenation off, without asking
+  // the pack provider (which maps the trie on the X3 and X4): such a layout keeps its key whatever pack is installed.
+  static uint32_t layoutKey(const std::string& lang, bool hyphenationEnabled);
   static void setLanguageHyphenator(const LanguageHyphenator* hyphenator) { cachedHyphenator_ = hyphenator; }
   // The patterns breakOffsets() uses now: the last installed, null when none is.
   static const LanguageHyphenator* languageHyphenator() { return cachedHyphenator_; }

@@ -11,7 +11,7 @@
 // the download, and whether a family already on the card is being updated.
 namespace FontDownloadRules {
 
-enum class FileKind : uint8_t { Unknown, Cpfont, TrueType, OpenTypeCff };
+enum class FileKind : uint8_t { Unknown, Cpfont, TrueType, OpenTypeCff, HyphenationPack, LanguagePack };
 
 // By the name's extension, in any case.
 inline FileKind kindOf(const char* name) {
@@ -29,16 +29,24 @@ inline FileKind kindOf(const char* name) {
   if (endsWith(".cpfont")) return FileKind::Cpfont;
   if (endsWith(".ttf")) return FileKind::TrueType;
   if (endsWith(".otf")) return FileKind::OpenTypeCff;
+  if (endsWith(".cphyph")) return FileKind::HyphenationPack;
+  if (endsWith(".cplang")) return FileKind::LanguagePack;
   return FileKind::Unknown;
 }
 
-// By a manifest's `format` value: "cpfont", "ttf" or "otf", exactly.
+// By a manifest's `format` value: "cpfont", "ttf" or "otf", exactly, or "uipack": a CJK UI pack
+// (CjkUiPacks.h), .cpfont files the interface draws from and no reading font, "hyphenation": one language's
+// hyphenation pack (HyphenationPack.h), installed beside the fonts in /.crosspoint/hyphenation/, or "language": one UI
+// language's strings (LangPack.h), installed into /.crosspoint/lang/. A firmware from before any of them skips the
+// family, as any reader skips a format it does not know.
 inline FileKind kindOfFormat(const char* value, const size_t len) {
   if (!value) return FileKind::Unknown;
   const auto is = [&](const char* word) { return strlen(word) == len && memcmp(value, word, len) == 0; };
-  if (is("cpfont")) return FileKind::Cpfont;
+  if (is("cpfont") || is("uipack")) return FileKind::Cpfont;
   if (is("ttf")) return FileKind::TrueType;
   if (is("otf")) return FileKind::OpenTypeCff;
+  if (is("hyphenation")) return FileKind::HyphenationPack;
+  if (is("language")) return FileKind::LanguagePack;
   return FileKind::Unknown;
 }
 
@@ -46,8 +54,9 @@ inline FileKind kindOfFormat(const char* value, const size_t len) {
 constexpr size_t kHeadBytes = 8;
 
 // Whether a file of `kind` starts as it must: a .cpfont with its magic, a .ttf with TrueType outlines (sfnt version
-// 0x00010000 or 'true'), an .otf with CFF outlines ('OTTO'). A collection ('ttcf') and WOFF are files of no kind the
-// reader draws.
+// 0x00010000 or 'true'), an .otf with CFF outlines ('OTTO'), a .cphyph with a CPHY version 1 header, a .cplang with a
+// CPLG version 1 one. A collection
+// ('ttcf') and WOFF are files of no kind the reader draws.
 inline bool headOk(const FileKind kind, const uint8_t* head, const size_t len) {
   if (len < kHeadBytes) return false;
   if (kind == FileKind::Cpfont) return memcmp(head, "CPFONT\0\0", kHeadBytes) == 0;
@@ -55,6 +64,8 @@ inline bool headOk(const FileKind kind, const uint8_t* head, const size_t len) {
     return memcmp(head, "\x00\x01\x00\x00", 4) == 0 || memcmp(head, "true", 4) == 0;
   }
   if (kind == FileKind::OpenTypeCff) return memcmp(head, "OTTO", 4) == 0;
+  if (kind == FileKind::HyphenationPack) return memcmp(head, "CPHY", 4) == 0 && head[4] == 1;
+  if (kind == FileKind::LanguagePack) return memcmp(head, "CPLG", 4) == 0 && head[4] == 1;
   return false;
 }
 
@@ -69,8 +80,9 @@ constexpr bool fits(const uint64_t freeBytes, const uint64_t downloadBytes) {
 }
 
 // Whether downloading a family is an update of what the card holds, from the counts of the manifest's files: `same`
-// are on the card at their manifest size, `changed` at another size, `absent` missing. A folder holding none of them
-// is someone else's family of that name, not an update.
+// are on the card at their manifest size, `changed` at another size (a pack's also at its size with another CRC:
+// FontInstaller::countFiles), `absent` missing. A folder holding none of them is someone else's family of that name,
+// not an update.
 // Two accepted limits: a reader's own file with a manifest file name but other bytes counts as an update and is
 // replaced; a hosted family whose files are all renamed is never offered an update (never rename hosted files: ship a
 // renamed set as a new family).
@@ -82,6 +94,21 @@ constexpr bool isUpdate(const size_t same, const size_t changed, const size_t ab
 // belongs. An update to an installed family is the caller's `|| catalog.hasUpdate(family)`.
 inline bool downloadAllTakes(const FontCatalog& catalog, const size_t family) {
   return !catalog.installed(family) && catalog.inDownloadAll(family);
+}
+
+// "Update all" on the device: an installed family with an update. With `packsOnly`, the language and hyphenation packs
+// among them alone, which Check for updates counts (packUpdates()) and has the Font Manager update.
+inline bool updateAllTakes(const FontCatalog& catalog, const size_t family, const bool packsOnly) {
+  return catalog.installed(family) && catalog.hasUpdate(family) && (!packsOnly || catalog.pack(family));
+}
+
+// The packs updateAllTakes() takes with `packsOnly`: how many updates Check for updates offers.
+inline size_t packUpdates(const FontCatalog& catalog) {
+  size_t count = 0;
+  for (size_t family = 0; family < catalog.count(); ++family) {
+    if (updateAllTakes(catalog, family, /*packsOnly=*/true)) ++count;
+  }
+  return count;
 }
 
 }  // namespace FontDownloadRules

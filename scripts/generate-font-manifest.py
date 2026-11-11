@@ -11,7 +11,11 @@ reader downloads fonts from:
   download an outline one it cannot install.
 - --output-v3 (fonts-v3.json): version 3, every family, each with its
   "format" ("cpfont", "ttf" or "otf") and, where the config says so,
-  "inDownloadAll": false.
+  "inDownloadAll": false. It lists the packs too: the UI language packs
+  (format "language"), a folder <Name>/ holding <code>.cplang, which the
+  Font Manager installs into /.crosspoint/lang/, then the hyphenation
+  packs (format "hyphenation"), a folder <Name>/ holding hyph-<code>.cphyph,
+  installed into /.crosspoint/hyphenation/. They come after the fonts.
 
 Usage:
     python3 scripts/generate-font-manifest.py \
@@ -22,7 +26,8 @@ Usage:
 
 The input directory may be flat (all files in one dir) or nested (family
 subdirectories). Family names are derived from filenames using the
-conventions <FamilyName>_<size>.cpfont and <FamilyName>-<Style>.ttf/.otf.
+conventions <FamilyName>_<size>.cpfont and <FamilyName>-<Style>.ttf/.otf;
+a pack's family is its folder.
 With --config, only the families sd-fonts.yaml lists are written, with its
 descriptions; a folder it does not list is reported and left out.
 """
@@ -51,6 +56,9 @@ CPFONT_VERSION = 4
 STYLE_NAMES = {0: "regular", 1: "bold", 2: "italic", 3: "bolditalic"}
 
 OUTLINE_SUFFIXES = {".ttf": "ttf", ".otf": "otf"}
+# A pack's file names its language and keeps the name the firmware looks for; its folder is its family. In the
+# order the manifest lists them, after the fonts.
+PACK_SUFFIXES = {".cplang": "language", ".cphyph": "hyphenation"}
 
 
 def load_config(yaml_path: Path) -> dict[str, dict]:
@@ -168,6 +176,16 @@ def scan_font_files(input_dir: Path) -> dict[str, list[Path]]:
             # <Family>-<Style>.otf: the family is the name before the last "-".
             families.setdefault(path.stem.rsplit("-", 1)[0], []).append(path)
 
+    for suffix in PACK_SUFFIXES:
+        for path in sorted(input_dir.rglob(f"*{suffix}")):
+            if not path.is_file():
+                continue
+            # A pack's family is its folder: the file keeps the name the firmware looks for.
+            if path.parent == input_dir:
+                print(f"  WARNING: skipping {path.name} (a pack sits in a folder of its family)", file=sys.stderr)
+                continue
+            families.setdefault(path.parent.name, []).append(path)
+
     for family_name, files in families.items():
         if len({p.suffix for p in files}) > 1:
             suffixes = ", ".join(sorted({p.suffix for p in files}))
@@ -177,8 +195,15 @@ def scan_font_files(input_dir: Path) -> dict[str, list[Path]]:
 
 
 def family_format(files: list[Path]) -> str:
-    """"cpfont", "ttf" or "otf": the format of a family's files."""
+    """"cpfont", "ttf", "otf", "language" or "hyphenation": the format of a family's files."""
+    if files and files[0].suffix in PACK_SUFFIXES:
+        return PACK_SUFFIXES[files[0].suffix]
     return OUTLINE_SUFFIXES.get(files[0].suffix, "cpfont") if files else "cpfont"
+
+
+def listing_order(fmt: str) -> int:
+    """The fonts, then the language packs, then the hyphenation packs."""
+    return 1 + list(PACK_SUFFIXES.values()).index(fmt) if fmt in PACK_SUFFIXES.values() else 0
 
 
 def build_manifest(
@@ -189,21 +214,25 @@ def build_manifest(
     every family with its format."""
     manifest_families = []
 
-    for family_name in sorted(families.keys()):
+    # The fonts by name, then the language packs and the hyphenation packs by name.
+    for family_name in sorted(families.keys(), key=lambda n: (listing_order(family_format(families[n])), n)):
         files = families[family_name]
-        fmt = family_format(files)
+        entry = (config or {}).get(family_name, {})
+        # A UI script pack is .cpfont files under its own format, which older firmware skips: version 3 only.
+        fmt = "uipack" if entry.get("format") == "uipack" else family_format(files)
         if version < 3 and fmt != "cpfont":
             continue
 
-        if fmt == "cpfont":
+        if family_format(files) == "cpfont":
             # Read styles from the first file (all files in a family have the
             # same styles since they're generated from the same source fonts).
             styles = read_cpfont_styles(files[0]) if files else []
+        elif fmt in PACK_SUFFIXES.values():
+            styles = []
         else:
             styles = [read_outline_style(f) for f in sorted(files, key=lambda p: p.name)]
 
         # Get description
-        entry = (config or {}).get(family_name, {})
         description = entry.get("description")
         if description is None:
             print(f"  WARNING: no description for family '{family_name}'", file=sys.stderr)
@@ -307,7 +336,7 @@ def main():
             del families[name]
         for name, files in families.items():
             wanted = config[name].get("format", "cpfont")
-            if family_format(files) != wanted:
+            if family_format(files) != ("cpfont" if wanted == "uipack" else wanted):
                 print(f"ERROR: {name} is {wanted} in {args.config} but its files are not", file=sys.stderr)
                 sys.exit(1)
 

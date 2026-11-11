@@ -2,6 +2,7 @@
 
 #include <ArabicScripts.h>
 #include <IndicScripts.h>
+#include <MyanmarScript.h>
 #include <Utf8.h>
 
 #include <algorithm>
@@ -16,15 +17,20 @@ struct Iso639Mapping {
   const char* iso639_2;
   const char* iso639_1;
 };
-static constexpr Iso639Mapping kIso639Mappings[] = {{"eng", "en"}, {"fra", "fr"}, {"fre", "fr"}, {"deu", "de"},
-                                                    {"ger", "de"}, {"rus", "ru"}, {"spa", "es"}, {"ita", "it"},
-                                                    {"ukr", "uk"}, {"swe", "sv"}, {"pol", "pl"}, {"por", "pt"}};
+static constexpr Iso639Mapping kIso639Mappings[] = {
+    {"eng", "en"}, {"fra", "fr"}, {"fre", "fr"}, {"deu", "de"}, {"ger", "de"}, {"rus", "ru"},
+    {"spa", "es"}, {"ita", "it"}, {"ukr", "uk"}, {"swe", "sv"}, {"pol", "pl"}, {"por", "pt"},
+    {"nld", "nl"}, {"dut", "nl"}, {"ces", "cs"}, {"cze", "cs"}, {"dan", "da"}, {"slv", "sl"},
+    {"lit", "lt"}, {"cat", "ca"}, {"bel", "be"}, {"fin", "fi"}, {"tur", "tr"}, {"asm", "as"},
+    {"ben", "bn"}, {"guj", "gu"}, {"hin", "hi"}, {"kan", "kn"}, {"mal", "ml"}, {"mar", "mr"},
+    {"ori", "or"}, {"ory", "or"}, {"pan", "pa"}, {"san", "sa"}, {"tam", "ta"}, {"tel", "te"}};
 
 const LanguageHyphenator* Hyphenator::cachedHyphenator_ = nullptr;
 
 namespace {
 
-const LanguageHyphenator* hyphenatorForLanguage(const std::string& langTag) {
+// The registry's entry for a language tag: its primary subtag, lowered, with ISO 639-2 codes mapped to 639-1.
+const LanguageEntry* languageEntryFor(const std::string& langTag) {
   if (langTag.empty()) return nullptr;
 
   std::string primary;
@@ -38,11 +44,16 @@ const LanguageHyphenator* hyphenatorForLanguage(const std::string& langTag) {
 
   for (const auto& mapping : kIso639Mappings) {
     if (primary == mapping.iso639_2) {
-      return getLanguageHyphenatorForPrimaryTag(mapping.iso639_1);
+      return findLanguageEntry(mapping.iso639_1);
     }
   }
 
-  return getLanguageHyphenatorForPrimaryTag(primary);
+  return findLanguageEntry(primary.c_str());
+}
+
+const LanguageHyphenator* hyphenatorForLanguage(const std::string& langTag) {
+  const LanguageEntry* entry = languageEntryFor(langTag);
+  return entry ? getLanguageHyphenatorForPrimaryTag(entry->primaryTag) : nullptr;
 }
 
 // Maps a codepoint index back to its byte offset inside the source word.
@@ -87,22 +98,38 @@ bool arabicBreakAllowed(const std::vector<CodepointInfo>& cps, const size_t idx)
   return true;
 }
 
+// The Myanmar part of the fallback rule (myanmar::cutAllowed): a Myanmar word is cut between syllables only, and its
+// joiners stay with the letter before them. The rule reads the code point after cps[idx] past any dot below.
+bool myanmarBreakAllowed(const std::vector<CodepointInfo>& cps, const size_t idx) {
+  size_t next = idx + 1;
+  while (next < cps.size() && cps[next].value == myanmar::DOT_BELOW) ++next;
+  return myanmar::cutAllowed(cps[idx - 1].value, cps[idx].value, next < cps.size() ? cps[next].value : 0);
+}
+
 // Fallback break indexes for a word the language patterns could not split:
 // every index leaving minPrefix/minSuffix codepoints on each side, except
-// inside an Indic syllable, whose halves would each shape on their own, and inside an Arabic cluster (before a mark
-// or a joiner, after a ZWJ), which would start the next line with a mark.
+// inside an Indic syllable, whose halves would each shape on their own, inside an Arabic cluster (before a mark
+// or a joiner, after a ZWJ), which would start the next line with a mark, and inside a Myanmar syllable.
 // Ported from crosspoint-reader PR #3787 ("feat: add Indic language support without HarfBuzz", SSafayet /
 // @SSafayet).
 void appendFallbackIndexes(const std::vector<CodepointInfo>& cps, const size_t minPrefix, const size_t minSuffix,
                            std::vector<size_t>& out) {
   for (size_t idx = minPrefix; idx + minSuffix <= cps.size(); ++idx) {
-    if (idx == 0 || (indic::syllableBreakAllowed(cps[idx - 1].value, cps[idx].value) && arabicBreakAllowed(cps, idx))) {
+    if (idx == 0 || (indic::syllableBreakAllowed(cps[idx - 1].value, cps[idx].value) && arabicBreakAllowed(cps, idx) &&
+                     myanmarBreakAllowed(cps, idx))) {
       out.push_back(idx);
     }
   }
 }
 
 bool isSegmentSeparator(const uint32_t cp) { return isExplicitHyphen(cp) || isApostrophe(cp); }
+
+// Whether a break before cps[idx] shows a hyphen: not between two letters of a language whose lines break without one
+// (the Indic scripts). A Latin word in such a book keeps its hyphen.
+bool showsHyphen(const LanguageHyphenator* hyphenator, const std::vector<CodepointInfo>& cps, const size_t idx) {
+  if (!hyphenator || hyphenator->insertsHyphen() || idx == 0 || idx >= cps.size()) return true;
+  return !(hyphenator->isLetter(cps[idx - 1].value) && hyphenator->isLetter(cps[idx].value));
+}
 
 void appendSegmentPatternBreaks(const std::vector<CodepointInfo>& cps, const LanguageHyphenator& hyphenator,
                                 const bool includeFallback, std::vector<Hyphenator::BreakInfo>& outBreaks) {
@@ -130,7 +157,7 @@ void appendSegmentPatternBreaks(const std::vector<CodepointInfo>& cps, const Lan
         if (idx == 0 || idx >= segment.size()) continue;
         const size_t cpIdx = segStart + idx;
         if (cpIdx < cps.size()) {
-          outBreaks.push_back({cps[cpIdx].byteOffset, true});
+          outBreaks.push_back({cps[cpIdx].byteOffset, showsHyphen(&hyphenator, cps, cpIdx)});
         }
       }
     }
@@ -274,15 +301,46 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
   breaks.reserve(indexes.size());
   for (const size_t idx : indexes) {
     // CJK scripts are not hyphenated: a break next to a CJK character draws no hyphen. Ported from
-    // crosspoint-reader PR #2288 (Justin Mitchell).
-    const bool cjkSide =
-        (idx < cps.size() && utf8IsCjkBreakable(cps[idx].value)) || (idx > 0 && utf8IsCjkBreakable(cps[idx - 1].value));
-    breaks.push_back({byteOffsetForIndex(cps, idx), !cjkSide});
+    // crosspoint-reader PR #2288 (Justin Mitchell). Nor is Myanmar: a line ends between its syllables as it ends
+    // between its phrases.
+    const auto unhyphenated = [](const uint32_t cp) { return utf8IsCjkBreakable(cp) || myanmar::isRunMember(cp); };
+    const bool noHyphen =
+        (idx < cps.size() && unhyphenated(cps[idx].value)) || (idx > 0 && unhyphenated(cps[idx - 1].value));
+    breaks.push_back({byteOffsetForIndex(cps, idx), !noHyphen && showsHyphen(hyphenator, cps, idx)});
   }
 
+  return breaks;
+}
+
+std::vector<Hyphenator::BreakInfo> Hyphenator::myanmarLineEndBreaks(const std::string& word) {
+  // The byte scan first: most words are not Myanmar, and return here without a code point vector.
+  if (!myanmar::holdsMyanmar(word.data(), word.size())) return {};
+  const std::vector<CodepointInfo> cps = collectCodepoints(word);
+  std::vector<BreakInfo> breaks;
+  breaks.reserve(cps.size());  // at most a break a code point; the vector lives for one candidate search
+  for (size_t idx = 1; idx < cps.size(); ++idx) {
+    // Inside a run: a syllable's start after a member, a joiner or a dotted circle. Myanmar meeting another script
+    // is no break of this rule's (a bracket or a quote must not be left at a line's end).
+    const uint32_t prev = cps[idx - 1].value;
+    if (myanmar::isRunMember(cps[idx].value) && (myanmar::isRunMember(prev) || myanmar::isShared(prev)) &&
+        myanmarBreakAllowed(cps, idx)) {
+      breaks.push_back({cps[idx].byteOffset, false});
+    }
+  }
   return breaks;
 }
 
 void Hyphenator::setPreferredLanguage(const std::string& lang) { cachedHyphenator_ = hyphenatorForLanguage(lang); }
 
 const LanguageHyphenator* Hyphenator::forLanguage(const std::string& lang) { return hyphenatorForLanguage(lang); }
+
+uint32_t Hyphenator::layoutKey(const std::string& lang, const bool hyphenationEnabled) {
+  if (!hyphenationEnabled) return 0;
+  const LanguageEntry* entry = languageEntryFor(lang);
+  return entry ? hyphenationLayoutKey(entry->primaryTag) : 0;
+}
+
+const char* Hyphenator::languageCode(const std::string& lang) {
+  const LanguageEntry* entry = languageEntryFor(lang);
+  return entry ? entry->primaryTag : nullptr;
+}

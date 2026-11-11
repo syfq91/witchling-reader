@@ -42,21 +42,26 @@ class SdCardFontSystem {
   void setReaderLanguage(const std::string& language);
   void clearReaderLanguage();
   /// The open book's language is not known yet: a first open learns it from the load that builds book.bin. While a
-  /// Noto CJK, Indic, Arabic or Hebrew family is installed, which the language may pick (effectiveReaderFamily,
-  /// selectLanguageFamily), the book's font waits for it (waitsForReaderLanguage) rather than install one face and then
-  /// another.
+  /// Noto CJK, Indic, Arabic, Hebrew or Myanmar family is installed, which the language may pick
+  /// (effectiveReaderFamily, selectLanguageFamily), the book's font waits for it (waitsForReaderLanguage) rather than
+  /// install one face and then another.
   void setReaderLanguagePending();
   bool waitsForReaderLanguage() const;
 
-  /// A Chinese, Japanese, Korean, Indic, Arabic-script or Hebrew-script book (by its language) whose reader font has
-  /// none of its script is drawn in an installed Noto family of the book's region or script instead: NotoSerif<R> or
-  /// NotoSans<R> (R: JP, SC, TC, KR, Hebrew, or an Indic script's name; an Arabic-script book: NotoSansArabic or
-  /// NotoNaskhArabic), the sans first for a font named Sans. Decided at book open for the font the book takes from the
-  /// settings (`family`: the global SD family, "" for a built-in one; nullptr when the book has a font of its own),
-  /// from that font's file on the card; languageFamily() is "" when it has the script, the book is in none of these
-  /// scripts, or no such family is installed.
+  /// A Chinese, Japanese, Korean, Indic, Arabic-script, Hebrew-script or Myanmar-script book (by its language) whose
+  /// reader font has none of its script is drawn in an installed Noto family of the book's region or script instead:
+  /// NotoSerif<R> or NotoSans<R> (R: JP, SC, TC, KR, Hebrew, Myanmar, or an Indic script's name; an Arabic-script book:
+  /// NotoSansArabic or NotoNaskhArabic), the sans first for a font named Sans. Decided at book open for the font the
+  /// book takes from the settings (`family`: the global SD family, "" for a built-in one; nullptr when the book has a
+  /// font of its own), from that font's file on the card; languageFamily() is "" when it has the script, the book is in
+  /// none of these scripts, or no such family is installed.
   void selectLanguageFamily(const char* family);
   const char* languageFamily() const { return languageFamily_.c_str(); }
+  // The family selectLanguageFamily() would have taken for the open book's script and found no install of: the one it
+  // tries first ("NotoSansDevanagari", "NotoNaskhArabic", "NotoSerifSC"); "" when the book needs none, the reader's
+  // font draws its script, a family of it is installed, or the book's own body family (selectBookFamilies) draws it.
+  // What the book's open offers to download (BookPackOffer). Reads that body family's character map: once a book open.
+  const char* missingLanguageFamily() const;
 
   /// The families of a book, loaded read-only for UI screens: only when the glyph store holds them as a set already
   /// (SdCardFontManager::openTtfFamiliesReadOnly). False, nothing loaded, otherwise or when the first is no TrueType.
@@ -198,6 +203,8 @@ class SdCardFontSystem {
   static bool isArabicFamily(const std::string& family);
   // Whether `family` is "NotoSansHebrew" or "NotoSerifHebrew".
   static bool isHebrewFamily(const std::string& family);
+  // Whether `family` is "NotoSansMyanmar" or "NotoSerifMyanmar".
+  static bool isMyanmarFamily(const std::string& family);
   // Whether `family`'s regular file maps `codepoint`; true too when the file cannot be read, which keeps the font.
   static bool familyMapsCodepoint(const SdCardFontFamilyInfo& family, uint32_t codepoint);
 
@@ -205,7 +212,10 @@ class SdCardFontSystem {
   const indic::ScriptInfo* readerIndicScript_ = nullptr;  // the open book's Indic script, else null
   bool readerArabicScript_ = false;                       // the open book is in an Arabic-script language
   bool readerHebrewScript_ = false;                       // the open book is in a Hebrew-script language
+  bool readerMyanmarScript_ = false;                      // the open book is in a Myanmar-script language
   std::string languageFamily_;                            // selectLanguageFamily()
+  std::string missingLanguageFamily_;                     // selectLanguageFamily(): none installed
+  uint32_t missingLanguageProbe_ = 0;                     // a character of its script
   uint32_t languageFamilyKey_ = 0;  // what it was decided for: the reader's font and the region; 0: nothing
   SdCardFontRegistry registry_;
   SdCardFontManager manager_;

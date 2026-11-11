@@ -1,20 +1,23 @@
-// The shaping rules, checked on every page the host pipeline lays out for the shaped books: the four Indic ones
-// (test/epubs/make_test_shaped_indic.py), the Arabic, Persian and Urdu ones and the Hebrew one with Hindi words
-// (make_test_shaped_arabic.py), each with its font (test/fixtures/fonts) as the face of every font and style, and the
-// Arabic one again 1,600 px wide, where its lines take the line pass's fallback.
+// The shaping rules, checked on every page the host pipeline lays out for the shaped books: the four Indic ones and the
+// Myanmar one (test/epubs/make_test_shaped_indic.py), the Arabic, Persian and Urdu ones and the Hebrew one with Hindi
+// words (make_test_shaped_arabic.py), each with its font (test/fixtures/fonts) as the face of every font and style, the
+// Arabic one again 1,600 px wide, where its lines take the line pass's fallback, and the Myanmar one 1,600 px wide,
+// where more of its phrases stay whole.
 //
 // A line with a logical order (a bidi line) stores its words in visual order: each rule reads them in the order it is
 // about. Glue (wordContinues) is between visual neighbours; reading order is TextBlock::logicalPosition, and a token is
 // what the book's text says it is. So every page line and table cell line is read back against the chapter's text
 // first: its words, in reading order, must reproduce it (rule 6), and that reading gives each word its place in the
 // text, the space before it, and the tokens around it.
-//  1. a glyph form sits only on a word whose text holds an Arabic letter or U+0900-0DFF, and never on a digit (bidi
-//     class EN or AN), a Bidi_Mirrored code point or a bidi control: bidi orders those, a glyph run does not;
+//  1. a glyph form sits only on a word whose text holds an Arabic letter, U+0900-0DFF or a Myanmar code point, and
+//     never on a digit (bidi class EN or AN), a Bidi_Mirrored code point or a bidi control: bidi orders those, a glyph
+//     run does not;
 //  2. a shaped word is as wide as it was measured: a word glued to a word with a glyph form (or one with a glyph form
 //     glued to the word before it) starts where that word ends, the run's advance or a piece's text width, and a word
 //     with a glyph form ends at or before the spaced word after it (both in stored order: between visual neighbours);
-//  3. no line starts, in reading order, with an Arabic mark, a dependent sign, a ZWJ or a ZWNJ, and no line that ends
-//     inside a word (before the hyphen of a word split across lines) ends its Indic text with a virama;
+//  3. no line starts, in reading order, with an Arabic mark, a dependent sign, a Myanmar sign, a ZWJ or a ZWNJ, no
+//     line that ends inside a word (before the hyphen of a word split across lines) ends its Indic text with a virama,
+//     and a word split across lines without a hyphen is cut where Myanmar's rule allows it (myanmar::cutAllowed);
 //  4. each glyph form is what IndicShaper::shapeToken makes of its word's text, at its drawn size, in the book's
 //     language, with the glued tokens kept apart from its token (another style or size, or a token a ligature took) as
 //     context, whole, where the word is its token's edge: one Glyphs piece over the text, the stored records, any other
@@ -73,6 +76,7 @@
 #include "IndicScripts.h"
 #include "IndicShaper.h"
 #include "LogObserver.h"
+#include "MyanmarScript.h"
 #include "PipelineRunner.h"
 #include "StoredZipWriter.h"
 #include "TextShaping.h"
@@ -99,7 +103,9 @@ struct Book {
   int minGluedToPunctuation = 0;
   int minPastTheCap = 0;
   int minSplitWords = 0;
-  int consumed = 0;  // the tokens a glued neighbour's ligature draws, exactly
+  int minUnhyphenatedSplits = 0;  // words split across lines without a hyphen (Myanmar)
+  int minLatinLines = 2;          // lines of blocks without shaped letters, which must keep their bytes
+  int consumed = 0;               // the tokens a glued neighbour's ligature draws, exactly
   int minBesideDigits = 0;
   int minRtlPairs = 0;
   int minFallbackLines = 0;
@@ -176,12 +182,26 @@ bool holdsArabicLetter(const std::string& text) {
   return std::any_of(cps.begin(), cps.end(), isArabicLetter);
 }
 
-// Text a font that shapes draws differently: Indic, or an Arabic letter.
-bool holdsShapedLetter(const std::string& text) { return holdsIndic(text) || holdsArabicLetter(text); }
+bool holdsMyanmar(const std::string& text) {
+  const std::vector<uint32_t> cps = codepointsOf(text);
+  return std::any_of(cps.begin(), cps.end(), myanmar::isRunMember);
+}
 
-// What a run of the word shaped whole would hold, drawn as its code points instead: an Arabic run member, or an Indic
-// code point (a danda a token of its own draws as its code point is part of the run when the word is one token).
-bool drawsShapedScript(const uint32_t cp) { return arabic::isRunMember(cp) || isIndic(cp); }
+// Text a font that shapes draws differently: Indic, an Arabic letter, or Myanmar.
+bool holdsShapedLetter(const std::string& text) {
+  return holdsIndic(text) || holdsArabicLetter(text) || holdsMyanmar(text);
+}
+
+// What a run of the word shaped whole would hold, drawn as its code points instead: an Arabic or Myanmar run member, or
+// an Indic code point (a danda a token of its own draws as its code point is part of the run when the word is one
+// token).
+bool drawsShapedScript(const uint32_t cp) { return arabic::isRunMember(cp) || isIndic(cp) || myanmar::isRunMember(cp); }
+
+// A Myanmar sign: a run member that starts no syllable, but for the section marks (U+104A, 104B), which a space may
+// come before.
+bool isMyanmarSign(const uint32_t cp) {
+  return myanmar::isRunMember(cp) && !myanmar::startsSyllable(cp) && cp != 0x104A && cp != 0x104B;
+}
 
 // Bidi orders these; a glyph run must never hold one (rule 1).
 bool isDigit(const uint32_t cp) {
@@ -700,7 +720,7 @@ TEST_P(ShapingRules, GlyphFormsSitOnShapedLettersOnly) {
       if (!w.glyphs) continue;
       ++glyphWords;
       EXPECT_TRUE(holdsShapedLetter(w.text))
-          << "a glyph form on a word without Indic or Arabic letters: " << where(line, i);
+          << "a glyph form on a word without Indic, Arabic or Myanmar letters: " << where(line, i);
       for (const uint32_t cp : codepointsOf(w.text)) {
         EXPECT_FALSE(isDigit(cp)) << "a glyph form over a digit: " << where(line, i);
         EXPECT_FALSE(isMirrored(cp)) << "a glyph form over a mirrored code point: " << where(line, i);
@@ -752,6 +772,7 @@ TEST_P(ShapingRules, NoLineBreaksInsideASyllable) {
     if (!cps.empty()) {
       EXPECT_FALSE(indic::isDependentSign(cps.front())) << "a line starts with a sign: " << where(line, first);
       EXPECT_FALSE(arabic::isMark(cps.front())) << "a line starts with an Arabic mark: " << where(line, first);
+      EXPECT_FALSE(isMyanmarSign(cps.front())) << "a line starts with a Myanmar sign: " << where(line, first);
       EXPECT_NE(kZwj, cps.front()) << "a line starts with a ZWJ: " << where(line, first);
       EXPECT_NE(kZwnj, cps.front()) << "a line starts with a ZWNJ: " << where(line, first);
     }
@@ -765,8 +786,23 @@ TEST_P(ShapingRules, NoLineBreaksInsideASyllable) {
       }
     }
   }
+  // A word split across lines without a hyphen (a Myanmar phrase wider than the line): the cut is Myanmar's.
+  int unhyphenated = 0;
+  for (size_t s = 1; s < book.stream.size(); ++s) {
+    if (&book.lineOf(s - 1) == &book.lineOf(s) || !book.glued(s)) continue;
+    const std::vector<uint32_t> head = codepointsOf(book.word(s - 1).plain);
+    const std::vector<uint32_t> tail = codepointsOf(book.word(s).plain);
+    if (head.empty() || tail.empty()) continue;
+    size_t next = 1;
+    while (next < tail.size() && tail[next] == myanmar::DOT_BELOW) ++next;
+    if (myanmar::isRunMember(tail.front())) ++unhyphenated;
+    EXPECT_TRUE(myanmar::cutAllowed(head.back(), tail.front(), next < tail.size() ? tail[next] : 0))
+        << "a word cut inside a Myanmar syllable: " << where(book.lineOf(s), book.stream[s].word);
+  }
   logCount("lines", lines, 1);
+  logCount("Myanmar words cut without a hyphen", unhyphenated, GetParam().minUnhyphenatedSplits);
   EXPECT_GT(lines, 0);
+  EXPECT_GE(unhyphenated, GetParam().minUnhyphenatedSplits);
 }
 
 // Rule 4.
@@ -905,7 +941,8 @@ TEST_P(ShapingRules, EachLetterIsDrawnOnce) {
     bool codePoints = false;
     for (const size_t s : members) {
       glyphs = glyphs || book.word(s).glyphs;
-      split = split || book.place(s).splitHyphen;
+      // With its hyphen, or without one, on two lines (Myanmar).
+      split = split || book.place(s).splitHyphen || &book.lineOf(s) != &book.lineOf(members.front());
       if (!book.word(s).glyphs) {
         const std::vector<uint32_t> cps = codepointsOf(book.word(s).plain);
         codePoints = codePoints || std::any_of(cps.begin(), cps.end(), drawsShapedScript);
@@ -1007,8 +1044,8 @@ TEST_P(ShapingRules, TheLatinLinesKeepTheirBytes) {
   unshaped.shapingFontFile = nullptr;
   const std::vector<std::string> shapedLines = latinLines(profileOf(GetParam()), "shaped");
   const std::vector<std::string> unshapedLines = latinLines(unshaped, "unshaped");
-  logCount("Latin lines", static_cast<int>(shapedLines.size()), 2);
-  EXPECT_GE(shapedLines.size(), 2u);
+  logCount("Latin lines", static_cast<int>(shapedLines.size()), GetParam().minLatinLines);
+  EXPECT_GE(static_cast<int>(shapedLines.size()), GetParam().minLatinLines);
   EXPECT_EQ(unshapedLines, shapedLines);
 }
 
@@ -1067,7 +1104,10 @@ TEST_P(ShapingRules, TheCasesAreOnThePages) {
     }
   }
   for (size_t s = 0; s + 1 < book.stream.size(); ++s) {
-    if (book.word(s).glyphs && book.place(s + 1).splitHyphen && book.token[s] == book.token[s + 1]) ++split;
+    const bool unhyphenated = &book.lineOf(s) != &book.lineOf(s + 1) && book.glued(s + 1);
+    if (book.word(s).glyphs && (book.place(s + 1).splitHyphen || unhyphenated) && book.token[s] == book.token[s + 1]) {
+      ++split;
+    }
   }
   const auto mergedFloor = static_cast<int>(param.mergedWords.size());
   logCount("merged words", merged, mergedFloor);
@@ -1246,6 +1286,20 @@ TEST_P(ShapingRules, TheWordCacheChangesNoLine) {
   EXPECT_EQ(0u, disarmed.oversize);  // never armed: nothing was offered
   EXPECT_GT(disarmed.bypassed, 0u);
   EXPECT_EQ(without, with);
+
+  // The S3 boards' 256 KB PSRAM arena: the large tail, never reached by the parse lane, changes no line either, and
+  // replays at least what S did.
+  std::vector<std::string> largeLines;
+  const std::string large = run("large", 256 * 1024, &largeLines);
+  WordCacheLine psram;
+  ASSERT_TRUE(parseWordCacheLine(lineWith(largeLines, "word cache: "), &psram)) << lineWith(largeLines, "word cache: ");
+  std::printf("[ ShapingRules ] %s: PSRAM arena: word cache hits=%u misses=%u inserts=%u clears=%u\n", book.label,
+              psram.hits, psram.misses, psram.inserts, psram.clears);
+  EXPECT_EQ(WordShapeCache::kLargeWordCacheBytes, psram.bytes);
+  EXPECT_EQ(0u, psram.clears);
+  EXPECT_EQ(0u, psram.bypassed);
+  EXPECT_GE(psram.hits, on.hits);
+  EXPECT_EQ(without, large);
 }
 
 namespace {
@@ -1305,6 +1359,21 @@ std::vector<Book> shapedBooks() {
   indic("test_shaped_malayalam", "NotoSansMalayalam-Book-Regular.ttf", "ml",
         {"\xE0\xB4\xAE\xE0\xB4\xB2\xE0\xB4\xAF\xE0\xB4\xBE\xE0\xB4\xB3\xE0\xB4\x82", "\xE0\xB4\x95\xE0\xB4\xBF"}, 3, 24,
         2, 2);
+  // ko (a bold e), myanma (a bold killed na), and ka with a ZWJ before its medial ya, each with its little section.
+  const std::vector<std::string> myanmarMerged = {
+      "\xE1\x80\x80\xE1\x80\xB1\xE1\x80\xAC\xE1\x81\x8A",
+      "\xE1\x80\x99\xE1\x80\xBC\xE1\x80\x94\xE1\x80\xBA\xE1\x80\x99\xE1\x80\xAC\xE1\x81\x8A",
+      "\xE1\x80\x80\xE2\x80\x8D\xE1\x80\xBB\xE1\x81\x8A"};
+  // Lines end between syllables inside phrases (the Myanmar design's PR 3): at 460 px the long phrases are cut, so few
+  // words stay past one call's code points.
+  indic("test_shaped_myanmar", "NotoSansMyanmar-Book-Regular.ttf", "my", myanmarMerged, 4, 2, 3, 30);
+  books.back().minUnhyphenatedSplits = 30;
+  // 1,600 px wide, where more phrases stay whole on their lines, and the two Latin lines are one.
+  indic("test_shaped_myanmar", "NotoSansMyanmar-Book-Regular.ttf", "my", myanmarMerged, 4, 2, 4, 8);
+  books.back().label = "test_shaped_myanmar_1600";
+  books.back().viewportWidth = 1600;
+  books.back().minUnhyphenatedSplits = 8;
+  books.back().minLatinLines = 1;
 
   Book arabic = arabicBook("test_shaped_arabic", 460);
   arabic.minSplitWords = 1;  // the table's narrow cell

@@ -8,6 +8,7 @@
 #include <IndicShaper.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <MyanmarScript.h>
 #include <TextShaping.h>
 #include <Utf8.h>
 
@@ -35,6 +36,77 @@
 constexpr int MAX_COST = std::numeric_limits<int>::max();
 
 namespace {
+
+// The parts of an inter-word space, remembered for one layout pass (spaceBefore()). Every line break and every
+// extracted line asks for the same gaps again, and getSpaceAdvance() looked up the font, the space glyph and its
+// kerning with both neighbours each time: 7% of a Latin chapter's build on the X3 (2026-11-09 profile). The parts are
+// what it sums, so the one rounding step (snapSpaceAdvance()) and the result are the same. Cleared at each
+// layoutAndExtractLines(), so a font set reloaded between passes is never read stale; section builds lay out on the
+// loop task, one pass at a time. 560 B.
+class SpaceParts {
+ public:
+  void clear() {
+    for (Glyph& g : glyphs_) g.valid = false;
+    for (Kern& k : kerns_) k.key = 0;
+    next_ = 0;
+  }
+
+  int space(const GfxRenderer& renderer, const int fontId, const EpdFontFamily::Style style, const uint32_t leftCp,
+            const uint32_t rightCp) {
+    const uint8_t slot = glyphSlot(renderer, fontId, style);
+    const int32_t totalFP =
+        glyphs_[slot].advanceFP + kern(renderer, slot, leftCp, false) + kern(renderer, slot, rightCp, true);
+    return renderer.snapSpaceAdvance(fontId, totalFP);
+  }
+
+ private:
+  struct Glyph {
+    int fontId = 0;
+    EpdFontFamily::Style style = EpdFontFamily::REGULAR;
+    bool valid = false;
+    int32_t advanceFP = 0;
+  };
+  // key: the neighbour's code point (21 bits) | the space's side (bit 21, 1: the space on its left) | the glyph slot
+  // (bits 22-23) | 1 << 24, so a key is never 0, the empty one.
+  struct Kern {
+    uint32_t key = 0;
+    int8_t kernFP = 0;
+  };
+  static constexpr size_t kGlyphs = 4;  // a kerning key holds two bits of glyph slot
+  static constexpr size_t kKerns = 64;  // a key's top six hash bits index it
+  static_assert(kGlyphs == 4 && kKerns == 64, "the key layout and the index width assume these");
+
+  uint8_t glyphSlot(const GfxRenderer& renderer, const int fontId, const EpdFontFamily::Style style) {
+    for (uint8_t s = 0; s < kGlyphs; ++s) {
+      if (glyphs_[s].valid && glyphs_[s].fontId == fontId && glyphs_[s].style == style) return s;
+    }
+    const uint8_t s = next_;
+    next_ = static_cast<uint8_t>((next_ + 1) % kGlyphs);
+    for (Kern& k : kerns_) {
+      if (k.key != 0 && ((k.key >> 22) & 3u) == s) k.key = 0;  // the slot's kerning was another font's
+    }
+    glyphs_[s] = Glyph{fontId, style, true, renderer.spaceGlyphAdvanceFP(fontId, style)};
+    return s;
+  }
+
+  int32_t kern(const GfxRenderer& renderer, const uint8_t slot, const uint32_t cp, const bool spaceOnLeft) {
+    const uint32_t key =
+        (cp & 0x1FFFFFu) | (spaceOnLeft ? 1u << 21 : 0u) | (static_cast<uint32_t>(slot) << 22) | 1u << 24;
+    Kern& k = kerns_[(key * 2654435761u) >> (32 - 6)];
+    if (k.key != key) {
+      const Glyph& g = glyphs_[slot];
+      const int32_t fp =
+          spaceOnLeft ? renderer.kerningFP(g.fontId, ' ', cp, g.style) : renderer.kerningFP(g.fontId, cp, ' ', g.style);
+      k = Kern{key, static_cast<int8_t>(fp)};  // a kerning pair is int8_t 4.4 fixed point (EpdFontFamily::getKerning)
+    }
+    return k.kernFP;
+  }
+
+  Glyph glyphs_[kGlyphs];
+  Kern kerns_[kKerns];
+  uint8_t next_ = 0;
+};
+SpaceParts spaceParts;
 
 // Closing punctuation that should not have extra space inserted before it during justification.
 // Includes common closing brackets/quotes and sentence-ending marks. En/em dashes
@@ -210,16 +282,30 @@ uint16_t measureWordWidth(const GfxRenderer& renderer, const int fontId, const c
       space ? renderer.getSpaceWidth(fontId, style) : textAdvance(renderer, fontId, text, style, vertical), scale);
 }
 
+// Returns the advance width for the first `bytes` of a word while ignoring soft hyphen glyphs and optionally appending
+// a visible hyphen, measured in `scratch` (a caller measuring several prefixes of one word reuses it: no allocation a
+// prefix).
+uint16_t measureWordPrefixWidth(const GfxRenderer& renderer, const int fontId, const std::string& word,
+                                const size_t bytes, const EpdFontFamily::Style style, const bool appendHyphen,
+                                const float scale, const bool vertical, std::string& scratch) {
+  scratch.assign(word, 0, bytes);
+  const bool hasSoftHyphen = containsSoftHyphen(scratch);
+  if (!hasSoftHyphen && !appendHyphen)
+    return measureWordWidth(renderer, fontId, scratch.c_str(), style, scale, vertical);
+  if (hasSoftHyphen) stripSoftHyphensInPlace(scratch);
+  if (appendHyphen) scratch.push_back('-');
+  return scaledWidth(textAdvance(renderer, fontId, scratch.c_str(), style, vertical), scale);
+}
+
 // Returns the advance width for a word while ignoring soft hyphen glyphs and optionally appending a visible hyphen.
 uint16_t measureWordWidth(const GfxRenderer& renderer, const int fontId, const std::string& word,
                           const EpdFontFamily::Style style, const bool appendHyphen = false, const float scale = 1.0f,
                           const bool vertical = false) {
-  const bool hasSoftHyphen = containsSoftHyphen(word);
-  if (!hasSoftHyphen && !appendHyphen) return measureWordWidth(renderer, fontId, word.c_str(), style, scale, vertical);
-  std::string sanitized = word;
-  if (hasSoftHyphen) stripSoftHyphensInPlace(sanitized);
-  if (appendHyphen) sanitized.push_back('-');
-  return scaledWidth(textAdvance(renderer, fontId, sanitized.c_str(), style, vertical), scale);
+  if (!containsSoftHyphen(word) && !appendHyphen) {
+    return measureWordWidth(renderer, fontId, word.c_str(), style, scale, vertical);
+  }
+  std::string sanitized;
+  return measureWordPrefixWidth(renderer, fontId, word, word.size(), style, appendHyphen, scale, vertical, sanitized);
 }
 
 uint16_t clampedWidth(const int width) { return static_cast<uint16_t>(std::clamp(width, 0, UINT16_MAX)); }
@@ -809,8 +895,12 @@ int ParsedText::widthForLine(const int lineIndex, const int lineHeight, const in
 
 int ParsedText::spaceBefore(const GfxRenderer& renderer, const int fontId, const size_t j) const {
   const size_t source = spaceSource(fontId, j);
-  return renderer.getSpaceAdvance(wordFontId(source, fontId), lastCodepoint(words[j - 1]), firstCodepoint(words[j]),
-                                  wordStyles[source]);
+  if (!rememberSpaceParts) {
+    return renderer.getSpaceAdvance(wordFontId(source, fontId), lastCodepoint(words[j - 1]), firstCodepoint(words[j]),
+                                    wordStyles[source]);
+  }
+  return spaceParts.space(renderer, wordFontId(source, fontId), wordStyles[source], lastCodepoint(words[j - 1]),
+                          firstCodepoint(words[j]));
 }
 
 int ParsedText::kernBefore(const GfxRenderer& renderer, const int fontId, const size_t j) const {
@@ -918,23 +1008,33 @@ void ParsedText::decideShaping(const GfxRenderer& renderer, const int fontId) {
   // comma shape nowhere), where a token of it has a face that draws Arabic (maps beh), the first one found deciding (my
   // call 5): in a bitmap or built-in font, or a TrueType face without Arabic (whose every run would be Text), an Arabic
   // paragraph makes no ShapingState and merges nothing, so its lines are byte for byte those of the line pass alone.
-  // Consecutive tokens in one font and style that has no such face ask it once.
-  shapes_ = std::any_of(words.begin(), words.end(), [](const std::string& w) { return IndicShaper::holdsIndic(w); });
-  int askedFont = 0;
-  int askedStyle = -1;
-  for (size_t i = 0; bidi_ && i < words.size() && !shapes_; ++i) {
-    // A run member, not any code point of the blocks: a Hebrew paragraph with Arabic-Indic digits has no Arabic run,
-    // and shaping it would cost a call per digit token and merge its glued groups for nothing.
-    if (!arabic::holdsRunMember(words[i].data(), words[i].size())) continue;
-    const int font = wordFontId(i, fontId);
-    const int style = wordStyles[i] & EpdFontFamily::BOLD_ITALIC;
-    if (font == askedFont && style == askedStyle) continue;
-    uint32_t ppem = 0;
-    ShapingFace* const face = shapingFaceFor(renderer, fontId, i, &ppem);
-    shapes_ = face != nullptr && IndicShaper::drawsArabic(*face);
-    askedFont = font;
-    askedStyle = style;
-  }
+  // Myanmar text likewise, in any paragraph, where a token of it has a face that draws Myanmar (maps ka). Consecutive
+  // tokens in one font and style that has no such face ask it once.
+  const auto faceDraws = [&](bool (*holds)(const std::string&), const uint32_t probe) {
+    int askedFont = 0;
+    int askedStyle = -1;
+    for (size_t i = 0; i < words.size(); ++i) {
+      if (!holds(words[i])) continue;
+      const int font = wordFontId(i, fontId);
+      const int style = wordStyles[i] & EpdFontFamily::BOLD_ITALIC;
+      if (font == askedFont && style == askedStyle) continue;
+      uint32_t ppem = 0;
+      ShapingFace* const face = shapingFaceFor(renderer, fontId, i, &ppem);
+      if (face != nullptr && IndicShaper::draws(*face, probe)) return true;
+      askedFont = font;
+      askedStyle = style;
+    }
+    return false;
+  };
+  // A run member, not any code point of the blocks: a Hebrew paragraph with Arabic-Indic digits has no Arabic run,
+  // and shaping it would cost a call per digit token and merge its glued groups for nothing. A number sign with its
+  // digits is a run (the end of ayah drawn around the verse number).
+  const auto holdsArabicRun = [](const std::string& w) {
+    return arabic::holdsRunMember(w.data(), w.size()) || arabic::holdsNumberSignWithDigit(w.data(), w.size());
+  };
+  const auto holdsMyanmar = [](const std::string& w) { return myanmar::holdsMyanmar(w.data(), w.size()); };
+  shapes_ = std::any_of(words.begin(), words.end(), [](const std::string& w) { return IndicShaper::holdsIndic(w); }) ||
+            (bidi_ && faceDraws(holdsArabicRun, arabic::kProbe)) || faceDraws(holdsMyanmar, myanmar::kProbe);
   if (!shapes_) {
     // The store is in step with the passes that shape: a later one starts it again.
     if (shapingState_) shapingState_->store.reset();
@@ -991,12 +1091,8 @@ void ParsedText::mergeGluedGroups(const int fontId) {
     return k < unmergedFrom_ && words[k] != " " && TokenBoundary::rubyRole(b) == TokenBoundary::RubyRole::None &&
            !TokenBoundary::combineRequested(b);
   };
-  // Glue inside a syllable (indic::syllableBreakAllowed false across it), read as mergesWithPrevious reads it.
-  const auto insideSyllable = [&](const size_t j) {
-    if (words[j - 1].empty() || words[j].empty()) return false;
-    size_t pos = 0;
-    return !indic::syllableBreakAllowed(lastCodepoint(words[j - 1]), TextShaping::decodeAt(words[j], pos));
-  };
+  // Glue inside a syllable, read as mergesWithPrevious reads it.
+  const auto insideSyllable = [&](const size_t j) { return TextShaping::glueInsideSyllable(words[j - 1], words[j]); };
   // Each maximal run of glued tokens, [start, end).
   for (size_t start = 0; start < words.size();) {
     size_t end = start + 1;
@@ -1050,12 +1146,12 @@ void ParsedText::mergeGluedGroups(const int fontId) {
 bool ParsedText::readyShapedStore() {
   ShapedStore& store = shapingState_->store;
   // The estimate, for the tokens this pass adds to the store: an entry each, and 2 B of records a byte of their Indic
-  // text, 3 a byte of their Arabic text (2 B a letter; the kept tokens' records are in the chunks already). Refused,
-  // the chunks are still asked for one at a time.
+  // or Myanmar text (Myanmar takes about 1.4, the Myanmar design measured), 3 a byte of their Arabic text (2 B a
+  // letter; the kept tokens' records are in the chunks already). Refused, the chunks are still asked for one at a time.
   const size_t added = words.size() > store.size() ? words.size() - store.size() : 0;
   size_t bytes = 0;
   for (size_t i = store.size(); i < words.size(); ++i) {
-    if (IndicShaper::holdsIndic(words[i])) {
+    if (IndicShaper::holdsIndic(words[i]) || myanmar::holdsMyanmar(words[i].data(), words[i].size())) {
       bytes += 2 * words[i].size();
     } else if (shapedText(words[i])) {
       bytes += 3 * words[i].size();
@@ -1235,7 +1331,8 @@ bool ParsedText::shapeToken(const GfxRenderer& renderer, const int fontId, const
 }
 
 bool ParsedText::shapedText(const std::string_view text) const {
-  return IndicShaper::holdsIndic(text) || (bidi_ && arabic::holdsArabic(text.data(), text.size()));
+  return IndicShaper::holdsIndic(text) || (bidi_ && arabic::holdsArabic(text.data(), text.size())) ||
+         myanmar::holdsMyanmar(text.data(), text.size());
 }
 
 bool ParsedText::storedWidth(const GfxRenderer& renderer, const int fontId, const size_t i,
@@ -1296,6 +1393,7 @@ void ParsedText::layoutAndExtractLines(
   if (words.empty()) {
     return;
   }
+  spaceParts.clear();
   // Whether the paragraph needs bidi and which way it runs, before anything reads its words or its alignment. A pass
   // without bidi drops its controls first, so the snapshot below is of the text that is laid out.
   decideBidi();
@@ -1484,7 +1582,13 @@ void ParsedText::layoutAndExtractLines(
   lineEndsWithHyphenatedWord.clear();
   splitPrefixWordIndexes.clear();
   splitInsertedHyphen.clear();
-  if (hyphenationEnabled) {
+  // A paragraph with Myanmar text takes the greedy breaker whatever the hyphenation setting: a Burmese line ends
+  // between syllables inside a phrase (the Myanmar design's PR 3), and only that breaker splits a word that fits the
+  // line. Its Latin words take no pattern breaks there unless hyphenation is on (hyphenateWordAtIndex).
+  const bool splitsAtLineEnds = hyphenationEnabled || std::any_of(words.begin(), words.end(), [](const std::string& w) {
+                                  return myanmar::holdsMyanmar(w.data(), w.size());
+                                });
+  if (splitsAtLineEnds) {
     // Use greedy layout that can split words mid-loop when a hyphenated prefix fits.
     computeHyphenatedLineBreaks(renderer, fontId, pageWidth, wordWidths, wordBoundaries, lineEndsWithHyphenatedWord,
                                 splitPrefixWordIndexes, splitInsertedHyphen, firstLineIndent, blockStartY, lineHeight,
@@ -2412,7 +2516,8 @@ void ParsedText::applyBionicReadingTransform() {
     // Complex-script words never take a focus split: each half would shape on its own.
     // Ported from crosspoint-reader PR #3787 ("feat: add Indic language support without HarfBuzz", SSafayet /
     // @SSafayet).
-    if (indic::containsIndic(source.c_str()) || arabic::holdsArabic(source.c_str(), source.size())) {
+    if (indic::containsIndic(source.c_str()) || arabic::holdsArabic(source.c_str(), source.size()) ||
+        myanmar::holdsMyanmar(source.c_str(), source.size())) {
       transformedSuffix.push_back(std::move(source));
       transformedSuffixStyles.push_back(originalStyle);
       transformedSuffixBoundaries.push_back(originalBoundary);
@@ -2559,12 +2664,15 @@ void ParsedText::computeHyphenatedLineBreaks(
       const bool allowFallbackBreaks = isFirstWord;  // Only for first word on line
 
       bool insertedHyphen = false;
+      bool myanmarCut = false;
       if (availableWidth > 0 && hyphenateWordAtIndex(currentIndex, availableWidth, renderer, fontId, wordWidths,
-                                                     allowFallbackBreaks, &insertedHyphen)) {
+                                                     allowFallbackBreaks, &insertedHyphen, &myanmarCut)) {
         // Keep interWordGaps in sync: insert placeholder for the new remainder word.
         // The remainder is always the first word on the next line so this slot is never read.
         interWordGaps.insert(interWordGaps.begin() + currentIndex + 1, 0);
-        lineEndedWithHyphenation = true;
+        // A cut between Myanmar syllables is how a Burmese line ends, not a hyphenation: the page-bottom retry, which
+        // would set the phrase whole and leave the page's last line a phrase short, leaves it.
+        lineEndedWithHyphenation = !myanmarCut;
         splitPrefixIndex = static_cast<int>(currentIndex);
         splitNeedsInsertedHyphen = insertedHyphen;
         // Prefix now fits; append it to this line and move to next line
@@ -2660,10 +2768,11 @@ void ParsedText::computeHyphenatedLineBreaksFromIndex(
       const bool allowFallbackBreaks = isFirstWord;
 
       bool insertedHyphen = false;
+      bool myanmarCut = false;
       if (availableWidth > 0 && hyphenateWordAtIndex(currentIndex, availableWidth, renderer, fontId, wordWidths,
-                                                     allowFallbackBreaks, &insertedHyphen)) {
+                                                     allowFallbackBreaks, &insertedHyphen, &myanmarCut)) {
         interWordGaps.insert(interWordGaps.begin() + currentIndex + 1, 0);
-        lineEndedWithHyphenation = true;
+        lineEndedWithHyphenation = !myanmarCut;  // as in computeHyphenatedLineBreaks
         splitPrefixIndex = static_cast<int>(currentIndex);
         splitNeedsInsertedHyphen = insertedHyphen;
         lineWidth += spacing + wordWidths[currentIndex];
@@ -2704,7 +2813,7 @@ void ParsedText::computeHyphenatedLineBreaksFromIndex(
 // available width.
 bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availableWidth, const GfxRenderer& renderer,
                                       const int fontId, std::vector<uint16_t>& wordWidths,
-                                      const bool allowFallbackBreaks, bool* outInsertedHyphen) {
+                                      const bool allowFallbackBreaks, bool* outInsertedHyphen, bool* outMyanmarCut) {
   // Guard against invalid indices or zero available width before attempting to split.
   if (availableWidth <= 0 || wordIndex >= words.size()) {
     return false;
@@ -2722,18 +2831,33 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   const float scale = wordScale(wordIndex);
   const int font = wordFontId(wordIndex, fontId);
   // A word this pass shapes is measured as each part would be shaped. Only upstream's fallback breaks, between
-  // syllables or Arabic clusters, reach one in practice: no language's patterns cut Indic letters, and an Arabic book
-  // has no patterns.
+  // syllables or Arabic clusters, and Myanmar's syllable breaks reach one in practice: no language's patterns cut
+  // Indic or Myanmar letters, and an Arabic book has no patterns.
   const bool shapedWord = shapes_ && shapedText(word);
 
-  // Collect candidate breakpoints (byte offsets and hyphen requirements). A Hangul word may split
-  // between syllables at a line end, without a hyphen; those breaks come first, so they win a width
-  // tie. From crosspoint-reader PR #3700 ("fix: justify Korean text by word spaces only", Sung-jin
-  // Brian Hong).
-  std::vector<Hyphenator::BreakInfo> breakInfos = CjkLineBreak::hangulLineEndBreaks(word);
-  const std::vector<Hyphenator::BreakInfo> hyphenatorBreaks = Hyphenator::breakOffsets(word, allowFallbackBreaks);
-  breakInfos.insert(breakInfos.end(), hyphenatorBreaks.begin(), hyphenatorBreaks.end());
-  if (breakInfos.empty()) {
+  // Collect candidate breakpoints (byte offsets and hyphen requirements), in three lists. A Hangul word may split
+  // between syllables at a line end, without a hyphen; those breaks come first, so they win a width tie. From
+  // crosspoint-reader PR #3700 ("fix: justify Korean text by word spaces only", Sung-jin Brian Hong). A Myanmar phrase
+  // splits between its syllables so too (the Myanmar design's PR 3). The language's breaks come last, asked only with
+  // hyphenation on or for a word wider than the line (as computeLineBreaks asks): a paragraph with Myanmar text takes
+  // this breaker whatever the setting, and its Latin words get no pattern breaks with hyphenation off.
+  const std::vector<Hyphenator::BreakInfo> hangulBreaks = CjkLineBreak::hangulLineEndBreaks(word);
+  const std::vector<Hyphenator::BreakInfo> myanmarBreaks = Hyphenator::myanmarLineEndBreaks(word);
+  std::vector<Hyphenator::BreakInfo> hyphenatorBreaks;
+  if (hyphenationEnabled || allowFallbackBreaks) hyphenatorBreaks = Hyphenator::breakOffsets(word, allowFallbackBreaks);
+  const auto byOffset = [](const Hyphenator::BreakInfo& a, const Hyphenator::BreakInfo& b) {
+    return a.byteOffset < b.byteOffset;
+  };
+  // The fallback's cuts in a Myanmar run are the syllable breaks: each is measured once.
+  if (!myanmarBreaks.empty()) {
+    hyphenatorBreaks.erase(std::remove_if(hyphenatorBreaks.begin(), hyphenatorBreaks.end(),
+                                          [&](const Hyphenator::BreakInfo& b) {
+                                            return std::binary_search(myanmarBreaks.begin(), myanmarBreaks.end(), b,
+                                                                      byOffset);
+                                          }),
+                           hyphenatorBreaks.end());
+  }
+  if (hangulBreaks.empty() && myanmarBreaks.empty() && hyphenatorBreaks.empty()) {
     return false;
   }
   // A shaped word's candidates are copied into one string (shapedPrefixWidth), grown here once to the word and a
@@ -2751,26 +2875,49 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   size_t chosenOffset = 0;
   int chosenWidth = -1;
   bool chosenNeedsHyphen = true;
+  const std::vector<Hyphenator::BreakInfo>* chosenFrom = nullptr;
 
-  // Iterate over each legal breakpoint and retain the widest prefix that still fits.
-  for (const auto& info : breakInfos) {
-    const size_t offset = info.byteOffset;
-    if (offset == 0 || offset >= word.size()) {
-      continue;
+  // Retains the widest prefix of a list's legal breakpoints that still fits. A list's ascending order is taken to give
+  // prefixes of one kind (with an inserted hyphen, or without) that never narrow, so a kind's first prefix that does
+  // not fit ends that kind's search: no longer one is shaped and measured for nothing (the Myanmar design measured this
+  // stop into its call counts; on the X3 the language's list was 5% of a Latin chapter's build). Assumed of every font,
+  // not proven: a longer prefix holds more letters. The kinds stop apart because "Hi-" is wider than "Hil" in most
+  // fonts. The order stays the list's, so a tie goes to the shorter prefix as before; a list out of order is measured
+  // whole.
+  std::string prefix;  // the candidates' text: one string for the word's every prefix
+  const auto chooseFrom = [&](const std::vector<Hyphenator::BreakInfo>& breaks) {
+    bool tooWide[2] = {false, false};  // [requiresInsertedHyphen]
+    size_t previous = 0;
+    for (const auto& info : breaks) {
+      const size_t offset = info.byteOffset;
+      if (offset < previous) tooWide[0] = tooWide[1] = false;  // out of order: no stop holds from here
+      previous = std::max(previous, offset);
+      if (offset == 0 || offset >= word.size()) {
+        continue;
+      }
+
+      const bool needsHyphen = info.requiresInsertedHyphen;
+      if (tooWide[needsHyphen]) continue;
+      const int prefixWidth = shapedWord ? shapedPrefixWidth(renderer, fontId, wordIndex, offset, needsHyphen)
+                                         : measureWordPrefixWidth(renderer, font, word, offset, style, needsHyphen,
+                                                                  scale, vertical_, prefix);
+      if (prefixWidth > availableWidth) {
+        tooWide[needsHyphen] = true;
+        continue;  // too wide, as every longer prefix of its kind
+      }
+      if (prefixWidth <= chosenWidth) {
+        continue;  // not an improvement
+      }
+
+      chosenWidth = prefixWidth;
+      chosenOffset = offset;
+      chosenNeedsHyphen = needsHyphen;
+      chosenFrom = &breaks;
     }
-
-    const bool needsHyphen = info.requiresInsertedHyphen;
-    const int prefixWidth =
-        shapedWord ? shapedPrefixWidth(renderer, fontId, wordIndex, offset, needsHyphen)
-                   : measureWordWidth(renderer, font, word.substr(0, offset), style, needsHyphen, scale, vertical_);
-    if (prefixWidth > availableWidth || prefixWidth <= chosenWidth) {
-      continue;  // Skip if too wide or not an improvement
-    }
-
-    chosenWidth = prefixWidth;
-    chosenOffset = offset;
-    chosenNeedsHyphen = needsHyphen;
-  }
+  };
+  chooseFrom(hangulBreaks);
+  chooseFrom(myanmarBreaks);
+  chooseFrom(hyphenatorBreaks);
 
   if (chosenWidth < 0) {
     // No hyphenation point produced a prefix that fits in the remaining space.
@@ -2856,6 +3003,9 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   if (!rubyEdge_.empty()) rubyEdge_.insert(rubyEdge_.begin() + wordIndex + 1, RubyEdge{});
   if (outInsertedHyphen) {
     *outInsertedHyphen = chosenNeedsHyphen;
+  }
+  if (outMyanmarCut) {
+    *outMyanmarCut = chosenFrom == &myanmarBreaks;
   }
   return true;
 }

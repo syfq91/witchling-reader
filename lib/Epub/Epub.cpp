@@ -25,6 +25,7 @@
 #include <limits>
 #include <optional>
 
+#include "Epub/BodySize.h"
 #include "Epub/CoverImageRefScanner.h"
 #include "Epub/CoverThumbSession.h"
 #include "Epub/HashUtils.h"
@@ -751,7 +752,8 @@ void Epub::parseCssFiles() const {
     LOG_DBG("EBP", "CSS cache exists, skipping parseCssFiles");
     return;
   }
-  cssParser->deleteCache();  // one of another version: the rules, backgrounds and font faces compile again
+  cssParser->deleteCache();     // one of another version: the rules, backgrounds and font faces compile again
+  BodySize::forget(cachePath);  // measured under the old rules: the next open measures the book again
 
   // No cache yet - parse CSS files
   if (!cssParser->beginCacheCompile()) {
@@ -2464,6 +2466,11 @@ size_t Epub::getBookSize() const {
     return 0;
   }
   return getCumulativeSpineItemSize(getSpineItemsCount() - 1);
+}
+
+int Epub::getLargestSpineIndex() const {
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) return -1;
+  return bookMetadataCache->largestSpineIndex();
 }
 
 int Epub::getSpineIndexForTextReference() const {

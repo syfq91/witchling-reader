@@ -28,6 +28,7 @@
 #include "EpubReaderMenuActivity.h"
 #include "ImageMemoryLadder.h"
 #include "LaneBeforeBuild.h"
+
 #include "ReaderUtils.h"
 #include "activities/Activity.h"
 
@@ -174,6 +175,7 @@ class EpubReaderActivity final : public Activity {
   // displayBuildPage() for a multi-slice build, or renderContents() directly when the build finishes
   // in a single slice (e.g. a one-page cover) and never goes through displayBuildPage at all.
   bool forceHalfRefreshAfterPopup_ = false;
+
   // When true, large images on the current page are decoded instead of shown as placeholders.
   // Reset to false on every page turn so the next image page starts with a placeholder again.
   bool forceLoadLargeImages = false;
@@ -809,6 +811,8 @@ class EpubReaderActivity final : public Activity {
   // The book's other font families, which makeSectionBuildParams() fills and points the params at: a build keeps
   // its params across slices, so the table lives as long as the reader.
   mutable BlockFontFamilies bookFontFamilies_;
+  // The size of the book's running text (BodySize), read once at open: 100 until it has been measured.
+  uint8_t bookBodySizePct_ = 100;
   // Drop all Background-B state (aborting a partial build and deleting its partial cache
   // file via ~Section). Resets the overlay percent.
   void resetBackgroundBuild();
@@ -899,6 +903,8 @@ class EpubReaderActivity final : public Activity {
   // Compared in shouldSkipPeriodicUpdate() to suppress no-op re-renders that on
   // X3 panels accumulate visible speckle via repeated no-diff FAST refreshes.
   mutable int lastStatusBarPage = -1;
+  // The spine lastStatusBarPage belongs to: renderContents() tells a tick from a turn by both (DisplayedPage).
+  mutable int lastStatusBarSpine_ = -1;
   mutable int lastStatusBarBattery = -1;
   // A minute tick that came while the page on screen was still being finished -- a pass in flight
   // (a turn's display, its AA replay, a pre-render) or its deferred AA still to run. Its refresh is

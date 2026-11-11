@@ -18,6 +18,7 @@
 #include "EpubReaderActivity.h"
 
 #include <CooperativeAbort.h>
+#include <Epub/BodySize.h>
 #include <Epub/FlowContext.h>
 #include <Epub/FootnotePreviews.h>
 #include <Epub/FootnoteShape.h>
@@ -27,6 +28,7 @@
 #include <Epub/TypographyProfile.h>
 #include <Epub/blocks/ImageBlock.h>
 #include <Epub/blocks/TextBlock.h>
+#include <Epub/hyphenation/Hyphenator.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
 #include <FsHelpers.h>
@@ -48,6 +50,7 @@
 #include <memory>
 #include <optional>
 
+
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
@@ -58,6 +61,7 @@
 #include "EpubReaderPrintedPageInputActivity.h"
 #include "FinishedBookActivity.h"
 #include "GlobalBookmarkIndex.h"
+#include "HyphenationPacks.h"
 #include "ImageOnlyPage.h"
 #include "InPlaceBuildGate.h"
 #include "MappedInputManager.h"
@@ -772,6 +776,21 @@ void EpubReaderActivity::onEnter() {
   bookLineSpacingOverride = currentBook.lineSpacingOverride;
   bookVerticalTextOverride = currentBook.verticalTextOverride;
   bookPublisherFontsOverride = currentBook.publisherFontsOverride;
+  // Measured at the open that compiled the book's CSS (ReaderActivity); taken into account with Normalize Font Size and
+  // the book's style on (makeSectionBuildParams).
+  if (const uint8_t bodySize = BodySize::read(epub->getCachePath()); bodySize != 0) bookBodySizePct_ = bodySize;
+  LOG_INF("ERS", "Body size %u%%", static_cast<unsigned>(bookBodySizePct_));
+  // The book's hyphenation patterns, from its language's pack, before the first lookup of them below and before any
+  // build. A pack not yet in the flash store is copied in here, once (German: about a second), under a popup. Its
+  // displayBuffer() consumes any pending HALF override, so on a panel that diffs against a host frame the first page
+  // is forced to HALF, as after the font-room popup in buildSection().
+  bool hyphenationPopupDrawn = false;
+  HyphenationPacks::prepareForBook(epub->getLanguage(), [this, &hyphenationPopupDrawn] {
+    RenderLock lock(*this);
+    GUI.drawPopup(renderer, tr(STR_PREPARING_HYPHENATION));
+    hyphenationPopupDrawn = true;
+  });
+  if (hyphenationPopupDrawn && renderer.fastRefreshNeedsHostFrame()) forceHalfRefreshAfterPopup_ = true;
   bookVerticalAllowed_ = TypographyProfile::forLanguage(epub->getLanguage()).verticalAllowed;
   logReaderMemSnapshot("onEnter_after_recent_books");
 
@@ -800,6 +819,8 @@ void EpubReaderActivity::onEnter() {
     autoSyncIndicator = SyncIndicator::Failed;
   }
 #endif  // CROSSPOINT_KOREADER_AUTOSYNC
+
+
 
   // Trigger first update
   logReaderMemSnapshot("onEnter_before_request_update");
@@ -925,11 +946,17 @@ void EpubReaderActivity::onExit() {
   epub.reset();
   currentPageFootnotes.clear();
   currentPageFootnotes.shrink_to_fit();
+  // The book's hyphenation trie: every build has stopped and the section and book are gone, so nothing lays out its
+  // text from here on. On the X3 and X4 its MMU pages go back to the font cache (HyphenationPacks::bookClosed()).
+  HyphenationPacks::bookClosed();
+
   // The glyph caches go back so Home and Settings do not run 7-12 KB short after every book.
   // The next onEnter takes them again, still at a stable point rather than mid-build
   // (GfxRenderer::ensureScaledGlyphCache).
   renderer.releaseGlyphCaches();
 }
+
+
 
 void EpubReaderActivity::loop() {
   if (!epub) {
@@ -937,6 +964,8 @@ void EpubReaderActivity::loop() {
     finish();
     return;
   }
+
+
 
   // Periodic serial dump of background-work counters (DEBUG_BACKGROUND_WORK, defined at the top of
   // this file -- on in release builds too).
@@ -1359,9 +1388,11 @@ Section::BuildParams EpubReaderActivity::makeSectionBuildParams() const {
   p.viewportWidth = layout.viewportWidth;
   p.viewportHeight = layout.viewportHeight;
   p.hyphenationEnabled = getEffectiveHyphenation();
+  if (epub) p.hyphenationLayoutKey = Hyphenator::layoutKey(epub->getLanguage(), p.hyphenationEnabled);
   p.widowOrphanControl = SETTINGS.widowOrphanControl != 0;
   p.fontSizeNormalization = getEffectiveFontSizeNormalization();
   p.embeddedStyle = lastRenderStats.embeddedStyle;
+  if (p.fontSizeNormalization && p.embeddedStyle) p.bodySizePct = bookBodySizePct_;
   // The SETTING, nothing else. Availability is guaranteed by construction: a preview-enabled
   // build resolves the note text its own spine needs before it lays out a single line (see
   // Section::resolveInlineFootnotePreviews), so this key can never describe a page cache that
@@ -3373,7 +3404,7 @@ static FontSizeLadder builtinFontSizeLadder(const uint8_t family, const uint8_t 
 static FontSizeLadder buildReaderFontSizeLadder(const int bodyFontId) {
   // Sizes and their point values come from CrossPointSettings::FONT_SIZE_RUNGS, the one table
   // that defines the ladder; this used to keep its own pair of arrays and went stale.
-  static constexpr uint8_t kFamilies[] = {CrossPointSettings::BOOKERLY, CrossPointSettings::NOTOSANS};
+  static constexpr uint8_t kFamilies[] = {CrossPointSettings::SERIF, CrossPointSettings::NOTOSANS};
   const auto& rungs = CrossPointSettings::FONT_SIZE_RUNGS;
   constexpr int rungCount = CrossPointSettings::FONT_SIZE_RUNG_COUNT;
   // FontSizeLadder is fixed-capacity and drops extra rungs without a word, so the size that
@@ -3411,8 +3442,8 @@ static void buildBookFontFamilies(BlockFontFamilies& families, const std::string
   const BookFonts::Families* book = sdFontSystem.bookFontFamiliesFor(cachePath);
   if (!book) return;
   families.body = book->body;
-  // The built-in families in CssFontFamily's order: kSerif (1) is Bookerly, kSansSerif (2) Noto Sans.
-  static_assert(CrossPointSettings::BOOKERLY + 1 == CssFontFamily::kSerif &&
+  // The built-in families in CssFontFamily's order: kSerif (1) is Serif, kSansSerif (2) Noto Sans.
+  static_assert(CrossPointSettings::SERIF + 1 == CssFontFamily::kSerif &&
                     CrossPointSettings::NOTOSANS + 1 == CssFontFamily::kSansSerif,
                 "the generic families index the built-in ones");
   // A built-in body is drawn at the rung a stored size snaps to; another family's sizes are relative to its own.
@@ -4827,6 +4858,10 @@ bool EpubReaderActivity::buildSection(const RenderLayout& layout) {
       // the popup is what makes the replacing page expensive — it is a dark box the content page
       // must then diff against, which is the entire reason for the ~1.7 s HALF armed below.
       const bool popupBeforeBuild = (mode == SectionBuildMode::IncrementalReleased);
+      // Where the lend below need not wait for the popup's waveform (the X3), the build starts while the popup
+      // paints: the popup ships async, the lend takes the frame not being painted, and the kickoff below slices on
+      // until the waveform ends. Not for a build B handed over, which holds its block already.
+      bool popupPainting = popupBeforeBuild && !secondaryBorrowed_ && renderer.lendsDuringRefresh();
       if (popupBeforeBuild) {
         // X4: the dramatic-transition HALF belongs on the first CONTENT page
         // (forceHalfRefreshAfterPopup_ below), not the popup. The popup is a transient box over the
@@ -4839,7 +4874,9 @@ bool EpubReaderActivity::buildSection(const RenderLayout& layout) {
         if (halfOnContentPage) {
           renderer.clearRefreshOverride();  // discard the armed HALF -> popup paints FAST
         }
-        GUI.drawPopup(renderer, tr(STR_INDEXING));  // immediate feedback before the first page lands
+        // Immediate feedback before the first page lands.
+        GUI.drawPopup(renderer, tr(STR_INDEXING), /*overlayDisplayedFrame=*/true,
+                      popupPainting ? PopupShip::Async : PopupShip::Blocking);
 
         // Tight heap: free the secondary buffer (~48–52 KB) for the build. AA is off until the
         // build ends and recoverSecondaryBufferIfNeeded() reallocates it (marked via
@@ -4879,13 +4916,15 @@ bool EpubReaderActivity::buildSection(const RenderLayout& layout) {
           // build's arena bump-allocates inside the lent region instead of the heap. Fall back to
           // the legacy release only when there is no secondary buffer to lend.
           size_t borrowedSize = 0;
-          uint8_t* borrowed = renderer.borrowSecondaryBuffer(&borrowedSize);
+          uint8_t* borrowed = popupPainting ? renderer.borrowSecondaryBufferDuringRefresh(&borrowedSize)
+                                            : renderer.borrowSecondaryBuffer(&borrowedSize);
           if (borrowed) {
             buildScratch_ = makeUniqueNoThrow<BuildArena>(borrowed, borrowedSize);
             section->setExternalBuildScratch(buildScratch_ && buildScratch_->valid() ? buildScratch_.get() : nullptr);
             secondaryBorrowed_ = true;
           } else {
-            renderer.releaseSecondaryBuffer();
+            renderer.releaseSecondaryBuffer();  // drains the popup's refresh first
+            popupPainting = false;
           }
           // Display semantics are identical to a released buffer (single-buffer mode either way).
           renderer.setSingleBufferFastDiff(true);
@@ -4921,8 +4960,30 @@ bool EpubReaderActivity::buildSection(const RenderLayout& layout) {
       // Kick the build off so hasActiveBuild() is true (a resumed B build already is). One slice
       // may already finish a tiny section, in which case we fall through to a normal render.
       Section::BuildStep step = Section::BuildStep::More;
+      const unsigned long kickoffMs = millis();
+      uint16_t slices = 0;
       if (!section->hasActiveBuild()) {
         step = section->stepSectionBuild(makeSectionBuildParams(), BG_BUILD_BUDGET_MS);
+        ++slices;
+      }
+      if (popupPainting) {
+        // The popup is still painting: build on through its waveform, then finish its refresh, which nothing may
+        // draw before. Here and not on the loop task, whose C step waits out every pending refresh; the render lock
+        // held here keeps every other draw out until the finish. Full clock, as the loop's C slice takes.
+        {
+          HalPowerManager::Lock powerLock;
+          while (step == Section::BuildStep::More && renderer.refreshBusy()) {
+            step = section->stepSectionBuild(makeSectionBuildParams(), BG_BUILD_BUDGET_MS);
+            ++slices;
+          }
+        }
+        const unsigned long builtMs = millis() - kickoffMs;
+        renderer.finishDisplayAsync();
+        checkHeapIntegrity("after_popup_slices");
+        LOG_INF("ERS",
+                "Background-C: spine %d built %u slices (%lu ms) while the popup painted, %u pages; finish %lu ms",
+                currentSpineIndex, slices, builtMs, static_cast<unsigned>(section->activeBuildPageCount()),
+                millis() - kickoffMs - builtMs);
       }
       if (step == Section::BuildStep::More) {
         // The deferred case, now resolved: the build needs more slices, so a popup IS warranted.
@@ -5704,6 +5765,99 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
     return;
   }
 
+  // Single push beats both older strategies wherever the panel offers it: the
+  // page arrives complete in one waveform, with no intermediate B/W state and no
+  // second refresh. It also has to be chosen HERE rather than at display time,
+  // because it changes what happens before the page is even drawn.
+  //
+  // Nothing here is preemptible any more, and nothing needs to be: the planes
+  // are a by-product of the page render rather than ~1 s of extra work, so
+  // there is no pass for a page turn to abort.
+  const bool singlePushAaThisRender = aaEnabledForThisRender && renderer.supportsGrayFrame();
+
+  // The image-page half refresh is owed to the page AFTER an image page. A redraw of the image page
+  // itself must leave it pending: consuming it here flashed a HALF on every clock minute while an
+  // image page was on screen (X3, 2026-10-08), and the page re-armed it each time since it still has
+  // images. Keyed on the page last drawn, spine included, not on the status-bar tick test below: a
+  // one-page chapter followed by the next chapter's page 0 has the same page number, and that turn,
+  // from a full-page illustration, is the one this refresh exists for.
+  bool forceHalfRefreshThisPage =
+      !redrawOfPageOnScreen && pendingHalfRefreshAfterImagePage && SETTINGS.halfRefreshAfterImagePage;
+  if (!redrawOfPageOnScreen) pendingHalfRefreshAfterImagePage = false;
+  lastRenderStats.imagePageWithAA = false;
+  lastRenderStats.forcedHalfRefresh = forceHalfRefreshThisPage;
+
+  // Read before renderStatusBar() overwrites it: the only way left to tell a page turn from a clock or battery tick
+  // that redrew the page already on the panel, including one first shown mid-build (displayBuildPage(), which pins no
+  // lastRendered* identity).
+  const bool statusBarTick =
+      section && DisplayedPage::redrawsStatusBarPage({lastStatusBarSpine_, lastStatusBarPage}, currentSpineIndex,
+                                                     section->currentPage + 1);
+  // Resolve this page's refresh mode (consuming any force flags) before the prewarm: whether the page goes out composed
+  // one-pass decides whether the prewarm may borrow the secondary buffer (below). Fired after the BW render.
+  HalDisplay::RefreshMode pageRefreshMode;
+  // A buffer lent for a build-through is not a degraded one: the X3 diffs against its own copy of
+  // the frame on screen, so it keeps the normal cadence (see BG_BUILD_THROUGH_PAGES).
+  if (secondaryBufferDegraded_ && !backgroundBuildThrough_) {
+    // FULL_REFRESH already gives a clean baseline, same goal as forceHalfRefreshAfterPopup_;
+    // consume it here too so it doesn't carry over and force an unrelated later page to HALF.
+    forceHalfRefreshAfterPopup_ = false;
+    pageRefreshMode = HalDisplay::FULL_REFRESH;
+    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+  } else if (forceRefreshModeNextRender_ >= 0) {
+    // Manual force-refresh button: apply the requested mode for this one render. A manual refresh
+    // gives its own clean baseline, so consume any armed post-popup HALF too rather than letting it
+    // carry over and force an unrelated later page to HALF.
+    forceHalfRefreshAfterPopup_ = false;
+    pageRefreshMode = static_cast<HalDisplay::RefreshMode>(forceRefreshModeNextRender_);
+    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+    forceRefreshModeNextRender_ = -1;
+  } else if (forceHalfRefreshAfterPopup_) {
+    // First real page after the indexing popup, shown directly here because the build finished
+    // in a single slice (e.g. a one-page cover) and never went through displayBuildPage(). See
+    // forceHalfRefreshAfterPopup_.
+    forceHalfRefreshAfterPopup_ = false;
+    pageRefreshMode = HalDisplay::HALF_REFRESH;
+    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+  } else if (forceHalfRefreshThisPage) {
+    pageRefreshMode = HalDisplay::HALF_REFRESH;
+    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+  } else if (statusBarTick) {
+    // Same page as the one already on the panel, spine included: this render was a status-bar
+    // tick (clock minute or battery step), not a page turn.
+    //
+    // refreshFrequencyPages is a GHOSTING BUDGET DENOMINATED IN PAGES -- the
+    // setting, its label and the counter all say pages. Letting a tick spend
+    // from it drains the budget once a minute whether or not anyone is reading,
+    // so on an idle reader the ghost-clearing HALF fires on a schedule set by
+    // the clock rather than by page turns: ~2s of full-screen flash caused by a
+    // digit changing. Device-traced on an X4 2026-09-16, counter 10 -> 9 -> 8
+    // across three consecutive minutes with no page turns.
+    //
+    // The tick still costs a FAST refresh of the whole frame, which is not
+    // free -- a no-diff FAST accumulates speckle on X3 (see the
+    // lastStatusBar* field comment). What it must not do is bill that to the
+    // page budget.
+    pageRefreshMode = HalDisplay::FAST_REFRESH;
+  } else {
+    pageRefreshMode = ReaderUtils::nextRefreshCycleMode(pagesUntilFullRefresh);
+  }
+
+  // The composed one-pass turns the buffer holding the frame on screen into the page's old plane
+  // (displayComposedOnePass()). Lent to the prewarm, that buffer comes back seeded from the cleared write buffer and
+  // the SDK no longer counts it as the frame on screen (borrowSecondaryBuffer() and returnSecondaryBuffer() both clear
+  // it), so beginOnePassMask() refused and every freshly rendered page took the two passes; only a pre-rendered one,
+  // whose prewarm lends nothing, went one-pass. A page bound for it keeps the buffer, and its prewarm takes a TrueType
+  // miss's scratch and the built-in fonts' ring from the heap, freed again before the BW render (releaseTtfMissMemory()
+  // below). Not on a page that starved a glyph: its redraw needs the lent memory more than one refresh. The S3 lends a
+  // PSRAM arena, not the frame buffer, and keeps the frame either way. An armed override (a book open's HALF) makes the
+  // refresh something other than FAST, which the drivers show B/W without the gray, so that page is not bound for it.
+  const bool composedOnePassPlanned = aaEnabledForThisRender && !singlePushAaThisRender &&
+                                      pageRefreshMode == HalDisplay::FAST_REFRESH &&
+                                      !renderer.hasRefreshOverridePending() && onePassComposedFor(*page);
+  const bool prewarmKeepsFrameOnScreen = composedOnePassPlanned && !HalCapabilities::keepsSecondaryBuffer() &&
+                                         !(section && glyphStarvedPage(currentSpineIndex, section->currentPage));
+
   logReaderMemSnapshot("prewarm_begin");
 
   // Font prewarm: scan pass accumulates text, then prewarm, then real render
@@ -5721,7 +5875,7 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
     // they return (glyph_miss, FontDecompressor's ringArena()). The page slots stay on the heap: the BW render and the
     // AA pass read them after the lend. Not when Background-B holds the buffer.
     std::optional<LentSecondary> prewarmLend;
-    if (renderer.hasSecondaryBuffer()) prewarmLend.emplace(renderer);
+    if (renderer.hasSecondaryBuffer() && !prewarmKeepsFrameOnScreen) prewarmLend.emplace(renderer);
     const glyph_miss::Scope misses(prewarmLend ? prewarmLend->arena() : nullptr);
     prewarmPageFonts(*page, orientedMarginLeft, contentTop);
   }
@@ -5740,30 +5894,8 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
           (int32_t)heapAfter - (int32_t)heapBefore);
   logReaderMemSnapshot("prewarm_end");
 
-  // Single push beats both older strategies wherever the panel offers it: the
-  // page arrives complete in one waveform, with no intermediate B/W state and no
-  // second refresh. It also has to be chosen HERE rather than at display time,
-  // because it changes what happens before the page is even drawn.
-  //
-  // Nothing here is preemptible any more, and nothing needs to be: the planes
-  // are a by-product of the page render rather than ~1 s of extra work, so
-  // there is no pass for a page turn to abort.
-  const bool singlePushAaThisRender = aaEnabledForThisRender && renderer.supportsGrayFrame();
-
   const bool effectiveForceLoad = forceLoadLargeImages || !SETTINGS.largeImagePlaceholder;
   pageHasPlaceholders = page->hasPlaceholderImages(effectiveForceLoad, imageMonochrome);
-
-  // The image-page half refresh is owed to the page AFTER an image page. A redraw of the image page
-  // itself must leave it pending: consuming it here flashed a HALF on every clock minute while an
-  // image page was on screen (X3, 2026-10-08), and the page re-armed it each time since it still has
-  // images. Keyed on the page last drawn, spine included, not on the status-bar tick test below: a
-  // one-page chapter followed by the next chapter's page 0 has the same page number, and that turn,
-  // from a full-page illustration, is the one this refresh exists for.
-  bool forceHalfRefreshThisPage =
-      !redrawOfPageOnScreen && pendingHalfRefreshAfterImagePage && SETTINGS.halfRefreshAfterImagePage;
-  if (!redrawOfPageOnScreen) pendingHalfRefreshAfterImagePage = false;
-  lastRenderStats.imagePageWithAA = false;
-  lastRenderStats.forcedHalfRefresh = forceHalfRefreshThisPage;
 
   // Single-push AA: the planes are captured BY the page render below, not by two
   // extra renders of their own. Idea from jetaudio's crosspoint-aurora; see
@@ -5834,10 +5966,7 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   // pre-render). Mark the overlay as a miss before the status bar draws it.
   backgroundAGlyph_ = '-';
 #endif
-  // Snapshot the page the status bar last reported BEFORE renderStatusBar()
-  // overwrites it: further down it is the only way left to tell a page turn from
-  // a clock or battery tick that redrew the page already on the panel.
-  const int statusBarPageBeforeRender = lastStatusBarPage;
+
   renderStatusBar();
   if (showTruncatedSectionHintThisRender) {
     const int hintX = orientedMarginLeft + 4;
@@ -5863,57 +5992,9 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   fcm->logStats("bw_render");
   const auto tBwRender = millis();
   logReaderMemSnapshot("after_bw_render");
-  // Resolve this page's refresh mode (consuming any force flags), then fire it.
-  // With AA enabled on X4 the refresh goes out async so the grayscale planes
-  // can render during the waveform (inline AA below); everywhere else the
-  // trigger blocks through the waveform exactly as before.
-  HalDisplay::RefreshMode pageRefreshMode;
-  // A buffer lent for a build-through is not a degraded one: the X3 diffs against its own copy of
-  // the frame on screen, so it keeps the normal cadence (see BG_BUILD_THROUGH_PAGES).
-  if (secondaryBufferDegraded_ && !backgroundBuildThrough_) {
-    // FULL_REFRESH already gives a clean baseline, same goal as forceHalfRefreshAfterPopup_;
-    // consume it here too so it doesn't carry over and force an unrelated later page to HALF.
-    forceHalfRefreshAfterPopup_ = false;
-    pageRefreshMode = HalDisplay::FULL_REFRESH;
-    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-  } else if (forceRefreshModeNextRender_ >= 0) {
-    // Manual force-refresh button: apply the requested mode for this one render. A manual refresh
-    // gives its own clean baseline, so consume any armed post-popup HALF too rather than letting it
-    // carry over and force an unrelated later page to HALF.
-    forceHalfRefreshAfterPopup_ = false;
-    pageRefreshMode = static_cast<HalDisplay::RefreshMode>(forceRefreshModeNextRender_);
-    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-    forceRefreshModeNextRender_ = -1;
-  } else if (forceHalfRefreshAfterPopup_) {
-    // First real page after the indexing popup, shown directly here because the build finished
-    // in a single slice (e.g. a one-page cover) and never went through displayBuildPage(). See
-    // forceHalfRefreshAfterPopup_.
-    forceHalfRefreshAfterPopup_ = false;
-    pageRefreshMode = HalDisplay::HALF_REFRESH;
-    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-  } else if (forceHalfRefreshThisPage) {
-    pageRefreshMode = HalDisplay::HALF_REFRESH;
-    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-  } else if (statusBarPageBeforeRender >= 0 && section && section->currentPage + 1 == statusBarPageBeforeRender) {
-    // Same page as the one already on the panel: this render was a status-bar
-    // tick (clock minute or battery step), not a page turn.
-    //
-    // refreshFrequencyPages is a GHOSTING BUDGET DENOMINATED IN PAGES -- the
-    // setting, its label and the counter all say pages. Letting a tick spend
-    // from it drains the budget once a minute whether or not anyone is reading,
-    // so on an idle reader the ghost-clearing HALF fires on a schedule set by
-    // the clock rather than by page turns: ~2s of full-screen flash caused by a
-    // digit changing. Device-traced on an X4 2026-09-16, counter 10 -> 9 -> 8
-    // across three consecutive minutes with no page turns.
-    //
-    // The tick still costs a FAST refresh of the whole frame, which is not
-    // free -- a no-diff FAST accumulates speckle on X3 (see the
-    // lastStatusBar* field comment). What it must not do is bill that to the
-    // page budget.
-    pageRefreshMode = HalDisplay::FAST_REFRESH;
-  } else {
-    pageRefreshMode = ReaderUtils::nextRefreshCycleMode(pagesUntilFullRefresh);
-  }
+  // Fire the refresh resolved above. With AA enabled on X4 the refresh goes out async so the grayscale planes can
+  // render during the waveform (inline AA below); everywhere else the trigger blocks through the waveform.
+  //
   // Inline AA is X4-only: X4 waits out the waveform inside the trigger, so the
   // async split hands that window to the plane renders. X3 returns pre-waveform
   // from its trigger already and keeps the deferred loop-task pass.
@@ -5950,8 +6031,7 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
   }
   // One-pass where the planes are composed in the frame buffers (the X3, the X4). Not while the reader is
   // flipping: the gray render comes before the refresh, so it would hold the turn back.
-  const bool composedOnePassThisRender = aaEnabledForThisRender && !singlePushAaThisRender && !aaPreempted &&
-                                         pageRefreshMode == HalDisplay::FAST_REFRESH && onePassComposedFor(*page) &&
+  const bool composedOnePassThisRender = composedOnePassPlanned && !aaPreempted &&
                                          displayComposedOnePass(*page, orientedMarginLeft, contentTop, pageRefreshMode);
   const bool inlineAaThisRender = aaEnabledForThisRender && !singlePushAaThisRender && inlineAaAvailable &&
                                   !aaPreempted && !composedOnePassThisRender;
@@ -6662,6 +6742,7 @@ void EpubReaderActivity::renderStatusBar() const {
                            SETTINGS.statusBarMiddle == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY ||
                            SETTINGS.statusBarRight == CrossPointSettings::STATUS_BAR_SLOT_CONTENT::SLOT_BATTERY);
   lastStatusBarPage = currentPage;
+  lastStatusBarSpine_ = currentSpineIndex;
   lastStatusBarBattery = hasBattery ? static_cast<int>(powerManager.getBatteryPercentage()) : -1;
 }
 
@@ -6896,6 +6977,7 @@ bool EpubReaderActivity::shouldSkipPeriodicUpdate() const {
   if (hasBattery) {
     if (static_cast<int>(powerManager.getBatteryPercentage()) != lastStatusBarBattery) return false;
   }
+
   return true;
 }
 
@@ -7164,6 +7246,7 @@ bool EpubReaderActivity::drawCurrentPageToBuffer(const std::string& filePath, Gf
   p.viewportWidth = viewportWidth;
   p.viewportHeight = viewportHeight;
   p.hyphenationEnabled = effectiveHyphenation;
+  p.hyphenationLayoutKey = Hyphenator::layoutKey(epub->getLanguage(), p.hyphenationEnabled);
   p.widowOrphanControl = SETTINGS.widowOrphanControl != 0;
   p.fontSizeNormalization = effectiveFontSizeNormalization;
   p.embeddedStyle = effectiveEmbeddedStyle;

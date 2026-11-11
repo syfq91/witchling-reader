@@ -3,6 +3,7 @@ add_executable(WordSizeLayoutTest
   WordFontSlotTest.cpp
   ShapedLayoutTest.cpp
   WordCapacityTest.cpp
+  MyanmarLineBreakTest.cpp
   ${REPO_ROOT}/lib/Epub/Epub/CjkLineBreak.cpp
   ${REPO_ROOT}/lib/Epub/Epub/CjkPunctuation.cpp
   ${REPO_ROOT}/lib/Epub/Epub/ParsedText.cpp
@@ -35,6 +36,7 @@ target_include_directories(WordSizeLayoutTest PRIVATE
   ${REPO_ROOT}/test/text_shaping     # FixtureShapingFace.h
   ${REPO_ROOT}/test/ot_shaper_port   # OtShaperTestHelpers.h: the oracle's records
   ${REPO_ROOT}/test/complex_shaper   # ExpectedShaping.h, which the helpers read
+  ${REPO_ROOT}/test/ot_shaper         # ArabicNumberExpected.h
   ${BIDI_LAYOUT_INCLUDES}
   ${REPO_ROOT}/lib/GfxRenderer
 )

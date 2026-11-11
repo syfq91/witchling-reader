@@ -241,6 +241,7 @@ bool renderPngSleepScreen(const std::string& filename, GfxRenderer& renderer) {
   // cache filename, so no separate invalidation is needed.
   if (!useCache && cacheW > 0) config.cachePath = cachePath;
 
+
   PngToFramebufferConverter decoder;
 
   // Native grayscale: one decode, one push, every level the panel has.

@@ -43,6 +43,13 @@ class CrossPointState {
   uint8_t recentBooksView = 1;
   // When false, setup() skips the boot screen on wake (used by reader resume).
   bool showBootScreen = true;
+  // The packs the reader offered and was told no (HyphenationPacks, UiLanguagePacks), as two-letter codes back to back,
+  // empty -- no heap -- when none: a hyphenation pack by its language, lower case ("de"), a CJK interface pack by its
+  // interface language, upper case ("ZH"). They are not offered again; the Font Manager still has them.
+  std::string hyphenationOffersDeclined;
+  // The reading fonts a book's open offered and was told no (BookPackOffer), by their script, comma-separated, empty
+  // when none: "Devanagari,JP". A book in the script is not asked again; the Font Manager still has them.
+  std::string fontOffersDeclined;
   PendingBookmarkJumpState pendingBookmarkJump;
 #if SERIAL_TEST_API
   PendingPercentJumpState pendingPercentJump;  // not saved; see the type

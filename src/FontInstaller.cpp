@@ -1,6 +1,7 @@
 #include "FontInstaller.h"
 
 #include <HalStorage.h>
+#include <I18n.h>
 #include <Logging.h>
 #include <esp_rom_crc.h>
 
@@ -8,6 +9,7 @@
 #include <cstring>
 
 #include "CrossPointSettings.h"
+#include "HyphenationPacks.h"
 #include "util/FontDownloadRules.h"
 
 FontInstaller::FontInstaller(SdCardFontRegistry& registry) : registry_(registry) {}
@@ -108,9 +110,11 @@ bool FontInstaller::validateFontFile(const char* path) {
   }
 
   if (!FontDownloadRules::headOk(kind, head, sizeof head)) {
-    const char* kindName = kind == FontDownloadRules::FileKind::Cpfont     ? ".cpfont"
-                           : kind == FontDownloadRules::FileKind::TrueType ? "TrueType"
-                                                                           : "OpenType CFF";
+    const char* kindName = kind == FontDownloadRules::FileKind::Cpfont            ? ".cpfont"
+                           : kind == FontDownloadRules::FileKind::TrueType        ? "TrueType"
+                           : kind == FontDownloadRules::FileKind::OpenTypeCff     ? "OpenType CFF"
+                           : kind == FontDownloadRules::FileKind::HyphenationPack ? "hyphenation pack"
+                                                                                  : "language pack";
     LOG_ERR("FONT", "Not a %s file: %s", kindName, path);
     return false;
   }
@@ -146,11 +150,13 @@ bool FontInstaller::computeFileCrc32(const char* path, uint32_t& outCrc) {
   if (!Storage.openFileForRead("FONT", path, f)) {
     return false;
   }
-  constexpr size_t BUF_SIZE = 128;
-  uint8_t buf[BUF_SIZE];
+  // 1 KB a read, eight times fewer card reads than the 128 bytes it took before: German's hyphenation pack (206 KB) is
+  // 202 of them. On the stack, not the heap: every caller (the Font Manager, the web font API) runs on the loop task,
+  // whose stack is 16 KB, and nothing below this call but the card read takes more of it.
+  uint8_t buf[1024];
   uint32_t crc = 0;
   while (f.available()) {
-    const int n = f.read(buf, BUF_SIZE);
+    const int n = f.read(buf, sizeof buf);
     if (n <= 0) break;
     crc = esp_rom_crc32_le(crc, buf, static_cast<uint32_t>(n));
   }
@@ -207,12 +213,114 @@ bool FontInstaller::isFamilyOnCard(const char* familyName) const {
   return Storage.exists(dirPath);
 }
 
+bool FontInstaller::isOnCard(const FontCatalog& families, const size_t family) const {
+  if (!families.pack(family)) return isFamilyOnCard(families.name(family));
+  if (families.fileCount(family) == 0) return false;
+  for (size_t j = 0; j < families.fileCount(family); j++) {
+    // Where the reader finds a language's hyphenation pack: our folder or CrossInk's. Any other file is looked for
+    // where the install puts it.
+    const char* localName = families.fileLocalName(family, j);
+    char code[3];
+    if (families.hyphenation(family) && HyphenationPacks::codeOfPackFile(localName, code)) {
+      if (!HyphenationPacks::packOnCard(code)) return false;
+      continue;
+    }
+    char path[128];
+    buildPackPath(families, family, localName, path, sizeof(path));
+    if (!Storage.exists(path)) return false;
+  }
+  return true;
+}
+
+namespace {
+
+const char* packDir(const FontCatalog& families, const size_t family) {
+  return families.languagePack(family) ? I18n::PACK_DIR : HyphenationPacks::DIR;
+}
+
+}  // namespace
+
+void FontInstaller::buildPackPath(const FontCatalog& families, const size_t family, const char* localName, char* outBuf,
+                                  const size_t outBufSize) {
+  snprintf(outBuf, outBufSize, "%s/%s", packDir(families, family), localName);
+}
+
+namespace {
+
+// Tells HyphenationPacks that the pack files of `family` were installed, or removed. A UI language pack is read at
+// the next start.
+void tellPacks(const FontCatalog& families, const size_t family, const bool installed) {
+  if (!families.hyphenation(family)) return;
+  for (size_t j = 0; j < families.fileCount(family); j++) {
+    char code[3];
+    if (!HyphenationPacks::codeOfPackFile(families.fileLocalName(family, j), code)) continue;
+    if (installed) {
+      HyphenationPacks::packInstalled(code);
+    } else {
+      HyphenationPacks::packRemoved(code);
+    }
+  }
+}
+
+}  // namespace
+
+bool FontInstaller::installStagedPack(const FontCatalog& families, const size_t family, const char* stagingDir) {
+  const char* dir = packDir(families, family);
+  if (!Storage.exists(dir) && !Storage.mkdir(dir)) {
+    LOG_ERR("FONT", "Failed to create %s", dir);
+    return false;
+  }
+  for (size_t j = 0; j < families.fileCount(family); j++) {
+    const char* localName = families.fileLocalName(family, j);
+    char staged[128];
+    char live[128];
+    char backup[136];
+    snprintf(staged, sizeof(staged), "%s/%s", stagingDir, localName);
+    buildPackPath(families, family, localName, live, sizeof(live));
+    snprintf(backup, sizeof(backup), "%s.old", live);
+    if (Storage.exists(backup)) Storage.remove(backup);
+    const bool hadLive = Storage.exists(live);
+    if (hadLive && !Storage.rename(live, backup)) {
+      LOG_ERR("FONT", "Failed to move %s aside", live);
+      return false;
+    }
+    if (!Storage.rename(staged, live)) {
+      LOG_ERR("FONT", "Failed to move %s into place", staged);
+      if (hadLive) Storage.rename(backup, live);
+      return false;
+    }
+    if (hadLive) Storage.remove(backup);
+  }
+  Storage.removeDir(stagingDir);
+  tellPacks(families, family, true);
+  return true;
+}
+
+FontInstaller::Error FontInstaller::deletePack(const FontCatalog& families, const size_t family) {
+  Error result = Error::OK;
+  for (size_t j = 0; j < families.fileCount(family); j++) {
+    char path[128];
+    buildPackPath(families, family, families.fileLocalName(family, j), path, sizeof(path));
+    if (Storage.exists(path) && !Storage.remove(path)) {
+      LOG_ERR("FONT", "Failed to remove %s", path);
+      result = Error::SD_WRITE_ERROR;
+    }
+  }
+  tellPacks(families, family, false);
+  return result;
+}
+
 FontInstaller::FileCounts FontInstaller::countFiles(const FontCatalog& families, const size_t family) {
   FileCounts counts;
   const char* familyName = families.name(family);
+  const bool pack = families.pack(family);
   for (size_t j = 0; j < families.fileCount(family); j++) {
     char path[128];
-    buildFontPath(familyName, families.fileLocalName(family, j), path, sizeof(path));
+    if (pack) {
+      buildPackPath(families, family, families.fileLocalName(family, j), path, sizeof(path));
+    } else {
+      buildFontPath(familyName, families.fileLocalName(family, j), path, sizeof(path));
+    }
     FsFile f;
     if (!Storage.openFileForRead("FONT", path, f)) {
       ++counts.absent;
@@ -220,11 +328,28 @@ FontInstaller::FileCounts FontInstaller::countFiles(const FontCatalog& families,
     }
     const size_t actual = f.fileSize();
     f.close();
-    if (actual == families.fileSize(family, j)) {
-      ++counts.same;
-    } else {
+    const uint32_t listed = families.fileSize(family, j);
+    if (actual != listed) {
+      if (pack) {
+        LOG_DBG("FONT", "%s: %u B, the manifest lists %u B", path, unsigned(actual), unsigned(listed));
+      }
       ++counts.changed;
+      continue;
     }
+    // At the manifest's size a pack's file is read for its CRC too, when the manifest gives one: a pack rebuilt at the
+    // same size is an update all the same. Packs are small (German's hyphenation, the largest, is 206 KB). A font's
+    // file goes by its size alone: a family runs to megabytes, and its files would be read whole each time the Font
+    // Manager or the web font API loads the list.
+    if (pack && families.fileHasCrc32(family, j)) {
+      uint32_t crc = 0;
+      const uint32_t listedCrc = families.fileCrc32(family, j);
+      if (!computeFileCrc32(path, crc) || crc != listedCrc) {
+        LOG_DBG("FONT", "%s: CRC %08x, the manifest lists %08x", path, unsigned(crc), unsigned(listedCrc));
+        ++counts.changed;
+        continue;
+      }
+    }
+    ++counts.same;
   }
   return counts;
 }

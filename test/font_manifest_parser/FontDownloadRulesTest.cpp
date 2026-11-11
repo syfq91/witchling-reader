@@ -45,14 +45,45 @@ TEST(FontDownloadRulesTest, AFilesKindIsItsExtensionInAnyCase) {
 
 TEST(FontDownloadRulesTest, AManifestFormatNamesAKindExactly) {
   EXPECT_EQ(kindOfFormat("cpfont"), FileKind::Cpfont);
+  EXPECT_EQ(kindOfFormat("uipack"), FileKind::Cpfont);  // a UI script pack: .cpfont files
   EXPECT_EQ(kindOfFormat("ttf"), FileKind::TrueType);
   EXPECT_EQ(kindOfFormat("otf"), FileKind::OpenTypeCff);
+  EXPECT_EQ(kindOfFormat("hyphenation"), FileKind::HyphenationPack);
+  EXPECT_EQ(kindOfFormat("language"), FileKind::LanguagePack);
   EXPECT_EQ(kindOfFormat("OTF"), FileKind::Unknown);
   EXPECT_EQ(kindOfFormat("woff2"), FileKind::Unknown);
   EXPECT_EQ(kindOfFormat(""), FileKind::Unknown);
   EXPECT_EQ(FontDownloadRules::kindOfFormat("otfx", 3), FileKind::OpenTypeCff);  // the length bounds it
   EXPECT_EQ(FontDownloadRules::kindOfFormat("otf", 2), FileKind::Unknown);
   EXPECT_EQ(FontDownloadRules::kindOfFormat(nullptr, 0), FileKind::Unknown);
+}
+
+// A hyphenation pack (HyphenationPack.h): .cphyph, starting with a CPHY version 1 header.
+TEST(FontDownloadRulesTest, AHyphenationPackIsACphyphWithACphyV1Header) {
+  EXPECT_EQ(FontDownloadRules::kindOf("Hyphenation-German/hyph-de.cphyph"), FileKind::HyphenationPack);
+  EXPECT_EQ(FontDownloadRules::kindOf("HYPH-DE.CPHYPH"), FileKind::HyphenationPack);
+  EXPECT_TRUE(head(FileKind::HyphenationPack, std::string("CPHY\x01"
+                                                          "de\x02rest",
+                                                          12)));
+  EXPECT_FALSE(head(FileKind::HyphenationPack, std::string("CPHY\x02"
+                                                           "de\x02rest",
+                                                           12)));  // another version
+  EXPECT_FALSE(head(FileKind::HyphenationPack, std::string("CPFONT\0\0rest", 12)));
+  EXPECT_FALSE(head(FileKind::Cpfont, std::string("CPHY\x01"
+                                                  "de\x02rest",
+                                                  12)));
+}
+
+// A UI language pack (LangPack.h): .cplang, starting with a CPLG version 1 header.
+TEST(FontDownloadRulesTest, ALanguagePackIsACplangWithACplgV1Header) {
+  EXPECT_EQ(FontDownloadRules::kindOf("Language-German/de.cplang"), FileKind::LanguagePack);
+  EXPECT_EQ(FontDownloadRules::kindOf("DE.CPLANG"), FileKind::LanguagePack);
+  EXPECT_TRUE(head(FileKind::LanguagePack, std::string("CPLG\x01\0\x51\x03rest", 12)));
+  EXPECT_FALSE(head(FileKind::LanguagePack, std::string("CPLG\x02\0\x51\x03rest", 12)));  // another version
+  EXPECT_FALSE(head(FileKind::LanguagePack, std::string("CPHY\x01"
+                                                        "de\x02rest",
+                                                        12)));
+  EXPECT_FALSE(head(FileKind::HyphenationPack, std::string("CPLG\x01\0\x51\x03rest", 12)));
 }
 
 TEST(FontDownloadRulesTest, ACpfontStartsWithItsMagic) {
@@ -112,7 +143,7 @@ TEST(FontDownloadRulesTest, EveryShippedTtfFamilyPasses) {
       ++checked;
     }
   }
-  EXPECT_EQ(checked, 48);
+  EXPECT_EQ(checked, 52);
 }
 
 TEST(FontDownloadRulesTest, TheCardMustHoldTheDownloadAndAMargin) {
@@ -159,4 +190,50 @@ TEST(FontDownloadRulesTest, DownloadAllTakesOnlyMissingFamiliesThatJoinIt) {
   EXPECT_FALSE(FontDownloadRules::downloadAllTakes(catalog, 1));
   catalog.setHasUpdate(2, true);
   EXPECT_FALSE(FontDownloadRules::downloadAllTakes(catalog, 2));
+}
+
+// "Update all" takes an installed family with an update; packs only, the language and hyphenation packs among them,
+// which are what Check for updates counts.
+TEST(FontDownloadRulesTest, UpdateAllTakesInstalledFamiliesWithAnUpdateAndPacksOnlyThePacks) {
+  const auto feedFamilies = [](FontCatalog::Builder& builder) {
+    builder.beginFamily();
+    builder.keepFamily("Font", 4);  // 0
+    builder.beginFamily();
+    builder.hyphenation(true);
+    builder.keepFamily("Hyphenation-German", 18);  // 1
+    builder.beginFamily();
+    builder.languagePack(true);
+    builder.keepFamily("Language-German", 15);  // 2
+    builder.beginFamily();
+    builder.languagePack(true);
+    builder.keepFamily("Language-French", 15);  // 3: installed, current
+    builder.beginFamily();
+    builder.hyphenation(true);
+    builder.keepFamily("Hyphenation-French", 18);  // 4: not installed
+  };
+  FontCatalog::Builder counter;
+  feedFamilies(counter);
+  FontCatalog catalog;
+  ASSERT_TRUE(catalog.allocate(counter.size()));
+  FontCatalog::Builder filler(catalog);
+  feedFamilies(filler);
+  for (const size_t family : {0u, 1u, 2u, 3u}) catalog.setInstalled(family, true);
+  for (const size_t family : {0u, 1u, 2u, 4u}) catalog.setHasUpdate(family, true);
+
+  EXPECT_TRUE(FontDownloadRules::updateAllTakes(catalog, 0, false));
+  EXPECT_TRUE(FontDownloadRules::updateAllTakes(catalog, 1, false));
+  EXPECT_TRUE(FontDownloadRules::updateAllTakes(catalog, 2, false));
+  EXPECT_FALSE(FontDownloadRules::updateAllTakes(catalog, 3, false));
+  EXPECT_FALSE(FontDownloadRules::updateAllTakes(catalog, 4, false));
+
+  EXPECT_FALSE(FontDownloadRules::updateAllTakes(catalog, 0, true));
+  EXPECT_TRUE(FontDownloadRules::updateAllTakes(catalog, 1, true));
+  EXPECT_TRUE(FontDownloadRules::updateAllTakes(catalog, 2, true));
+  EXPECT_FALSE(FontDownloadRules::updateAllTakes(catalog, 3, true));
+  EXPECT_FALSE(FontDownloadRules::updateAllTakes(catalog, 4, true));
+  EXPECT_EQ(FontDownloadRules::packUpdates(catalog), 2u);
+
+  catalog.setHasUpdate(1, false);
+  catalog.setHasUpdate(2, false);
+  EXPECT_EQ(FontDownloadRules::packUpdates(catalog), 0u);
 }

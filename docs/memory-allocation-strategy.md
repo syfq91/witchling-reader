@@ -10,7 +10,7 @@ number ("rule 4"). Keep those numbers when editing; add new sections at the end.
 logs these conclusions came from (this file before October 2026, `docs/memory-audit-2026-09.md`,
 `docs/heap-work-handover-2026-08-10.md`) are in git history.
 
-Scope: the ESP32-C3 boards (X3, X4), which have no PSRAM. The ESP32-S3 boards (X4 Pro, T5S3) have
+Scope: the ESP32-C3 boards (X3, X4), which have no PSRAM. The ESP32-S3 boards (X4 Pro, T5S3, Murphy M3) have
 8 MB of PSRAM with `CONFIG_SPIRAM_USE_MALLOC` and a 4 KB `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`
 threshold, so large allocations land in PSRAM there and the budget below does not bind. The code
 and the rules are shared, so new code must still follow them.
@@ -222,7 +222,7 @@ Arena instances:
 | Font selector previews | lent framebuffer | the framebuffer size | one preview font | `FontSelectionActivity::lendPreviewArena`, `SdCardFont::useArena` |
 | Dictzip lookup | lent framebuffer | the framebuffer size | one dictionary lookup | `LentLookupScratch` (`DictionaryWordSelectActivity`), `Dictionary::useInflateArena` |
 | TrueType miss memory | a build's arena, lent | the scratch block and page cache (§9.7) | one glyph lookup | `glyph_miss::Scope`: `Section::stepSectionBuild`, `EpubReaderActivity::displayBuildPage`, the ladder's light relief |
-| Word-shaping cache | the free tail of a lent build arena | `WordShapeCache::kWordCacheBytes` (16 KB), 128 sets of two 64 B ways | one parse, emptied whenever an allocation reaches it | `WordShapeCache`, owned by `ChapterHtmlSlimParser` |
+| Word-shaping cache | the free tail of a lent build arena | `WordShapeCache::kWordCacheBytes` (16 KB), 128 sets of two 64 B ways; 128 KB on the S3 boards' 256 KB PSRAM arena (`kLargeWordCacheBytes`) | one parse, emptied whenever an allocation reaches it | `WordShapeCache`, owned by `ChapterHtmlSlimParser` |
 
 In the lent region the CSS ruleset is resident in the arena (`CssParser::setIndexArena`), the SAX
 state is taken there (`ChapterHtmlSlimParser::setBuildArena`), and the ZIP ring shares the main
@@ -463,7 +463,7 @@ under 1 KB more heap shaped than unshaped there. The room the arena has for the 
   pass's arena workspace, and a paragraph's end releases line buffers over 2 KB and a store over 8 KB. The host
   inventory's peak for that chapter fell from +73.2 to +62.6 KB above the build's base, with layout unchanged, and
   on the X3 the build's heap minimum rose from 5.8 KB to about 19.8 KB (read with 8 KB of ballast held, since the
-  build no longer reaches the boot's own minimum; the writing-modes handover, item 1).
+  build no longer reaches the boot's own minimum; [text-shaping.md](text-shaping.md#the-shaped-stores-heap)).
 
 ### 8.4 Where contiguity is lost
 
@@ -743,3 +743,42 @@ chapter; with every glyph stored, a Japanese chapter still fell to 28.9 KB at th
 79–89 KB free at its start, more than the reading heap reaches. Every other book keeps its floors: built-in and .cpfont
 fonts make no miss memory, and single-slice Latin chapters in two TrueType families built in place and finished with
 the store empty and full, without the indexing popup a borrowed build draws first (about 0.54 s).
+
+---
+
+## 10. IRAM is heap
+
+On the C3, code linked into IRAM (`.iram0.text`) is carved from the same internal SRAM as the heap: the heap starts
+where IRAM ends, rounded up to 512 B. Every kilobyte of IRAM is a kilobyte of heap at boot.
+
+**What the C3 links into IRAM.** The prebuilt Arduino libraries' `sections.ld` kept all of FreeRTOS, the ring buffers
+and the (unused) RMT interrupt handlers there. The C3 envs link with `ld/esp32c3-iram-budget/sections.ld` instead,
+which moves:
+
+| Code | IRAM before | after |
+|---|---|---|
+| FreeRTOS: task create/delete, timers, event groups, queue create/delete, the scheduler's start | 14,298 B | 7,504 B |
+| Ring buffers: all but the FromISR functions | 4,792 B | 3,026 B |
+| RMT interrupt handlers (no RMT channel is ever created) | 2,698 B | 360 B |
+
+`.iram0.text` 72,076 → 61,198 B; X3 boot heap 68,624 → 79,744 B (2026-11-09). Moving all of FreeRTOS's non-ISR
+functions freed 4 KB more, and made every chapter build 2.4-4% slower: the calls this firmware makes on every SD
+access, render and loop turn (queue send/receive, semaphores and recursive mutexes, task notifications, scheduler
+suspend/resume) stay in IRAM through `tools/iram-budget/keep_in_iram.txt`.
+
+**How it is made.** `tools/iram-budget/gen_sections_ld.py` runs ESP-IDF's own ldgen, at the IDF commit the prebuilt
+libraries were built from, against those libraries, with the linker-only Kconfig options of
+`tools/iram-budget/options.txt` flipped and the keep list's fragment entries dropped. Nothing is recompiled. The
+generated script is checked in; `scripts/iram_budget.py` (a post: script, C3 envs only) swaps it into the link.
+
+**After a platform update.** The generated script records the sha256 of the platform `sections.ld` it was derived
+from, and `scripts/iram_budget.py` stops the build when the installed one differs (or the flash mode is not DIO).
+Regenerate: update the IDF commit in `tools/iram-budget/fetch_idf.sh` to the one in
+`framework-arduinoespressif32-libs/versions.txt`, fetch, run `gen_sections_ld.py --check` (it must reproduce the
+platform's file byte for byte), then `gen_sections_ld.py`, and re-check that every option is still linker-only.
+
+**The safety rule.** While a flash erase or write runs (glyph store installs, OTA, NVS), the cache is off and only
+IRAM code runs: the flash driver, and interrupts registered with `ESP_INTR_FLAG_IRAM` with everything they call. Code
+that may run then must stay in IRAM; code that never does may leave. None of this firmware's interrupts is
+IRAM-flagged; a new one that is, and calls into FreeRTOS, may call only FromISR functions. `tools/iram-budget/SAFETY.md`
+lists the interrupts, their callees' placement, and every remaining IRAM call into flash.

@@ -5,7 +5,11 @@ Reads sd-fonts.yaml, downloads any missing source fonts, runs
 fontconvert_sdcard.py in parallel for each family, and optionally
 generates the fonts.json manifest. A family with `format: otf` is a CFF
 subset instead (cjk_subset.py): one <name>-Regular.otf, drawn at every size. A family with `format: ttf` is a
-script font merged with Noto's Latin (merge_noto_latin.py): <name>-Regular.ttf and <name>-Bold.ttf.
+script font merged with Noto's Latin (merge_noto_latin.py): <name>-Regular.ttf and <name>-Bold.ttf. A family with
+`format: uipack` is a CJK UI pack (build_ui_script_pack.py): 1-bit .cpfont files the interface draws from, built
+last, from the Noto CJK OTF the family its `source` names pins. A family with `format: hyphenation` is a hyphenation pack, built by
+scripts/build_hyphenation_packs.py, one with `format: language` a UI language pack, built by scripts/gen_i18n.py --packs:
+the pack the repository holds is copied.
 
 Usage:
     # Generate fonts (output in ./output/)
@@ -257,10 +261,43 @@ def _read_corpus(path: Path) -> list[str]:
 
 def write_corpus(out_dir: Path) -> None:
     """The checks' corpus, one <script>.txt per script (test/ot_shaper/generate_corpus.py for the Indic scripts,
-    generate_corpus_arabic.py for arabic.txt, generate_corpus_hebrew.py for hebrew.txt)."""
+    generate_corpus_arabic.py for arabic.txt, generate_corpus_hebrew.py for hebrew.txt, generate_corpus_myanmar.py for
+    myanmar.txt)."""
     shaper_dir = SCRIPT_DIR.parent.parent.parent / "test" / "ot_shaper"
-    for generator in ("generate_corpus.py", "generate_corpus_arabic.py", "generate_corpus_hebrew.py"):
+    for generator in ("generate_corpus.py", "generate_corpus_arabic.py", "generate_corpus_hebrew.py",
+                      "generate_corpus_myanmar.py"):
         subprocess.run([sys.executable, str(shaper_dir / generator), str(out_dir)], check=True, capture_output=True)
+
+
+def build_ui_pack_family(family: dict, output_dir: Path) -> tuple[str, bool, str]:
+    """A `format: uipack` entry: a CJK UI pack (build_ui_script_pack.py), cut from the Noto CJK OTF its `source`
+    family pins."""
+    result = subprocess.run([sys.executable, str(SCRIPT_DIR / "build_ui_script_pack.py"), "--pack", family["name"],
+                             "--output-dir", str(output_dir)],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        return family["name"], False, result.stderr.strip()[-2000:]
+    return family["name"], True, ""
+
+
+# A pack's format: the files its folder holds, and the script that writes them into the repository.
+PACKS = {
+    "hyphenation": ("hyph-*.cphyph", "scripts/build_hyphenation_packs.py"),
+    "language": ("*.cplang", "scripts/gen_i18n.py --packs assets/sd-fonts"),
+}
+
+
+def copy_pack(family: dict, output_dir: Path) -> tuple[str, bool, str]:
+    """A `format: hyphenation` or `format: language` entry: the pack its script wrote into the repository."""
+    pattern, writer = PACKS[family["format"]]
+    source = SCRIPT_DIR.resolve().parents[2] / "assets" / "sd-fonts" / family["name"]
+    packs = sorted(source.glob(pattern))
+    if not packs:
+        return family["name"], False, f"no pack in {source}: run {writer}"
+    for pack in packs:
+        if pack.resolve() != (output_dir / pack.name).resolve():
+            shutil.copyfile(pack, output_dir / pack.name)
+    return family["name"], True, ""
 
 
 def build_family(
@@ -275,6 +312,10 @@ def build_family(
         return build_otf_family(family, output_dir, unihan, fonttools_pin)
     if family.get("format") == "ttf":
         return build_ttf_family(family, output_dir, corpus_dir, fonttools_pin)
+    if family.get("format") == "uipack":
+        return build_ui_pack_family(family, output_dir)
+    if family.get("format") in PACKS:
+        return copy_pack(family, output_dir)
 
     styles = family.get("styles", {})
     intervals = family["intervals"]
@@ -495,23 +536,32 @@ def main():
         except (OSError, subprocess.CalledProcessError) as e:
             print(f"ERROR: the checks' corpus: {e}", file=sys.stderr)
             sys.exit(1)
+    # The UI packs go after the families, one at a time: each renders over a thread pool of its own.
+    packs = [f for f in families if f.get("format") == "uipack"]
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(build_family, family, output_base, verbose, timeout, unihan, fonttools_pin,
                             corpus_dir): family["name"]
-            for family in families
+            for family in families if family.get("format") != "uipack"
         }
         for future in as_completed(futures):
             name, success, message = future.result()
             if success:
                 # Count output files
                 family_dir = output_base / name
-                files = list(family_dir.glob("*.cpfont")) + list(family_dir.glob("*.otf")) + list(family_dir.glob("*.ttf"))
+                files = [f for ext in ("*.cpfont", "*.otf", "*.ttf", "*.cphyph", "*.cplang") for f in family_dir.glob(ext)]
                 size = sum(f.stat().st_size for f in files)
                 print(f"  OK: {name} ({len(files)} files, {size / 1024 / 1024:.1f} MB) {message}")
             else:
                 print(f"  FAILED: {name}: {message}", file=sys.stderr)
                 failed.append(name)
+    for family in packs:
+        name, success, message = build_family(family, output_base, verbose, timeout)
+        if success:
+            print(f"  OK: {name} {message}")
+        else:
+            print(f"  FAILED: {name}: {message}", file=sys.stderr)
+            failed.append(name)
 
     # Summary
     print("\n=== Summary ===\n")

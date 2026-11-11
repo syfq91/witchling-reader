@@ -6,6 +6,9 @@
 class FontCacheManager;
 class SdCardFont;
 struct GlyphRun;
+namespace ui_shaping {
+class Shaped;
+}
 
 #include <atomic>
 #include <cstring>
@@ -223,6 +226,17 @@ class GfxRenderer {
 
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
+  // drawFormedText's walk over `text`'s code points with the pen at x and the baseline at yPos, after the string's
+  // beginText(): the unscaled blitter, which the shaped UI path also draws its text segments with.
+  void drawCodepoints(const EpdFontFamily& font, int x, int yPos, const char* text, bool black,
+                      EpdFontFamily::Style style) const;
+  // Whether UI text in `fontId`'s `style` may be shaped (ui_shaping): drawn at the font's own size, not in small caps,
+  // and not while a page is scanned (which records the text as it is drawn unshaped).
+  bool shapesUiText(int fontId, EpdFontFamily::Style style) const;
+  // A shaped UI string (ui_shaping::shape) at (x, y), y the line's top: its text segments through drawCodepoints, its
+  // runs by glyph key through the UI face's own provider chain, which serves them as the ink of the face behind it.
+  void drawShapedUiText(int fontId, const EpdFontFamily& font, int x, int y, const ui_shaping::Shaped& shaped,
+                        bool black, EpdFontFamily::Style style) const;
   void freeBwBufferChunks();
   template <Color color>
   void drawPixelDither(int x, int y) const;
@@ -449,6 +463,10 @@ class GfxRenderer {
   /// without the hook. A section build's end and the dictionary's pages call it, under RenderLock.
   static void setShapingFaceRelease(void (*release)()) { shapingFaceRelease_ = release; }
   static void releaseShapingFaces();
+  /// A render pass ends (the RenderLock's release, SdCardFontSystem): what shaped UI text kept for the pass goes back
+  /// to the heap, the string it shaped last and a shaping face it made (ui_shaping::endPass), a section build's faces
+  /// left alone. Under RenderLock.
+  static void endUiTextPass();
   void setNextDisplayRefreshMode(HalDisplay::RefreshMode refreshMode) const;
   // True if a setNextDisplayRefreshMode() override is armed but not yet consumed. Peek only —
   // does NOT consume it (unlike consumeRefreshOverride). Lets a caller that is about to issue an
@@ -505,6 +523,13 @@ class GfxRenderer {
   // FreeInkDisplay::borrowSecondaryBuffer.
   uint8_t* borrowSecondaryBuffer(size_t* size) const { return display.borrowSecondaryBuffer(size); }
   bool returnSecondaryBuffer() const { return display.returnSecondaryBuffer(); }
+  // HalDisplay::borrowSecondaryBufferDuringRefresh. The lend can move the framebuffer, so the cached pointer follows.
+  uint8_t* borrowSecondaryBufferDuringRefresh(size_t* size) const {
+    uint8_t* lent = display.borrowSecondaryBufferDuringRefresh(size);
+    frameBuffer = display.getFrameBuffer();
+    return lent;
+  }
+  bool lendsDuringRefresh() const { return display.lendsDuringRefresh(); }
   // Keep fast differential alive (X4) after releaseSecondaryBuffer() by diffing
   // against the controller's retained baseline. See HalDisplay::setSingleBufferFastDiff.
   void setSingleBufferFastDiff(bool enabled) const { display.setSingleBufferFastDiff(enabled); }
@@ -547,6 +572,7 @@ class GfxRenderer {
     // dual->single transition (release sites) only.
   }
   bool isRefreshPending() const { return display.isRefreshPending(); }
+  bool refreshBusy() const { return display.refreshBusy(); }
   bool isRedRamSynced() const { return display.isRedRamSynced(); }
   // Diagnostics: effective refresh mode of the last refresh (after any downgrade).
   HalDisplay::RefreshMode getLastRefreshMode() const { return display.getLastRefreshMode(); }
@@ -649,6 +675,10 @@ class GfxRenderer {
 
   // Text
   int getTextWidth(int fontId, const char* text, EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+  /// Whether UI text in `fontId` draws Arabic in its presentation forms (EpdFontFamily::formsArabic): the gate under
+  /// which drawText, drawTextScaled, getTextWidth and truncatedText form it (BidiUtils::arabicUiForms). For a caller
+  /// that forms a string itself to keep a position in it, as the keyboard's entry field keeps its cursor.
+  bool formsArabicUi(int fontId, EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   // Unscaled primitives. The public accessors above apply the font's base scale; these do not,
   // and exist so the *Scaled paths can compound base x residual without applying base twice.
   int rawTextWidth(int fontId, const char* text, EpdFontFamily::Style style) const;
@@ -688,6 +718,12 @@ class GfxRenderer {
   /// Using a single snap avoids the +/-1 px rounding error that arises when space advance and kern are
   /// snapped separately and then added as integers.
   int getSpaceAdvance(int fontId, uint32_t leftCp, uint32_t rightCp, EpdFontFamily::Style style) const;
+  // The parts getSpaceAdvance() sums, in 4.4 fixed point, and the one rounding step it ends with, for a caller that
+  // asks for many gaps in one font and remembers the parts (ParsedText's layout pass): the space's advance, a kerning
+  // pair, and their sum scaled and snapped to whole pixels. 0 for an unknown font.
+  int32_t spaceGlyphAdvanceFP(int fontId, EpdFontFamily::Style style) const;
+  int32_t kerningFP(int fontId, uint32_t leftCp, uint32_t rightCp, EpdFontFamily::Style style) const;
+  int snapSpaceAdvance(int fontId, int32_t totalFP) const;
   /// Returns the kerning adjustment between two adjacent codepoints.
   int getKerning(int fontId, uint32_t leftCp, uint32_t rightCp, EpdFontFamily::Style style) const;
   int getTextAdvanceX(int fontId, const char* text, EpdFontFamily::Style style) const;

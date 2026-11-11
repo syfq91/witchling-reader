@@ -106,6 +106,8 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
   doc["lastSleepFromReader"] = s.lastSleepFromReader;
   doc["recentBooksView"] = s.recentBooksView;
   doc["showBootScreen"] = s.showBootScreen;
+  doc["hyphenationOffersDeclined"] = s.hyphenationOffersDeclined;
+  doc["fontOffersDeclined"] = s.fontOffersDeclined;
   // Information about a pending bookmark jump
   JsonObject jump = doc["pendingBookmarkJump"].to<JsonObject>();
   jump["active"] = s.pendingBookmarkJump.active;
@@ -154,6 +156,8 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
     s.recentBooksView = CrossPointSettings::BROWSER_VIEW_DETAILS;
   }
   s.showBootScreen = doc["showBootScreen"] | true;
+  s.hyphenationOffersDeclined = doc["hyphenationOffersDeclined"] | std::string("");
+  s.fontOffersDeclined = doc["fontOffersDeclined"] | std::string("");
 
   JsonObject jump = doc["pendingBookmarkJump"].as<JsonObject>();
   s.pendingBookmarkJump.active = jump["active"] | false;
@@ -357,8 +361,8 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
 
   // Font family uses a DynamicEnumCtx in SettingsList (no valuePtr) so the generic
   // loop above skips it. Load manually.
-  s.fontFamily = clamp(doc["fontFamily"] | (uint8_t)CrossPointSettings::BOOKERLY,
-                       CrossPointSettings::BUILTIN_FONT_COUNT, CrossPointSettings::BOOKERLY);
+  s.fontFamily = clamp(doc["fontFamily"] | (uint8_t)CrossPointSettings::SERIF, CrossPointSettings::BUILTIN_FONT_COUNT,
+                       CrossPointSettings::SERIF);
   const char* dictName = doc["dictionaryName"] | "";
   strncpy(s.dictionaryName, dictName, sizeof(s.dictionaryName) - 1);
   s.dictionaryName[sizeof(s.dictionaryName) - 1] = '\0';

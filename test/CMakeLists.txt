@@ -119,6 +119,11 @@ endif()
 enable_testing()
 include(GoogleTest)
 
+# Every trie compiled in, as before hyphenation packs: the tests that lay out German or French text keep hyphenating
+# it. The firmware compiles English alone and maps the rest from the SD packs; test/hyphenation_store takes this
+# definition back off to test that path.
+add_compile_definitions(HYPHENATION_ALL_BUILTIN)
+
 # ---------------------------------------------------------------------------
 # Generated I18n headers
 #
@@ -145,6 +150,8 @@ set(I18N_GENERATED_KEYS "${I18N_GENERATED_DIR}/I18nKeys.h")
 set(I18N_GENERATED_STRINGS "${I18N_GENERATED_DIR}/I18nStrings.cpp")
 
 file(GLOB I18N_TRANSLATION_FILES "${REPO_ROOT}/lib/I18n/translations/*.yaml")
+# ...and the past releases' slot layouts it emits the conversion tables from.
+file(GLOB I18N_LEGACY_LAYOUTS "${REPO_ROOT}/lib/I18n/legacy/*.keys")
 # gen_i18n.py also checks every translation against the UI font headers.
 file(GLOB I18N_UI_FONT_HEADERS "${REPO_ROOT}/lib/EpdFont/builtinFonts/*.h")
 
@@ -153,7 +160,7 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E make_directory ${I18N_GENERATED_DIR}
   COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/scripts/gen_i18n.py
           ${REPO_ROOT}/lib/I18n/translations ${I18N_GENERATED_DIR}
-  DEPENDS ${REPO_ROOT}/scripts/gen_i18n.py ${I18N_TRANSLATION_FILES}
+  DEPENDS ${REPO_ROOT}/scripts/gen_i18n.py ${I18N_TRANSLATION_FILES} ${I18N_LEGACY_LAYOUTS}
           ${REPO_ROOT}/lib/EpdFont/scripts/ui_font_coverage.py ${I18N_UI_FONT_HEADERS}
   COMMENT "Generating I18n headers for host tests"
   VERBATIM
@@ -189,8 +196,10 @@ add_subdirectory(double_action_wait)
 add_subdirectory(inline_list_function_ref)
 add_subdirectory(keyboard_layouts)
 add_subdirectory(password_mask)
+add_subdirectory(entry_field_line)
 add_subdirectory(differential_rounding)
 add_subdirectory(hyphenation_eval)
+add_subdirectory(hyphenation_store)
 add_subdirectory(url_utils)
 add_subdirectory(http_range)
 add_subdirectory(range_download)
@@ -240,6 +249,7 @@ add_subdirectory(font_size_ladder)
 add_subdirectory(scaled_glyph)
 add_subdirectory(font_lookup)
 add_subdirectory(reader_font_sizes)
+add_subdirectory(reading_font_script)
 add_subdirectory(list_row_tap)
 add_subdirectory(list_row_cache)
 add_subdirectory(chapter_page_span)
@@ -276,13 +286,20 @@ add_subdirectory(gray8_writer)
 add_subdirectory(glyph_fallback)
 add_subdirectory(glyph_provider)
 add_subdirectory(fallback_face_provider)  # after font_group_stream: links its uzlib_font_ring
+add_subdirectory(cjk_ui_pack)  # likewise
+add_subdirectory(keyboard_labels)
+add_subdirectory(ui_face_scripts)
+add_subdirectory(ui_shaped_text)  # after font_group_stream: links its uzlib_font_ring
 add_subdirectory(ui_font_compression)  # likewise
 add_subdirectory(flash_lang_partition)  # likewise
+add_subdirectory(i18n_lang_pack)  # likewise
+add_subdirectory(esp_nor_flash)
 add_subdirectory(glyph_store)
 add_subdirectory(ttf_rasterizer)
 add_subdirectory(ttf_font)
 # After zip_entry_reader: reuses its inflate_reader_host target and HalStorage shim.
 add_subdirectory(dictionary)
+
 add_subdirectory(folder_count_memo)
 add_subdirectory(folder_walk)
 add_subdirectory(bitmap_rows)

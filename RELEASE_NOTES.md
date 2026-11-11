@@ -52,6 +52,295 @@ Changes pulled in from `jpirnay/witchhunt-reader` 2.40 that this fork carries. S
 - **Panel behaviour comes from the SDK's capability queries** (SDK bump to `f44c877`): the reader asks the display layer how fast refreshes and async refreshes behave rather than assuming by board name. Behaviour on the X4 Pro is unchanged; this keeps the fork aligned with upstream's board-capability work.
 - **Settings screens refresh more cheaply.** A half refresh that would only ghost is skipped in favour of the next full one, gating on the panel's measured ghosting budget.
 
+## 2.50 — 2026-11-10
+
+**Faster. More fonts. More layouts. More languages.** Everything since 2.40, including the 2.41 release candidate, and the X3 and X4 get all of it.
+
+- **Faster:**
+  - **One-Pass Anti-Aliasing** puts a page and its grey edges up in one refresh.
+  - Flipping no longer waits for the grey.
+  - Very large books open in seconds instead of minutes.
+- **More fonts:**
+  - TrueType and OpenType fonts on every device.
+  - **Publisher Fonts** reads a book in the fonts it brings.
+  - **Serif**, made from Source Serif 4, replaces Bookerly.
+- **More layouts:**
+  - Vertical Chinese, Japanese and Korean.
+  - Right-to-left Hebrew, Arabic, Persian and Urdu.
+  - Ten shaped Indic scripts, and Burmese.
+  - Closer support for the book's CSS.
+  - **Avoid Widows & Orphans**.
+  - **Normalize Font Size** for books that shrink all their text.
+- **More languages:**
+  - The interface in 30 languages, and hyphenation in 32.
+  - Every language but English comes as a small pack on the SD card, offered when needed.
+- **One more device:** the Murphy M3.
+
+Read the upgrade notes at the end of this section before you update.
+
+### Languages and scripts
+
+- **Chinese, Japanese and Korean books** are laid out by CJK rules once a CJK font is installed. Lines break between characters, and no line starts with a closing mark or ends with an opening one (kinsoku). Punctuation takes the widths CJK layout gives it, justified lines end flush, characters sit on a whole-em grid, and a line one character too long first squeezes its punctuation before it breaks earlier. A small gap separates CJK and Latin text. Korean words split between syllables at a line end. **Line Spacing** steps for a CJK book are fixed distances, 1.5 to 2.2 times the text size, as the CJK layout guides recommend.
+- **Ruby (furigana) is drawn above its base** at half size. It used to follow its base in brackets: 吾輩（わがはい）. **Emphasis dots** (傍点) that a book sets with `text-emphasis` sit above their characters.
+- **Vertical text.** A Japanese, Chinese or Korean book that asks for vertical writing is set in columns, read top to bottom, with the columns running right to left and the pages turning right to left. **Vertical Text** (Settings → Reader → Layout) decides: "Automatic" (default) follows the book. On a vertical page, 、 and 。 sit in the top-right corner of their cell, small kana are nudged into place, Traditional Chinese marks are centred, numbers the book marks `text-combine-upright` stand upright across the column (tate-chu-yoko), and a lone picture is centred.
+- **A CJK book draws in a CJK font.** With a Noto CJK family as the reader font, the book's language picks the regional sibling (Japanese, Simplified or Traditional Chinese, Korean) when it is installed. A book tagged `cn` is now laid out as Chinese.
+- **Hebrew books** read right to left, with Latin words and numbers inside them left to right, and the niqqud on its letter. Lists and tables start on the right, and the book's `dir`, `<bdi>` and `<bdo>` take effect. The Font Manager offers **NotoSansHebrew** and **NotoSerifHebrew**; a Hebrew, Yiddish or Ladino book uses one by itself when your reader font has no Hebrew letters.
+- **Arabic, Persian and Urdu books** join their letters, place their vowel marks and run right to left. The end-of-ayah sign (۝) and the other Arabic number signs are drawn around the digits after them, as a Quran shows its verse numbers. The Font Manager offers **NotoNaskhArabic** and **NotoSansArabic**.
+- **Books that turn their pages right to left** (vertical books, and Hebrew and Arabic-script books) do so, and links are read in reading order. **Page Turn Buttons** (Settings → Reader) decides what Left and Right do in them: "Follow Book" (default) makes Left show the next page, "Fixed" keeps your buttons as they are. On a touch screen the page swipes mirror too.
+- **Ten Indic scripts are shaped.** Hindi, Marathi, Nepali, Sanskrit, Bengali, Assamese, Punjabi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam and Sinhala books get their conjuncts formed and their vowel signs, reph and nukta placed. The Font Manager offers Noto Sans and Noto Serif for each of the ten scripts. A chapter in these scripts takes longer to prepare the first time you open it: on the X3, 6.9 s for a 2,593-word Hindi chapter against 2.6 s for a Latin one of the same length.
+- **Burmese books** (and Mon, Shan and S'gaw Karen) are shaped in **NotoSansMyanmar** or **NotoSerifMyanmar**, and their lines break between syllables, since Burmese puts spaces only between phrases. The text must be Unicode: a book in the older Zawgyi encoding is not converted.
+- **A book offers the font it needs.** A book in a script your reader font lacks, with no Noto family of that script on the card, used to draw boxes with no hint why. Opening it now asks whether to download the family it would use (Noto Sans when your reader font's name contains "Sans", otherwise Noto Serif), in the same question as a missing hyphenation pack. **No** is remembered for that script.
+- **Titles in every script, outside a book too.** The menu fonts now carry Hebrew and Greek, and Arabic, Persian and Urdu titles join in them without a download. Hebrew and Arabic titles are drawn right to left instead of mirrored. Indic titles show their vowel signs in visual order and are shaped in the last book's font, as are Burmese ones. Chinese, Japanese and Korean titles are drawn whole with an interface pack (**ChineseUI**, **ChineseTradUI**, **JapaneseUI** or **KoreanUI**) from the Font Manager, instead of with boxes.
+- **Hebrew, Arabic and Greek keyboards**, and an entry field that handles right-to-left text.
+- Fix: a link of several CJK characters could not be tapped.
+- Fix: a Burmese word between two Hebrew or Arabic words was drawn reversed.
+
+### Interface languages and packs
+
+- **The interface comes in 30 languages.** New are Simplified Chinese, Japanese and Korean, with menu fonts that carry their characters, and Hebrew, Arabic (Modern Standard Arabic) and Persian, whose text runs right to left while the screens keep their layout.
+- **Every interface language but English is a pack on the SD card**, 10–15 KB each, listed in the Font Manager as **Language-German** and so on. Picking a language under **Language** (Settings → System) whose pack is missing asks whether to download it, in one question with the language's hyphenation pack (or, for Chinese, Japanese and Korean, its interface pack) when that is missing too. The firmware is 179 KB smaller on every board, and a translation fix no longer needs a firmware release. Without Wi-Fi, copy the pack (`de.cplang` for German) to `/.crosspoint/lang/` and restart.
+- **Hyphenation for 32 languages, 22 of them new:** Dutch, Czech, Danish, Slovenian, Lithuanian, Catalan, Belarusian, Finnish, Turkish and Hungarian, and Hindi, Marathi, Sanskrit, Bengali, Assamese, Punjabi, Gujarati, Odia, Tamil, Telugu, Kannada and Malayalam, which break a line between two syllables without a hyphen. English is built in; the other 31 are downloadable packs, in the format CrossPoint and CrossInk use, and packs CrossInk put on the card are used as they are. Taking hyphenation out of the firmware made the X3 and X4 image 312 KB smaller.
+- **A book offers its language's hyphenation pack** when it opens, with **Hyphenation** on, before its first page is laid out. **No** is remembered for that language. Home asks once after a start for the interface language's pack, and the web interface's Fonts page lists the packs too.
+- **Check for updates also looks for newer language and hyphenation packs** once the firmware is up to date, or its update declined, and offers to update them: "Language and hyphenation pack updates: N". Fonts are not part of it.
+- The seven labels every language lacked (Vertical Text, Automatic, Page Turn Buttons, Follow Book, Fixed, Extra Wide, Widest) are translated.
+
+### Fonts
+
+- **TrueType and OpenType fonts on every board, the X3 and X4 included.** Copy a family's `.ttf` or `.otf` files into `/.crosspoint/fonts/<Name>/`, or download one in the Font Manager. Each character is drawn from its outline the first time it is used and kept in flash, so later pages and later starts read it from there.
+  - Kerning, and the fi, fl, ff, ffi and ffl ligatures, as the font's own tables say.
+  - Headings, CSS font sizes and drop caps are drawn at their own pixel size, so a drop cap is as sharp as the body text.
+  - OpenType fonts with CFF outlines (`.otf`) are drawn exactly as FreeType draws them.
+  - A family without a bold file draws bold text emboldened, and one without an italic file draws italic text slanted.
+  - A font too large for the flash reads its outlines from the card, only for characters it has not drawn before.
+  - When the font memory fills, as a CJK font soon does, it keeps the characters you use and drops the rest, instead of being wiped at the next book.
+- **Publisher Fonts** (Settings → Reader, default **Off**) reads a book in the fonts it embeds. **Body Text** uses the book's body font, **Accents** keeps your font for the body and draws the book's other fonts where it uses them (a heading, a quotation, an emphasised word), and **All Text** does both. Up to three of the book's other fonts are drawn, word by word, found across the whole book and ranked by how much text they set. It needs **Embedded Style**; the fonts are copied out of the book under its first "Indexing" popup, and WOFF, WOFF2, font collections and encrypted fonts are not used.
+- **Publisher Fonts for one book:** the reader menu has a row (Default, Off, Body Text, Accents, All Text) that overrides the setting for the open book.
+- **Serif replaces Bookerly** as the built-in reading font. It is made from Adobe's Source Serif 4 (Caption) under the SIL Open Font License, while Bookerly is Amazon's proprietary font. It covers every major Cyrillic language, including Bashkir, Tajik and Chuvash, and a Noto Sans fill-in carries the characters Bookerly had and Source Serif lacks. Pages come out about the same: chapter 5 of *Pride and Prejudice* at 14 pt takes 73 pages on the X3, against Bookerly's 74. The firmware is 70 KB smaller.
+- **Font Manager:** Chinese, Japanese and Korean as eight OpenType families (each language as sans serif and serif, 1.6–7.0 MB), the twenty Indic families, and the Hebrew, Arabic and Myanmar ones. These 34 script families are left out of **Download All**: install your language's from its own row.
+- **20 pt is the 18 pt face enlarged**, as 22, 24 and 26 pt already were. The flash that freed (506 KB) made room for the TrueType work.
+- **Text drawn smaller than its font** (notes, captions, superscripts, small capitals) is shrunk with anti-aliased edges, as enlarged text already was, instead of losing rows of pixels.
+- **Body text in Calibre-converted books is drawn at the size you chose.** A paragraph that undoes the book's root font size was drawn at 89 %, shrunk from the font with jagged stems.
+- Fix: the downloadable `.cpfont` families lacked €, ™, № and the minus sign, and some kerned pairs took the wrong value. They were rebuilt.
+- Fix: a TrueType font without a replacement character draws its own missing-character box, where the character used to vanish, and a damaged `.cpfont` record draws as a box instead of being read past its end.
+- Box-drawing characters (Markdown tables, tree listings in code) are drawn as `-`, `|` and `+` instead of replacement diamonds.
+- Fix: a font upload through the web interface that failed could cut short or delete the installed font. Retry after a failed font list now fetches the list again.
+
+### Reading and layout
+
+- **Normalize Font Size reads a book at its running text's size.** A book that sets all its text smaller or larger was read at that size: *Die Bücherdiebin* sets every paragraph `small`, so at 14 pt it looked like 10 or 11 pt. The size of a book's running text is now measured once, under the first "Indexing" popup, and taken as your font size, with headings and small print in proportion. On the X3, chapter 12 of that book at 14 pt now takes 19 pages with **Embedded Style** on, as it does with it off, instead of 13. A book whose text is already at your size is laid out as before. The CSS size keywords now follow the CSS Fonts 4 scale (`small` is 8/9 of the body, not 0.8).
+- **Avoid Widows & Orphans** (Settings → Reader, default **ON**). A page ends early rather than leave a paragraph's first line alone at its foot, or its last line alone at the top of the next page, and a heading moves to the next page unless it fits with two lines of its text. With a large font a page can end up to two lines short; turn it off to fill every page.
+- **A font, size or margin change keeps you at the same text**, not the same page number, also when the book is opened again.
+- **The book's stylesheet is followed more closely:**
+  - a block's bold or italic reaches the blocks inside it;
+  - `page-break-before` and `page-break-after` act;
+  - rules apply by specificity, then by stylesheet order;
+  - compound (`.a.b`), descendant (`blockquote p`) and child (`div.poem > p`) selectors match;
+  - `inherit` keeps the parent's weight, style and alignment;
+  - class and id names match case-sensitively, as Kindle and ADE match them;
+  - small capitals no longer turn Ł into ŀ, shrink ł, ń, ž, ÿ, Greek and Cyrillic letters too, and draw "fi" as two letters.
+- **More HTML is laid out as blocks:** `dl`, `dt`, `dd`, `figure`, `figcaption`, `center`, `address`, `header`, `footer`, `nav`, `details` and the like used to run inline. `<center>` centres everything inside it.
+- **Paragraph Alignment sets the running text only.** What the book centres, or sets to the far side, stays there. An `<hr>` the book hides is not drawn: *Project Hail Mary*'s 86 section breaks showed a half-width line.
+- **Dashes and spaces:** a line may end after a dash, and a dash takes no stretched gap. A Unicode space or hyphen the font lacks no longer draws a box, and the space takes its proper width.
+- Fix: with Hyphenation off, the default, every line of an indented paragraph was laid out one indent short and justified looser. Only the first line is indented now.
+- **Contents and covers:**
+  - an EPUB 3 contents list with few entries gives way to the NCX, which lists every chapter (Amazon-converted books showed almost no chapters);
+  - contents entries that name their chapter by file name alone open it;
+  - a cover named as an SVG wrapper shows the picture inside it;
+  - a book that names no cover finds its cover picture, not a title banner.
+- **Chapter fixes:**
+  - sub-chapter titles land on the right pages right after a chapter is laid out;
+  - text declared too small to read (watermark spans) is left out;
+  - pictures with a missing or wrong file extension are shown;
+  - a footnote link to a `<span>` opens the note's page;
+  - a note's Return link takes you back instead of one detour deeper.
+- **Back after following a link lands on the page you followed it from.** It landed about four pages earlier.
+- **The status bar's chapter page count firms up.** The reader now lays out the rest of a chapter in the background, so its "~" estimate becomes a count.
+- **The chapter list wraps long titles** onto a second line instead of cutting them.
+- **The reader menu names the current chapter**, and **Auto Turn** takes any interval from 5 to 120 seconds.
+- **Markdown:** pipe tables are drawn as a grid with their column alignment, inline code sits in a thin frame, and a wrapped line of a code block hangs indented.
+- Fix: XTC books made by xtctool failed on every page with "Page load error".
+- Fix: a book whose XML names carry prefixes (`ns0:package`) did not open.
+
+### Display and refresh
+
+- **One-Pass Anti-Aliasing** (Settings → Reader, default **Off**; X3, X4 with an SSD1677 panel, X4 Pro with a UC8179 panel, Murphy M3). A text page and its grey edges arrive in one refresh, so there is no second flicker when the grey lands, and the edges stay while you flip quickly. The edges use one grey level instead of two, and pages with pictures keep the two steps.
+- **Flipping through pages no longer waits for the grey pass.** A press cancels it, and it starts 400 ms after the black-and-white page, so a reader who stays on the page still gets the greys. The picture on the page you are looking at is decoded before the rest of its chapter is laid out.
+- **A book opened from the Library, All Files or the bookmark list starts on a clean refresh**, as one opened from Home did: the list or cover grid no longer ghosts into the first page. On the X3 that costs about 0.1 s.
+- **Fast AA (X3 only) is gone.** It had done nothing since the display driver changed.
+- Fix (X3): now and then the page on screen was drawn again about a second after a turn, which made the turn take 2.2–6 s and lost its anti-aliasing.
+- Fix (X3): a sleep cover shown straight from the reader let the last page show through its light grey.
+- Fix (T5 S3): the reading light drawer is drawn over the page.
+- Fix: from the first press on Home, every menu entry showed twice (X4, X3 and X4 Pro, with Lyra and Lyra Carousel).
+- **Smaller layout fixes:** on Lyra's Home card a long title or author steps down a size before it is cut, and the menu icons sit level with their labels. Screen content starts below the header and clear of the hint boxes, so the OPDS book page no longer draws over the header, and progress screens show the percentage once.
+
+### Library, Home and settings
+
+- **Clear Reading Cache asks whether to keep bookmarks and reading progress.** **Keep** leaves each book's reading position, bookmarks and link Back history.
+- **A long touch on a library row or cover opens its options** on a touch screen, in every library view but the folder picker. It used to open the book.
+- **The first Library visit after a start is quick on a large card:** 2.4 s instead of 42 s on a card with 1,790 folders in one folder.
+- **The font settings sit together** under the **Reader Font** heading in Settings → Reader: Reader Font, TXT/MD Font, Font Manager and Publisher Fonts.
+- Fix: setting a picture as the sleep image took effect on one press; it now asks first.
+- Fix: a password field opened on a stored password showed its last character, and each Delete uncovered the one before. It now shows only a character you have just typed, and the whole character, not one byte of an `ú`.
+- Fix: on a touch board, a start where the touch probe missed reset the touch settings.
+- **Percent jumps** find their chapter in about 11 reads instead of one per chapter, and **Reading Stats** files reading past midnight under both days.
+
+### Dictionary
+
+- **Lookups on Chinese and Japanese text** take the longest dictionary word that starts at the cursor, show every entry, and draw them in the reader's font.
+- **The dictionary works on vertical pages.** Before, its row was hidden there.
+- **A word the dictionary lists twice shows every entry**, a synonym of several headwords shows them all, and entries that name their own types are read.
+- **The right headword:** the exact-case headword wins over capitalised variants, a capitalised word with accents finds its lowercase headword, and guillemets, ¿, ¡ and CJK punctuation are taken off a word's edges.
+- A styled definition is hyphenated by the open book's language, not by the last book laid out.
+- With Power set to turn pages, it turns a definition's pages too.
+- Fix (X3): a compressed (`.dict.dz`) dictionary failed on a CJK page with "Not enough memory".
+- Fix: a large definition needed a second copy of itself and could restart the reader.
+
+### Devices
+
+- **The Murphy M3 is supported**: an ESP32-S3 board with a 240 × 416 panel, three keys and touch, built on the hardware notes of mr-tbot's Crosspoint-Murphy-M3.
+  - text, sleep covers and pictures in four levels of grey;
+  - its reading light;
+  - its clock chip is used, so a file written before the first time sync is no longer dated 1980;
+  - USB Drive at 712 KB/s;
+  - short taps register, and a tap on a hint box is a tap, not a long press;
+  - less ghosting on black-and-white screens, for 0.1 s more per quick refresh;
+  - **Refresh Frequency** above 9 takes effect.
+- **The X3 and X4 run all of it**: TrueType fonts, every script with its shaping, vertical text, the packs and Publisher Fonts.
+- **Files are dated right from the start.** The clock and its time zone are restored before the first file is written; files written early in a start used to get UTC after a restart, or 1980 after a cold start.
+- On a board with a clock chip, the clock no longer loses about a second at every sleep.
+- **The SD card runs at 40 MHz on boards with a native SD bus**, as was always intended: an X4 Pro read a 564 KB font in 185 ms instead of 303 ms.
+
+### Sync, network and web
+
+- **KOReader sync:**
+  - a progress record that holds only a percentage (Calibre-Web NextGen's web reader, Kobo) is read; it used to count as no record, and smart sync uploaded over it;
+  - **Authenticate** in Settings has the memory a secure connection needs;
+  - a book opened with a sync on open is the one the sync reopens;
+  - the page on screen survives a sync, leaving the book, and a restart to recover memory;
+  - a document id that failed to compute is not kept.
+- **OPDS catalogs:**
+  - "Previous page" links written as `rel="prev"`, covers and downloads without a type, and books in formats the reader cannot open (listed as "Format not supported") all work;
+  - a refused login says "Authentication failed";
+  - Project Gutenberg's catalog and its search work;
+  - a catalog without a login continues past a certificate the reader cannot check.
+- **Passwords:** OPDS and KOReader passwords survive a card that comes from another reader.
+- **Connections:**
+  - login details are no longer sent along a redirect to another server;
+  - secure connections are seeded from the hardware random number generator;
+  - addresses are escaped before they go out;
+  - a host name that does not resolve fails at once.
+- **Web interface:**
+  - names uploaded from a Mac are stored so Finder can see them;
+  - a dialog survives a text selection dragged out of it;
+  - plugins install again, and in-place Optimize works;
+  - a browser that stops reading no longer holds the server;
+  - very long file names are listed;
+  - the hotspot's login page opens on phones;
+  - an upload that breaks off keeps the file it would replace.
+- **The web interface stays installed across firmware updates that leave its pages unchanged.** Every new firmware used to ask for it again.
+- Fix: in 2.41RC, **Download** on the web interface's setup page failed on every board. It now fetches the pages from the release's own tag.
+
+### Speed
+
+- **Very large books open quickly.** A book of 1,732 chapters kept the "Indexing" popup up for 431 s on the X3; the popup now takes 4.9 s, and the first page shows at 7.6 s.
+- **Arabic and Hindi chapters are laid out 21–24 % faster on the X3.** On the S3 boards a larger word cache saves a further 10 % (Arabic) to 20 % (Hindi), measured on the Murphy M3.
+- **A chapter opened for the first time shows its first page 0.17–0.30 s sooner on the X3**, because it is laid out while the "Indexing" popup is drawn.
+- **The X3 prepares the next page again with book fonts.** With a book's fonts loaded (Publisher Fonts' Accents or All Text, a TrueType reader font with a book's accent fonts, or a CJK font read from the card), it prepared none.
+
+### Stability fixes
+
+- Fix: a damaged bookmark file made the reader restart in a loop. It now keeps what comes before the damage.
+- Fix: corrupt files no longer crash the reader: an EPUB entry that claims to be 4 GB, a PNG with a bit depth its colour type does not allow, or an SD read that fails.
+- Fix: a folder of many books, and very long chapters, no longer run the reader out of memory.
+- **Replacing or moving a file never loses it**, whether it is an upload, a download or a WebDAV move. A finished book moved to `/COMPLETED` keeps its progress and bookmarks, and a WebDAV move between two spellings of one file keeps it.
+- Fix: an upload the memory had no room for restarted the reader; it is now refused.
+- Fix: the list of recent books could restart the reader when memory was short.
+- Fix: a picture extracted from a book in error could be kept for good.
+- **Pages with pictures and several fonts** free font memory before they give up on a picture, which used to leave a blank area.
+
+### Upgrade notes
+
+- **Every book is indexed and laid out once more the first time you open it**, because the book index, the compiled stylesheets and the chapter layouts all changed. Your place, bookmarks and reading progress are kept.
+- **Your interface language stays.** On the first start after updating from 2.40 or 2.41RC, the reader writes the language it kept to the card as its pack, with no download. Chinese, Japanese and Korean, which only 2.41RC had, are downloaded once. Removing a language's pack in the Font Manager makes the interface English from the next start.
+- **Hyphenation for any language but English needs its pack.** 2.40 had German, French, Spanish, Italian, Portuguese, Polish, Swedish, Russian and Ukrainian built in. Their books are laid out without hyphenation until the pack is installed; a book offers it when it opens, and Home asks for your interface language's pack. On the X3 and X4 a pack is copied into the reader's flash once, about a second for German.
+- **Bookerly is gone.** If you read in Bookerly, you now read in Serif, with no setting to change.
+- **CJK fonts:** 2.41RC's three bitmap CJK families are no longer offered. The Font Manager offers eight OpenType families instead.
+- **Fast AA (X3 only)** is gone from the settings.
+- **The web interface installs its pages again on your first visit**, because they changed. On your Wi-Fi network this happens by itself. For hotspot mode, have the `web-….bin` file from the release page ready.
+- **Which file to flash:** `firmware.bin` for the X3 and X4, `firmware-x4pro.bin` for the X4 Pro, `firmware-lilygo.bin` for the LilyGo T5 S3 and `firmware-murphy.bin` for the Murphy M3.
+- **Translations:** the Chinese, Japanese and Korean interfaces are machine translations that no native speaker has reviewed yet. Hebrew, Arabic and Persian take about 300 strings each from crosspoint-reader's translators, and the rest are machine translations. The strings new in this release were machine-translated in every language. Corrections are welcome.
+
+### With thanks to
+
+- **Justin Mitchell**: the one-pass anti-aliasing core from Free-Ink, the ideas behind Publisher Fonts (crosspoint-reader #3934) and the layout fixes of #3891, and escaped addresses.
+- **Uri Tauber**, **Husam Younis** and **Amin Alaee**, crosspoint-reader's Hebrew, Arabic and Persian translators, whose wording the new interfaces use. Uri Tauber also designed the hyphenation pack format and fixed dictionary and justification bugs; Husam Younis placed the Hebrew and Arabic marks on their letters; Amin Alaee made Power turn a definition's pages.
+- **Lef** and **Somnius** (CrossInk-Indic): Burmese shaping and line breaks.
+- **SSafayet**: the Indic shaper tables (crosspoint-reader #3787).
+- **Sung-jin Brian Hong**: CJK line-break rules and Korean syllable breaks from crosspoint-reader, and upload names from a Mac. With **Bob Vincent**, **Zach Nelson** and **Husam Younis**: the bidi library from crosspoint-reader.
+- **Phạm Bình An**: ruby, dictionary and missing-character fixes, and line ends after a dash.
+- **Julia Nguyen** (CrossInk): damaged bookmark files, prefixed XML, dash breaks, reading past midnight in the statistics, the X4's battery percentage and quicker percentage jumps.
+- **syfq91** (witchling-reader): the cover fallbacks, OPDS catalog fixes, a stylesheet fix, the keyboard's distance from the side hints, and the reports behind Avoid Widows & Orphans, the chapter page count and the 2.41RC web setup.
+- **Arthur Tazhitdinov**: the web interface and network fixes (stalled browsers, long file names, the hotspot login page, host names, escaped addresses).
+- **Leopoldo Pla Sempere**: the font list's Retry, whole characters in password fields, the Home cover's edge and `inherit` in stylesheets.
+- **Tuan Q. Nguyen**: touch settings after a missed probe, Wi-Fi names cut by width, and the SD card's free-space search.
+- **phucisstupid**, **sabraman**, **Sidney San Martín** and **Adrian Ratiu**: corrupt files, failed reads, uploads and WebDAV moves that keep their file, long chapters and large folders.
+- **Waqas Razzaq**: the SD card at 40 MHz. **Laurenz Mädje**: the Hungarian hyphenation pack, from NAGY Bence's Huhyphn patterns. **Sylve**: finished books that keep their place.
+- **Micah Halter**, **Daviex** and **Dr. Foulad**: KOReader sync records, document ids and login details kept off redirects. **Rory Chatterton**: secure connections seeded from the hardware.
+- **Ryan Jarvis**, **Hoang Manh Linh**, **OSAKANA TARO**, **artwen**, **Maciej** and **Ruslan Sukharev**: contents lists, covers, pictures, watermark spans and footnote links.
+- **Lennon Anderson**, **PrashikshitSaini**, **Anton Lijcklama à Nijeholt** and **Esben Sorig**: dictionary headword fixes.
+- **Stefan VanBuren** and **Eszter Schuffert**: converted-font characters, kerning and damaged font records. **Daniil Pankov**: XTC books from xtctool. **Crestwave**: dialogs in the web interface. **DarkStarDS9** and **Phillip Suh**: log and serial fixes.
+- **mr-tbot**, for the Murphy M3 hardware notes, and **roman910dev** and **a1exb0nd** for the reports behind the Markdown tables and code, the chapter list and the footnote Back fixes.
+
+Source-level credits remain in the relevant files.
+
+## 2.40 — 2026-10-13
+
+Everything since 2.37. Your books have one Library screen, with tabs for Recent, New and Authors and a view of their covers, and an SD-card font offers the sizes it was made in. KOReader sync lands on the exact page, the lists move with one set of buttons, and fonts and firmware updates download from GitHub again. The web interface has a new design and many new pages, and lives on the SD card: the first time you open it after updating, it installs itself (see the [Web Interface Guide](docs/webserver.md)). Every language is now translated in full.
+
+### Library
+
+- **One Library screen, with four tabs: Books, Recent, New and Authors.** Browse Files and Recent Books are now its first two tabs, and Home has a single **Library** entry, which opens on the tab you left. Hold **Up** or **Down** to change tab (their hints read "Up / Tab" and "Down / Tab"), or tap a tab on a touch screen. Each tab keeps your place while the Library is open, and closing a book returns to the tab, the folder or author, and the row you opened it from.
+- **New lists the ten books added to the card most recently, and Authors everyone who wrote a book on it.** Authors are listed surname first ("Pratchett, Terry"), each with the number of their books; open one to see their books by series and then title. The author comes from an `.opf` metadata file beside the book if there is one, and its sort name decides where the author is filed; without one, the last word of the name comes first. Both tabs read an index of the card's books that is kept on the card and brought up to date when the card changes: books added or removed on the device, through the web interface, Calibre, an OPDS catalogue or USB Drive are noticed by themselves, and **Refresh library** in the options menu picks up anything copied in a computer's card reader that the Library missed. A book that has never been opened is read once for its author, so the first visit takes a while on a large card; the header shows **Indexing** while it runs. Up to 2,000 books are indexed.
+- **Three ways to show books: Filenames, Details and Covers**, chosen with **Book view** in the options menu, separately for each tab. **Details** shows each book's title, with the author and series under it ("Thomas Mann · Werke #3") and how far you have read: a percentage, or **Finished**. **Covers** shows a grid of whole covers with the title and author under each, a bar along the bottom of a book you are reading and a folded corner on one you have finished. A folder is drawn as a folder, with the number of books in it and in the folders below it. In the grid, Up/Down move a row and Left/Right one cover, wrapping round at the ends; hold **Right** for the options menu. A cover not made yet shows a card with the title first; the covers on screen are then made one at a time, and a button press pauses the work. The Books tab starts on Filenames, Recent and New on Covers, and Authors on Details.
+- **Covers are shown whole**, scaled to fit, in the cover grids and on the finished-book screen. The Recent Books grid and the finished-book screen used to crop them to fill the tile, which cut off a third of a typical cover.
+- **The cover grid fills the T5 S3's taller screen with three rows of three**, instead of two rows of two and a fifth of the screen left blank. The X3 and X4 keep two rows of two.
+- **The Books tab lists books and nothing else**: EPUB, XTC, TXT and Markdown. A cover image or `.opf` file saved beside a book is no longer listed as a file of its own, so a book downloaded from an OPDS catalogue shows up once. A folder with no book anywhere in it is left out too, and so are the reader's own `.crosspoint` folder and the card's system folders, even with **Show Hidden Files** on. **Move to folder** and **Remove** take the book's cover and `.opf` file with it, and **New Folder** opens the folder it made. Every file on the card, images included, is in the new **Settings → System → All Files**, which is also where an image's **Set Sleep** now lives.
+- **Recent works like the Books tab.** It has the same three views (your old grid or list choice carries over as Covers or Details), the same buttons, and an options menu with **Remove from recents**, which takes a book off the list but not off the card, and **Go to folder**, which opens the Books tab where the book is. The old screen's long presses (Up for the view, Left to remove, Right for Info) are now in that menu.
+- **An `.opf` metadata file names XTC, TXT and Markdown books too**, not just EPUBs, and Details and Covers show an XTC book's title and author from the book itself instead of its filename. The metadata editor plugin lists every book format and has a new **Sort author as** field, the name the author is filed under in Authors; it follows the author until you change it yourself.
+- **Folder book counts are remembered until the device sleeps**, so going back to a folder no longer shows "..." while it counts again. Moving, removing or uploading a book counts the folders it changes again.
+- **Covers draw about three and a half times faster**: a grid cover takes 12 ms instead of 40 ms on the X3, and a page of the Recent Books grid 79 ms instead of 168 ms.
+- **Fix: a book could be marked as having no cover for good.** When the Home carousel or the Recent Books grid moved from one book to the next, the next book's cover was read from where the previous book's cover sat in its file, which failed, and the book was recorded as coverless. A cover that fails for want of memory, or because a button was pressed, is also tried again later instead of being given up.
+- **Fix: a moved or renamed book started over.** Moving a book with **Move to folder**, or moving or renaming it, or its folder, in the web interface or over WebDAV, lost its reading position, bookmarks and place in Recent, and a rename also lost its reading stats. They now go with the book.
+
+### Fonts
+
+- **An SD-card font offers the sizes it was made in** (#395), such as 6, 7 or 8 pt, not only 10 to 26 pt. Above its largest size it also offers the standard sizes, drawn from its largest file enlarged; it never offers a size made by shrinking a larger file. Bookerly and Noto Sans keep 10 to 26 pt. If you switch to a font that does not offer your size, the nearest size it does offer is shown and used, and your own size comes back when you switch back. The same applies to the font size of a single book and to the TXT and Markdown font.
+- **The web interface's settings page can change the font and its size in one save.** A size picked from the list is saved as picked, and the list follows a change of font.
+- **The font picker makes its previews without running the X3 short of memory.** It now works in the screen's second frame buffer instead of the shared memory: the lowest free memory while it makes previews went from about 10 KB to 26 KB, and making them no longer stops halfway for lack of memory.
+- Fix: the font picker made its previews again on every visit for a font drawn enlarged, such as 22 pt from an 18 pt file.
+- **Fix: an SD-card font with 255 kerning classes froze the reader**, and one whose kerning tables name a class the font does not have could crash it. Such entries are now treated as unkerned.
+- **The largest sizes of an SD-card font load from the flash font cache too.** Mapping a font size took the cache's whole start up to that size, so on the X3 and X4 the top one or two sizes of most catalog families did not fit and were read from the card instead, with their tables taking memory.
+
+### Reading
+
+- **Background pictures set by a book's stylesheet are shown.** They were never drawn: Gutenberg's illustrated *Alice* draws its rabbit hole as the background of a table, so chapter 2 showed only the text around it. Text cannot be drawn over a picture here, so the picture now follows the text of the box it belongs to. Small ornaments (under 96 pixels a side), repeating textures, list bullets and whole-page backgrounds are still left out.
+- **A long paragraph keeps the space the book puts above it.** A paragraph of more than 96 words lost its top margin and padding, and with them the blank line of a scene break before it, or the space of an empty box.
+- **A poem's indented lines keep their shape on a narrow screen.** In *Alice*'s "Mouse's Tale", each line of the tail is indented a step further, and on the X3 the deepest lines wrapped back to the left edge and broke the tail apart. The indent now gives way first, so a line whose words fit the column stays on one line.
+- **Back after following a link survives sleep and closing the book.** Back still returns to where you followed the link (a footnote, say) after the device has slept or you closed the book there. After more than three links in a row, Back forgets the oldest instead of the newest, so it always returns to the page you just left.
+- **Turning onto a page with pictures is quicker.** The reader prepares the next page while you read, but it used to skip every page with a picture. A page whose pictures have already been decoded is now prepared like a text page: on the X3, turning onto one took 677 ms and now takes 499 ms. This does not apply on the T5 S3. Drawing a page whose pictures are already decoded also no longer looks into the book first, which saved about 30 ms on the X4.
+- **Fix: the screen flashed every minute on a page with pictures.** While such a page was open, each clock or battery update of the status bar was drawn with the slower full refresh instead of the quick one. The full refresh owed to a picture page now waits for the next page turn.
+- Fix: after turning away from a page with a "Large image — press Confirm to load" placeholder, the first Confirm on the next page did nothing instead of opening the reader menu.
+- **"Indexing" shows up less often on the X3.** The reader prepares the next chapter in the background, but on the X3 it seldom had the memory to start. It now leaves about 13 KB more free while you read (a median of 47.7 KB instead of 33.9 KB in one book), starts the work with less, and in the last three pages of a chapter carries on through page turns instead of waiting for a pause. Those few pages are drawn without anti-aliasing while it runs.
+- **Very large books open on a device that has been in use.** A book of 2,956 chapters took 75 seconds and then failed, or opened without its table of contents, unless the device had just been restarted. It now opens in about 10 seconds. A table of contents lost to a memory shortage is tried again the next time the book is opened, up to three times; it used to stay lost until the book's cache was cleared.
+- **Fix: a page after a very tall table row could be unreadable.** When a table cell taller than the screen was laid out as paragraphs instead, the next page could be saved damaged, and showed as an empty chapter on every visit (page 4 of chapter 2 of the illustrated *Alice*).
+- **Fix: running short of memory while opening or drawing a page no longer restarts the device.** A page's footnotes, a chapter's page table, its contents entries and printed page numbers, and the font warm-up asked for memory in a way that restarts the device when it is refused. The page now does without them: its footnote links are not tappable, or the printed page number is left out.
+
+### Touch
+
+- **Fix: a swipe on Bookmarks, Starred pages, Wi-Fi or the OPDS catalog no longer acts on the selected row.** A vertical swipe over these lists was passed on as a Left/Right press. Swiping up on Bookmarks or Starred pages deleted the highlighted entry, and on Wi-Fi it started a rescan. On Bookmarks, Starred pages and Wi-Fi a swipe now does nothing, while the OPDS catalog pages (see OPDS below). On other lists it still pages.
+- **File Transfer, its hotspot, Calibre Wireless and USB Drive have an Exit button on a touch screen**, below their status. It does what **Back** does. USB Drive shows it only until a computer has the card, as it does Back.
+- **Fix: tapping Back at the bottom of File Transfer and the hotspot did nothing.** On a reader without a Back key, such as the T5 S3 or the X4 Pro, a held home key was the only way out.
+
 ## 2.37 — 2026-09-29
 
 ### Reading status bar

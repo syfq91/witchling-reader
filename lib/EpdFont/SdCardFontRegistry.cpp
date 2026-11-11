@@ -8,6 +8,8 @@
 #include <cstring>
 #include <numeric>
 
+#include "CjkUiPacks.h"
+
 // --- SdCardFontFamilyInfo helpers ---
 
 const SdCardFontFileInfo* SdCardFontFamilyInfo::findFile(uint8_t size, uint8_t style) const {
@@ -208,6 +210,8 @@ void SdCardFontRegistry::scanRoot(const char* rootPath) {
 
       // Skip hidden/system directories (macOS ._*, .Trashes, etc.)
       if (nameBuffer[0] == '.' || nameBuffer[0] == '_') continue;
+      // The CJK UI packs draw the interface's CJK (src/CjkUiPack.cpp): no reading fonts.
+      if (cjk_ui_pack::isFamily(nameBuffer)) continue;
 
       // Skip in-flight install/rollback dirs (Bookerly__staging, Bookerly__backup, ...)
       // — these may contain valid-looking .cpfont files during a resumable

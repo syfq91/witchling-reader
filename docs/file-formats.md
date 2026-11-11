@@ -16,7 +16,7 @@ truncates the file in place.
 | File | Written by | Version | Contents |
 |---|---|---|---|
 | `settings.json` | `JsonSettingsIO::saveSettings` | `fontSizeOrderV`: `CrossPointSettings::FONT_SIZE_ORDER_VERSION` (2); `gestureDefaultsV`: `GESTURE_DEFAULTS_VERSION` (3) | The settings. From `fontSizeOrderV` 2, `fontSize` and `txtFontSize` are point sizes; an older file is converted as it loads and saved again |
-| `state.json` | `JsonSettingsIO::saveState` | none | The open book, the sleep image, a pending KOReader sync or bookmark jump, the Library tab last left (`libraryTab`) and the views of its lists (`recentBooksView`, `addedBooksView`, `authorsView`; an old `recentBooksGridView` is read to migrate) |
+| `state.json` | `JsonSettingsIO::saveState` | none | The open book, the sleep image, a pending KOReader sync or bookmark jump, the pack offers declined (`hyphenationOffersDeclined`, two-letter keys back to back: a hyphenation pack's language in lower case, `de`; a CJK interface pack's UI language in upper case, `ZH`; a UI language pack's capitalised, `De`), the Library tab last left (`libraryTab`) and the views of its lists (`recentBooksView`, `addedBooksView`, `authorsView`; an old `recentBooksGridView` is read to migrate) |
 | `recent.json` | `JsonSettingsIO::saveRecentBooks` | `fontSizeOrderV` (2), stamped separately from `settings.json` | Recently opened books and their per-book overrides; `fontSizeOverride` is a point size from version 2 |
 | `wifi.json`, `opds.json`, `koreader.json` | `JsonSettingsIO::saveWifi`, `saveOpds`, `saveKOReader` | none | Credentials, obfuscated with the key of the reader that saved them, which `wifi.json` names in `lastKnownMacAddress` and the other two in `keyId`, so a card moved to another reader still decodes; `wifi.json` also keeps `arrivedFrom`, the reader it was re-keyed from when the card moved. A file without `keyId` (older firmware) gets one the first time it loads if its passwords decode to plausible text with this reader's key and `wifi.json` does not say the card came from another reader; otherwise it is left as it is, and no later save records a `keyId` until those passwords are entered again. The web file endpoints refuse them (`lib/FsHelpers/ProtectedPaths.h`) |
 | `weather_settings.json`, `weather_cache.json` | `WeatherSettingsStore`, `WeatherClient::saveCache` | none | Weather settings, and the last forecast (dropped when its `requestSignature` no longer matches the settings) |
@@ -30,6 +30,8 @@ truncates the file in place.
 | `library/library.bin` | `LibraryPublish` | `library::VERSION` (3) | The Library's book index: [below](#librarybin) |
 | `fileindex/<hash>.idx` | `FileIndex` | `INDEX_VERSION` (2) | A large folder's sorted listing, magic `CPFI`; `<hash>` is FNV-1a 64 of the folder's path |
 | `fonts/<Family>/<Family>_<size>.cpfont` | Font Manager, web upload | `CPFONT_VERSION` (4) in `lib/EpdFont/SdCardFont.cpp` | SD fonts; one of another version is refused. Downloads are staged in `<Family>__staging/` and swapped in. See [contributing/font-cache-structures.md](contributing/font-cache-structures.md) |
+| `hyphenation/hyph-<code>.cphyph` | Font Manager | `hyphpack::kVersion` (1) | One language's hyphenation pack, magic `CPHY`: [below](#hyphenation-packs-cphy-and-the-store-whhs). The same file in CrossInk's `/.crossink/hyphenation/` is read when this folder lacks it |
+| `lang/<code>.cplang` | Font Manager, web font page, copied by hand, or the conversion of a 2.40 or 2.41RC slot | `langpack::FORMAT_VERSION` (1) | One UI language's strings, magic `CPLG`, `<code>` the language's code in lower case (`de`). Strings by the FNV-1a of their key's name, so one file serves every firmware from 2.41 on. See [i18n.md](i18n.md#how-the-strings-reach-the-screen) |
 | `fontprev/*.fpv` | `FontPreviewCache::store` | `FORMAT_VERSION` (2) | Rendered font previews, magic `CPFP` |
 | `opds_<hash>_disc.json` | `saveOpdsDiscovery` | `"v"` (`OPDS_DISCOVERY_VERSION`, 2) | An OPDS server's navigation entries and search template; `<hash>` is FNV-1a of the server's URL. Version 2: a template from an OpenSearch description is its Atom one |
 | `epub_<hash>/`, `xtc_<hash>/`, `txt_<hash>/` | | | One per book: next table |
@@ -54,7 +56,7 @@ directory whole.
 | `book.bin` | EPUB | `BOOK_CACHE_VERSION` (18) | Metadata, spine and TOC: [below](#bookbin) |
 | `fingerprint.bin`, `toc.retry` | EPUB | none | [below](#fingerprintbin-and-tocretry) |
 | `pagelist.bin` | EPUB | none | The printed-page list: [below](#pagelistbin) |
-| `css_rules.cache`, `css_bg.bin`, `css_fonts.bin` | EPUB | `CSS_CACHE_VERSION` (31), `BACKGROUND_IMAGES_FILE_VERSION` (1) | [below](#css_rulescache-css_bgbin-and-css_fontsbin) |
+| `css_rules.cache`, `css_bg.bin`, `css_fonts.bin` | EPUB | `CSS_CACHE_VERSION` (34), `BACKGROUND_IMAGES_FILE_VERSION` (1) | [below](#css_rulescache-css_bgbin-and-css_fontsbin) |
 | `spines/<n>/<spine>_<hash>.bin` | EPUB | `SECTION_FILE_VERSION` | Laid-out pages: [`section.bin`](#sectionbin) |
 | `spines/<n>/html_<spine>.bin` | EPUB | none | The spine item's inflated XHTML, banked by its build for the footnote pass and later builds; checked against the inflated size |
 | `pages.bin` | EPUB | `kFormatVersion` (1) in `SpinePageIndex.cpp`, plus the section version and property hash | Each spine item's page count and size under one render variant (`SpinePageIndex`), to count pages across a chapter split over several files |
@@ -64,6 +66,7 @@ directory whole.
 | `cover.img` | EPUB | none | The cover image's bytes, extracted once (or copied from a cover sidecar) |
 | `linkstack.bin` | EPUB | `EpubLinkBackStack::kVersion` (1) | The link Back stack: [below](#linkstackbin) |
 | `fonts.bin`, `fonts/<style>.ttf`, `fonts/accent<n>/<style>.ttf` | EPUB | `BookFonts::kVersion` (7) | The book's embedded body and accent fonts (Publisher Fonts): [below](#fontsbin) |
+| `bodysize.bin` | EPUB | `BodySize::kVersion` (1) | The size of the book's running text, for Normalize Font Size (`lib/Epub/Epub/BodySize.h`): `u8` version, `u8` body size in percent of the reader's size (0: the last measurement failed), `u8` failed attempts. Measured after the CSS is compiled, removed when it is compiled again |
 | `kosync_push.bin` | EPUB | `LastPush::kVersion` (1) | Our last KOReader push: [below](#kosync_pushbin) |
 | `koreader_docid.txt`, `koreader_syncmethod.txt` | EPUB | none | The KOReader document id, after the file size and fingerprint it was computed for, and the match method learned for the book |
 | `index.bin` | TXT, Markdown | `CACHE_VERSION`: TXT 2 (magic `TXTI`), Markdown 11 (`MKDI`) | Page offsets under the current layout. `SleepActivity` checks the TXT magic and version too |
@@ -95,6 +98,10 @@ fonts need.
 |---|---|---|---|
 | `CPFC` | `FlashFontPartition` | none | A `.cpfont` family copied from the card, mapped in place. See [contributing/font-cache-structures.md](contributing/font-cache-structures.md) |
 | `CPTT` | `FlashGlyphStore` | `glyphstore::kFormatVersion` (5) | The TTF glyph store: [below](#the-ttf-glyph-store-cptt) |
+
+On the X3 and X4 the 384 KB below the language slot (`FlashFontPartition::HYPH_RESERVED_BYTES`) are taken from the font
+area for the hyphenation store, `WHHS`: [below](#hyphenation-packs-cphy-and-the-store-whhs). The S3 boards keep the
+whole area for fonts and read a book's pack into PSRAM.
 
 ## `book.bin`
 
@@ -309,7 +316,7 @@ Two small files beside `book.bin` (`lib/Epub/Epub.cpp`).
 
 ## `css_rules.cache`, `css_bg.bin` and `css_fonts.bin`
 
-The book's compiled stylesheets, written by `CssParser` (`lib/Epub/Epub/css/`). `css_rules.cache` starts with a 14-byte header (`u8` version, `u16` rule count, `u32` selector candidates, `u32` unsupported-selector skips, `u8` flags, `u16` complex-table bytes), then the complex-rule table (compound, descendant and child selectors, which the hashed index cannot key; its layout is described at `CssParser::complexTable`), then the sorted `{hash, offset}` index, then the rule records (`u16` selector length, selector, `u16` source order, style payload). A selector declared again after other rules has a record per declaration, so rules of equal specificity can apply in stylesheet order. The version byte is `CssParser::CSS_CACHE_VERSION` (31); the comment above it lists what each version changed. A file with another version is deleted and the CSS compiled again, and the book's section caches go with it. It is compiled into `css_rules.compile.tmp` first.
+The book's compiled stylesheets, written by `CssParser` (`lib/Epub/Epub/css/`). `css_rules.cache` starts with a 14-byte header (`u8` version, `u16` rule count, `u32` selector candidates, `u32` unsupported-selector skips, `u8` flags, `u16` complex-table bytes), then the complex-rule table (compound, descendant and child selectors, which the hashed index cannot key; its layout is described at `CssParser::complexTable`), then the sorted `{hash, offset}` index, then the rule records (`u16` selector length, selector, `u16` source order, style payload). A selector declared again after other rules has a record per declaration, so rules of equal specificity can apply in stylesheet order. A selector's element names are stored folded to lowercase and its class and id names as written (since version 33, #676): XHTML class and id names are case-sensitive, as Kindle, ADE and Readest match them, and a survey of 109 books found three where folding made two rules collide (`Dial`/`dial`, `TOC`/`toc`) and none that matched a rule only through the folding. The version byte is `CssParser::CSS_CACHE_VERSION` (34); the comment above it lists what each version changed. A file with another version is deleted and the CSS compiled again, and the book's section caches go with it. It is compiled into `css_rules.compile.tmp` first.
 
 `css_bg.bin` sits beside it and holds the CSS background pictures (`CssParser::backgroundImageFor`): the `no-repeat` `background-image` of each rule that sets one. Absent when the book has none.
 
@@ -325,7 +332,7 @@ count x {
 `css_fonts.bin` holds the book's `@font-face` rules (`CssParser::loadFontFaces`, read one at a time by `CssParser::nextFontFace`), in source order, for its embedded fonts: at most `MAX_FONT_FACES` (32). Absent when the book declares none.
 
 ```text
-u8  version             CSS_CACHE_VERSION (31)
+u8  version             CSS_CACHE_VERSION (34)
 then, to the end of the file, one record per face {
     u16 weight          font-weight, 100-900 (normal 400, bold 700)
     u8  italic          1 when font-style is not normal
@@ -522,6 +529,13 @@ Version 3 (`fonts-v3.json`) adds two keys to a family:
   `ttf` or `otf` family has one file per style, and the reader draws every size from it.
 - `inDownloadAll`: a boolean, `true` when left out. The CJK families say `false`: "Download all" does not take them.
 
+A family of format `uipack` is a UI script pack (`.cpfont` files the interface draws from), one of format `language`
+a UI language pack: a folder `Language-<Language>/` holding one `<code>.cplang`, which the Font Manager installs into
+`/.crosspoint/lang/`, and one of format `hyphenation` a hyphenation pack: a folder `Hyphenation-<Language>/` holding one
+`hyph-<code>.cphyph`, installed into `/.crosspoint/hyphenation/`. The packs come after the fonts, the language packs
+first, with `"styles": []` and `"inDownloadAll": false`. Firmware from before 2.41 leaves the language packs out as a
+format it does not know.
+
 Who reads which: `fonts.json` lists the `.cpfont` families alone, for firmware from before version 3, which rejects a
 manifest of a version it does not know. Firmware with this format reads `fonts-v3.json`, and versions 1 to 3 alike.
 A family of an unknown format is left out, and so is one whose files are not of its format (judged when the family
@@ -538,8 +552,8 @@ device's byte order:
 
 | Part | Layout |
 |---|---|
-| Header, 16 B | `u32` magic `CPFC`; `u16` version (2); `u16` families, files, stringBytes; `u32` blockBytes, the whole block |
-| Families | 12 B each: `u32` totalSize; `u16` name, description, firstFile; `u8` flags (bit 0 installed, bit 1 update available, bit 2 resumable download, bit 3 an outline family, bit 4 not in "Download all"); `u8` 0 |
+| Header, 16 B | `u32` magic `CPFC`; `u16` version (4); `u16` families, files, stringBytes; `u32` blockBytes, the whole block |
+| Families | 12 B each: `u32` totalSize; `u16` name, description, firstFile; `u8` flags (bit 0 installed, bit 1 update available, bit 2 resumable download, bit 3 an outline family, bit 4 not in "Download all", bit 5 a hyphenation pack, bit 6 a UI language pack); `u8` 0 |
 | Files | 12 B each: `u32` size, crc32; `u16` name; `u8` hasCrc32; `u8` 0 |
 | Strings | NUL-terminated; `name` and `description` are offsets into them |
 
@@ -549,6 +563,25 @@ files out of order, a total that does not add up). The file is left in place aft
 stash overwrites it. The manifest the list is built from is
 downloaded to `/fonts_manifest.tmp` (`/fonts_manifest_web.tmp` from the web UI) and removed once
 parsed.
+
+## Hyphenation packs (`CPHY`) and the store (`WHHS`)
+
+A pack, `hyph-<code>.cphyph`, is one language's Liang trie in the layout of crosspoint-reader PR #3706 (CPHY v1),
+kept byte for byte so packs move between CrossPoint, CrossInk and this firmware. `lib/Epub/Epub/hyphenation/HyphenationPack.h`
+holds the layout: a 24-byte little-endian header (magic `CPHY`, version 1, the two-letter code, the minima, the root
+offset, the payload size and its CRC32), then the payload, the Typst hypher trie without its 4-byte root prefix
+([hyphenation-trie-format.md](hyphenation-trie-format.md)). A pack carries data only: how the language's letters are
+told and lowered, its minima and whether its breaks show a hyphen stay in `LanguageRegistry.cpp`, and a pack whose code
+or minima disagree with it is refused. `scripts/build_hyphenation_packs.py` writes the packs the repository hosts.
+
+The store, on the X3 and X4, is the 384 KB region of the font area that caches the packs the reader has used, read in
+place through a mapping (`HyphenationStore.h`). Payloads start at the region's first sector, each on a sector of its
+own; the last two sectors are two header copies, the valid one with the higher generation live. A header copy is 16
+entries of 24 bytes (code, minima, payload offset and size, root offset, CRC32, the generation it was copied in), then
+a 16-byte trailer at byte 384: magic `WHHS`, version 1, the entry count, the generation and a CRC32 of all of it. A
+payload is written and read back before a header names it; room is made by dropping the oldest entries in a header of
+their own first. A region that holds no valid header copy is an empty store: anything it lost is copied again from
+the card.
 
 ## The TTF glyph store (`CPTT`)
 

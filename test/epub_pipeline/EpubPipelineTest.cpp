@@ -30,7 +30,7 @@
 // default goldens hold glyph forms; the Devanagari and Arabic ones also run without a face
 // (<book>_unshaped.golden.txt), as in a font that cannot shape them: IndicReorder's forms, and the line pass's code
 // points. The Arabic one also runs 1,600 px wide (<book>_1600.golden.txt), where its lines pass the line pass's 128
-// slots and take its fallback.
+// slots and take its fallback, and so does the Myanmar one, whose lines end between syllables at both widths.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -108,7 +108,7 @@ std::string stem(const std::string& path) { return fs::path(path).stem().string(
 
 // The corpus books whose layout normalization changes. For every other book the ON dump is
 // byte-identical to OFF, so an ON case would only re-assert the OFF golden under a second name.
-const char* const kNormalizationSensitiveBooks[] = {"test_font_normalization", "test_font_sizes"};
+const char* const kNormalizationSensitiveBooks[] = {"test_body_size", "test_font_normalization", "test_font_sizes"};
 
 // Books with enough running text that hyphenation splits words, and a hyphenated line lands at
 // the bottom of a page (the retry).
@@ -140,6 +140,7 @@ const ShapedBook kShapedBooks[] = {{"test_shaped_arabic", "NotoNaskhArabic-Book-
                                    {"test_shaped_bidi_indic", "NotoSansDevanagari-Book-Regular.ttf"},
                                    {"test_shaped_devanagari", "NotoSansDevanagari-Book-Regular.ttf"},
                                    {"test_shaped_malayalam", "NotoSansMalayalam-Book-Regular.ttf"},
+                                   {"test_shaped_myanmar", "NotoSansMyanmar-Book-Regular.ttf"},
                                    {"test_shaped_persian", "NotoNaskhArabic-Book-Regular.ttf"},
                                    {"test_shaped_tamil", "NotoSansTamil-Book-Regular.ttf"},
                                    {"test_shaped_urdu", "NotoNaskhArabic-Book-Regular.ttf"}};
@@ -155,8 +156,9 @@ const char* shapingFontOf(const std::string& book) {
 // Shaped books also laid out with no face (<book>_unshaped.golden.txt).
 const char* const kUnshapedBooks[] = {"test_shaped_arabic", "test_shaped_devanagari"};
 
-// Books also laid out 1,600 px wide (<book>_1600.golden.txt), with their face: the bidi line pass's fallback.
-const char* const kWideBooks[] = {"test_shaped_arabic"};
+// Books also laid out 1,600 px wide (<book>_1600.golden.txt), with their face: the bidi line pass's fallback, and
+// Burmese lines ending between syllables on a line wider than most phrases.
+const char* const kWideBooks[] = {"test_shaped_arabic", "test_shaped_myanmar"};
 
 // The families as the reader builds them for a 14 pt built-in body (buildBookFontFamilies), with stand-in IDs: the
 // built-in sans-serif's rungs are 2000 + their size, the accent families' native sizes 0x12345600, 0x23456700 and

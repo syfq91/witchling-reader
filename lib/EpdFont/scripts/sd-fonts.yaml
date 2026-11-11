@@ -14,6 +14,13 @@
 #                  path: relative to lib/EpdFont (for committed fonts)
 #                  url:  download URL (for fonts not in the repo)
 #
+# UI script packs (format: uipack):
+#   .cpfont files the interface draws a script from (src/CjkUiPack.cpp), never a reading font;
+#   build_ui_script_pack.py writes them. They take in place of intervals, sizes and styles:
+#   source:        the family in this file whose Noto CJK OTF they are cut from
+#   fonts-v3.json lists them with format "uipack", which a firmware that does not know it skips; fonts.json leaves
+#   them out.
+#
 # CJK families (format: otf):
 #   A CFF subset of Noto CJK cut by cjk_subset.py: one <name>-Regular.otf, drawn at every size by the reader's
 #   engine, instead of a .cpfont family. They take these fields in place of intervals, sizes and styles:
@@ -36,6 +43,20 @@
 #   fails on any difference. Rebuilding them needs the pinned pair (top-level `fonttools`, another version writes
 #   other bytes):
 #     pip install fonttools==4.63.0 uharfbuzz==0.56.2
+#
+# Hyphenation packs (format: hyphenation):
+#   One language's hyphenation pack, hyph-<code>.cphyph in a folder of the family's name. scripts/build_hyphenation_packs.py
+#   writes them into assets/sd-fonts/ (this build copies them). fonts-v3.json lists them after the fonts with format
+#   "hyphenation", which a firmware that does not know it skips; fonts.json leaves them out. The Font Manager installs
+#   the file into /.crosspoint/hyphenation/. They take no fields but name, description and inDownloadAll (false: a
+#   reader picks the languages of their books).
+#
+# UI language packs (format: language):
+#   One interface language's strings, <code>.cplang in a folder of the family's name, for every language but English,
+#   which is in the image. scripts/gen_i18n.py --packs writes them into assets/sd-fonts/ (this build copies them).
+#   fonts-v3.json lists them after the fonts with format "language", which a firmware that does not know it skips;
+#   fonts.json leaves them out. The Font Manager installs the file into /.crosspoint/lang/. They take no fields but
+#   name, description and inDownloadAll (false: a reader wants one language, not all of them).
 #
 # Variable fonts:
 #   Some fonts (Bitter, Inter, Alegreya) are distributed as variable fonts.
@@ -669,6 +690,32 @@ families:
         Regular: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSans/unhinted/ttf/NotoSans-Regular.ttf", sha256: "f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8"}
         Bold: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSans/unhinted/ttf/NotoSans-Bold.ttf", sha256: "87cb2d84472a7d66da659ee47b6cdb9552326e8c128245231f191b6ac72529d9"}
 
+  # The interface's CJK (format: uipack): book titles in the CJK UI faces' sizes, one pack per region in its own forms,
+  # from the Noto Sans CJK region OTF the family named in `source` pins (build_ui_script_pack.py).
+  - name: ChineseUI
+    description: "Simplified Chinese in the interface: book titles. Not a reading font"
+    format: uipack
+    source: NotoSansSC
+    inDownloadAll: false
+
+  - name: ChineseTradUI
+    description: "Traditional Chinese in the interface: book titles. Not a reading font"
+    format: uipack
+    source: NotoSansTC
+    inDownloadAll: false
+
+  - name: JapaneseUI
+    description: "Japanese in the interface: book titles. Not a reading font"
+    format: uipack
+    source: NotoSansJP
+    inDownloadAll: false
+
+  - name: KoreanUI
+    description: "Korean in the interface: book titles. Not a reading font"
+    format: uipack
+    source: NotoSansKR
+    inDownloadAll: false
+
   # ── Hebrew script (format: ttf), merged the same way ───────────────────────────────────────────
 
   - name: NotoSansHebrew
@@ -694,3 +741,332 @@ families:
       latin:
         Regular: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSerif/unhinted/ttf/NotoSerif-Regular.ttf", sha256: "a15cfbbc1539d707115111d672d590a3d70d4f74b4c0a315956da20ae19a14e1"}
         Bold: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSerif/unhinted/ttf/NotoSerif-Bold.ttf", sha256: "24ad531e6b05ddad8c3d89572d2c93eb86a6b74e652ce7ee3c3e171de68e84c3"}
+
+  # ── Myanmar script (format: ttf), merged the same way ──────────────────────────────────────────
+
+  - name: NotoSansMyanmar
+    description: "Burmese, Mon, Shan, Karen, sans serif"
+    format: ttf
+    inDownloadAll: false
+    merge:
+      script:
+        Regular: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSansMyanmar/unhinted/ttf/NotoSansMyanmar-Regular.ttf", sha256: "f4be6ef43871516d8347c5217a2033991b8ecda2dd1200007c2fb431a66d64db"}
+        Bold: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSansMyanmar/unhinted/ttf/NotoSansMyanmar-Bold.ttf", sha256: "c40a000f8093de13bdf1379a7c589faa2ea989319f33f244eaaa907033c6889f"}
+      latin:
+        Regular: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSans/unhinted/ttf/NotoSans-Regular.ttf", sha256: "f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8"}
+        Bold: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSans/unhinted/ttf/NotoSans-Bold.ttf", sha256: "87cb2d84472a7d66da659ee47b6cdb9552326e8c128245231f191b6ac72529d9"}
+
+  - name: NotoSerifMyanmar
+    description: "Burmese, Mon, Shan, Karen, serif"
+    format: ttf
+    inDownloadAll: false
+    merge:
+      script:
+        Regular: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSerifMyanmar/unhinted/ttf/NotoSerifMyanmar-Regular.ttf", sha256: "bb3a381c17751aa169595ae8be13fde604463e3587ae466c31f34a833e10e2a5"}
+        Bold: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSerifMyanmar/unhinted/ttf/NotoSerifMyanmar-Bold.ttf", sha256: "2407c27e57a219f37cfb77285c50e19ad8f1d2948654a750a29a217c6bac9863"}
+      latin:
+        Regular: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSerif/unhinted/ttf/NotoSerif-Regular.ttf", sha256: "a15cfbbc1539d707115111d672d590a3d70d4f74b4c0a315956da20ae19a14e1"}
+        Bold: {url: "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c82cef0a8f08806f932062e18c02be62be278f0/fonts/NotoSerif/unhinted/ttf/NotoSerif-Bold.ttf", sha256: "24ad531e6b05ddad8c3d89572d2c93eb86a6b74e652ce7ee3c3e171de68e84c3"}
+
+  # ── UI language packs (format: language), one per language but English: gen_i18n.py --packs ──────────────
+
+  - name: Language-Arabic
+    description: "Menus and messages in Arabic"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Belarusian
+    description: "Menus and messages in Belarusian"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Catalan
+    description: "Menus and messages in Catalan"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-ChineseSimplified
+    description: "Menus and messages in Simplified Chinese"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Czech
+    description: "Menus and messages in Czech"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Danish
+    description: "Menus and messages in Danish"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Dutch
+    description: "Menus and messages in Dutch"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Finnish
+    description: "Menus and messages in Finnish"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-French
+    description: "Menus and messages in French"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-German
+    description: "Menus and messages in German"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Hebrew
+    description: "Menus and messages in Hebrew"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Hungarian
+    description: "Menus and messages in Hungarian"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Italian
+    description: "Menus and messages in Italian"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Japanese
+    description: "Menus and messages in Japanese"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Kazakh
+    description: "Menus and messages in Kazakh"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Korean
+    description: "Menus and messages in Korean"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Lithuanian
+    description: "Menus and messages in Lithuanian"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Persian
+    description: "Menus and messages in Persian"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Polish
+    description: "Menus and messages in Polish"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-PortugueseBR
+    description: "Menus and messages in Brazilian Portuguese"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-PortuguesePT
+    description: "Menus and messages in European Portuguese"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Romanian
+    description: "Menus and messages in Romanian"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Russian
+    description: "Menus and messages in Russian"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Slovenian
+    description: "Menus and messages in Slovenian"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Spanish
+    description: "Menus and messages in Spanish"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Swedish
+    description: "Menus and messages in Swedish"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Turkish
+    description: "Menus and messages in Turkish"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Ukrainian
+    description: "Menus and messages in Ukrainian"
+    format: language
+    inDownloadAll: false
+
+  - name: Language-Vietnamese
+    description: "Menus and messages in Vietnamese"
+    format: language
+    inDownloadAll: false
+  # ── Hyphenation packs (format: hyphenation), one per language: scripts/build_hyphenation_packs.py ──────────
+
+  - name: Hyphenation-Assamese
+    description: "Hyphenation for books in Assamese: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Belarusian
+    description: "Hyphenation for books in Belarusian"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Bengali
+    description: "Hyphenation for books in Bengali: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Catalan
+    description: "Hyphenation for books in Catalan"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Czech
+    description: "Hyphenation for books in Czech"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Danish
+    description: "Hyphenation for books in Danish"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Dutch
+    description: "Hyphenation for books in Dutch"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Finnish
+    description: "Hyphenation for books in Finnish"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-French
+    description: "Hyphenation for books in French"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-German
+    description: "Hyphenation for books in German"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Gujarati
+    description: "Hyphenation for books in Gujarati: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Hindi
+    description: "Hyphenation for books in Hindi: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Hungarian
+    description: "Hyphenation for books in Hungarian"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Italian
+    description: "Hyphenation for books in Italian"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Kannada
+    description: "Hyphenation for books in Kannada: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Lithuanian
+    description: "Hyphenation for books in Lithuanian"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Malayalam
+    description: "Hyphenation for books in Malayalam: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Marathi
+    description: "Hyphenation for books in Marathi: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Odia
+    description: "Hyphenation for books in Odia: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Polish
+    description: "Hyphenation for books in Polish"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Portuguese
+    description: "Hyphenation for books in Portuguese"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Punjabi
+    description: "Hyphenation for books in Punjabi: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Russian
+    description: "Hyphenation for books in Russian"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Sanskrit
+    description: "Hyphenation for books in Sanskrit: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Slovenian
+    description: "Hyphenation for books in Slovenian"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Spanish
+    description: "Hyphenation for books in Spanish"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Swedish
+    description: "Hyphenation for books in Swedish"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Tamil
+    description: "Hyphenation for books in Tamil: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Telugu
+    description: "Hyphenation for books in Telugu: lines break between syllables, without a hyphen"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Turkish
+    description: "Hyphenation for books in Turkish"
+    format: hyphenation
+    inDownloadAll: false
+
+  - name: Hyphenation-Ukrainian
+    description: "Hyphenation for books in Ukrainian"
+    format: hyphenation
+    inDownloadAll: false

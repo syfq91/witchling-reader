@@ -329,6 +329,21 @@ TEST(BidiUtils, ArabicSupplementAndExtendedAreStrongRtl) {
   EXPECT_EQ(bidi_class(0xFDFA), AL);
 }
 
+// A Burmese word in a Hebrew line keeps its letters left to right, its stacker (U+1039) and asat (U+103A) with them:
+// Myanmar is strong left to right, its marks read as L as the Indic ones do. Its code points were ON once, and an ON
+// run between two Hebrew words is reversed with them.
+TEST(BidiUtils, ABurmeseWordInAHebrewLineKeepsItsOrder) {
+  // Shin lamed, a space, Burmese "myanma" (U+1019 U+103C U+1014 U+103A U+1019 U+102C), a space, alef bet.
+  const CP burmese = {0x1019, 0x103C, 0x1014, 0x103A, 0x1019, 0x102C};
+  CP logical = {0x05E9, 0x05DC, 0x20};
+  logical.insert(logical.end(), burmese.begin(), burmese.end());
+  logical.insert(logical.end(), {0x20, 0x05D0, 0x05D1});
+  CP expected = {0x05D1, 0x05D0, 0x20};
+  expected.insert(expected.end(), burmese.begin(), burmese.end());
+  expected.insert(expected.end(), {0x20, 0x05DC, 0x05E9});
+  EXPECT_EQ(visual(logical, 1), expected);
+}
+
 // A line of UI text as it is drawn: a title with a right-to-left character in visual order, at its own direction, the
 // rest as it is; a heap workspace it had to make is gone again.
 TEST(BidiUtils, AUiLineIsDrawnInVisualOrderAtItsOwnDirection) {
@@ -348,4 +363,43 @@ TEST(BidiUtils, AUiLineIsDrawnInVisualOrderAtItsOwnDirection) {
   // A Latin title with a Hebrew word in it stays left to right; the Hebrew word reads right to left inside it.
   const std::string mixed = "Harry " + encode({0x05E9, 0x05DC, 0x05D5, 0x05DD});
   EXPECT_EQ(BidiUtils::visualUiLine(mixed), "Harry " + encode({0x05DD, 0x05D5, 0x05DC, 0x05E9}));
+}
+
+// A wrapped paragraph's lines take the paragraph's direction: a line of Latin after a Hebrew first line keeps the
+// right-to-left order its words had in the paragraph.
+TEST(BidiUtils, AUiLineTakesTheDirectionItIsGiven) {
+  BidiUtils::releaseWorkspace();
+  const std::string line = "abc " + encode({0x05E9, 0x05DC});
+  EXPECT_EQ(BidiUtils::visualUiLine(line), "abc " + encode({0x05DC, 0x05E9}));
+  EXPECT_EQ(BidiUtils::visualUiLine(line, 1), encode({0x05DC, 0x05E9}) + " abc");
+  EXPECT_EQ(BidiUtils::visualUiLine(line, 0), "abc " + encode({0x05DC, 0x05E9}));
+  EXPECT_FALSE(BidiUtils::heapWorkspaceHeld());
+  // A line with nothing right to left is left as it is at its own direction or left to right; set right to left, the
+  // full stop that ends it stands on its left, as on the line of a right-to-left paragraph.
+  EXPECT_EQ(BidiUtils::visualUiLine("abc def."), "abc def.");
+  EXPECT_EQ(BidiUtils::visualUiLine("abc def.", 0), "abc def.");
+  EXPECT_EQ(BidiUtils::visualUiLine("abc def.", 1), ".abc def");
+  EXPECT_FALSE(BidiUtils::heapWorkspaceHeld());
+}
+
+// orderUiLine is orderLine, and like visualUiLine it leaves no heap workspace behind it.
+TEST(BidiUtils, OrderUiLineLeavesNoWorkspace) {
+  BidiUtils::releaseWorkspace();
+  const uint32_t cps[] = {'a', ' ', 0x05E9, 0x05DC};
+  uint16_t visual[4] = {};
+  uint32_t drawn[4] = {};
+  ASSERT_TRUE(BidiUtils::orderUiLine(cps, 4, 0, visual, drawn));
+  EXPECT_EQ(visual[0], 0);
+  EXPECT_EQ(visual[1], 1);
+  EXPECT_EQ(visual[2], 3);
+  EXPECT_EQ(visual[3], 2);
+  EXPECT_EQ(drawn[2], 0x05DCu);
+  EXPECT_FALSE(BidiUtils::heapWorkspaceHeld());
+
+  // One a section build made stays for it.
+  ASSERT_TRUE(BidiUtils::orderLine(cps, 4, 1, visual, drawn));
+  ASSERT_TRUE(BidiUtils::heapWorkspaceHeld());
+  ASSERT_TRUE(BidiUtils::orderUiLine(cps, 4, 1, visual, drawn));
+  EXPECT_TRUE(BidiUtils::heapWorkspaceHeld());
+  BidiUtils::releaseWorkspace();
 }
