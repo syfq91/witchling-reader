@@ -1,7 +1,7 @@
 #include "SdCardFontManager.h"
 
 #include <EpdFontFamily.h>
-#include <EspNorFlash.h>
+#include <FlashAreaRegion.h>
 #include <FlashFontPartition.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -212,7 +212,7 @@ bool SdCardFontManager::loadTtf(const SdCardFontFamilyInfo* const* families, uin
   if (FlashFontPartition::isMapped()) FlashFontPartition::unmap();
 
   // Held while the families are loaded: the font area (a few words), and the set with its one scratch block.
-  auto flash = makeUniqueNoThrow<EspNorFlash>();
+  auto flash = makeUniqueNoThrow<FlashAreaRegion>();
   auto opened = makeUniqueNoThrow<TtfSources>();
   if (!flash || !opened || !flash->begin()) {
     LOG_ERR("SDMGR", "No font partition, or no memory, for TTF family %s", families[0]->name.c_str());
@@ -267,6 +267,16 @@ bool SdCardFontManager::loadTtf(const SdCardFontFamilyInfo* const* families, uin
   for (uint8_t f = 0; f < count; ++f) {
     if (f < loaded && ttfSet_->font(f)->readsCard()) {
       onCard = true;
+      // Its outlines are read at scattered offsets for as long as the set is loaded, and a seek backwards in a FAT32
+      // file walked its cluster chain from the start: 1,370 seeks cost 313 ms of a Japanese book's first chapters on
+      // the X3 (2026-11-13). Found contiguous once here, the file's seeks go straight to their cluster.
+      for (HalFile& file : opened->files[f]) {
+        if (!file) continue;
+        char name[48] = "";
+        file.getName(name, sizeof(name));
+        LOG_INF("SDMGR", "SD-mode font file %s: %s", name,
+                file.detectContiguous() ? "contiguous, seeks direct" : "fragmented, seeks walk the cluster chain");
+      }
       continue;
     }
     for (HalFile& file : opened->files[f]) file = HalFile();  // closed, and its handle freed

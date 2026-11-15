@@ -11,6 +11,7 @@
 //   - TextBlock serialization round-trips sizes (and stays 1 byte for uniform lines)
 //   - render baseline-aligns mixed-size words (smaller words shift down)
 
+#include <BufferedFileIO.h>
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -185,10 +186,15 @@ TEST(WordSizeSerialization, RoundTripsMixedSizes) {
                      {100, 80, 150});
 
   FsFile file = HalFile::forReadWrite();
-  ASSERT_TRUE(original.serialize(file));
+  {
+    serialization::BufferedFileWriter writer(file);
+    ASSERT_TRUE(original.serialize(writer));
+    ASSERT_TRUE(writer.flush());
+  }
   ASSERT_TRUE(file.seek(0));
 
-  const auto restored = TextBlock::deserialize(file);
+  serialization::BufferedFileReader reader(file);
+  const auto restored = TextBlock::deserialize(reader);
   ASSERT_NE(restored, nullptr);
   ASSERT_EQ(restored->wordCount(), 3u);
   ASSERT_TRUE(restored->hasWordSizes());
@@ -202,13 +208,22 @@ TEST(WordSizeSerialization, UniformBlockCostsOneFlagByte) {
 
   FsFile uniformFile = HalFile::forReadWrite();
   FsFile mixedFile = HalFile::forReadWrite();
-  ASSERT_TRUE(uniform.serialize(uniformFile));
-  ASSERT_TRUE(mixed.serialize(mixedFile));
+  {
+    serialization::BufferedFileWriter writer(uniformFile);
+    ASSERT_TRUE(uniform.serialize(writer));
+    ASSERT_TRUE(writer.flush());
+  }
+  {
+    serialization::BufferedFileWriter writer(mixedFile);
+    ASSERT_TRUE(mixed.serialize(writer));
+    ASSERT_TRUE(writer.flush());
+  }
   // Mixed pays the flag byte plus one byte per word; uniform only the flag byte.
   EXPECT_EQ(mixedFile.size(), uniformFile.size() + 2);
 
   ASSERT_TRUE(uniformFile.seek(0));
-  const auto restored = TextBlock::deserialize(uniformFile);
+  serialization::BufferedFileReader uniformReader(uniformFile);
+  const auto restored = TextBlock::deserialize(uniformReader);
   ASSERT_NE(restored, nullptr);
   EXPECT_FALSE(restored->hasWordSizes());
 }
@@ -225,10 +240,15 @@ TEST(WordSizeSerialization, ArenaRoundTripPreservesPerWordFields) {
   ASSERT_TRUE(original.valid());
 
   FsFile file = HalFile::forReadWrite();
-  ASSERT_TRUE(original.serialize(file));
+  {
+    serialization::BufferedFileWriter writer(file);
+    ASSERT_TRUE(original.serialize(writer));
+    ASSERT_TRUE(writer.flush());
+  }
   ASSERT_TRUE(file.seek(0));
 
-  const auto restored = TextBlock::deserialize(file);
+  serialization::BufferedFileReader reader(file);
+  const auto restored = TextBlock::deserialize(reader);
   ASSERT_NE(restored, nullptr);
   ASSERT_EQ(restored->wordCount(), words.size());
   EXPECT_FALSE(restored->hasWordSizes());
@@ -442,10 +462,15 @@ TEST(WordSizeSerialization, ContinuationFlagRoundTrips) {
   ASSERT_TRUE(original.valid());
 
   FsFile file = HalFile::forReadWrite();
-  ASSERT_TRUE(original.serialize(file));
+  {
+    serialization::BufferedFileWriter writer(file);
+    ASSERT_TRUE(original.serialize(writer));
+    ASSERT_TRUE(writer.flush());
+  }
   ASSERT_TRUE(file.seek(0));
 
-  const auto restored = TextBlock::deserialize(file);
+  serialization::BufferedFileReader reader(file);
+  const auto restored = TextBlock::deserialize(reader);
   ASSERT_NE(restored, nullptr);
   ASSERT_EQ(restored->wordCount(), words.size());
   EXPECT_FALSE(restored->wordContinues(0));
@@ -462,10 +487,15 @@ TEST(WordSizeSerialization, EmptyStringWordRoundTrips) {
   ASSERT_TRUE(original.valid());
 
   FsFile file = HalFile::forReadWrite();
-  ASSERT_TRUE(original.serialize(file));
+  {
+    serialization::BufferedFileWriter writer(file);
+    ASSERT_TRUE(original.serialize(writer));
+    ASSERT_TRUE(writer.flush());
+  }
   ASSERT_TRUE(file.seek(0));
 
-  const auto restored = TextBlock::deserialize(file);
+  serialization::BufferedFileReader reader(file);
+  const auto restored = TextBlock::deserialize(reader);
   ASSERT_NE(restored, nullptr);
   ASSERT_EQ(restored->wordCount(), 3u);
   EXPECT_EQ(std::string(restored->wordText(0)), "");
@@ -481,10 +511,15 @@ TEST(WordSizeSerialization, EmptyBlockRoundTrips) {
   EXPECT_TRUE(original.isEmpty());
 
   FsFile file = HalFile::forReadWrite();
-  ASSERT_TRUE(original.serialize(file));
+  {
+    serialization::BufferedFileWriter writer(file);
+    ASSERT_TRUE(original.serialize(writer));
+    ASSERT_TRUE(writer.flush());
+  }
   ASSERT_TRUE(file.seek(0));
 
-  const auto restored = TextBlock::deserialize(file);
+  serialization::BufferedFileReader reader(file);
+  const auto restored = TextBlock::deserialize(reader);
   ASSERT_NE(restored, nullptr);
   EXPECT_EQ(restored->wordCount(), 0u);
   EXPECT_TRUE(restored->isEmpty());
@@ -750,7 +785,6 @@ TEST(WordSizeRender, BlockMultiplierComposesWithWordSize) {
   EXPECT_FLOAT_EQ(renderer.drawCalls[1].scale, 0.75f);  // 1.5 x 50%
 }
 
-
 // ---------------------------------------------------------------------------
 // Guide dots (render-time reading aid; idea from CrossInk)
 // ---------------------------------------------------------------------------
@@ -849,4 +883,3 @@ TEST(HyphenationSearch, TheWidestFittingPrefixIsChosenAtEveryColumn) {
   }
   Hyphenator::setPreferredLanguage("");
 }
-

@@ -25,6 +25,8 @@
 
 #include "FontCacheManager.h"
 #include "GlyphRun.h"
+#include "Gray8Compose.h"
+#include "ImagePolarity.h"
 #include "ScaledGlyphResample.h"
 #include "UiShapedText.h"
 
@@ -2093,7 +2095,7 @@ void GfxRenderer::drawRoundedRect(const int x, const int y, const int width, con
 // patternByte is repeated across the full span; partial edge bytes are blended with existing content.
 // Bit layout: MSB-first (bit 7 = phyX=0, bit 0 = phyX=7); 0 bits = dark pixel, 1 bits = white pixel.
 void GfxRenderer::fillPhysicalHSpanByte(const int phyY, const int phyX_start, const int phyX_end,
-                                        const uint8_t patternByte) const {
+                                        const uint8_t patternByte, const bool keepInk) const {
   const int cX0 = std::max(phyX_start, 0);
   const int cX1 = std::min(phyX_end, (int)getDisplayWidth() - 1);
   if (cX0 > cX1 || phyY < 0 || phyY >= (int)getDisplayHeight()) return;
@@ -2107,31 +2109,33 @@ void GfxRenderer::fillPhysicalHSpanByte(const int phyY, const int phyX_start, co
   const int leftBits = cX0 & 7;   // first bit index within startByte
   const int rightBits = cX1 & 7;  // last bit index within endByte
 
+  // keepInk: only the pattern's dark bits are written, so ink already in the span stays.
+  const auto blend = [patternByte, keepInk](uint8_t& byte, const uint8_t fillMask) {
+    byte = keepInk ? static_cast<uint8_t>(byte & (patternByte | ~fillMask))
+                   : static_cast<uint8_t>((byte & ~fillMask) | (patternByte & fillMask));
+  };
   if (startByte == endByte) {
     // Both endpoints in the same byte
-    const uint8_t fillMask = (0xFF >> leftBits) & ~(0xFF >> (rightBits + 1));
-    row[startByte] = (row[startByte] & ~fillMask) | (patternByte & fillMask);
+    blend(row[startByte], (0xFF >> leftBits) & ~(0xFF >> (rightBits + 1)));
     return;
   }
 
   // Left partial byte
-  if (leftBits != 0) {
-    const uint8_t fillMask = 0xFF >> leftBits;
-    row[startByte] = (row[startByte] & ~fillMask) | (patternByte & fillMask);
-  }
+  if (leftBits != 0) blend(row[startByte], 0xFF >> leftBits);
 
   // Full bytes in the middle
   const int fullStart = (leftBits == 0) ? startByte : startByte + 1;
   const int fullEnd = (rightBits == 7) ? endByte : endByte - 1;
   if (fullStart <= fullEnd) {
-    memset(row + fullStart, patternByte, fullEnd - fullStart + 1);
+    if (keepInk) {
+      for (int b = fullStart; b <= fullEnd; ++b) row[b] &= patternByte;
+    } else {
+      memset(row + fullStart, patternByte, fullEnd - fullStart + 1);
+    }
   }
 
   // Right partial byte
-  if (rightBits != 7) {
-    const uint8_t fillMask = ~(0xFF >> (rightBits + 1));
-    row[endByte] = (row[endByte] & ~fillMask) | (patternByte & fillMask);
-  }
+  if (rightBits != 7) blend(row[endByte], ~(0xFF >> (rightBits + 1)));
 }
 
 // Thin wrapper: state=true → 0x00 (all dark), false → 0xFF (all white).
@@ -2202,12 +2206,13 @@ void GfxRenderer::drawPixelDither<Color::DarkGray>(const int x, const int y) con
   drawPixel(x, y, (x + y) % 2 == 0);  // TODO: maybe find a better pattern?
 }
 
-void GfxRenderer::fillRectDither(const int x, const int y, const int width, const int height, Color color) const {
+void GfxRenderer::fillRectDither(const int x, const int y, const int width, const int height, Color color,
+                                 const bool keepInk) const {
   if (color == Color::Clear) {
   } else if (color == Color::Black) {
     fillRect(x, y, width, height, true);
   } else if (color == Color::White) {
-    fillRect(x, y, width, height, false);
+    if (!keepInk) fillRect(x, y, width, height, false);
   } else if (color == Color::DarkGray) {
     // Pattern: dark where (phyX + phyY) % 2 == 0 (alternating checkerboard).
     // Byte patterns (phyY even / phyY odd):
@@ -2218,28 +2223,28 @@ void GfxRenderer::fillRectDither(const int x, const int y, const int width, cons
         for (int lx = x; lx < x + width; lx++) {
           const int phyY = getDisplayHeight() - 1 - lx;
           const uint8_t pb = (phyY % 2 == 0) ? 0xAA : 0x55;
-          fillPhysicalHSpanByte(phyY, y, y + height - 1, pb);
+          fillPhysicalHSpanByte(phyY, y, y + height - 1, pb, keepInk);
         }
         return;
       case PortraitInverted:
         for (int lx = x; lx < x + width; lx++) {
           const int phyY = lx;
           const uint8_t pb = (phyY % 2 == 0) ? 0xAA : 0x55;
-          fillPhysicalHSpanByte(phyY, getDisplayWidth() - 1 - (y + height - 1), getDisplayWidth() - 1 - y, pb);
+          fillPhysicalHSpanByte(phyY, getDisplayWidth() - 1 - (y + height - 1), getDisplayWidth() - 1 - y, pb, keepInk);
         }
         return;
       case LandscapeCounterClockwise:
         for (int ly = y; ly < y + height; ly++) {
           const int phyY = ly;
           const uint8_t pb = (phyY % 2 == 0) ? 0x55 : 0xAA;
-          fillPhysicalHSpanByte(phyY, x, x + width - 1, pb);
+          fillPhysicalHSpanByte(phyY, x, x + width - 1, pb, keepInk);
         }
         return;
       case LandscapeClockwise:
         for (int ly = y; ly < y + height; ly++) {
           const int phyY = getDisplayHeight() - 1 - ly;
           const uint8_t pb = (phyY % 2 == 0) ? 0x55 : 0xAA;
-          fillPhysicalHSpanByte(phyY, getDisplayWidth() - 1 - (x + width - 1), getDisplayWidth() - 1 - x, pb);
+          fillPhysicalHSpanByte(phyY, getDisplayWidth() - 1 - (x + width - 1), getDisplayWidth() - 1 - x, pb, keepInk);
         }
         return;
     }
@@ -2255,28 +2260,30 @@ void GfxRenderer::fillRectDither(const int x, const int y, const int width, cons
         for (int lx = x; lx < x + width; lx++) {
           const int phyY = getDisplayHeight() - 1 - lx;
           if (phyY % 2 == 0) continue;  // all-white row — no dark pixels to write
-          fillPhysicalHSpanByte(phyY, y, y + height - 1, 0x55);
+          fillPhysicalHSpanByte(phyY, y, y + height - 1, 0x55, keepInk);
         }
         return;
       case PortraitInverted:
         for (int lx = x; lx < x + width; lx++) {
           const int phyY = lx;
           if (phyY % 2 != 0) continue;  // all-white row
-          fillPhysicalHSpanByte(phyY, getDisplayWidth() - 1 - (y + height - 1), getDisplayWidth() - 1 - y, 0xAA);
+          fillPhysicalHSpanByte(phyY, getDisplayWidth() - 1 - (y + height - 1), getDisplayWidth() - 1 - y, 0xAA,
+                                keepInk);
         }
         return;
       case LandscapeCounterClockwise:
         for (int ly = y; ly < y + height; ly++) {
           const int phyY = ly;
           if (phyY % 2 != 0) continue;  // all-white row
-          fillPhysicalHSpanByte(phyY, x, x + width - 1, 0x55);
+          fillPhysicalHSpanByte(phyY, x, x + width - 1, 0x55, keepInk);
         }
         return;
       case LandscapeClockwise:
         for (int ly = y; ly < y + height; ly++) {
           const int phyY = getDisplayHeight() - 1 - ly;
           if (phyY % 2 == 0) continue;  // all-white row
-          fillPhysicalHSpanByte(phyY, getDisplayWidth() - 1 - (x + width - 1), getDisplayWidth() - 1 - x, 0xAA);
+          fillPhysicalHSpanByte(phyY, getDisplayWidth() - 1 - (x + width - 1), getDisplayWidth() - 1 - x, 0xAA,
+                                keepInk);
         }
         return;
     }
@@ -2632,6 +2639,50 @@ static void bitmapFastRow(uint8_t* const frameBuffer, const uint8_t* const outpu
   }
 }
 
+// Not while a page is scanned for its glyphs: the pass that draws it for real follows, and an inversion here would be
+// undone by its own.
+bool GfxRenderer::keepsImagePolarity() const {
+  return getRenderMode() == BW && frameBuffer != nullptr && !cacheOnlyImageWrites_ && !isFontCacheScanning() &&
+         display.isInverted();
+}
+
+void GfxRenderer::preserveImagePolarity(const int x, const int y, const int width, const int height) const {
+  if (!keepsImagePolarity()) return;
+  image_polarity::PanelRect box{};
+  if (!image_polarity::panelRectOf(static_cast<int>(getOrientation()), panelWidth, panelHeight, x, y, width, height,
+                                   box)) {
+    return;
+  }
+  image_polarity::invertPanelRect(frameBuffer, panelWidthBytes, box);
+}
+
+namespace {
+// preserveImagePolarity() over a bitmap's drawn box as the draw returns, whichever return that is: the draws below
+// leave early on a row they cannot read, and the rows drawn by then are a picture like any other.
+class PolarityOnReturn {
+ public:
+  PolarityOnReturn(const GfxRenderer& renderer, const bool active, const int x, const int y, const int width,
+                   const int height)
+      : renderer_(renderer), active_(active && renderer.keepsImagePolarity()), x_(x), y_(y), w_(width), h_(height) {}
+  ~PolarityOnReturn() {
+    if (active_) renderer_.preserveImagePolarity(x_, y_, w_, h_);
+  }
+  PolarityOnReturn(const PolarityOnReturn&) = delete;
+  PolarityOnReturn& operator=(const PolarityOnReturn&) = delete;
+
+ private:
+  const GfxRenderer& renderer_;
+  bool active_;
+  int x_, y_, w_, h_;
+};
+
+// How many pixels a run of `source` pixels covers once drawn at `scale` (pixel i lands at floor(i * scale)).
+int scaledExtent(const int source, const bool isScaled, const float scale) {
+  if (source <= 0) return 0;
+  return isScaled ? static_cast<int>(std::floor(static_cast<float>(source - 1) * scale)) + 1 : source;
+}
+}  // namespace
+
 void GfxRenderer::drawGray8Pixel(const Gray8Target& gray8, const int x, const int y, const uint8_t gray) const {
   int phyX = 0;
   int phyY = 0;
@@ -2702,6 +2753,9 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
   const int widthBytes = getDisplayWidthBytes();
   // Width of the rendered (post-crop) region in source pixels
   const int renderWidth = bitmap.getWidth() - 2 * cropPixX;
+  // A canvas paint leaves the frame alone.
+  const PolarityOnReturn polarity(*this, gray8 == nullptr, x, y, scaledExtent(renderWidth, isScaled, scale),
+                                  scaledExtent(bitmap.getHeight() - 2 * cropPixY, isScaled, scale));
 
   // Pixel write state for each render mode:
   //   BW: black pixels (state=true clears the bit)
@@ -2871,6 +2925,10 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
   const int displayWidth = getDisplayWidth();
   const int displayHeight = getDisplayHeight();
   const int widthBytes = getDisplayWidthBytes();
+  // The scaled path below folds every source column into max(1, floor(width * scale)) destination columns.
+  const int drawnWidth =
+      isScaled ? std::max(1, static_cast<int>(std::floor(bitmap.getWidth() * scale))) : bitmap.getWidth();
+  const PolarityOnReturn polarity(*this, true, x, y, drawnWidth, scaledExtent(bitmap.getHeight(), isScaled, scale));
 
   // ── Unscaled fast path (scale == 1.0): draw each source row 1:1. ──────────────
   //
@@ -3710,31 +3768,19 @@ uint8_t GfxRenderer::getGrayLevels() const { return display.getGrayLevels(); }
 
 uint8_t* GfxRenderer::borrowGray8Canvas(uint16_t* stride) const { return display.borrowGray8Canvas(stride); }
 
-void GfxRenderer::displayGray8Canvas() const { display.displayGray8Canvas(HalDisplay::FULL_REFRESH, fadingFix); }
+void GfxRenderer::displayGray8Canvas() const {
+  // A full refresh whatever was asked (the driver forces its clean bank), so it satisfies an armed override too (a
+  // book open's HALF), which would otherwise wait for the next refresh and land on the page after.
+  consumeRefreshOverride(HalDisplay::FULL_REFRESH);
+  noteRefresh(HalDisplay::FULL_REFRESH);
+  display.displayGray8Canvas(HalDisplay::FULL_REFRESH, fadingFix);
+}
 
 // Bit clear = black is the framebuffer's own convention (see DirectPixelWriter's
 // BW branch, which draws by clearing), and the driver expands it the same way.
 void GfxRenderer::stampBwOntoGray8Canvas(uint8_t* canvas, const uint16_t stride) const {
   if (!canvas || !frameBuffer) return;
-  const int width = getDisplayWidth();
-  const int height = getDisplayHeight();
-  const int widthBytes = getDisplayWidthBytes();
-  for (int y = 0; y < height; y++) {
-    const uint8_t* src = frameBuffer + static_cast<uint32_t>(y) * widthBytes;
-    uint8_t* dst = canvas + static_cast<uint32_t>(y) * stride;
-    for (int bx = 0; bx < widthBytes; bx++) {
-      const uint8_t bits = src[bx];
-      // The overwhelmingly common case on a text overlay: a fully white byte has
-      // nothing to stamp, so skip the eight-bit unpack entirely.
-      if (bits == 0xFF) continue;
-      const int x0 = bx * 8;
-      for (int bit = 0; bit < 8; bit++) {
-        const int x = x0 + bit;
-        if (x >= width) break;
-        if (!(bits & (0x80 >> bit))) dst[x] = 0x00;
-      }
-    }
-  }
+  gray8compose::stampBlack(canvas, stride, frameBuffer, getDisplayWidthBytes(), getDisplayWidth(), getDisplayHeight());
 }
 
 void GfxRenderer::compositeBwRectOntoGray8Canvas(const Gray8Target& gray8, const int x, const int y, const int width,

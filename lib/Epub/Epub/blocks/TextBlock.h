@@ -10,6 +10,10 @@
 #include <vector>
 
 class BuildArena;  // lib/Memory -- optional page-scoped storage for the arena bytes
+namespace serialization {
+class BufferedFileWriter;  // lib/Serialization -- where a block writes itself
+class BufferedFileReader;  // and where it reads itself back
+}  // namespace serialization
 
 #include "../TokenBoundary.h"
 #include "Block.h"
@@ -380,6 +384,9 @@ class TextBlock final : public Block {
   int annotationBand(const GfxRenderer& renderer, int fontId) const;
   // The same band from what a layout knows before the line exists.
   static int annotationBandFor(const GfxRenderer& renderer, int effFontId, float blockScale, uint8_t maxSizePct);
+  // How far below the band the line's baseline sits: the ascender of its tallest word size, which render() draws every
+  // word's baseline at. From what a layout knows before the line exists, as annotationBandFor is.
+  static int lineAscenderFor(const GfxRenderer& renderer, int effFontId, float blockScale, uint8_t maxSizePct);
   // No word draws scaled: block multiplier 1, no heading font, no word sizes, no SUP/SUB/SMALL_CAPS, no annotations,
   // not vertical.
   bool drawsUnscaled() const;
@@ -417,8 +424,8 @@ class TextBlock final : public Block {
   // given a renderer works out where to break the words into lines
   void render(const GfxRenderer& renderer, int fontId, int x, int y) const;
   BlockType getType() override { return TEXT_BLOCK; }
-  bool serialize(FsFile& file) const;
+  bool serialize(serialization::BufferedFileWriter& out) const;
   // `scratch`: the arena bytes come from it when given (a page drawn mid-build takes them from
   // the build's lent region, inside a block the caller opens and closes); null means the heap.
-  static std::unique_ptr<TextBlock> deserialize(FsFile& file, BuildArena* scratch = nullptr);
+  static std::unique_ptr<TextBlock> deserialize(serialization::BufferedFileReader& in, BuildArena* scratch = nullptr);
 };

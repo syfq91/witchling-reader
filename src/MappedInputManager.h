@@ -1,12 +1,16 @@
 #pragma once
 
 #include <HalGPIO.h>
+#include <TouchTransform.h>
 
 class GfxRenderer;
 
 class MappedInputManager {
  public:
   enum class Button { Back, Confirm, Left, Right, Up, Down, Power, PageBack, PageForward };
+  enum class SwipeDir { None, Left, Right, Up, Down };
+  enum class RowTouch : uint8_t { None, Down, Tap };
+  enum class MultiTouch : uint8_t { None, PinchIn, PinchOut, RotateClockwise, RotateCounterClockwise };
 
   // Screen orientation as the input layer sees it. Mirrors GfxRenderer::Orientation value for
   // value; it is duplicated rather than included because the input layer sits below the renderer
@@ -78,13 +82,21 @@ class MappedInputManager {
   void setTouchEventsEnabled(bool) const {}
   bool touchEventsEnabled() const { return false; }
   bool wasScreenTapped(int&, int&) const { return false; }
+  bool wasScreenTappedIn(touchtransform::Orientation, int&, int&) const { return false; }
+  bool peekScreenTapIn(touchtransform::Orientation, int&, int&) const { return false; }
   bool wasScreenTouchPressed(int&, int&) const { return false; }
   bool wasScreenTouchDown(int&, int&) const { return false; }
+  bool peekScreenLongPressIn(touchtransform::Orientation, int&, int&) const { return false; }
   bool peekScreenLongPress(int&, int&) const { return false; }
   void suppressTouchContact() const {}
   bool isScreenTouchHeld(int&, int&) const { return false; }
   bool wasScreenTouchReleased() const { return false; }
   unsigned long lastTouchHeldMs() const { return 0; }
+  RowTouch listTouch(int&) const { return RowTouch::None; }
+  SwipeDir wasSwipe() const { return SwipeDir::None; }
+  SwipeDir wasSwipeIn(touchtransform::Orientation) const { return SwipeDir::None; }
+  SwipeDir wasSwipeIn(touchtransform::Orientation, int&, int&) const { return SwipeDir::None; }
+  MultiTouch popMultiTouch(int&, int&) const { return MultiTouch::None; }
   void flushTouchEvents() const {}
   bool wasHomeGesture() const { return false; }
   bool wasMenuGesture() const { return false; }

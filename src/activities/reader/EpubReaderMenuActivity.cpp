@@ -1,5 +1,6 @@
 #include "EpubReaderMenuActivity.h"
 
+#include <Epub/LineSpacing.h>
 #include <GfxRenderer.h>
 #include <HalCapabilities.h>
 #include <I18n.h>
@@ -139,6 +140,9 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
   if (hasPrintedPages) {
     navigationItems.push_back(SettingInfo::Action(StrId::STR_GO_TO_PRINTED_PAGE, SettingAction::None));
   }
+  navigationItems.push_back(SettingInfo::Action(StrId::STR_SEARCH, SettingAction::None));
+  // Auto page turn: ACTION type with its own picker in onActionSelected
+  navigationItems.push_back(SettingInfo::Action(StrId::STR_AUTO_TURN_SECONDS, SettingAction::None));
   navigationItems.push_back(SettingInfo::Action(StrId::STR_STAR_PAGE, SettingAction::None));
   if (hasStarredPages) {
     navigationItems.push_back(SettingInfo::Action(StrId::STR_STARRED_PAGES, SettingAction::None));
@@ -178,10 +182,11 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
           s->pendingEmbeddedStyleOverride = 0;
       }));
 
-  // Image rendering: cycles default(-1) -> display(0) -> placeholder(1) -> suppress(2)
+  // Image rendering: cycles default(-1) -> display(0) -> placeholder(1) -> suppress(2) -> black & white(3)
   settingsItems.push_back(SettingInfo::DynamicEnumCtx(
       StrId::STR_IMAGES,
-      {StrId::STR_DEFAULT_VALUE, StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS},
+      {StrId::STR_DEFAULT_VALUE, StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS,
+       StrId::STR_IMAGES_DISPLAY_BW},
       self,
       [](const void* ctx) -> uint8_t {
         const auto* s = static_cast<const EpubReaderMenuActivity*>(ctx);
@@ -192,28 +197,17 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
         s->pendingImageRenderingOverride = (v == 0) ? -1 : static_cast<int8_t>(v - 1);
       }));
 
-  // Reader font family: default + built-ins + discovered SD families.
+  // Reader font family: default, then the built-in and the card's families as the settings list them
+  // (fontFamilyOptionCount), mapped to the book's overrides by the helpers the reader bars' Layout tab shares.
   {
-    std::vector<StrId> values = {StrId::STR_DEFAULT_VALUE, StrId::STR_SERIF, StrId::STR_NOTO_SANS};
-    const auto& families = sdFontSystem.registry().getFamilies();
-    values.insert(values.end(), families.size(), StrId::STR_NONE_OPT);
-
+    std::vector<StrId> values(1 + fontFamilyOptionCount(), StrId::STR_NONE_OPT);
     auto familySetting = SettingInfo::DynamicEnumCtx(
-                             StrId::STR_FONT_FAMILY, values, self,
+                             StrId::STR_FONT_FAMILY, std::move(values), self,
                              [](const void* ctx) -> uint8_t {
                                const auto* s = static_cast<const EpubReaderMenuActivity*>(ctx);
-                               if (s->pendingFontFamilyOverride >= 0) {
-                                 return static_cast<uint8_t>(s->pendingFontFamilyOverride + 1);
-                               }
-                               if (!s->pendingSdFontFamilyOverride.empty()) {
-                                 const auto& fs = sdFontSystem.registry().getFamilies();
-                                 for (size_t i = 0; i < fs.size(); i++) {
-                                   if (fs[i].name == s->pendingSdFontFamilyOverride) {
-                                     return static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + 1 + i);
-                                   }
-                                 }
-                               }
-                               return 0;
+                               const int option = fontFamilyOptionForOverrides(s->pendingFontFamilyOverride,
+                                                                               s->pendingSdFontFamilyOverride);
+                               return static_cast<uint8_t>(option + 1);
                              },
                              [](void* ctx, uint8_t v) {
                                auto* s = static_cast<EpubReaderMenuActivity*>(ctx);
@@ -222,29 +216,12 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
                                  s->pendingSdFontFamilyOverride.clear();
                                  return;
                                }
-
-                               const uint8_t builtinCount = CrossPointSettings::BUILTIN_FONT_COUNT;
-                               if (v <= builtinCount) {
-                                 s->pendingFontFamilyOverride = static_cast<int8_t>(v - 1);
-                                 s->pendingSdFontFamilyOverride.clear();
-                                 return;
-                               }
-
-                               const size_t sdIdx = static_cast<size_t>(v - (builtinCount + 1));
-                               const auto& fs = sdFontSystem.registry().getFamilies();
-                               s->pendingFontFamilyOverride = -1;
-                               if (sdIdx < fs.size()) {
-                                 s->pendingSdFontFamilyOverride = fs[sdIdx].name;
-                               } else {
-                                 s->pendingSdFontFamilyOverride.clear();
-                               }
+                               fontFamilyOverridesForOption(static_cast<uint8_t>(v - 1), s->pendingFontFamilyOverride,
+                                                            s->pendingSdFontFamilyOverride);
                              })
                              .withSelectorActivity();
-
-    familySetting.enumLabels = {tr(STR_DEFAULT_VALUE), tr(STR_SERIF), tr(STR_NOTO_SANS)};
-    for (const auto& fam : families) {
-      familySetting.enumLabels.push_back(fam.name);
-    }
+    familySetting.enumLabels.push_back(tr(STR_DEFAULT_VALUE));
+    for (uint8_t i = 0; i < fontFamilyOptionCount(); ++i) familySetting.enumLabels.push_back(fontFamilyOptionLabel(i));
     settingsItems.push_back(std::move(familySetting));
   }
 
@@ -332,12 +309,9 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
                               })
                               .withSelectorActivity());
 
-  // Line spacing: default(-1) + the 6 global options
+  // Line spacing: default(-1) + the global options, the percentages then Book's Style
   settingsItems.push_back(SettingInfo::DynamicEnumCtx(
-                              StrId::STR_LINE_SPACING,
-                              {StrId::STR_DEFAULT_VALUE, StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE,
-                               StrId::STR_EXTRA_WIDE, StrId::STR_WIDEST, StrId::STR_BOOK_S_STYLE},
-                              self,
+                              StrId::STR_LINE_SPACING, {StrId::STR_DEFAULT_VALUE, StrId::STR_BOOK_S_STYLE}, self,
                               [](const void* ctx) -> uint8_t {
                                 const auto* s = static_cast<const EpubReaderMenuActivity*>(ctx);
                                 return (s->pendingLineSpacingOverride < 0)
@@ -348,6 +322,7 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
                                 auto* s = static_cast<EpubReaderMenuActivity*>(ctx);
                                 s->pendingLineSpacingOverride = (v == 0) ? -1 : static_cast<int8_t>(v - 1);
                               })
+                              .withLiteralOptions(lineSpacingStepLabel, kLineSpacingPercentSteps, 1)
                               .withSelectorActivity());
 
   // Vertical text: default / automatic / on / off, for a book whose language is ever set vertically
@@ -369,6 +344,7 @@ void EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes, bool hasStarredPa
   }
 
   // Text anti-aliasing: default / on / off (mirrors QuickOverrides)
+  // cppcheck-suppress knownConditionTrueFalse ; a compile-time constant on Murphy, live on the other boards
   if (HalCapabilities::panelShowsGray()) {
     settingsItems.push_back(SettingInfo::DynamicEnumCtx(
         StrId::STR_TEXT_AA, {StrId::STR_DEFAULT_VALUE, StrId::STR_STATE_ON, StrId::STR_STATE_OFF}, self,
@@ -421,6 +397,8 @@ EpubReaderMenuActivity::MenuAction EpubReaderMenuActivity::actionForNameId(StrId
       return MenuAction::GO_TO_PERCENT;
     case StrId::STR_GO_TO_PRINTED_PAGE:
       return MenuAction::GO_TO_PRINTED_PAGE;
+    case StrId::STR_SEARCH:
+      return MenuAction::SEARCH;
     case StrId::STR_STARRED_PAGES:
       return MenuAction::STARRED_PAGES;
     case StrId::STR_STAR_PAGE:

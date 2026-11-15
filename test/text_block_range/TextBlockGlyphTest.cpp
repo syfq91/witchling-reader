@@ -2,6 +2,7 @@
 // records as a glyph form, bit 2 of the TextBlock bidi region, beside the UTF-8 display forms of bit 0 and sharing
 // their offsets. A glyph form is 0xFF, a u16 glyph count, the records, then 0x00. The word's text stays its logical
 // text. Against the fixed-width shim of this directory: every codepoint 10 px, and runs measured as glyphRunAdvance.
+#include <BufferedFileIO.h>
 #include <GfxRenderer.h>
 #include <GlyphRun.h>
 #include <Memory.h>
@@ -105,7 +106,11 @@ std::unique_ptr<TextBlock> line(const LineSpec& spec) {
 
 std::string bytesOf(const TextBlock& block) {
   FsFile file = HalFile::forReadWrite();
-  if (!block.serialize(file) || !file.seek(0)) return {};
+  {
+    serialization::BufferedFileWriter writer(file);
+    if (!block.serialize(writer) || !writer.flush()) return {};
+  }
+  if (!file.seek(0)) return {};
   std::string bytes(file.size(), '\0');
   file.read(bytes.data(), bytes.size());
   return bytes;
@@ -115,7 +120,8 @@ std::unique_ptr<TextBlock> readBack(const std::string& bytes) {
   FsFile file = HalFile::forReadWrite();
   file.write(bytes.data(), bytes.size());
   if (!file.seek(0)) return nullptr;
-  return TextBlock::deserialize(file);
+  serialization::BufferedFileReader reader(file);
+  return TextBlock::deserialize(reader);
 }
 
 std::string octets(const std::initializer_list<int> values) {

@@ -256,15 +256,30 @@ class CrossPointSettings {
     return best;
   }
 
-  // Stored by number, in LineSpacingStep's order (Epub/LineSpacing.h). FROM_BOOK is Book's style.
+  // Stored by number, in LineSpacingStep's order (Epub/LineSpacing.h): a percentage of Normal, then FROM_BOOK, Book's
+  // style. Renumbered at LINE_SPACING_ORDER_VERSION 1; older files are converted as they load.
   enum LINE_COMPRESSION {
-    TIGHT = 0,
-    NORMAL = 1,
-    WIDE = 2,
-    EXTRA_WIDE = 3,
-    WIDEST = 4,
-    FROM_BOOK = 5,
+    LINE_SPACING_90 = 0,
+    LINE_SPACING_95 = 1,
+    LINE_SPACING_100 = 2,
+    LINE_SPACING_110 = 3,
+    LINE_SPACING_120 = 4,
+    LINE_SPACING_130 = 5,
+    LINE_SPACING_145 = 6,
+    LINE_SPACING_160 = 7,
+    LINE_SPACING_175 = 8,
+    FROM_BOOK = 9,
     LINE_COMPRESSION_COUNT
+  };
+  // Stored by number, in ParagraphIndent's order (Epub/ParagraphIndent.h): none, four sizes in ems, then Book's style.
+  enum PARAGRAPH_INDENT {
+    PARAGRAPH_INDENT_NONE = 0,
+    PARAGRAPH_INDENT_HALF_EM = 1,
+    PARAGRAPH_INDENT_ONE_EM = 2,
+    PARAGRAPH_INDENT_ONE_AND_HALF_EM = 3,
+    PARAGRAPH_INDENT_TWO_EM = 4,
+    PARAGRAPH_INDENT_FROM_BOOK = 5,
+    PARAGRAPH_INDENT_COUNT
   };
   // Stored by number, in VerticalText's order (Epub/FlowContext.h).
   enum VERTICAL_TEXT { VERTICAL_TEXT_AUTOMATIC = 0, VERTICAL_TEXT_ON = 1, VERTICAL_TEXT_OFF = 2, VERTICAL_TEXT_COUNT };
@@ -285,8 +300,15 @@ class CrossPointSettings {
   // Size of the menu/chrome text. Kept for UiFontLadder / layout compatibility, defaulting to Normal.
   enum UI_FONT_SIZE { UI_FONT_SIZE_DEFAULT = 0, UI_FONT_SIZE_COUNT };
 
-  // Image rendering in EPUB reader
-  enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
+  // Image rendering in EPUB reader. Stored by number: a new value goes last. IMAGES_DISPLAY_BW lays images out as
+  // IMAGES_DISPLAY does and draws them in black and white, with no gray pass (activities/reader/ReaderImageMode.h).
+  enum IMAGE_RENDERING {
+    IMAGES_DISPLAY = 0,
+    IMAGES_PLACEHOLDER = 1,
+    IMAGES_SUPPRESS = 2,
+    IMAGES_DISPLAY_BW = 3,
+    IMAGE_RENDERING_COUNT
+  };
 
   // File browser sort mode (per-session, not persisted)
   enum FILE_SORT_MODE { SORT_BY_NAME = 0, SORT_BY_DATE = 1, SORT_BY_SIZE = 2, SORT_BY_TYPE = 3, FILE_SORT_MODE_COUNT };
@@ -356,6 +378,9 @@ class CrossPointSettings {
   uint8_t statusBarPrintedPage = 1;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
+  // A body paragraph's first-line indent: Book's Style (the book's, one em where it sets none and extra paragraph
+  // spacing is off), or a size the reader chose. See ParagraphIndent.h.
+  uint8_t paragraphIndent = PARAGRAPH_INDENT_FROM_BOOK;
   // The interval Auto Turn last ran at, in seconds: where its picker opens. The reader starts it from the menu.
   uint8_t autoTurnSeconds = 30;
 #if defined(FREEINK_DEVICE_MURPHY) && FREEINK_DEVICE_MURPHY && !FREEINK_MURPHY_GRAY
@@ -390,7 +415,7 @@ class CrossPointSettings {
   // Point size of the EPUB reader font, persisted as "fontSize". Shown and drawn snapped to the
   // sizes the active family offers (ReaderSizeList), never rewritten to them.
   uint8_t fontPointSize = DEFAULT_FONT_POINT_SIZE;
-  uint8_t lineSpacing = NORMAL;
+  uint8_t lineSpacing = LINE_SPACING_100;
   uint8_t verticalText = VERTICAL_TEXT_AUTOMATIC;
   uint8_t pageTurnButtons = PAGE_TURN_FOLLOW_BOOK;
   uint8_t paragraphAlignment = JUSTIFIED;
@@ -414,8 +439,24 @@ class CrossPointSettings {
   // paragraphs and a size stated on the block itself (p.body { font-size: 1.1em }). Default on.
   uint8_t fontSizeNormalization = 1;
 
-  // Reader screen margin settings
-  uint8_t screenMargin = 5;
+  // The reader's margins, in pixels on top of the panel's viewable insets (ReaderUtils::addReaderMargins): Top &
+  // Bottom, never less than the status bar there, and Left & Right. One "screenMargin" for all four sides before; a
+  // file with only that key gives it to both (screenMarginFromStored).
+  static constexpr uint8_t SCREEN_MARGIN_MIN = 5;
+  static constexpr uint8_t SCREEN_MARGIN_MAX = 40;
+  static constexpr uint8_t SCREEN_MARGIN_STEP = 5;
+  static constexpr uint8_t DEFAULT_SCREEN_MARGIN = 5;
+  uint8_t screenMarginVertical = DEFAULT_SCREEN_MARGIN;
+  uint8_t screenMarginHorizontal = DEFAULT_SCREEN_MARGIN;
+  /// A reader margin read from a settings file: its own key's value (`stored`, -1 when the file has none), else the one
+  /// margin of a file from before the two (`legacy`, -1 when absent), else the default. Clamped to the rows' range, as
+  /// the settings loop clamps a value row.
+  static constexpr uint8_t screenMarginFromStored(const int stored, const int legacy) {
+    const int value = stored >= 0 ? stored : legacy >= 0 ? legacy : DEFAULT_SCREEN_MARGIN;
+    return static_cast<uint8_t>(value < SCREEN_MARGIN_MIN   ? SCREEN_MARGIN_MIN
+                                : value > SCREEN_MARGIN_MAX ? SCREEN_MARGIN_MAX
+                                                            : value);
+  }
 
   // Extra clearance from the panel edge, on TOP of the board profile's own viewableInsets --
   // see GfxRenderer::setViewablePaddingProvider. The profile says where the case covers the
@@ -451,8 +492,15 @@ class CrossPointSettings {
   uint16_t measuredFastRefreshMs = 0;
   // Menu/chrome text size (UI_FONT_SIZE)
   uint8_t uiFontSize = UI_FONT_SIZE_DEFAULT;
+  // Dark Mode: every screen but the sleep screens and the image viewer white on black. A DarkMode::Setting: off, on,
+  // or Scheduled, from darkModeFrom to darkModeUntil (half-hour slots of the day, DarkMode::SLOT_MINUTES). See
+  // DarkMode.h; what the screens follow now is DarkModeNow::isDark().
+  uint8_t darkMode = 0;
+  uint8_t darkModeFrom = 44;   // 22:00
+  uint8_t darkModeUntil = 14;  // 07:00
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
+
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
   uint8_t embeddedStyle = 1;
   // Publisher Fonts (PUBLISHER_FONTS; BookFonts). Off by default: opening a book in its own font installs its family
@@ -477,7 +525,13 @@ class CrossPointSettings {
   uint8_t tiltNegativeAction = TILT_ACT_PREV_PAGE;
 
   // Tracks button-action enum ordering and board-specific keymap defaults.
-  static constexpr uint8_t BUTTON_ACTIONS_VERSION = 1;
+  // 1: BTN_BACK inserted before the board-gated block. Older settings keep
+  //    explicit custom actions, while old built-in Confirm double/long entries
+  //    inherit Murphy's Back/Sleep defaults.
+  // 2: BTN_READER_BARS inserted after BTN_BACK.
+  // 3: BTN_CONFIRM inserted after BTN_READER_BARS. A stored built-in short Power takes the board's
+  //    default, Confirm on a board with no Back or Home key (BOOX Picco), in place of nothing.
+  static constexpr uint8_t BUTTON_ACTIONS_VERSION = 3;
 
   // Enable synthetic TOC fallback for malformed/sparse TOC books (enabled by default; removed from settings)
   uint8_t syntheticTocFallback = 1;
@@ -544,6 +598,19 @@ class CrossPointSettings {
     BTN_DICTIONARY,
     BTN_SYNC_PROGRESS,
     BTN_BACK,
+    // Open the reader bars, as a short Confirm in a book does: for a second way in (a double
+    // press, a gesture) or a board whose Confirm sits awkwardly. A reader without bars (XTC, TXT)
+    // opens what its Confirm opens.
+    BTN_READER_BARS,
+    // Send a normal Confirm press to the current activity, as BTN_BACK sends Back. On a board with no
+    // Back or Home key (BOOX Picco) a short press of Power carries it by default.
+    BTN_CONFIRM,
+    // --- Board-gated actions MUST stay at the end of this enum ---------------
+    BTN_LIGHT_TOGGLE,
+    BTN_LIGHT_BRIGHTER,
+    BTN_LIGHT_DIMMER,
+    BTN_LIGHT_WARMER,
+    BTN_LIGHT_COOLER,
     BUTTON_ACTION_COUNT
   };
 
@@ -616,8 +683,8 @@ class CrossPointSettings {
   static int getBuiltinReaderFontIdForPoints(const uint8_t family, const uint8_t pt) {
     return getBuiltinReaderFontId(family, builtinRungForPoints(pt));
   }
-  // The Publisher Fonts (PUBLISHER_FONTS) a book is drawn with: its override (RecentBook::publisherFontsOverride), or
-  // `setting` (publisherFonts) when it has none.
+  // The Publisher Fonts (PUBLISHER_FONTS) a book is drawn with: its override
+  // (BookReaderOverrides::publisherFontsOverride), or `setting` (publisherFonts) when it has none.
   static constexpr uint8_t publisherFontsFor(const int8_t bookOverride, const uint8_t setting) {
     return bookOverride >= 0 && bookOverride < PUBLISHER_FONTS_COUNT ? static_cast<uint8_t>(bookOverride) : setting;
   }
@@ -665,6 +732,17 @@ class CrossPointSettings {
       default:
         return action;
     }
+  }
+
+  // A stored action from a settings file written at BUTTON_ACTIONS_VERSION `fromVersion`, in today's numbering. Each
+  // version that inserted an action before the board-gated block moved every action from its place up by one. The
+  // insertions run in order and each lands after the one before, so today's value of an inserted action is also where
+  // it went in. Past the end is left for the loader's range check.
+  static constexpr uint8_t upgradeStoredAction(uint8_t action, const int fromVersion) {
+    if (fromVersion < 1 && action >= BTN_BACK) ++action;
+    if (fromVersion < 2 && action >= BTN_READER_BARS) ++action;
+    if (fromVersion < 3 && action >= BTN_CONFIRM) ++action;
+    return action;
   }
 
   // Enforce settings whose values depend on others. Call after any setting mutation that could

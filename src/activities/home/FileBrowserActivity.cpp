@@ -204,11 +204,6 @@ void FileBrowserActivity::selectTab(const BrowserTab tab, const bool focusBar) {
     model.setMode(newMode);
     model.setPath(std::move(targetPath));
 
-    std::optional<RecentBooksStore::Hold> recents;
-    if (model.getMode() == Mode::Recents) {
-      recents.emplace();
-      RECENT_BOOKS.refreshSidecarMetadata(static_cast<size_t>(RECENT_BOOKS.getCount()));
-    }
     model.load();
   }
 
@@ -249,13 +244,7 @@ void FileBrowserActivity::onEnter() {
   // it replaced did on the way in: a metadata sidecar may have changed since the book was read.
   // One load of the recent-books list for both the refresh and the rows (loadRecents copies the
   // paths out), let go again before the screen draws: the list is not kept while browsing.
-  std::optional<RecentBooksStore::Hold> recents;
-  if (model.getMode() == Mode::Recents) {
-    recents.emplace();
-    RECENT_BOOKS.refreshSidecarMetadata(static_cast<size_t>(RECENT_BOOKS.getCount()));
-  }
   model.load();
-  recents.reset();
   int selectedIndex = 0;
 
   const bool hadFocusName = !focusName.empty();
@@ -711,8 +700,9 @@ bool FileBrowserActivity::removeDirRecursive(const std::string& fullPath) {
   }
   if (!file.isDirectory()) {
     file.close();
+    if (!Storage.remove(fullPath.c_str())) return false;
     clearFileMetadata(fullPath);
-    return Storage.remove(fullPath.c_str());
+    return true;
   }
   file.close();
 
@@ -760,12 +750,12 @@ bool FileBrowserActivity::removeDirRecursive(const std::string& fullPath) {
       if (isDir) {
         stack.push_back({std::move(entryPath), false});
       } else {
-        clearFileMetadata(entryPath);
         if (!Storage.remove(entryPath.c_str())) {
           LOG_ERR("FBR", "Failed to remove file: %s", entryPath.c_str());
           dir.close();
           return false;
         }
+        clearFileMetadata(entryPath);
       }
     }
     dir.close();
@@ -1880,10 +1870,14 @@ void FileBrowserActivity::doRemove(const std::string& fullPath, const std::strin
                              if (isDirectory) {
                                deleted = removeDirRecursive(fullPath);
                              } else {
-                               clearFileMetadata(fullPath);
+                               // The cache holds where the book was left and its bookmarks: it goes
+                               // only once the book has.
                                deleted = Storage.remove(fullPath.c_str());
-                               if (deleted && withSidecars && !SidecarFiles::removeAll(fullPath)) {
-                                 LOG_ERR("FBR", "Deleted %s but not all of its sidecars", fullPath.c_str());
+                               if (deleted) {
+                                 clearFileMetadata(fullPath);
+                                 if (withSidecars && !SidecarFiles::removeAll(fullPath)) {
+                                   LOG_ERR("FBR", "Deleted %s but not all of its sidecars", fullPath.c_str());
+                                 }
                                }
                              }
                              if (deleted) {
@@ -1893,7 +1887,13 @@ void FileBrowserActivity::doRemove(const std::string& fullPath, const std::strin
                                resetNavigation(nav.selected);
                                requestUpdate(true);
                              } else {
+                               // Said on screen too: the list as it was is all the user would see.
                                LOG_ERR("FBR", "Failed to delete: %s", fullPath.c_str());
+                               {
+                                 RenderLock lock(*this);
+                                 renderer.setNextDisplayRefreshMode(HalDisplay::HALF_REFRESH);
+                                 GUI.drawPopup(renderer, tr(STR_DELETE_FAILED));
+                               }
                                requestUpdate();
                              }
                            } else {

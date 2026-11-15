@@ -27,6 +27,7 @@ the commands do, how to use them, and how to add one.
   - [Heap ballast: `HEAP`](#heap-ballast-heap)
   - [TrueType fonts: `TTF`](#truetype-fonts-ttf)
   - [Files on the card: `FS`](#files-on-the-card-fs)
+  - [The web bundle: `WEB`](#the-web-bundle-web)
   - [Other: `BOOTLOG`, `HELP`](#other-bootlog-help)
 - [The USB Transfer screen](#the-usb-transfer-screen)
 - [Safety notes](#safety-notes)
@@ -58,11 +59,22 @@ web settings page. A test therefore exercises the real code paths, not a back do
 
 The development builds (`pio run -e default`, `-e x4pro`, `-e lilygo_t5s3`) are compiled with
 `-DSERIAL_TEST_API=1` and have everything on this page. The release builds (`gh_release`,
-`gh_release_rc` and their X4 Pro and LilyGo twins) and `slim` leave the flag off and keep only the
-first commands: `BTN` (the six front and side keys, `:LONG`), `ACT` (`HOME`, `READER:<path>`,
-`SETTINGS`, `BOOKMARKS`, `FILES`, `LIBRARY`), `STATE` (screen, stack, the reader's book, spine and
-page), `SCREENSHOT`, `BOOTLOG` and `HELP`. Anything else gets `CMD_ERROR:unknown command`, and
-`CMD:HELP` lists what the build in hand has.
+`gh_release_rc` and their X4 Pro, LilyGo and Murphy twins) and `slim` leave the flag off and keep
+only these:
+
+| Command | In a release build |
+| --- | --- |
+| `BTN` | the six front and side keys, `:LONG` |
+| `ACT` | `HOME`, `READER:<path>`, `SETTINGS`, `BOOKMARKS`, `FILES`, `LIBRARY`, `USB_TRANSFER` |
+| `STATE` | screen, stack, the reader's book, spine and page |
+| `WEB` | all of it ([The web bundle](#the-web-bundle-web)) |
+| `SCREENSHOT`, `BOOTLOG`, `HELP` | all of it |
+
+The USB Transfer screen answers them too, and its file-transfer protocol is the same in every
+build. `ACT:USB_TRANSFER` and `WEB` are there for the web flasher (`flasher/`), which writes the
+web bundle to the card after a flash and installs it, so a fresh install needs no Wi-Fi for its
+pages. Anything else gets `CMD_ERROR:unknown command`, and `CMD:HELP` lists what the build in hand
+has.
 
 The full set costs about 19.4 KB of flash and 280 B of RAM on the X4 build: `PAGE` and the file
 commands brought 9 KB of the flash and no RAM, since their 2 KB scratch comes from the heap for the
@@ -87,12 +99,24 @@ Things to know about the port:
 - **Closing it can.** On Windows a plain close drops DTR before RTS, and an ESP32-C3 takes RTS high
   with DTR low as a reset request: it restarts to Home (`resetReason=11` in the boot log). Set RTS
   low, then DTR low, then close, as `tools/devctl.py` does.
-- **The port goes away on a reboot or sleep.** The USB device re-enumerates. A long-running host
-  has to close and reopen the port; `tools/devctl.py` does this by itself.
+- **The port goes away when the cable is pulled or the device goes into deep sleep.** Only then
+  does a long-running host have to close and reopen it; `tools/devctl.py` does this by itself, and
+  drops what it had read from the old port. A command whose write fails that way may or may not
+  have reached the device, so do not send it again blindly: `devctl.py` fails that step with
+  `DELIVERY UNCERTAIN: CMD:<text> (port reopened, not resent)` and goes on with the next one on the
+  reopened port. A reset does not take the port away on the ESP32-C3 boards (X3, X4): their USB
+  serial port stays up through a restart (`CMD:REBOOT`) and through a reset from the host (RTS), so
+  a reply outstanding when the device resets never comes, and `devctl.py` stops the run with
+  `LINK UNSYNCED`.
 - **One program at a time.** Close your monitor before running a script, and never hold the port
   while flashing.
 - **Log lines share the wire.** The device keeps printing its log (`[1234] [INF] [ERS] ...`) between
-  replies. A host must pick out the reply by its prefix and skip everything else.
+  replies. A host must pick out the reply by its prefix and skip everything else. Each reply line
+  goes out in one write, so a log line lands inside it only when the host lags far enough behind
+  for that write to come back short. A line left unfinished (a log line the USB link cut short, or a
+  reply the device gave up on after 2 s without the host reading, 50 ms for an `EVT:` line) is
+  followed by a line break before the next reply, so that reply starts a fresh line. Log lines may
+  still sit between replies.
 
 ## How a command works
 
@@ -117,6 +141,10 @@ A reply means the command was **accepted**, not that its effect is finished: aft
 press is queued and the screen has not been redrawn yet. Use [`CMD:IDLE`](#waiting-idle) to wait for
 the effect before you look at the screen.
 
+A command counts as user activity, as a key press does: it restarts the auto-sleep countdown and
+keeps the CPU at its full clock, and so does a pending `IDLE` or a press or screen switch still on
+its way to the panel, so a session driven only over USB needs no keep-alive presses.
+
 Values that contain spaces are written in double quotes, with `"` and `\` escaped by a backslash,
 for example `book="/test/The Anarchy - Dalrymple, William.epub"`. Split such a line on spaces that
 are outside quotes.
@@ -126,10 +154,11 @@ are outside quotes.
 ### Buttons: `BTN`
 
 ```
-CMD:BTN:<BACK|CONFIRM|LEFT|RIGHT|UP|DOWN|POWER>[:LONG|:DOUBLE]
+CMD:BTN:<BACK|CONFIRM|LEFT|RIGHT|UP|DOWN|POWER>[:LONG|:DOUBLE|:<ms>]
 ```
 
-Reply: `BTN_OK`, or `BTN_ERROR:unknown button <name>` / `BTN_ERROR:bad press <text>`.
+Reply: `BTN_OK`, or `BTN_ERROR:unknown button <name>` / `BTN_ERROR:bad press <text>`, and for a
+held press `BTN_ERROR:busy`.
 
 - The names are the **physical keys**. The user's front-button remapping and the configured
   short/double/long actions apply as they would for a finger (on this X4, `POWER` is bound to the
@@ -141,11 +170,28 @@ Reply: `BTN_OK`, or `BTN_ERROR:unknown button <name>` / `BTN_ERROR:bad press <te
   need the full API.
 - `POWER:LONG` puts the device to sleep, like holding the power key (see
   [Power](#power-sleep-and-reboot) before you use it).
+- `:<ms>` (1 to 10000, full API only) **holds the key down** for that long. The other forms are a
+  press and a release handed over at once, so code that checks whether a key is still down across
+  loop passes never sees them held; this one goes in where the board's buttons are read, beside the
+  board's own button hook and before the debounce, on every board, so `isPressed()`, the release and the
+  held time are a real key's. A long press fires
+  mid-hold, at 1 s, as it does for a finger. Held presses queue (four at most) and play one after
+  the other, each starting once the last release has gone through; while one plays, a tap, `:LONG`
+  or `:DOUBLE` answers `BTN_ERROR:busy`, so wait with `CMD:IDLE` (its timeout longer than the hold).
+  A real key pressed meanwhile keeps its own press and release; the same key merges with the held
+  one into one press, and a held press of a key that is still down waits for it to come up, so it
+  gets a press of its own. `POWER` held past the power-key duration sleeps the device, as the key
+  does. A held press fails when the input layer does not take the press or its release in within a
+  second and four loop passes (a finger still on the key keeps the release out), or when its key is
+  still down that long after the press is due. A failed press is counted in `STATE`'s `btn_dropped`,
+  and the next `IDLE` answers `IDLE_ERROR:press dropped`.
 
 ```
 > CMD:BTN:DOWN
 < BTN_OK
 > CMD:BTN:CONFIRM:LONG
+< BTN_OK
+> CMD:BTN:DOWN:1500
 < BTN_OK
 ```
 
@@ -172,8 +218,8 @@ Reply: `ACT_OK`, or `ACT_ERROR:<reason>` (`no such file <path>`, `bad position <
   text after the last `@` is read as a position, and only when it has one of the two forms. A book
   under `/test/` stays out of the recent books and the reading stats (see
   [Safety notes](#safety-notes)).
-- Positions are for EPUB books, and need the full API (so do `DICT`, `FILE_TRANSFER`,
-  `USB_TRANSFER` and the settings tab). `@<spine>:<page>` counts from 1, exactly as `STATE` reports
+- Positions are for EPUB books, and need the full API (so do `DICT`, `FILE_TRANSFER` and the
+  settings tab; `USB_TRANSFER` is in every build). `@<spine>:<page>` counts from 1, exactly as `STATE` reports
   `spine=` and `page=`: `@20:12` opens the 12th page of the 20th spine item and `STATE` then says
   `spine=20/.. page=12/..`. That is the page within the spine item; the status bar counts pages in
   the whole TOC chapter (`chapter_page=` in `STATE`), which is a larger number when the chapter
@@ -212,6 +258,7 @@ Reply: one line, `STATE:` followed by `key=value` pairs.
 | `font`, `font_pt` | EPUB reader | the font family and point size the book is set in |
 | `chapter`, `chapter_page`, `percent` | EPUB reader | what the status bar shows: the TOC chapter title, the page within the whole chapter, which can span several spine items (`~` when the total is still an estimate), the book percentage |
 | `flow`, `progression`, `input_progression` | EPUB reader, with a section open | how the section on screen runs and which way its pages turn: `horizontal` or `vertical-rl`; `ltr` or `rtl`; `input_progression` is the direction the buttons, taps and bar use, which equals `progression` once the section's first build pass or page has been drawn (while a cold section's "Indexing" popup is up, about 1 s, it still holds the previous section's direction, or `ltr` in a book just opened) |
+| `btn_dropped` | when not 0 | held presses (`BTN:<key>:<ms>`) that failed: the press or its release was not taken in |
 | `heap`, `maxblock` | always | free heap and the largest free block, in bytes |
 
 Everything but `activity`, `stack`, `book`, `spine` and `page` needs the full API. A popup counts as
@@ -240,9 +287,11 @@ SCREENSHOT_START:<width>:<height>:<bytes>
 SCREENSHOT_END
 ```
 
-or `SCREENSHOT_ERROR:busy` (the display stayed busy for 5 s), `SCREENSHOT_ERROR:framebuffer
-released` (the Wi-Fi file server has the memory), `SCREENSHOT_ERROR:transfer stalled` (the host
-stopped reading).
+or `SCREENSHOT_ERROR:busy` (the display stayed busy for 5 s, or, at once, an earlier `SCREENSHOT` is
+still pending: one at a time, so each gets its reply), `SCREENSHOT_ERROR:framebuffer released` (the
+Wi-Fi file server has the memory), `SCREENSHOT_ERROR:transfer stalled` (the host stopped reading).
+A screenshot to the card (POWER+DOWN, the reader menu) asked for while a `SCREENSHOT` is pending is
+skipped, with a `[SCR]` log line.
 
 The capture waits for the current render pass and copies the frame that is on the panel, not one
 being drawn. In the reader, whose next page may already be drawn off-screen in the same memory, the
@@ -286,6 +335,7 @@ PAGE_LINE:<i> x=<x> y=<y> words=<n> align=<left|right|center|justify> vertical=<
 PAGE_W:<j> x=<x> w=<width> style=<n> glue=<0|1> text="<escaped>"
 ...                                   (one PAGE_W per word of the line, then the next element)
 PAGE_IMAGE:<i> x=<x> y=<y> w=<w> h=<h>
+PAGE_BOX:<i> x=<x> y=<y> w=<w> h=<h> edges=<w>/<s>,<w>/<s>,<w>/<s>,<w>/<s> shaded=<0|1>
 PAGE_EL:<i> <table|hr>
 PAGE_END:<k> starved=<n>
 ```
@@ -309,6 +359,10 @@ or `PAGE_ERROR:<reason>`.
   paragraph says `justify` although it is drawn ragged, as justified text ends; its words' `x` show
   where they are. `vertical=1` marks a line of a vertical-rl page.
 - A table is `PAGE_EL:<i> table` (its cells are not listed), a rule `PAGE_EL:<i> hr`.
+- `PAGE_BOX` is the frame of a CSS box (borders and background) on this page, listed before the content it
+  frames. `edges` are top, right, bottom and left, each `<width>/<style>` in pixels and `CssBorderStyle`
+  (0 unset, 1 none, 2 solid, 3 double, 4 dotted, 5 dashed); a width of 0 draws no edge, as at a page
+  break that cuts the box. `shaded=1`: the background is drawn as a light gray.
 - `starved` counts the glyph lookups during the dump that the heap had no room for
   (`glyph_miss::starvedCount()`). Such a glyph is measured as missing, so with `starved` above 0
   some `w=` are not what the panel shows: free some heap and ask again before trusting the widths.
@@ -362,7 +416,9 @@ CMD:IDLE[:<timeout_ms>][:SCREEN]
 
 Reply, once the device is idle: `IDLE:<milliseconds waited>`. If it is not idle within the
 timeout (default 10000 ms, at most 600000): `IDLE_TIMEOUT:<what kept it busy>`.
-`IDLE_ERROR:...` for a malformed argument.
+`IDLE_ERROR:...` for a malformed argument, and `IDLE_ERROR:busy` while another `IDLE` waits.
+`IDLE_ERROR:press dropped` replaces either answer when a held press (`BTN:<key>:<ms>`) failed since
+the last `IDLE` answer, during the wait or before it: the press or its release was not taken in.
 
 `IDLE` follows the last command that should change the screen (`BTN`, `TOUCH`, `SWIPE`, an `ACT`
 that opens a screen) to its end, so it never answers between the command and its effect. The
@@ -388,7 +444,11 @@ needs room made (a reclaim or an index rebuild, `CMD:TTF`) or still has its use 
 allocated at an idle step, not inside a draw), which the reader does in idle time.
 
 Send `CMD:IDLE` after the command it should wait for; the device handles them in order. While an
-`IDLE` is pending, the device still answers other commands; a second `IDLE` replaces the first.
+`IDLE` is pending, the device still answers other commands. One `IDLE` waits at a time, so each
+gets its own reply: a second one sent while the first waits is answered `IDLE_ERROR:busy` at once,
+and the first goes on with its own timeout and `:SCREEN` mode. A wait outlives the script that sent
+it: after a script stopped during a long `IDLE`, a new `IDLE` is answered `IDLE_ERROR:busy` until
+that wait has answered.
 
 **`IDLE:<ms>` is no timing of what it waited for.** It counts from when the device read the `IDLE`
 line, and the device reads one command line per loop pass: work that holds the loop before that
@@ -456,7 +516,7 @@ GET_ERROR / SET_ERROR:font families not loaded on this screen <key>   (boot stra
 
 - Numbers: an on/off setting is `0` or `1` (any non-zero sets it on); a choice is its option
   index, with the option's text as `label`; a slider (`sleepTimeoutMinutes`, ...) is its number.
-- A choice can also be set by its label, exactly as `GET` shows it (`CMD:SET:lineSpacing=Normal`).
+- A choice can also be set by its label, exactly as `GET` shows it (`CMD:SET:lineSpacing=110%`).
   Labels are in the UI language, so scripts should prefer numbers.
 - Text settings are written as they are. Passwords are never sent back: `GET` shows `(hidden)`.
 - `SET` does what the web page does after a change: it settles the settings that depend on others,
@@ -602,7 +662,9 @@ Replies: `SLEEP_OK`, `REBOOT_OK`, sent before the device acts.
   **Deep sleep switches the USB port off, and only a real button press wakes the device.** Do not
   use it on a device nobody can reach.
 - `REBOOT` restarts to Home the way the firmware's own maintenance restarts do: the reading session
-  is closed, no boot screen. The port re-enumerates; reopen it.
+  is closed, no boot screen. On the ESP32-C3 boards the port stays up through it (the boot log
+  arrives on it), so nothing has to be reopened; a command sent right behind `REBOOT` is lost with
+  the restart and gets no reply.
 
 ### Heap ballast: `HEAP`
 
@@ -858,6 +920,40 @@ spelled with an 8.3 alias are refused (`lib/FsHelpers/ProtectedPaths.h`), but fo
 open book is using is not guarded: do it from Home. On the USB Transfer screen a command line is at most 127 bytes.
 Development builds only.
 
+### The web bundle: `WEB`
+
+```
+CMD:WEB             which bundle this build expects, and whether it is installed
+CMD:WEB:INSTALL     install it from the card's top folder
+```
+
+Replies:
+
+- `CMD:WEB` gives `WEB:state=<installed|missing|stale> asset=<web-hash.bin> release=<tag> onCard=<0|1>`.
+  `release` is `""` on a build that is not published. `onCard` says whether `/<asset>` is on the card.
+- `CMD:WEB:INSTALL` gives `WEB_OK`, or `WEB_ERROR:<reason>`, with the setup page's texts
+  (`no bundle file on the SD card`, `the file is not the bundle for this firmware`, ...).
+
+The install is the setup page's "card" source (`src/network/WebAssets.h`). The file must be this
+build's bundle: same size and SHA-256. On success the device deletes the card copy; a wrong file
+stays on the card. The install blocks the loop for the read and the unpacking, about a second.
+
+With the USB Transfer screen's `W` message this installs the pages without Wi-Fi. The web flasher
+does it after a flash, in this order:
+
+1. `CMD:WEB`, to learn the asset name.
+2. `CMD:ACT:USB_TRANSFER`.
+3. `W` with `/<asset>`.
+4. `CMD:WEB:INSTALL`.
+5. `CMD:ACT:HOME`, which restarts the device.
+
+```
+> CMD:WEB
+< WEB:state=missing asset=web-9748f943a3a6.bin release=2.51 onCard=0
+> CMD:WEB:INSTALL
+< WEB_ERROR:no bundle file on the SD card
+```
+
 ### Other: `BOOTLOG`, `HELP`
 
 - `CMD:BOOTLOG` prints the boot summary again (for a monitor attached after boot) as log lines,
@@ -870,7 +966,7 @@ Development builds only.
 File Transfer > USB Transfer (`CMD:ACT:USB_TRANSFER`) speaks a binary file-transfer protocol on the
 same port (`tools/serial_transfer.py`, compatible with MicroReader's tools). While it is up:
 
-- It still answers `CMD:` lines between transfer messages (full API, lines up to 127 bytes), so a
+- It still answers `CMD:` lines between transfer messages (the build's set, lines up to 127 bytes), so a
   script can check it with `CMD:STATE` and leave it with `CMD:BTN:BACK` or `CMD:ACT:HOME`. A
   transfer message starts with `CMND` or `EPUB`; a line starting with `CMD:` is told apart by its
   first four bytes.
@@ -955,6 +1051,25 @@ that fails says how many bytes came and with which CRC, cancels, and tries again
 card path starts with `/` and holds no `:`, so `put:` splits at its last `:` and `get:` at its first (and at a
 trailing `:<digits>`, the retry count), and a local path may carry a drive letter (`put:C:/books/a.epub:/test/a.epub`);
 `hash:` splits at the first `=`.
+A step takes only a reply to its own command: a line starting with the command's name and `_` or `:`, or
+`CMD_ERROR`. It waits as long as the device may take: 20 s for the device to read the command (a loop pass can be held
+up by long work), and on top what the command itself may take (an `IDLE` its own timeout, `FS:GET`, `FS:HASH` and
+`ACT:DICT` 300 s for a file read through, `SCREENSHOT` 5 s). Replies carry no tag that ties them to their command: a
+reply that comes after its step stopped waiting can be taken by the first command of its name, if it arrives just as
+that command is sent (lines that arrived before are dropped then). So when a command gets no reply while the port stays
+open, the run stops (`LINK UNSYNCED: ...`, exit 1), `--keep-going` or not, and so it does on `IDLE_ERROR:busy`, whose
+earlier wait still has its answer to come. A step whose own number or regular expression is malformed fails as
+`BAD STEP` before anything is sent, and a malformed reply fails its step, or stops the run when it leaves bytes of
+unknown length on the line or an exchange it cannot finish (a `SCREENSHOT_START`, `FS_GET_START` or `FS_PUT_READY` it
+cannot read). A step that failed with any other error reply does not stop a `--keep-going` run, and nor does a
+reply lost because the port went away meanwhile (the cable pulled, deep sleep): devctl reopens the port and drops what
+it had read from the old one. A reset that keeps the port (any reset on the ESP32-C3) with a reply outstanding across
+it stops the run, as any missing reply does. A run that stopped on a missing reply can leave that reply still to come: let the device answer, or
+restart it, before the next run. The `LINK UNSYNCED` message says what came instead, since each points somewhere else:
+`the port stayed silent` (a device asleep, busy or restarting), `N other lines came, none of them a reply`, or `a reply
+glued to the end of a cut line came instead: '...'` (firmware older than the cut-line fix, which left a log line
+unfinished while no host read the port and wrote the reply straight after it). One silent command is not proof the
+device is down: a second command, or the raw output, tells a busy port from a dead one.
 `--script FILE` reads one step per line (`#` comments), `--keep-going` runs all steps and reports every failure,
 `--rotate` sets the screenshot rotation, `--read-pause S` makes `get:` stop reading for S seconds after every MB, as a
 slow host would (a test of the pacing above). Paths may be given as Git Bash writes them (`/c/tmp/page.png`); output is
@@ -1000,7 +1115,9 @@ so it can be tested on the host (`test/serial_command_grammar`).
    `#if SERIAL_TEST_API` so release builds do not carry it (see
    [Which builds have it](#which-builds-have-it)); a probe the UI calls gets an empty inline twin in
    `SerialTestApi.h` for builds without the flag.
-6. Add the reply prefix to `REPLY` in `tools/devctl.py` and document the command on this page.
+6. Start every reply line with the command's name and `_` or `:`: that is how `tools/devctl.py` tells a reply
+   from a log line or a line of another command. A reply under another word goes in its `OTHER_REPLIES`.
+   Document the command on this page.
 
 For what a screen reports in `STATE`, override `Activity::appendDebugState()` and write each pair
 with `SerialCommandGrammar::appendField()`. For work `IDLE` should wait for, override

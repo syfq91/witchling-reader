@@ -1,5 +1,6 @@
 #include "Section.h"
 
+#include <BufferedFileIO.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <HeapFit.h>
@@ -37,7 +38,16 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 121;  // v121: the font-size keywords take the CSS Fonts 4 scale (small 8/9,
+constexpr uint8_t SECTION_FILE_VERSION = 123;  // v123: CSS white-space: pre, pre-wrap and break-spaces keep runs of
+                                               // spaces (a token each) and line feeds, pre-line keeps line feeds;
+                                               // a kept line feed starts the next line, not a block: the block's top
+                                               // spacing and first-line indent are not repeated per line
+                                               // v123 also: CSS initial-letter drop caps (span or ::first-letter)
+                                               // v123 also: CSS borders and background shades draw boxes (PageBox)
+                                               // v123 also: small images set in a text line (PageImage inline, link)
+                                               // v122: a <pre>'s lines take no first-line indent but the book's
+                                               // own; Book's Style gave each one em with extra spacing off
+                                               // v121: the font-size keywords take the CSS Fonts 4 scale (small 8/9,
                                                // x-large 3/2, xx-large 2, xxx-large 3, smaller 1/1.2)
                                                // v120: a character the parser's 256-byte text chunks cut is read
                                                // whole: a joiner after a word's first Arabic or Myanmar letter is
@@ -422,9 +432,9 @@ uint32_t Section::calculatePropertyHash(const BuildParams& p) {
   uint8_t buffer[104];
   static_assert(sizeof(buffer) >= 23 + sizeof(uint32_t) + sizeof(float) + sizeof(uint16_t) +
                                       BlockFontFamilies::kMaxFamilies * 3 * sizeof(int32_t) + sizeof(uint8_t) +
-                                      sizeof(uint32_t) + sizeof(uint8_t),
+                                      sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint8_t),
                 "the settings (23 B), Book's style line spacing, every family, the vertical request, the "
-                "hyphenation patterns and the body size fit");
+                "hyphenation patterns, the body size and the paragraph indent fit");
   size_t offset = 0;
 
   auto append = [&](const void* ptr, size_t size) {
@@ -478,6 +488,10 @@ uint32_t Section::calculatePropertyHash(const BuildParams& p) {
   // key, and so does every book with normalization or its style off.
   if (p.fontSizeNormalization && p.embeddedStyle && p.bodySizePct != 100) {
     append(&p.bodySizePct, sizeof(p.bodySizePct));
+  }
+  // Only when the reader chose one: Book's Style, the default, keeps the key every chapter had before the setting.
+  if (p.paragraphIndent != static_cast<uint8_t>(ParagraphIndent::FromBook)) {
+    append(&p.paragraphIndent, sizeof(p.paragraphIndent));
   }
 
   return fnv1a(buffer, offset);
@@ -625,20 +639,20 @@ void Section::evictOldVariants() const {
   }
 }
 
-uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
+uint32_t Section::onPageComplete(std::unique_ptr<Page> page, serialization::BufferedFileWriter& out) {
   if (!file) {
     LOG_ERR("SCT", "File not open for writing page %d", pageCount);
     return 0;
   }
 
-  const uint32_t position = file.position();
+  const uint32_t position = out.position();
   if (page->elements.size() > Page::MAX_ELEMENTS) {
     // serialize() writes the first MAX_ELEMENTS; the rest of this page is lost, and said so.
     LOG_ERR("SCT", "Page %d has %u elements, more than a page can load (%u); tail dropped", pageCount,
             static_cast<unsigned>(page->elements.size()), static_cast<unsigned>(Page::MAX_ELEMENTS));
     simplified_ = true;
   }
-  if (!page->serialize(file)) {
+  if (!page->serialize(out)) {
     LOG_ERR("SCT", "Failed to serialize page %d", pageCount);
     return 0;
   }
@@ -738,6 +752,7 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
 }
 
 bool Section::loadSectionFile(const BuildParams& p) {
+  forgetPagesWithoutPictures();
   truncatedCache = false;
   imageHeaderDegraded_ = false;
   tableRowDegraded_ = false;
@@ -890,7 +905,25 @@ bool Section::loadSectionFile(const BuildParams& p) {
   return true;
 }
 
+void Section::notePageWithoutPictures(const int page) {
+  if (page < 0 || page >= UINT16_MAX || pageKnownWithoutPictures(page)) return;
+  pagesWithoutPictures_[pagesWithoutPicturesNext_] = static_cast<uint16_t>(page + 1);
+  pagesWithoutPicturesNext_ = static_cast<uint8_t>((pagesWithoutPicturesNext_ + 1) % kPagesWithoutPicturesKept);
+}
+
+bool Section::pageKnownWithoutPictures(const int page) const {
+  if (page < 0 || page >= UINT16_MAX) return false;
+  return std::find(pagesWithoutPictures_.begin(), pagesWithoutPictures_.end(), static_cast<uint16_t>(page + 1)) !=
+         pagesWithoutPictures_.end();
+}
+
+void Section::forgetPagesWithoutPictures() {
+  pagesWithoutPictures_.fill(0);
+  pagesWithoutPicturesNext_ = 0;
+}
+
 bool Section::clearCache() {
+  forgetPagesWithoutPictures();
   // Only close a handle we actually opened: a Section whose cache is cleared before it ever
   // loaded or built (settings change on a freshly constructed Section) still holds the default
   // handle, and HalFile::close() asserts on those. Same reason as the guards in runBuildSetup
@@ -923,6 +956,17 @@ bool Section::clearCache() {
   LOG_DBG("SCT", "Cache cleared successfully");
   return true;
 }
+
+// The page writer's buffer (BuildState::pageWriter), from the heap and held for the build. Measured 2026-11-13, a page
+// took to write: X3 5.8 ms field by field, 1.2 ms gathered in 2 KB, 1.0 ms in 4 KB; T5S3 13.4 / 2.5 / 1.5 ms; X4 Pro
+// 6.3 / 3.1 / 1.7 ms (its SDMMC moves up to 4 KB a command). The PSRAM boards take 4 KB, the C3s 2 KB. The macro is
+// the one HalCapabilities::keepsSecondaryBuffer() reads: HalCapabilities needs the device's BoardConfig, which the
+// host tests that build this file do not have.
+#if defined(BOARD_HAS_PSRAM) && BOARD_HAS_PSRAM
+constexpr size_t PAGE_WRITE_BUFFER_BYTES = 4096;
+#else
+constexpr size_t PAGE_WRITE_BUFFER_BYTES = 2048;
+#endif
 
 // Live state of an in-progress section build. Holds exactly the locals that span build
 // phases. Held by Section as a
@@ -1048,6 +1092,7 @@ struct Section::BuildState {
     chunkBuf = nullptr;
   }
   ~BuildState() {
+    if (pageWriter) pageWriter->discard();  // a build that never reached runBuildFinalize: its file is not read
     if (extractGrowBlock.valid()) arena->release(extractGrowBlock);
     reader.reset();
     // The note-preview resolver reserves its ring block ABOVE chunkBlock and holds it across
@@ -1105,6 +1150,11 @@ struct Section::BuildState {
   uint32_t previewResolveStartMs = 0;
   uint32_t previewResolveMs = 0;          // CPU actually spent resolving, summed across slices
   uint32_t previewResolveMaxSliceMs = 0;  // worst single slice — the number that says it slices
+  // The pages on their way to `file`. A page is some 150 fields of a few bytes; this gathers them and sends them to
+  // the card in whole sectors (BufferedFileWriter::writeWholeSectors). Made once the header is written. A page loaded
+  // mid-build is sent first (loadPageFromActiveBuild), and runBuildFinalize sends the rest before it reads or patches
+  // the file. A build that never reaches finalize leaves a file nothing reads, so what is still here then is dropped.
+  std::optional<serialization::BufferedFileWriter> pageWriter;
   // Parse-result flags, set by runBuildParse and consumed by runBuildFinalize.
   bool streamOk = false;
   bool finalizeOk = false;
@@ -1202,6 +1252,7 @@ bool Section::htmlCacheReusable(const BuildState& st) const {
 }
 
 Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
+  forgetPagesWithoutPictures();
   const BuildParams& p = st.params;
   st.propertyHash = calculatePropertyHash(p);
   filePath = getSectionFilePath(st.propertyHash);
@@ -1250,6 +1301,11 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   writeSectionFileHeader(p.fontId, p.lineCompression, p.extraParagraphSpacing, p.paragraphAlignment, p.viewportWidth,
                          p.viewportHeight, p.hyphenationEnabled, p.embeddedStyle, p.bionicReadingEnabled,
                          p.imageRendering, p.verticalText);
+  st.pageWriter.emplace(file, PAGE_WRITE_BUFFER_BYTES);
+  if (!st.pageWriter->buffered()) {
+    LOG_INF("SCT", "createSectionFile spine=%d: no %u-byte block for the page writer, pages go out field by field",
+            spineIndex, static_cast<unsigned>(PAGE_WRITE_BUFFER_BYTES));
+  }
   st.lut.clear();
   // One u32 per page, appended by the completePageFn below across the whole parse. Pre-sized for
   // the same reason as the parser's paragraph LUT — see estimatePagesForSpine and
@@ -1323,7 +1379,7 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
           LOG_ERR("SCT", "No room in the page LUT for page %u; the build stops here", pageCount);
           return false;
         }
-        st.lut.back() = this->onPageComplete(std::move(page));
+        st.lut.back() = this->onPageComplete(std::move(page), *st.pageWriter);
         return true;
       },
       p.embeddedStyle, st.contentBase, st.imageBasePath, p.imageRendering, std::move(tocAnchors), st.progressFn,
@@ -1337,13 +1393,14 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
     const auto pageListPath = epub->getCachePath() + "/pagelist.bin";
     FsFile pageListFile;
     if (Storage.exists(pageListPath.c_str()) && Storage.openFileForRead("SCT", pageListPath, pageListFile)) {
+      // The whole list is read at every build for this chapter's entries, six reads an entry: through a window.
+      uint8_t window[512];
+      serialization::BufferedFileReader in(pageListFile, window, sizeof(window));
       uint16_t count = 0;
-      serialization::readPod(pageListFile, count);
+      in.readPod(count);
       std::string href, anchor, label;  // reused across entries
       for (uint16_t i = 0; i < count; i++) {
-        serialization::readString(pageListFile, href);
-        serialization::readString(pageListFile, anchor);
-        serialization::readString(pageListFile, label);
+        if (!in.readString(href) || !in.readString(anchor) || !in.readString(label)) break;
         if (href == st.localPath) {
           st.visitor->addExternalPageBreakAnchor(anchor, label);
         }
@@ -1355,6 +1412,7 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   st.visitor->setFontSizeLadder(p.fontSizeLadder);
   st.visitor->setBookLineHeight(p.bookLineHeightFloor, p.lineHeightEmPx);
   st.visitor->setWidowOrphanControl(p.widowOrphanControl);
+  st.visitor->setParagraphIndent(p.paragraphIndent);
   if (p.embeddedStyle) st.visitor->setBodySizePct(p.bodySizePct);
   if (p.embeddedStyle && p.fontFamilies) st.visitor->setFontFamilies(*p.fontFamilies);
   // Anchors stream to SD as they are found rather than accumulating in the parser; the
@@ -1791,6 +1849,18 @@ Section::BuildPhaseResult Section::runBuildParse(BuildState& st, const uint32_t 
 
 Section::BuildPhaseResult Section::runBuildFinalize(BuildState& st) {
   ChapterHtmlSlimParser& visitor = *st.visitor;
+  // The pages still in the writer go out before anything below reads or patches the file.
+  const bool pagesWritten = !st.pageWriter || st.pageWriter->flush();
+  st.pageWriter.reset();
+  if (!pagesWritten) {
+    LOG_ERR("SCT", "createSectionFile spine=%d: writing the last pages failed", spineIndex);
+    file.close();
+    Storage.remove(filePath.c_str());
+    if (st.cssParser) {
+      st.cssParser->clear();
+    }
+    return BuildPhaseResult::Failed;
+  }
   const bool parseComplete = st.streamOk && st.finalizeOk && st.parserStreamOk;
   bool success = parseComplete;
   const bool hasParsedPages = pageCount > 0;
@@ -2332,7 +2402,8 @@ std::unique_ptr<Page> Section::loadPageFromSectionFile() {
     LOG_ERR("SCT", "loadPageFromSectionFile: seek to page %d offset %u failed", currentPage, pageOffset);
     return nullptr;
   }
-  return Page::deserialize(file);
+  serialization::BufferedFileReader in(file, pageReadWindow_, sizeof(pageReadWindow_));
+  return Page::deserialize(in);
   // File is intentionally NOT closed; stays open for the next page load
 }
 
@@ -2413,10 +2484,14 @@ std::unique_ptr<Page> Section::loadPageFromActiveBuild(const uint16_t pageIndex,
     LOG_ERR("SCT", "loadPageFromActiveBuild: bad LUT entry %u for page %u", offset, pageIndex);
     return nullptr;
   }
-  // The build writes pages to `file` without syncing per page, so its most recently written
-  // sector — and the directory-entry size — may not be on the card yet. A separate read handle
-  // only sees committed data, so flush the writer first; otherwise the read could seek past a
-  // stale EOF or deserialize a half-written sector.
+  // The build's last pages may still be in its page writer, and the most recently written sector -- and the
+  // directory-entry size -- may not be on the card yet. A separate read handle only sees committed data, so send the
+  // writer's pages and sync the file first; otherwise the read could seek past a stale EOF or deserialize a
+  // half-written sector.
+  if (buildState_->pageWriter && !buildState_->pageWriter->flush()) {
+    LOG_ERR("SCT", "loadPageFromActiveBuild: writing the buffered pages failed");
+    return nullptr;
+  }
   if (file) file.flush();  // SdFat flush() == sync(): commits the cached sector + dir entry
   FsFile readHandle;
   if (!Storage.openFileForRead("SCT", filePath, readHandle)) {
@@ -2427,7 +2502,8 @@ std::unique_ptr<Page> Section::loadPageFromActiveBuild(const uint16_t pageIndex,
     LOG_ERR("SCT", "loadPageFromActiveBuild: seek to %u failed", offset);
     return nullptr;
   }
-  auto page = Page::deserialize(readHandle, scratch);
+  serialization::BufferedFileReader in(readHandle, pageReadWindow_, sizeof(pageReadWindow_));
+  auto page = Page::deserialize(in, scratch);
   readHandle.close();
   return page;
 }

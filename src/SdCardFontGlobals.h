@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "SdCardFontSystem.h"
 
 class GfxRenderer;
@@ -56,6 +58,14 @@ int resolveSdCardFontId(const char* familyName, uint8_t pointSize);
 uint8_t fontFamilyDynamicGetter(const void* ctx);
 void fontFamilyDynamicSetter(void* ctx, uint8_t value);
 
+// The same options for one book's own font (BookReaderOverrides): the option its overrides name, -1 when it has none
+// and follows the setting (or names an SD family no longer on the card); and the overrides that name an option, a
+// built-in family or an SD one, the other cleared. Shared by the reader menu's font row and the reader bars' Layout
+// tab.
+int fontFamilyOptionForOverrides(int8_t builtinOverride, const std::string& sdOverride);
+void fontFamilyOverridesForOption(uint8_t value, int8_t& builtinOverride, std::string& sdOverride);
+// The SD family an option names, "" for a built-in one: what SdCardFontSystem::sizeListFor takes.
+const char* fontFamilyOptionSdName(uint8_t value);
 // Returns the total number of font-family options currently available
 // (BUILTIN_FONT_COUNT + number of discovered SD families). Used by the
 // settings UI / web layer to enrich enumLabels and to bound cycling.

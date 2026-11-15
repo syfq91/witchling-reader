@@ -35,6 +35,7 @@ class EpubReaderMenuActivity final : public TabbedUiListActivity {
     DELETE_CACHE,
     RENDER_BENCHMARK,
     BOOK_INFO,
+    SEARCH,
     SYNC_PROGRESS,
   };
 

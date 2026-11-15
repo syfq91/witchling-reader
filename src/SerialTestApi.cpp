@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <HalGPIO.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
@@ -12,6 +13,7 @@
 #include <cctype>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include "BootDiagnostics.h"
@@ -19,6 +21,8 @@
 #include "activities/ActivityManager.h"
 #include "activities/RenderLock.h"
 #include "activities/home/LibraryTab.h"
+#include "network/WebAssets.h"
+#include "util/ButtonPressQueue.h"
 #include "util/ScreenshotUtil.h"
 #include "util/SerialCommandGrammar.h"
 
@@ -32,7 +36,6 @@
 #include <GlyphKey.h>
 #include <GlyphProvider.h>
 #include <GlyphRun.h>
-#include <HalPowerManager.h>
 #include <HalSystem.h>
 #include <IndicScripts.h>
 #include <Memory.h>
@@ -45,8 +48,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <ttf/TtfFont.h>
-
-#include <cstring>
 
 #include "ButtonEventManager.h"
 #include "CjkUiFonts.h"
@@ -78,6 +79,10 @@ using SerialCommandGrammar::appendField;
 // rather than spins: a tight loop on the C3 starves the USB-CDC task being waited on. Gives up
 // after `stallMs` without progress (the host stopped reading). `waiting` runs on each wait: a long stream feeds the
 // task watchdog there.
+//
+// A write that gives up leaves its line (or stream) unfinished: it marks the wire's line cut (Logging's
+// markSerialLineCut(), which a log line the USB link cut short marks too), and the next reply starts with "\n", so it
+// is a line of its own on the host rather than the tail of the cut one.
 bool writeAll(const uint8_t* data, const size_t len, const unsigned long stallMs, void (*waiting)() = nullptr) {
   size_t sent = 0;
   unsigned long lastProgressMs = millis();
@@ -88,7 +93,10 @@ bool writeAll(const uint8_t* data, const size_t len, const unsigned long stallMs
       lastProgressMs = millis();
       continue;
     }
-    if (millis() - lastProgressMs > stallMs) return false;
+    if (millis() - lastProgressMs > stallMs) {
+      markSerialLineCut();
+      return false;
+    }
     if (waiting) waiting();
     delay(1);
   }
@@ -99,22 +107,66 @@ bool writeText(const std::string_view text, const unsigned long stallMs) {
   return writeAll(reinterpret_cast<const uint8_t*>(text.data()), text.size(), stallMs);
 }
 
+// Begins a line written in pieces (PAGE's): first ends one that was cut. False when even that cannot go out.
+bool startLine(const unsigned long stallMs) {
+  if (!takeSerialLineCut()) return true;
+  return writeText("\n", stallMs);
+}
+
 // A reply waits up to 2 s for the host to read it.
 constexpr unsigned long kReplyStallMs = 2000;
 
-// One reply line: `head`, then `tail` (an argument echoed back), then the line end.
-void reply(const std::string_view head, const std::string_view tail = {}, const unsigned long stallMs = kReplyStallMs) {
-  if (writeText(head, stallMs) && writeText(tail, stallMs)) writeText("\n", stallMs);
+// One reply line: `head`, then `tail` (an argument echoed back), then the line end, after a "\n" when the wire's
+// last line was cut. Put together first and written in one write: HWCDC writes one call under its own lock, so no
+// other task's log line lands inside it, unless the host lags long enough for the write to come back short. Nothing
+// here holds the logger up. Most replies fit the stack buffer; a longer one (a STATE line) takes a heap one for the
+// moment. False when the line did not go out whole (it is then marked cut).
+bool reply(const std::string_view head, const std::string_view tail = {}, const unsigned long stallMs = kReplyStallMs) {
+  const bool cut = takeSerialLineCut();
+  const size_t length = (cut ? 1 : 0) + head.size() + tail.size() + 1;
+  char small[160];
+  std::string large;
+  char* line = small;
+  if (length > sizeof(small)) {
+    large.resize(length);
+    line = large.data();
+  }
+  size_t at = 0;
+  if (cut) line[at++] = '\n';
+  memcpy(line + at, head.data(), head.size());
+  at += head.size();
+  memcpy(line + at, tail.data(), tail.size());
+  at += tail.size();
+  line[at++] = '\n';
+  return writeAll(reinterpret_cast<const uint8_t*>(line), at, stallMs);
 }
 
-void replyf(const char* format, ...) {
+bool replyf(const char* format, ...) {
   char line[96];
   va_list args;
   va_start(args, format);
   const int n = vsnprintf(line, sizeof(line), format, args);
   va_end(args);
-  if (n > 0) reply(std::string_view(line, std::min(static_cast<size_t>(n), sizeof(line) - 1)));
+  return n > 0 && reply(std::string_view(line, std::min(static_cast<size_t>(n), sizeof(line) - 1)));
 }
+
+// Holds LOG_* lines back from the wire while it lives, as the USB Transfer screen does (Logging's mute: they still
+// reach the crash ring), so none cuts into a binary payload or a dump; then puts back what was, since the transfer
+// screen keeps the mute on for its whole session. The mute is set with the wire held, so a log line already on its
+// way is finished first rather than cut by what follows.
+class LogHold {
+ public:
+  LogHold() : wasMuted_(isSerialWireMuted()) {
+    const SerialWireLock wire;
+    setSerialWireMuted(true);
+  }
+  ~LogHold() { setSerialWireMuted(wasMuted_); }
+  LogHold(const LogHold&) = delete;
+  LogHold& operator=(const LogHold&) = delete;
+
+ private:
+  bool wasMuted_;
+};
 
 std::string_view trim(std::string_view text) {
   while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.remove_prefix(1);
@@ -222,6 +274,9 @@ bool idleScreenOnly = false;
 constexpr uint32_t kIdleDefaultTimeoutMs = 10000;
 constexpr uint32_t kIdleMaxTimeoutMs = 600000;
 
+// CMD:BTN:<name>:<ms>'s presses, held down through HalGPIO::holdSyntheticButtons() and stepped by service().
+ButtonPressQueue heldPresses;
+
 // The last command meant to change the screen, which CMD:IDLE waits to see through (IdleGate).
 // Input: a press or touch, handed over once HalGPIO has delivered it and the classifier is done
 // with it. Screen: an ACT, handed over once the activity on top has changed.
@@ -238,7 +293,7 @@ void noteEffect(const Effect kind) {
 bool effectHandled() {
   switch (effect) {
     case Effect::Input:
-      return !gpio.injectedInputPending() && !globalButtonEvents().isMidGesture();
+      return heldPresses.idle() && !gpio.injectedInputPending() && !globalButtonEvents().isMidGesture();
     case Effect::Screen:
       return activityManager.activityChangeCount() != effectActivityBase;
   }
@@ -257,7 +312,8 @@ void cmdButton(const std::string_view arg) {
   using SerialCommandGrammar::PressKind;
   std::string_view name;
   PressKind kind = PressKind::Short;
-  if (!SerialCommandGrammar::parseButtonArg(arg, name, kind)) {
+  int holdMs = 0;
+  if (!SerialCommandGrammar::parseButtonArg(arg, name, kind, holdMs, ButtonPressQueue::MAX_HOLD_MS)) {
     reply("BTN_ERROR:bad press ", arg);
     return;
   }
@@ -274,6 +330,13 @@ void cmdButton(const std::string_view arg) {
   };
   for (const NamedButton& button : kButtons) {
     if (name != button.name) continue;
+#if SERIAL_TEST_API
+    // A held press plays out over its hold; a tap now would reach the screen before it ends.
+    if (kind != PressKind::Hold && !heldPresses.idle()) {
+      reply("BTN_ERROR:busy");
+      return;
+    }
+#endif
     switch (kind) {
       case PressKind::Short:
         gpio.injectPress(button.index);
@@ -305,6 +368,17 @@ void cmdButton(const std::string_view arg) {
         return;
 #endif
       }
+      case PressKind::Hold:
+#if SERIAL_TEST_API
+        if (!heldPresses.push(button.index, static_cast<uint16_t>(holdMs))) {
+          reply("BTN_ERROR:busy");
+          return;
+        }
+        break;
+#else
+        reply("BTN_ERROR:bad press ", arg);
+        return;
+#endif
     }
     noteEffect(Effect::Input);
     reply("BTN_OK");
@@ -465,12 +539,14 @@ void cmdActivity(const std::string_view arg) {
   std::string_view target;
   std::string_view rest;
   splitHead(arg, target, rest);
-  static constexpr const char* kTargets[] = {"HOME",    "READER", "SETTINGS",      "BOOKMARKS",   "FILES",
-                                             "LIBRARY", "DICT",   "FILE_TRANSFER", "USB_TRANSFER"};
+  static constexpr const char* kTargets[] = {"HOME",    "READER",       "SETTINGS", "BOOKMARKS",    "FILES",
+                                             "LIBRARY", "USB_TRANSFER", "DICT",     "FILE_TRANSFER"};
 #if SERIAL_TEST_API
   constexpr int kTargetCount = 9;
 #else
-  constexpr int kTargetCount = 6;  // the original targets; the rest come with SERIAL_TEST_API
+  // The original targets, and USB_TRANSFER for the web flasher (flasher/), which writes the web
+  // bundle through it; the rest come with SERIAL_TEST_API.
+  constexpr int kTargetCount = 7;
 #endif
   switch (indexOf(target, kTargets, kTargetCount)) {
     case 0:
@@ -512,14 +588,7 @@ void cmdActivity(const std::string_view arg) {
       activityManager.goToLibrary(static_cast<LibraryTab>(tab));
       break;
     }
-#if SERIAL_TEST_API
     case 6:
-      lookUpWord(rest);
-      return;
-    case 7:
-      activityManager.goToFileTransfer();
-      break;
-    case 8:
       // Leaving the transfer screen reboots (SerialTransferActivity::onExit), so replacing it with
       // a fresh one would land on Home: already there is already done.
       if (std::strcmp(activityManager.currentActivityName(), "SerialTransfer") == 0) {
@@ -527,6 +596,13 @@ void cmdActivity(const std::string_view arg) {
         return;
       }
       activityManager.goToSerialTransfer();
+      break;
+#if SERIAL_TEST_API
+    case 7:
+      lookUpWord(rest);
+      return;
+    case 8:
+      activityManager.goToFileTransfer();
       break;
 #endif
     default:
@@ -561,6 +637,10 @@ void cmdState(std::string_view /*arg*/) {
   }
   // The TrueType family behind the UI faces (CjkUiFonts::setReaderFont), when one is.
   if (CjkUiFonts::hasReaderFont()) appendField(state, "ui_font", sdFontSystem.loadedFamily().c_str());
+  // Held presses that failed, the press or its release not taken in (ButtonPressQueue): only when there were any.
+  if (heldPresses.droppedPresses() != 0) {
+    appendField(state, "btn_dropped", static_cast<long>(heldPresses.droppedPresses()));
+  }
   appendField(state, "heap", static_cast<long>(ESP.getFreeHeap()));
   appendField(state, "maxblock",
               static_cast<long>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT)));
@@ -587,8 +667,13 @@ void cmdIdle(const std::string_view arg) {
     reply("IDLE_ERROR:bad mode ", second);
     return;
   }
+  // One wait at a time, so every IDLE gets its own reply: a second one while the first waits is
+  // refused, and the first goes on with its own timeout and mode.
+  if (!idleGate.begin(millis(), std::min(static_cast<uint32_t>(timeout), kIdleMaxTimeoutMs))) {
+    reply("IDLE_ERROR:busy");
+    return;
+  }
   idleScreenOnly = !second.empty();
-  idleGate.begin(millis(), std::min(static_cast<uint32_t>(timeout), kIdleMaxTimeoutMs));
 }
 
 void cmdEvents(const std::string_view arg) {
@@ -833,7 +918,9 @@ void cmdTouch(const std::string_view arg) {
   // BTN's suffix grammar, with the point where the button's name goes.
   std::string_view point;
   SerialCommandGrammar::PressKind kind = SerialCommandGrammar::PressKind::Short;
-  if (!SerialCommandGrammar::parseButtonArg(arg, point, kind) || kind == SerialCommandGrammar::PressKind::Double) {
+  int holdMs = 0;
+  if (!SerialCommandGrammar::parseButtonArg(arg, point, kind, holdMs, ButtonPressQueue::MAX_HOLD_MS) ||
+      (kind != SerialCommandGrammar::PressKind::Short && kind != SerialCommandGrammar::PressKind::Long)) {
     reply("TOUCH_ERROR:not on screen ", arg);
     return;
   }
@@ -1187,7 +1274,7 @@ class WireScratch {
 // word of thousands of bytes, goes out in pieces.
 class WireLine {
  public:
-  explicit WireLine(uint8_t* buffer) : buffer_(buffer) {}
+  explicit WireLine(uint8_t* buffer) : buffer_(buffer), ok_(startLine(kReplyStallMs)) {}
   void add(std::string_view text) {
     while (!text.empty()) {
       if (length_ == kWireChunk) flush();
@@ -1231,20 +1318,6 @@ class WireLine {
   bool ok_ = true;
 };
 
-// Holds LOG_* lines back from the wire while it lives, as the USB Transfer screen does (Logging's mute: they still
-// reach the crash ring), so none cuts into a binary payload or a dump; then puts back what was, since the transfer
-// screen keeps the mute on for its whole session.
-class LogHold {
- public:
-  LogHold() : wasMuted_(isSerialWireMuted()) { setSerialWireMuted(true); }
-  ~LogHold() { setSerialWireMuted(wasMuted_); }
-  LogHold(const LogHold&) = delete;
-  LogHold& operator=(const LogHold&) = delete;
-
- private:
-  bool wasMuted_;
-};
-
 // A file command holds the loop task for as long as the file takes. Every 100 ms it feeds the task watchdog and lets
 // the other tasks run, the idle task the watchdog also watches among them, as SDCardManager's long reads do.
 class LongWork {
@@ -1266,13 +1339,19 @@ constexpr unsigned long kStreamStallMs = 15000;
 // A short protocol line (FS_PUT_READY, FS_PUT_ACK, FS_GET_START) in one write, as WireLine writes its lines, from a
 // buffer of its own: the command's scratch may hold data.
 __attribute__((format(printf, 1, 2))) void replyWhole(const char* format, ...) {
-  char line[64];
+  char line[66];
+  // A "\n" first when the wire's last line was cut, then the line: one write, as reply() does.
+  const size_t lead = takeSerialLineCut() ? 1 : 0;
+  line[0] = '\n';
   va_list args;
   va_start(args, format);
-  const int n = vsnprintf(line, sizeof(line) - 1, format, args);
+  const int n = vsnprintf(line + lead, sizeof(line) - lead - 1, format, args);
   va_end(args);
-  if (n <= 0) return;
-  const size_t length = std::min(static_cast<size_t>(n), sizeof(line) - 2);
+  if (n <= 0) {
+    if (lead) markSerialLineCut();  // still to be ended
+    return;
+  }
+  const size_t length = lead + std::min(static_cast<size_t>(n), sizeof(line) - lead - 2);
   line[length] = '\n';
   writeAll(reinterpret_cast<const uint8_t*>(line), length + 1, kReplyStallMs);
 }
@@ -1476,7 +1555,6 @@ void fsPut(const std::string_view arg) {
     return;
   }
 
-  const HalPowerManager::Lock fullSpeed;
   LongWork work;
   const char* error = nullptr;
   {
@@ -1569,7 +1647,6 @@ void fsGet(const std::string_view arg) {
     reply("FS_ERROR:no memory ", path);
     return;
   }
-  const HalPowerManager::Lock fullSpeed;
   const auto size = static_cast<uint32_t>(file.fileSize());
   uint32_t crc = 0;
   if (!crcOfFile(file, size, scratch.get(), crc) || !file.seek(0)) {
@@ -1643,7 +1720,6 @@ void fsHash(const std::string_view arg) {
     reply("FS_ERROR:no memory ", path);
     return;
   }
-  const HalPowerManager::Lock fullSpeed;
   const auto size = static_cast<uint32_t>(file.fileSize());
   uint32_t crc = 0;
   if (!crcOfFile(file, size, scratch.get(), crc)) {
@@ -1856,37 +1932,39 @@ void fill(uint8_t* bw, uint8_t* red, const uint16_t width, const uint16_t height
 void cmdLab(std::string_view arg) {
   if (arg.substr(0, 4) == "LUT:") {
     const std::string_view hex = arg.substr(4);
-    if (hex.empty() || hex.size() % 2 != 0 || hex.size() / 2 > sizeof(lab::lut)) return reply("LAB_ERROR:bad lut");
+    if (hex.empty() || hex.size() % 2 != 0 || hex.size() / 2 > sizeof(lab::lut))
+      return static_cast<void>(reply("LAB_ERROR:bad lut"));
     for (size_t i = 0; i < hex.size() / 2; ++i) {
       const int high = lab::hexDigit(hex[2 * i]), low = lab::hexDigit(hex[2 * i + 1]);
-      if (high < 0 || low < 0) return reply("LAB_ERROR:bad lut");
+      if (high < 0 || low < 0) return static_cast<void>(reply("LAB_ERROR:bad lut"));
       lab::lut[i] = static_cast<uint8_t>(high << 4 | low);
     }
     lab::lutLength = hex.size() / 2;
-    return replyf("LAB_OK:lut %u", static_cast<unsigned>(lab::lutLength));
+    return static_cast<void>(replyf("LAB_OK:lut %u", static_cast<unsigned>(lab::lutLength)));
   }
-  if (arg.substr(0, 5) != "DRAW:") return reply("LAB_ERROR:LUT or DRAW");
+  if (arg.substr(0, 5) != "DRAW:") return static_cast<void>(reply("LAB_ERROR:LUT or DRAW"));
   arg.remove_prefix(5);
   const bool full = arg.substr(0, 5) == "FULL:";
-  if (!full && arg.substr(0, 4) != "LUT:") return reply("LAB_ERROR:FULL or LUT");
+  if (!full && arg.substr(0, 4) != "LUT:") return static_cast<void>(reply("LAB_ERROR:FULL or LUT"));
   arg.remove_prefix(full ? 5 : 4);
-  if (!full && lab::lutLength == 0) return reply("LAB_ERROR:no lut");
+  if (!full && lab::lutLength == 0) return static_cast<void>(reply("LAB_ERROR:no lut"));
   long background = 0;
-  if (!lab::takeNumber(arg, ':', background) || background > 3) return reply("LAB_ERROR:bad background");
+  if (!lab::takeNumber(arg, ':', background) || background > 3)
+    return static_cast<void>(reply("LAB_ERROR:bad background"));
 
   const uint16_t width = display.getDisplayWidth(), height = display.getDisplayHeight();
   const uint16_t widthBytes = display.getDisplayWidthBytes();
   RenderLock lock;  // the frame buffer is the render task's
   uint8_t* bw = renderer.getFrameBuffer();
   uint8_t* red = nullptr;
-  if (!bw) return reply("LAB_ERROR:no frame buffer");
+  if (!bw) return static_cast<void>(reply("LAB_ERROR:no frame buffer"));
   if (!full) {
     // The display's second frame buffer: a third 48 KB block is more than a C3 has free.
     size_t lent = 0;
     red = renderer.borrowSecondaryBuffer(&lent);
     if (!red || lent < display.getBufferSize()) {
       if (red) renderer.returnSecondaryBuffer();
-      return reply("LAB_ERROR:no second buffer");
+      return static_cast<void>(reply("LAB_ERROR:no second buffer"));
     }
   }
   lab::fill(bw, red, width, height, widthBytes, 0, 0, width, height, background);
@@ -1895,7 +1973,7 @@ void cmdLab(std::string_view arg) {
     if (!lab::takeNumber(arg, ',', x) || !lab::takeNumber(arg, ',', y) || !lab::takeNumber(arg, ',', w) ||
         !lab::takeNumber(arg, ',', h) || !lab::takeNumber(arg, ';', code) || code > 3) {
       if (red) renderer.returnSecondaryBuffer();
-      return reply("LAB_ERROR:bad rectangle");
+      return static_cast<void>(reply("LAB_ERROR:bad rectangle"));
     }
     lab::fill(bw, red, width, height, widthBytes, x, y, w, h, code);
   }
@@ -1907,7 +1985,7 @@ void cmdLab(std::string_view arg) {
     shown = display.displayLabFrame(bw, red, lab::lut);
   }
   if (red) renderer.returnSecondaryBuffer();
-  if (!shown) return reply("LAB_ERROR:no lab path on this panel");
+  if (!shown) return static_cast<void>(reply("LAB_ERROR:no lab path on this panel"));
   replyf("LAB_OK:%lu", millis() - start);
 }
 
@@ -1922,7 +2000,10 @@ void cmdReboot(std::string_view /*arg*/) {
 }
 #endif  // SERIAL_TEST_API
 
-void cmdScreenshot(std::string_view /*arg*/) { ScreenshotUtil::request(ScreenshotUtil::Target::Host); }
+// Answered by sendScreenshot() once ScreenshotUtil serves the request. One at a time, so each gets its reply.
+void cmdScreenshot(std::string_view /*arg*/) {
+  if (!ScreenshotUtil::request(ScreenshotUtil::Target::Host)) reply("SCREENSHOT_ERROR:busy");
+}
 
 // On-demand replay of this session's boot summary, for when the monitor was attached too late to
 // catch it and the automatic repeats are used up. The summary is log lines; the reply after them
@@ -1930,6 +2011,36 @@ void cmdScreenshot(std::string_view /*arg*/) { ScreenshotUtil::request(Screensho
 void cmdBootLog(std::string_view /*arg*/) {
   BootDiag::logSummary();
   reply("BOOTLOG_OK");
+}
+
+// ---- WEB ------------------------------------------------------------------------------------
+// The web interface's bundle (network/WebAssets.h). CMD:WEB says which bundle this build expects
+// and whether it is installed; CMD:WEB:INSTALL installs web-<hash>.bin from the card's top folder,
+// as the setup page's "card" source does, with the same hash check. Together with a file written
+// on the USB Transfer screen ('W') that installs the pages without Wi-Fi: the web flasher
+// (flasher/) does so after a flash, which is why both are in every build.
+void cmdWeb(const std::string_view arg) {
+  if (arg.empty()) {
+    WebAssets::forget();  // the card may have changed since the state was read (USB Transfer, a reader)
+    std::string line = "WEB:state=";
+    line.reserve(96);
+    line += WebAssets::stateName(WebAssets::state());
+    appendField(line, "asset", WebAssets::assetName());
+    appendField(line, "release", WebAssets::releaseTag());
+    appendField(line, "onCard", WebAssets::bundleOnCard() ? 1L : 0L);
+    reply(line);
+    return;
+  }
+  if (arg != "INSTALL") {
+    reply("WEB_ERROR:unknown argument ", arg);
+    return;
+  }
+  const WebAssets::InstallError err = WebAssets::installFromCard();
+  if (err == WebAssets::InstallError::None) {
+    reply("WEB_OK");
+  } else {
+    reply("WEB_ERROR:", WebAssets::errorText(err));
+  }
 }
 
 void cmdHelp(std::string_view arg);
@@ -1941,7 +2052,7 @@ struct Command {
 };
 constexpr Command kCommands[] = {
     {"BTN", &cmdButton},      {"ACT", &cmdActivity},  {"STATE", &cmdState}, {"SCREENSHOT", &cmdScreenshot},
-    {"BOOTLOG", &cmdBootLog}, {"HELP", &cmdHelp},
+    {"BOOTLOG", &cmdBootLog}, {"WEB", &cmdWeb},       {"HELP", &cmdHelp},
 #if SERIAL_TEST_API
     {"IDLE", &cmdIdle},       {"EVENTS", &cmdEvents}, {"GET", &cmdGet},     {"SET", &cmdSet},
     {"LOG", &cmdLog},         {"TOUCH", &cmdTouch},   {"SWIPE", &cmdSwipe}, {"SLEEP", &cmdSleep},
@@ -1952,12 +2063,12 @@ constexpr Command kCommands[] = {
 
 // The commands this build has: with SERIAL_TEST_API or without.
 void cmdHelp(std::string_view /*arg*/) {
-  writeText("HELP:", kReplyStallMs);
+  std::string line = "HELP:";
   for (const Command& command : kCommands) {
-    writeText(" ", kReplyStallMs);
-    writeText(command.name, kReplyStallMs);
+    line += ' ';
+    line += command.name;
   }
-  writeText("\n", kReplyStallMs);
+  reply(line);
 }
 
 #if SERIAL_TEST_API
@@ -2033,6 +2144,16 @@ void serviceEvents() {
   }
 }
 
+// Plays CMD:BTN:<name>:<ms>'s presses, against the buttons this pass's input snapshot shows down.
+void serviceHeldPresses() {
+  if (heldPresses.idle()) return;  // its last step released everything
+  uint8_t committed = 0;
+  for (uint8_t i = 0; i <= HalGPIO::BTN_POWER; ++i) {
+    if (gpio.isPressed(i)) committed |= static_cast<uint8_t>(1u << i);
+  }
+  gpio.holdSyntheticButtons(heldPresses.step(millis(), committed));
+}
+
 void serviceIdle() {
   // Nothing to follow most of the time: then the device is not sampled at all, which keeps the
   // reader's lock attempt in hasPendingBackgroundWork() off the ordinary loop pass.
@@ -2042,6 +2163,7 @@ void serviceIdle() {
   sample.busy = activityManager.busyReason(/*includeBackground=*/idleGate.waiting() && !idleScreenOnly);
   sample.effectHandled = effectHandled();
   sample.renderPasses = activityManager.renderPassCount();
+  sample.droppedPresses = heldPresses.droppedPresses();
   switch (idleGate.step(sample)) {
     case IdleGate::Verdict::Waiting:
       break;
@@ -2051,15 +2173,25 @@ void serviceIdle() {
     case IdleGate::Verdict::TimedOut:
       reply("IDLE_TIMEOUT:", idleGate.reason());
       break;
+    case IdleGate::Verdict::PressDropped:
+      reply("IDLE_ERROR:press dropped");
+      break;
   }
 }
 #endif  // SERIAL_TEST_API
 
 }  // namespace
 
-void handleLine(const std::string_view line) {
+bool handleLine(const std::string_view line) {
   constexpr std::string_view kPrefix = "CMD:";
-  if (line.substr(0, kPrefix.size()) != kPrefix) return;
+  if (line.substr(0, kPrefix.size()) != kPrefix) return false;
+  // A command can arrive with the CPU at 10 MHz, and main.cpp raises it only after this returns. At
+  // that clock the USB link can drop reply bytes unseen (lib/Logging/Logging.cpp says how), and the
+  // command's own work (a card copy, a dictionary lookup) would run at it too. The Lock lifts the idle
+  // governor's drop and keeps a refresh from lowering the clock meanwhile; ensureFullSpeed() lifts a
+  // refresh's drop already under way, which the Lock does not see.
+  const HalPowerManager::Lock fullSpeed;
+  powerManager.ensureFullSpeed();
   const std::string_view command = trim(line.substr(kPrefix.size()));
   std::string_view name;
   std::string_view arg;
@@ -2067,13 +2199,17 @@ void handleLine(const std::string_view line) {
   for (const Command& entry : kCommands) {
     if (name == entry.name) {
       entry.run(arg);
-      return;
+      return true;
     }
   }
   reply("CMD_ERROR:unknown command ", command);
+  return false;
 }
 
 void sendScreenshot(const uint8_t* frame, const uint32_t size, const int width, const int height, const bool busy) {
+  // CMD:SCREENSHOT is answered here, on a later loop pass when a render held the frame, after the
+  // idle governor may have lowered the clock again: a frame is the longest reply, where a lost byte shows.
+  const HalPowerManager::Lock fullSpeed;
   if (busy) {
     reply("SCREENSHOT_ERROR:busy");
     return;
@@ -2083,7 +2219,11 @@ void sendScreenshot(const uint8_t* frame, const uint32_t size, const int width, 
     reply("SCREENSHOT_ERROR:framebuffer released");
     return;
   }
-  replyf("SCREENSHOT_START:%d:%d:%lu", width, height, static_cast<unsigned long>(size));
+  // No log line may land inside the frame: the host reads exactly `size` bytes after START, as PAGE and FS hold them.
+  const LogHold hold;
+  // A START that did not go out whole leaves the host without the frame's size: no frame then, only the cut line
+  // (ended by the next reply's line break).
+  if (!replyf("SCREENSHOT_START:%d:%d:%lu", width, height, static_cast<unsigned long>(size))) return;
   // ~48 KB in one go is exactly the sustained write that trips the short-write behaviour, so the
   // END marker must not be sent if the payload was cut short: a truncated frame with a valid
   // trailer looks complete to the host. 15 s without progress matches SerialTransferDevice.
@@ -2098,9 +2238,12 @@ void sendScreenshot(const uint8_t* frame, const uint32_t size, const int width, 
 void begin(GfxRenderer& renderer) { testRenderer = &renderer; }
 
 void service() {
+  serviceHeldPresses();
   serviceEvents();
   serviceIdle();
 }
+
+bool commandPending() { return idleGate.active(); }
 
 void notePopup(const char* text) { noteText(popupProbe, -1, text); }
 
@@ -2186,6 +2329,18 @@ bool sendPage(const PageOnScreen& onScreen) {
       case TAG_PageHR:
         line.addf("PAGE_EL:%u hr", static_cast<unsigned>(i));
         break;
+      case TAG_PageBox: {
+        const PageBox& box = static_cast<const PageBox&>(element);
+        const PageBox::Edge& top = box.getEdge(CssBox::Top);
+        const PageBox::Edge& right = box.getEdge(CssBox::Right);
+        const PageBox::Edge& bottom = box.getEdge(CssBox::Bottom);
+        const PageBox::Edge& left = box.getEdge(CssBox::Left);
+        line.addf("PAGE_BOX:%u x=%d y=%d w=%u h=%u edges=%u/%u,%u/%u,%u/%u,%u/%u shaded=%d", static_cast<unsigned>(i),
+                  x, y, box.getWidth(), box.getHeight(), top.width, static_cast<unsigned>(top.style), right.width,
+                  static_cast<unsigned>(right.style), bottom.width, static_cast<unsigned>(bottom.style), left.width,
+                  static_cast<unsigned>(left.style), box.isShaded() ? 1 : 0);
+        break;
+      }
       default:
         line.addf("PAGE_EL:%u tag%u", static_cast<unsigned>(i), static_cast<unsigned>(element.getTag()));
         break;

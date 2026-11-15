@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <BoardConfig.h>  // FREEINK_DRIVER_LGFX_EPD
 #include <EInkDisplay.h>
 
 class HalDisplay {
@@ -79,6 +80,16 @@ class HalDisplay {
   // Request extra X3 ghost-clearing on the next display refresh.
   // No-op on non-X3 panels. Consumed by the next displayBuffer/refreshDisplay call.
   void requestResync(uint8_t settlePasses = 0);
+
+  // Dark mode: the panel shows every frame inverted, white on black. The frame buffers keep their
+  // colours and nothing draws differently; the SDK inverts each frame on its way to the panel and
+  // back (FreeInkDisplay::setInverted), promotes the first FAST after a change to HALF, and sends
+  // inverted frames B/W: the gray planes do not survive inversion. Only a single push whose driver
+  // mirrors its greys keeps them (invertsGrayFrame(): the LilyGo T5S3). Pictures keep their own
+  // polarity by drawing inverted (GfxRenderer::keepsImagePolarity).
+  void setInverted(bool inverted);
+  bool isInverted() const;
+  bool invertsGrayFrame() const;
 
   // Power management
   void deepSleep();
@@ -194,6 +205,9 @@ class HalDisplay {
   // answers yes and copyGrayscale*Buffers() stage planes instead of uploading them, so hold it only around
   // a page that goes out through a gray frame: see ReaderUtils::OnePassTextScope.
   bool supportsOnePassText() const;
+  void setOnePassText(bool on);
+  // True while a book page is rendered and shown: panels with a reading waveform (the Picco's) use it. It does
+  // not switch one-pass text on. See ReaderUtils::ReaderRefreshScope.
   void setReaderRefresh(bool reading);
   // One-pass text on a board without the memory to stage planes (the X3, the X4): see
   // FreeInkDisplay::beginOnePassMask(). The mask is the buffer that held the frame on screen; null sends the
@@ -229,6 +243,11 @@ class HalDisplay {
   // caller that borrows and then abandons the frame corrupts nothing, because
   // every normal push rebuilds the buffer from the 1-bpp framebuffer.
   uint8_t* borrowGray8Canvas(uint16_t* stride);
+  // Whether this build's panel driver can lend such a buffer at all: the
+  // LovyanGFX EPD driver (LilyGo T5S3, PaperS3) only. Known when building, so
+  // code that paints one is compiled out of every other build; whether the
+  // panel resolves more than four levels is getGrayLevels()'s to say.
+  static constexpr bool kMayLendGray8Canvas = FREEINK_DRIVER_LGFX_EPD != 0;
   // Quantise the borrowed canvas to the panel's native depth and show it as one
   // waveform. The driver picks a bank that can land every level, so this may
   // refresh more thoroughly (and more slowly) than `refreshMode` asked for.

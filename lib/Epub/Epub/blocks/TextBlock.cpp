@@ -1,5 +1,6 @@
 #include "TextBlock.h"
 
+#include <BufferedFileIO.h>
 #include <BuildArena.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
@@ -717,6 +718,13 @@ int TextBlock::annotationBandFor(const GfxRenderer& renderer, const int effFontI
   return (ascender + 1) / 2;  // the ruby's own ascender is round(ascender * 0.5)
 }
 
+int TextBlock::lineAscenderFor(const GfxRenderer& renderer, const int effFontId, const float blockScale,
+                               const uint8_t maxSizePct) {
+  return (maxSizePct == 100 && blockScale == 1.0f)
+             ? renderer.getFontAscenderSize(effFontId)
+             : renderer.getFontAscenderSizeScaled(effFontId, blockScale * maxSizePct / 100.0f);
+}
+
 int TextBlock::annotationBand(const GfxRenderer& renderer, const int fontId) const {
   if (!annotationBand_) return 0;
   const int effFontId = renderStyle.headingFontId != 0 ? renderStyle.headingFontId : fontId;
@@ -801,15 +809,12 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   // effective (fontId, scale) pair once and use it for every measure/draw below.
   const int effFontId = renderStyle.headingFontId != 0 ? renderStyle.headingFontId : fontId;
   const float blockScale = renderStyle.fontSizeMultiplier;
-  const int blockAscender = (blockScale == 1.0f) ? renderer.getFontAscenderSize(effFontId)
-                                                 : renderer.getFontAscenderSizeScaled(effFontId, blockScale);
+  const int blockAscender = lineAscenderFor(renderer, effFontId, blockScale, 100);
   // Mixed-size lines are baseline-aligned: every word's baseline sits at y + lineAscender,
   // where lineAscender is the tallest word's ascender. Uniform lines (no sizes) keep
   // lineAscender == blockAscender, i.e. the historical single-scale layout.
-  int lineAscender = blockAscender;
-  if (sizesPresent) {
-    lineAscender = renderer.getFontAscenderSizeScaled(effFontId, blockScale * (maxSizePct() / 100.0f));
-  }
+  const int lineAscender =
+      sizesPresent ? lineAscenderFor(renderer, effFontId, blockScale, maxSizePct()) : blockAscender;
   // The base sits below the band the line's ruby is drawn in.
   const int baseY = y + annotationBand(renderer, fontId);
   // Guide dots (see setGuideDots): one dot centered in each inter-word gap.
@@ -1063,7 +1068,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   }
 }
 
-bool TextBlock::serialize(FsFile& file) const {
+bool TextBlock::serialize(serialization::BufferedFileWriter& out) const {
   if (!isValid) {
     LOG_ERR("TXB", "Serialization failed: invalid block");
     return false;
@@ -1076,16 +1081,15 @@ bool TextBlock::serialize(FsFile& file) const {
   // bit 3 that its marks are centred, and the word-font count in bits 4-7: a line without word fonts or annotations
   // writes the 0 or 1 it always did. The flags byte is full, so the word count's top bit (a line holds at most 10,000
   // words) says the line has a bidi region: u16 bidiBytes follows the annotation size.
-  serialization::writePod(file, static_cast<uint16_t>(numWords | (bidiBytes_ != 0 ? kBidiWordCountBit : 0)));
-  serialization::writePod(
-      file, static_cast<uint8_t>((sizesPresent ? 1 : 0) | (annotationBytes_ != 0 ? 2 : 0) | (vertical_ ? 4 : 0) |
-                                 (centredMarks_ ? 8 : 0) | wordFontCount << 4));
-  serialization::writePod(file, textBytes);
-  if (annotationBytes_ != 0) serialization::writePod(file, annotationBytes_);
-  if (bidiBytes_ != 0) serialization::writePod(file, bidiBytes_);
+  out.writePod(static_cast<uint16_t>(numWords | (bidiBytes_ != 0 ? kBidiWordCountBit : 0)));
+  out.writePod(static_cast<uint8_t>((sizesPresent ? 1 : 0) | (annotationBytes_ != 0 ? 2 : 0) | (vertical_ ? 4 : 0) |
+                                    (centredMarks_ ? 8 : 0) | wordFontCount << 4));
+  out.writePod(textBytes);
+  if (annotationBytes_ != 0) out.writePod(annotationBytes_);
+  if (bidiBytes_ != 0) out.writePod(bidiBytes_);
   if (numWords > 0) {
     const size_t size = arenaSize(numWords, sizesPresent, wordFontCount, textBytes, annotationBytes_, bidiBytes_);
-    if (file.write(arena, size) != size) {
+    if (!out.write(arena, size)) {
       LOG_ERR("TXB", "Serialization failed: arena write (%u bytes)", static_cast<uint32_t>(size));
       return false;
     }
@@ -1097,34 +1101,30 @@ bool TextBlock::serialize(FsFile& file) const {
   // them back -- so they were 19 dead bytes per line on disk as well as in RAM.
   // Dropping them is a format change; SECTION_FILE_VERSION is bumped so stale
   // caches are rejected and rebuilt.
-  serialization::writePod(file, renderStyle.alignment);
-  serialization::writePod(file, renderStyle.fontSizeMultiplier);
-  serialization::writePod(file, renderStyle.headingFontId);
+  out.writePod(renderStyle.alignment);
+  out.writePod(renderStyle.fontSizeMultiplier);
+  out.writePod(renderStyle.headingFontId);
 
   return true;
 }
 
-std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file, BuildArena* scratch) {
+std::unique_ptr<TextBlock> TextBlock::deserialize(serialization::BufferedFileReader& in, BuildArena* scratch) {
   uint16_t wc = 0;
   uint8_t flags = 0;
   uint16_t textBytes = 0;
   uint16_t annotationBytes = 0;
   uint16_t bidiBytes = 0;
-  if (file.read(reinterpret_cast<uint8_t*>(&wc), sizeof(wc)) != static_cast<int>(sizeof(wc)) ||
-      file.read(&flags, sizeof(flags)) != static_cast<int>(sizeof(flags)) ||
-      file.read(reinterpret_cast<uint8_t*>(&textBytes), sizeof(textBytes)) != static_cast<int>(sizeof(textBytes))) {
+  if (!in.read(&wc, sizeof(wc)) || !in.read(&flags, sizeof(flags)) || !in.read(&textBytes, sizeof(textBytes))) {
     LOG_ERR("TXB", "Deserialization failed: incomplete arena header");
     return nullptr;
   }
-  if ((flags & 0x02) != 0 && file.read(reinterpret_cast<uint8_t*>(&annotationBytes), sizeof(annotationBytes)) !=
-                                 static_cast<int>(sizeof(annotationBytes))) {
+  if ((flags & 0x02) != 0 && !in.read(&annotationBytes, sizeof(annotationBytes))) {
     LOG_ERR("TXB", "Deserialization failed: incomplete annotation size");
     return nullptr;
   }
   const bool hasBidi = (wc & kBidiWordCountBit) != 0;
   wc &= static_cast<uint16_t>(~kBidiWordCountBit);
-  if (hasBidi &&
-      file.read(reinterpret_cast<uint8_t*>(&bidiBytes), sizeof(bidiBytes)) != static_cast<int>(sizeof(bidiBytes))) {
+  if (hasBidi && !in.read(&bidiBytes, sizeof(bidiBytes))) {
     LOG_ERR("TXB", "Deserialization failed: incomplete bidi size");
     return nullptr;
   }
@@ -1167,7 +1167,7 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file, BuildArena* scra
       LOG_ERR("TXB", "OOM: arena %u bytes", static_cast<uint32_t>(size));
       return nullptr;
     }
-    if (file.read(block->arena, size) != static_cast<int>(size)) {
+    if (!in.read(block->arena, size)) {
       LOG_ERR("TXB", "Deserialization failed: arena read (%u bytes)", static_cast<uint32_t>(size));
       return nullptr;
     }
@@ -1215,9 +1215,9 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file, BuildArena* scra
 
   // Style: the render slice only (see serialize).
   RenderStyle& renderStyle = block->renderStyle;
-  serialization::readPod(file, renderStyle.alignment);
-  serialization::readPod(file, renderStyle.fontSizeMultiplier);
-  serialization::readPod(file, renderStyle.headingFontId);
+  in.readPod(renderStyle.alignment);
+  in.readPod(renderStyle.fontSizeMultiplier);
+  in.readPod(renderStyle.headingFontId);
 
   return block;
 }

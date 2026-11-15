@@ -9,6 +9,7 @@
 #include "ActivityManager.h"  // for using the ActivityManager singleton
 #include "ActivityResult.h"
 #include "ButtonEventManager.h"
+#include "DarkMode.h"
 #include "GfxRenderer.h"
 #include "ListRowTap.h"
 #include "MappedInputManager.h"
@@ -73,6 +74,14 @@ class Activity {
   // while the host still owns the sectors.
   virtual bool requiresExclusiveStorageLoop() const { return false; }
   virtual bool isReaderActivity() const { return false; }
+  // The reader's page controls take the input while this screen is on top: the reader actions set on buttons and
+  // gestures come here (ActivityManager::currentIsReaderActivity()). The EPUB reader answers false while its bars are
+  // open over the page and it draws them itself: they take the keys and the touch, as a screen pushed over it would.
+  virtual bool takesReaderControls() const { return isReaderActivity(); }
+  // The panel's polarity this screen goes out in under Dark Mode (DarkMode::invertsOutput): inverted with the setting,
+  // unless it shows a picture of its own or the frame already on screen. ActivityManager sets the panel from it before
+  // the screen's onEnter() and at every render pass.
+  virtual DarkMode::ScreenPolarity outputPolarity() const { return DarkMode::ScreenPolarity::FollowDarkMode; }
   // This screen's Left and Right buttons and left/right swipe zones mean the opposite of their labels (a right-to-left
   // book under Follow Book): main.cpp reverses the directional page actions configured on them. Asked of the top
   // activity only.

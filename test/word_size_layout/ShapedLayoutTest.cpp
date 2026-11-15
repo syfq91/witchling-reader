@@ -4,6 +4,7 @@
 // take on their lines, piece by piece (steps 7-9), are the ShapedLine suite's.
 #include <Arduino.h>
 #include <BidiUtils.h>
+#include <BufferedFileIO.h>
 #include <BuildArena.h>
 #include <EpdFontData.h>
 #include <GlyphRun.h>
@@ -124,7 +125,11 @@ Lines layOut(ParsedText& text, const GfxRenderer& renderer, const int width, con
 
 std::string bytesOf(const TextBlock& line) {
   FsFile file = HalFile::forReadWrite();
-  EXPECT_TRUE(line.serialize(file));
+  {
+    serialization::BufferedFileWriter writer(file);
+    EXPECT_TRUE(line.serialize(writer));
+    EXPECT_TRUE(writer.flush());
+  }
   EXPECT_TRUE(file.seek(0));
   std::string bytes(file.size(), '\0');
   EXPECT_EQ(static_cast<int>(bytes.size()), file.read(bytes.data(), bytes.size()));
@@ -953,7 +958,8 @@ std::unique_ptr<TextBlock> readBack(const std::string& bytes) {
   FsFile file = HalFile::forReadWrite();
   file.write(bytes.data(), bytes.size());
   if (!file.seek(0)) return nullptr;
-  return TextBlock::deserialize(file);
+  serialization::BufferedFileReader reader(file);
+  return TextBlock::deserialize(reader);
 }
 
 std::string reordered(const std::string& text) {

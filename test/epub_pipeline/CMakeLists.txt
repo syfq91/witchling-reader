@@ -22,6 +22,8 @@ set(PIPELINE_SOURCES
   ${REPO_ROOT}/lib/Epub/Epub/FootnoteShape.cpp
   ${REPO_ROOT}/lib/Epub/Epub/EpubImageManifest.cpp
   ${REPO_ROOT}/lib/Epub/Epub/htmlEntities.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/BookSearch.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/BookSearchHitFile.cpp
   ${REPO_ROOT}/lib/Epub/Epub/css/CssParser.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ContainerParser.cpp
@@ -103,6 +105,8 @@ set_source_files_properties(PipelineRunner.cpp PROPERTIES
 
 add_executable(EpubPipelineTest
   EpubPipelineTest.cpp
+  BookSearchTest.cpp
+  BookSearchPageTest.cpp
   CjkRulesTest.cpp
   RubyLayoutTest.cpp
   FingerprintTest.cpp
@@ -118,9 +122,12 @@ add_executable(EpubPipelineTest
   ParagraphAnchorTest.cpp
   SavedPositionRestoreTest.cpp
   KeptReadingStateTest.cpp
+  PagesWithoutPicturesTest.cpp
+  EpubMetadataMemoTest.cpp
   ParsedTextOffsetTest.cpp
   LowHeapLoadTest.cpp
   LongChapterPageTablesTest.cpp
+  TableCellTextHeapTest.cpp
   TableRowFallbackArenaTest.cpp
   AnchorMapTest.cpp
   AnchorPageAccuracyTest.cpp
@@ -129,10 +136,12 @@ add_executable(EpubPipelineTest
   ImageExtractionTest.cpp
   ImageManifestTest.cpp
   ImageWrapperWidthTest.cpp
+  InlineImageTest.cpp
   BookAlignmentLayoutTest.cpp
   HeadingBlockLayoutTest.cpp
   WritingModeLayoutTest.cpp
   LineSpacingLayoutTest.cpp
+  ParagraphIndentLayoutTest.cpp
   BlockEmphasisTest.cpp
   KeepTogetherTest.cpp
   NativeSizeLayoutTest.cpp
@@ -140,6 +149,9 @@ add_executable(EpubPipelineTest
   PrefixedPackageTest.cpp
   BlockElementsTest.cpp
   DashBreakTest.cpp
+  WhiteSpaceLayoutTest.cpp
+  InitialLetterLayoutTest.cpp
+  LayoutGapsInteractionTest.cpp
   FontFamilyLayoutTest.cpp
   SpineCacheLayoutTest.cpp
   SaxStateInArenaTest.cpp
@@ -148,9 +160,15 @@ add_executable(EpubPipelineTest
   ImageParkTest.cpp
   StoredEntryDecodeTest.cpp
   PlaceholderOnlyScopeTest.cpp
+  Gray8PictureTest.cpp
+  ImageDitherPlacementTest.cpp
+  PixelCacheSizeTest.cpp
   PixelCacheWriteTest.cpp
+  PngHeapGateTest.cpp
+  WarmRefusalStopTest.cpp
   BufferedPrintTest.cpp
   VerticalPageTest.cpp
+  PageWindowReadTest.cpp
   ImageOnlyPageTest.cpp
   VerticalLayoutTest.cpp
   VerticalRulesTest.cpp
@@ -170,6 +188,7 @@ add_executable(EpubPipelineTest
   FirstOpenIndexingTest.cpp
   FirstChapterTest.cpp
   TocPassTest.cpp
+  BoxLayoutTest.cpp
   # A book's embedded body font (Publisher Fonts): the probe and the extraction. Its SHA-1 comes from
   # test/shims/wolfssl, standing in for wolfCrypt.
   ${REPO_ROOT}/lib/Epub/Epub/BookFonts.cpp
@@ -196,6 +215,8 @@ target_compile_definitions(EpubPipelineTest PRIVATE
   # LongChapterPageTablesTest refuses build-table chunks on purpose (see ChunkedVector.h). The
   # hook is inert until a test arms it; firmware and the dump tools never define it.
   CHUNKED_VECTOR_FAULT_INJECTION
+  # TableCellTextHeapTest refuses table cells their text (ChapterHtmlSlimParser::makeCellText). Inert otherwise.
+  TABLE_CELL_FAULT_INJECTION
   # Central-directory walk counters (ZipFile.h), for the tests that bound them. Inert otherwise.
   ZIP_FILE_SCAN_STATS
 )

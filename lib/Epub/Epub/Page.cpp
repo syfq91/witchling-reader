@@ -1,34 +1,53 @@
 #include "Page.h"
 
+#include <BufferedFileIO.h>
 #include <CooperativeAbort.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <HeapFit.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <Serialization.h>
 
 #include <optional>
 
 #include "PageFrameScope.h"
 
+namespace {
+
+// Whether the decode of `image` just made ends the page's warm: refused for memory (image_scratch::heapShortCount
+// moved since `shortBefore`, and the variant asked for is still missing) while the decode can wait
+// (image_scratch::canWait). That is the image lane beside a section build, whose lane after the build decodes what is
+// left with the whole buffer. Each image after a refusal still paid its extraction check, cache probes and a decode
+// refused like the first: a page of icons on the X3 took 26 refused decodes in 3.5 s (2026-11-11), each image twice,
+// once for both variants and once for the 4-level one alone. Any other pass tries every image, as before: a page
+// render's memory ladder climbs between its passes, and a smaller image may fit where a larger one did not.
+bool refusalEndsWarm(const ImageBlock& image, const uint32_t shortBefore, const bool monochromeOutput) {
+  if (!image_scratch::canWait() || image_scratch::heapShortCount() == shortBefore) return false;
+  return !(monochromeOutput ? image.hasPixelCache() : image.hasGrayVariantCache());
+}
+
+}  // namespace
+
 void PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
   block->render(renderer, fontId, xPos + xOffset, yPos + yOffset);
 }
 
-bool PageLine::serialize(FsFile& file) {
-  serialization::writePod(file, xPos);
-  serialization::writePod(file, yPos);
+bool PageLine::serialize(serialization::BufferedFileWriter& out) {
+  out.writePod(xPos);
+  out.writePod(yPos);
 
   // serialize TextBlock pointed to by PageLine
-  return block->serialize(file);
+  return block->serialize(out);
 }
 
-std::unique_ptr<PageLine> PageLine::deserialize(FsFile& file, BuildArena* scratch) {
+std::unique_ptr<PageLine> PageLine::deserialize(serialization::BufferedFileReader& in, BuildArena* scratch) {
   int16_t xPos;
   int16_t yPos;
-  serialization::readPod(file, xPos);
-  serialization::readPod(file, yPos);
+  in.readPod(xPos);
+  in.readPod(yPos);
 
-  auto tb = TextBlock::deserialize(file, scratch);
+  auto tb = TextBlock::deserialize(in, scratch);
   if (!tb) {
     LOG_ERR("PGE", "PageLine: TextBlock deserialize failed");
     return nullptr;
@@ -46,26 +65,42 @@ void PageImage::renderWithForceLoad(GfxRenderer& renderer, const int xOffset, co
   imageBlock->render(renderer, xPos + xOffset, yPos + yOffset, forceLoad, monochromeOutput, alsoCacheOtherVariant);
 }
 
-bool PageImage::serialize(FsFile& file) {
-  serialization::writePod(file, xPos);
-  serialization::writePod(file, yPos);
-
-  // serialize ImageBlock
-  return imageBlock->serialize(file);
+void PageImage::warmGrayVariant(GfxRenderer& renderer, const int xOffset, const int yOffset, const bool forceLoad) {
+  imageBlock->warmGrayVariant(renderer, xPos + xOffset, yPos + yOffset, forceLoad);
 }
 
-std::unique_ptr<PageImage> PageImage::deserialize(FsFile& file) {
+bool PageImage::serialize(serialization::BufferedFileWriter& out) {
+  out.writePod(xPos);
+  out.writePod(yPos);
+  // A flags byte, and the link's hash after it when it has one: a block image costs one byte.
+  const uint8_t flags = static_cast<uint8_t>((inLine_ ? kInLine : 0) | (linkHash_ != 0 ? kLinked : 0));
+  out.writePod(flags);
+  if (linkHash_ != 0) out.writePod(linkHash_);
+
+  // serialize ImageBlock
+  return imageBlock->serialize(out);
+}
+
+std::unique_ptr<PageImage> PageImage::deserialize(serialization::BufferedFileReader& in) {
   int16_t xPos;
   int16_t yPos;
-  serialization::readPod(file, xPos);
-  serialization::readPod(file, yPos);
+  in.readPod(xPos);
+  in.readPod(yPos);
+  uint8_t flags = 0;
+  in.readPod(flags);
+  if ((flags & ~(kInLine | kLinked)) != 0) {
+    LOG_ERR("PGE", "PageImage: unknown flags 0x%02X", flags);
+    return nullptr;
+  }
+  uint32_t linkHash = 0;
+  if ((flags & kLinked) != 0) in.readPod(linkHash);
 
-  auto ib = ImageBlock::deserialize(file);
+  auto ib = ImageBlock::deserialize(in);
   if (!ib) {
     LOG_ERR("PGE", "PageImage: ImageBlock deserialize failed");
     return nullptr;
   }
-  return std::unique_ptr<PageImage>(new PageImage(std::move(ib), xPos, yPos));
+  return std::unique_ptr<PageImage>(new PageImage(std::move(ib), xPos, yPos, (flags & kInLine) != 0, linkHash));
 }
 
 void PageHR::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
@@ -73,19 +108,148 @@ void PageHR::render(GfxRenderer& renderer, const int fontId, const int xOffset, 
   renderer.drawLine(xPos + xOffset, yPos + yOffset, xPos + xOffset + width - 1, yPos + yOffset);
 }
 
-bool PageHR::serialize(FsFile& file) {
-  serialization::writePod(file, xPos);
-  serialization::writePod(file, yPos);
-  serialization::writePod(file, width);
+bool PageHR::serialize(serialization::BufferedFileWriter& out) {
+  out.writePod(xPos);
+  out.writePod(yPos);
+  out.writePod(width);
   return true;
 }
 
-std::unique_ptr<PageHR> PageHR::deserialize(FsFile& file) {
+std::unique_ptr<PageHR> PageHR::deserialize(serialization::BufferedFileReader& in) {
   int16_t xPos, yPos, width;
-  serialization::readPod(file, xPos);
-  serialization::readPod(file, yPos);
-  serialization::readPod(file, width);
+  in.readPod(xPos);
+  in.readPod(yPos);
+  in.readPod(width);
   return std::unique_ptr<PageHR>(new PageHR(xPos, yPos, width));
+}
+
+namespace {
+// Each column's left edge, and the table's right edge last, for a table `totalWidth` wide drawn at drawX. Integer
+// division per edge, so rounding does not drift across the columns. Idea from uxjulia/CrossInk; rewritten for our
+// layout model.
+std::array<int, MAX_TABLE_COLS + 1> columnEdges(const int drawX, const uint16_t totalWidth, const uint8_t columnCount) {
+  std::array<int, MAX_TABLE_COLS + 1> colX = {};
+  colX[0] = drawX;
+  for (uint8_t c = 0; c < columnCount; c++) {
+    colX[c + 1] = drawX + static_cast<int>((static_cast<uint32_t>(totalWidth) * (c + 1)) / columnCount);
+  }
+  return colX;
+}
+
+// A cell's lines from (x, lineY) down, drawn when `draw`; returns where its graphic goes, below them.
+int layOutCellLines(GfxRenderer& renderer, const TableCell& cell, const int fontId, const int x, int lineY,
+                    const int lineHeight, const bool draw) {
+  for (const auto& line : cell.lines) {
+    if (draw) line->render(renderer, fontId, x, lineY);
+    lineY += lineHeight + line->annotationBand(renderer, fontId);
+  }
+  return lineY;
+}
+}  // namespace
+
+namespace {
+// One edge of a box as strips along its side: `length` long from (x, y), `side.width` deep inward. Ported from
+// crosspoint-reader PR #3891 (Justin Mitchell, @itsthisjustin), its drawBorderEdge.
+void drawBoxEdge(const GfxRenderer& renderer, const int x, const int y, const int length, const PageBox::Edge& side,
+                 const bool horizontal) {
+  const int depth = side.width;
+  const auto strip = [&](const int offset, const int along, const int span, const int thickness) {
+    if (horizontal) {
+      renderer.fillRect(x + along, y + offset, span, thickness, true);
+    } else {
+      renderer.fillRect(x + offset, y + along, thickness, span, true);
+    }
+  };
+  switch (side.style) {
+    case CssBorderStyle::Double:
+      // Two lines and the gap between them; under three pixels there is no gap to leave, and the line is solid.
+      if (depth >= 3) {
+        const int line = depth / 3;
+        strip(0, 0, length, line);
+        strip(depth - line, 0, length, line);
+        return;
+      }
+      break;
+    case CssBorderStyle::Dotted:
+    case CssBorderStyle::Dashed: {
+      const bool dotted = side.style == CssBorderStyle::Dotted;
+      const int dash = dotted ? depth : std::max(3, depth * 3);
+      const int gap = dotted ? std::max(2, depth) : std::max(2, depth * 2);
+      for (int along = 0; along < length; along += dash + gap) strip(0, along, std::min(dash, length - along), depth);
+      return;
+    }
+    case CssBorderStyle::Unset:
+    case CssBorderStyle::None:
+      return;
+    case CssBorderStyle::Solid:
+      break;
+  }
+  strip(0, 0, length, depth);
+}
+}  // namespace
+
+void PageBox::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
+  (void)fontId;
+  // The black-and-white pass only. The same element list draws the anti-aliasing planes and the one-pass gray mask,
+  // where a shade would mark its pixels gray and a line would clear plane bits the text set; and the font cache's scan
+  // pass is no drawing at all.
+  if (renderer.getRenderMode() != GfxRenderer::BW || renderer.isFontCacheScanning()) return;
+  const int x = xPos + xOffset;
+  const int y = yPos + yOffset;
+  // One pixel in four, ink only: anything drawn here before (the glyphs of a line above that reach into the box) stays.
+  if (shaded) renderer.fillRectDither(x, y, width, height, Color::LightGray, /*keepInk=*/true);
+  const Edge& top = edges[CssBox::Top];
+  const Edge& right = edges[CssBox::Right];
+  const Edge& bottom = edges[CssBox::Bottom];
+  const Edge& left = edges[CssBox::Left];
+  if (top.width > 0) drawBoxEdge(renderer, x, y, width, top, /*horizontal=*/true);
+  if (bottom.width > 0) drawBoxEdge(renderer, x, y + height - bottom.width, width, bottom, /*horizontal=*/true);
+  if (left.width > 0) drawBoxEdge(renderer, x, y, height, left, /*horizontal=*/false);
+  if (right.width > 0) drawBoxEdge(renderer, x + width - right.width, y, height, right, /*horizontal=*/false);
+}
+
+bool PageBox::serialize(serialization::BufferedFileWriter& out) {
+  out.writePod(xPos);
+  out.writePod(yPos);
+  out.writePod(width);
+  out.writePod(height);
+  for (const Edge& edge : edges) {
+    out.writePod(edge.width);
+    out.writePod(static_cast<uint8_t>(edge.style));
+  }
+  out.writePod(shaded);
+  return true;
+}
+
+std::unique_ptr<PageBox> PageBox::deserialize(serialization::BufferedFileReader& in) {
+  int16_t xPos = 0;
+  int16_t yPos = 0;
+  uint16_t width = 0;
+  uint16_t height = 0;
+  Edge edges[4];
+  bool shaded = false;
+  in.readPod(xPos);
+  in.readPod(yPos);
+  in.readPod(width);
+  in.readPod(height);
+  for (Edge& edge : edges) {
+    uint8_t style = 0;
+    in.readPod(edge.width);
+    in.readPod(style);
+    if (edge.width > CssBox::kMaxWidthPx || style > static_cast<uint8_t>(CssBorderStyle::Dashed)) {
+      LOG_ERR("PGE", "PageBox: invalid edge (width %u, style %u)", edge.width, style);
+      return nullptr;
+    }
+    edge.style = static_cast<CssBorderStyle>(style);
+  }
+  in.readPod(shaded);
+  if (width == 0 || height == 0) {
+    LOG_ERR("PGE", "PageBox: empty box %ux%u", width, height);
+    return nullptr;
+  }
+  auto box = makeUniqueNoThrow<PageBox>(xPos, yPos, width, height, edges, shaded);
+  if (!box) LOG_ERR("PGE", "PageBox: allocation failed");
+  return box;
 }
 
 void PageTableFragment::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
@@ -96,13 +260,7 @@ void PageTableFragment::render(GfxRenderer& renderer, const int fontId, const in
     renderer.drawRect(drawX, drawY, totalWidth, totalHeight, true);
   }
 
-  // Pre-compute column X positions using integer division to avoid rounding drift across columns.
-  // Idea from uxjulia/CrossInk; rewritten for our layout model.
-  std::array<int, MAX_TABLE_COLS + 1> colX = {};
-  colX[0] = drawX;
-  for (uint8_t c = 0; c < columnCount; c++) {
-    colX[c + 1] = drawX + static_cast<int>((static_cast<uint32_t>(totalWidth) * (c + 1)) / columnCount);
-  }
+  const std::array<int, MAX_TABLE_COLS + 1> colX = columnEdges(drawX, totalWidth, columnCount);
 
   // Rows: text content + separators. Column separators are drawn per row rather than as full-height
   // lines, because a colspan cell has no internal boundaries to draw.
@@ -116,16 +274,13 @@ void PageTableFragment::render(GfxRenderer& renderer, const int fontId, const in
     for (const TableCell& cell : row.cells) {
       if (col >= columnCount) break;
       const uint8_t span = std::min<uint8_t>(cell.colSpan ? cell.colSpan : 1, columnCount - col);
-      int lineY = rowY + TABLE_CELL_PADDING;
-      for (const auto& line : cell.lines) {
-        line->render(renderer, fontId, colX[col] + TABLE_CELL_PADDING, lineY);
-        lineY += lineHeight + line->annotationBand(renderer, fontId);
-      }
+      const int imageY = layOutCellLines(renderer, cell, fontId, colX[col] + TABLE_CELL_PADDING,
+                                         rowY + TABLE_CELL_PADDING, lineHeight, /*draw=*/true);
       // In-cell graphic, drawn below the cell text. Always 1-bit (BW) thumbnails:
       // the decode/cache machinery lives in ImageBlock; the BW cache is built during
       // the warm pass and simply blitted here (and again in grayscale strip passes).
       if (cell.image) {
-        cell.image->render(renderer, colX[col] + TABLE_CELL_PADDING, lineY, /*forceLoad=*/true,
+        cell.image->render(renderer, colX[col] + TABLE_CELL_PADDING, imageY, /*forceLoad=*/true,
                            /*monochromeOutput=*/true);
       }
       col = static_cast<uint8_t>(col + span);
@@ -139,6 +294,29 @@ void PageTableFragment::render(GfxRenderer& renderer, const int fontId, const in
       const int sepLineWidth = row.isHeaderRow ? 2 : 1;
       renderer.drawLine(drawX, rowY, drawX + totalWidth - 1, rowY, sepLineWidth, true);
     }
+  }
+}
+
+void PageTableFragment::renderImagesGray8(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
+                                          uint8_t* canvas, const uint16_t stride, Gray8Pictures& count) const {
+  if (!HalDisplay::kMayLendGray8Canvas) return;  // no canvas in this build
+  const std::array<int, MAX_TABLE_COLS + 1> colX = columnEdges(xPos + xOffset, totalWidth, columnCount);
+  const int lineHeight = renderer.getLineHeight(fontId);
+  int rowY = yPos + yOffset;
+  for (const TableRow& row : rows) {
+    uint8_t col = 0;
+    for (const TableCell& cell : row.cells) {
+      if (col >= columnCount) break;
+      if (cell.image) {
+        const int x = colX[col] + TABLE_CELL_PADDING;
+        const int imageY =
+            layOutCellLines(renderer, cell, fontId, x, rowY + TABLE_CELL_PADDING, lineHeight, /*draw=*/false);
+        count.offered++;
+        if (cell.image->renderGray8(renderer, x, imageY, canvas, stride)) count.inGray++;
+      }
+      col = static_cast<uint8_t>(col + std::min<uint8_t>(cell.colSpan ? cell.colSpan : 1, columnCount - col));
+    }
+    rowY += row.height;
   }
 }
 
@@ -159,13 +337,13 @@ bool PageTableFragment::hasUncachedImages(const bool forceLoad, const bool monoc
       if (cell.image->wouldShowPlaceholder(forceLoad, monochromeOutput)) continue;
       const bool cached = monochromeOutput ? cell.image->hasPixelCache() : cell.image->hasGrayscaleCache();
       if (!cached) return true;
-      if (alsoWarmGrayscale && monochromeOutput && !cell.image->hasGrayscaleCache()) return true;
+      if (alsoWarmGrayscale && monochromeOutput && !cell.image->hasGrayVariantCache()) return true;
     }
   }
   return false;
 }
 
-void PageTableFragment::warmCellImages(GfxRenderer& renderer, const bool forceLoad, const bool monochromeOutput,
+bool PageTableFragment::warmCellImages(GfxRenderer& renderer, const bool forceLoad, const bool monochromeOutput,
                                        const bool alsoWarmGrayscale) const {
   for (const auto& row : rows) {
     for (const auto& cell : row.cells) {
@@ -176,57 +354,63 @@ void PageTableFragment::warmCellImages(GfxRenderer& renderer, const bool forceLo
       // The cache is position-independent, so warm at the origin — the framebuffer write is
       // discarded by the caller's clearScreen().
       if (!cached) {
+        const uint32_t shortBefore = image_scratch::heapShortCount();
         cell.image->render(renderer, 0, 0, forceLoad, monochromeOutput);
-        if (CooperativeAbort::wasAborted()) return;  // see Page::warmImageCaches
+        if (CooperativeAbort::wasAborted()) return false;  // see Page::warmImageCaches
+        if (refusalEndsWarm(*cell.image, shortBefore, monochromeOutput)) return false;
       }
-      if (alsoWarmGrayscale && monochromeOutput && !cell.image->hasGrayscaleCache()) {
-        cell.image->render(renderer, 0, 0, forceLoad, /*monochromeOutput=*/false);
-        if (CooperativeAbort::wasAborted()) return;
+      if (alsoWarmGrayscale && monochromeOutput && !cell.image->hasGrayVariantCache()) {
+        const uint32_t shortBefore = image_scratch::heapShortCount();
+        cell.image->warmGrayVariant(renderer, 0, 0, forceLoad);
+        if (CooperativeAbort::wasAborted()) return false;
+        if (refusalEndsWarm(*cell.image, shortBefore, /*monochromeOutput=*/false)) return false;
       }
-    }
-  }
-}
-
-bool PageTableFragment::serialize(FsFile& file) {
-  serialization::writePod(file, xPos);
-  serialization::writePod(file, yPos);
-  serialization::writePod(file, columnCount);
-  serialization::writePod(file, totalWidth);
-  serialization::writePod(file, totalHeight);
-  serialization::writePod(file, hasBorder);
-  const uint16_t rowCount = static_cast<uint16_t>(rows.size());
-  serialization::writePod(file, rowCount);
-  for (const auto& row : rows) {
-    serialization::writePod(file, row.height);
-    serialization::writePod(file, row.isHeaderRow);
-    const uint8_t cellCount = static_cast<uint8_t>(row.cells.size());
-    serialization::writePod(file, cellCount);
-    for (const auto& cell : row.cells) {
-      serialization::writePod(file, cell.isHeader);
-      serialization::writePod(file, cell.colSpan);
-      const uint8_t lineCount = static_cast<uint8_t>(cell.lines.size());
-      serialization::writePod(file, lineCount);
-      for (const auto& line : cell.lines) {
-        if (!line->serialize(file)) return false;
-      }
-      const bool hasImage = static_cast<bool>(cell.image);
-      serialization::writePod(file, hasImage);
-      if (hasImage && !cell.image->serialize(file)) return false;
     }
   }
   return true;
 }
 
-std::unique_ptr<PageTableFragment> PageTableFragment::deserialize(FsFile& file, BuildArena* scratch) {
+bool PageTableFragment::serialize(serialization::BufferedFileWriter& out) {
+  out.writePod(xPos);
+  out.writePod(yPos);
+  out.writePod(columnCount);
+  out.writePod(totalWidth);
+  out.writePod(totalHeight);
+  out.writePod(hasBorder);
+  const uint16_t rowCount = static_cast<uint16_t>(rows.size());
+  out.writePod(rowCount);
+  for (const auto& row : rows) {
+    out.writePod(row.height);
+    out.writePod(row.isHeaderRow);
+    const uint8_t cellCount = static_cast<uint8_t>(row.cells.size());
+    out.writePod(cellCount);
+    for (const auto& cell : row.cells) {
+      out.writePod(cell.isHeader);
+      out.writePod(cell.colSpan);
+      const uint8_t lineCount = static_cast<uint8_t>(cell.lines.size());
+      out.writePod(lineCount);
+      for (const auto& line : cell.lines) {
+        if (!line->serialize(out)) return false;
+      }
+      const bool hasImage = static_cast<bool>(cell.image);
+      out.writePod(hasImage);
+      if (hasImage && !cell.image->serialize(out)) return false;
+    }
+  }
+  return true;
+}
+
+std::unique_ptr<PageTableFragment> PageTableFragment::deserialize(serialization::BufferedFileReader& in,
+                                                                  BuildArena* scratch) {
   int16_t xPos, yPos;
-  serialization::readPod(file, xPos);
-  serialization::readPod(file, yPos);
+  in.readPod(xPos);
+  in.readPod(yPos);
 
   uint8_t columnCount;
   uint16_t totalWidth, totalHeight;
-  serialization::readPod(file, columnCount);
-  serialization::readPod(file, totalWidth);
-  serialization::readPod(file, totalHeight);
+  in.readPod(columnCount);
+  in.readPod(totalWidth);
+  in.readPod(totalHeight);
 
   if (columnCount == 0 || columnCount > MAX_TABLE_COLS) {
     LOG_ERR("PGE", "TableFragment: invalid columnCount %u", columnCount);
@@ -234,10 +418,10 @@ std::unique_ptr<PageTableFragment> PageTableFragment::deserialize(FsFile& file, 
   }
 
   bool hasBorder;
-  serialization::readPod(file, hasBorder);
+  in.readPod(hasBorder);
 
   uint16_t rowCount;
-  serialization::readPod(file, rowCount);
+  in.readPod(rowCount);
   if (rowCount > MAX_TABLE_ROWS) {
     LOG_ERR("PGE", "TableFragment: invalid rowCount %u", rowCount);
     return nullptr;
@@ -247,10 +431,10 @@ std::unique_ptr<PageTableFragment> PageTableFragment::deserialize(FsFile& file, 
   rows.reserve(rowCount);
   for (uint16_t r = 0; r < rowCount; r++) {
     TableRow row;
-    serialization::readPod(file, row.height);
-    serialization::readPod(file, row.isHeaderRow);
+    in.readPod(row.height);
+    in.readPod(row.isHeaderRow);
     uint8_t cellCount;
-    serialization::readPod(file, cellCount);
+    in.readPod(cellCount);
     if (cellCount > MAX_TABLE_COLS) {
       LOG_ERR("PGE", "TableFragment: invalid cellCount %u in row %u", cellCount, r);
       return nullptr;
@@ -258,21 +442,21 @@ std::unique_ptr<PageTableFragment> PageTableFragment::deserialize(FsFile& file, 
     row.cells.reserve(cellCount);
     for (uint8_t c = 0; c < cellCount; c++) {
       TableCell cell;
-      serialization::readPod(file, cell.isHeader);
-      serialization::readPod(file, cell.colSpan);
+      in.readPod(cell.isHeader);
+      in.readPod(cell.colSpan);
       if (cell.colSpan == 0 || cell.colSpan > columnCount) {
         LOG_ERR("PGE", "TableFragment: invalid colSpan %u at row %u cell %u", cell.colSpan, r, c);
         return nullptr;
       }
       uint8_t lineCount;
-      serialization::readPod(file, lineCount);
+      in.readPod(lineCount);
       if (lineCount > MAX_CELL_LINES) {
         LOG_ERR("PGE", "TableFragment: invalid lineCount %u at row %u cell %u", lineCount, r, c);
         return nullptr;
       }
       cell.lines.reserve(lineCount);
       for (uint8_t l = 0; l < lineCount; l++) {
-        auto tb = TextBlock::deserialize(file, scratch);
+        auto tb = TextBlock::deserialize(in, scratch);
         if (!tb) {
           LOG_ERR("PGE", "TableFragment: TextBlock deserialize failed at row %u cell %u line %u", r, c, l);
           return nullptr;
@@ -280,9 +464,9 @@ std::unique_ptr<PageTableFragment> PageTableFragment::deserialize(FsFile& file, 
         cell.lines.push_back(std::move(tb));
       }
       bool hasImage = false;
-      serialization::readPod(file, hasImage);
+      in.readPod(hasImage);
       if (hasImage) {
-        cell.image = ImageBlock::deserialize(file);
+        cell.image = ImageBlock::deserialize(in);
         if (!cell.image) {
           LOG_ERR("PGE", "TableFragment: ImageBlock deserialize failed at row %u cell %u", r, c);
           return nullptr;
@@ -324,6 +508,28 @@ void Page::renderImagesFromGrayscaleCache(GfxRenderer& renderer, const int xOffs
   }
 }
 
+Gray8Pictures Page::renderImagesGray8(GfxRenderer& renderer, const int fontId, const int xOffsetIn, const int yOffsetIn,
+                                      uint8_t* canvas, const uint16_t stride) const {
+  int xOffset = xOffsetIn;
+  int yOffset = yOffsetIn;
+  const PageFrameScope scope(renderer, *this, xOffset, yOffset);
+  Gray8Pictures count;
+  for (const auto& element : elements) {
+    if (element->getTag() == TAG_PageTable) {
+      static_cast<const PageTableFragment&>(*element).renderImagesGray8(renderer, fontId, xOffset, yOffset, canvas,
+                                                                        stride, count);
+      continue;
+    }
+    if (element->getTag() != TAG_PageImage) continue;
+    const auto& pi = static_cast<const PageImage&>(*element);
+    count.offered++;
+    if (pi.getImageBlock().renderGray8(renderer, pi.xPos + xOffset, pi.yPos + yOffset, canvas, stride)) {
+      count.inGray++;
+    }
+  }
+  return count;
+}
+
 void Page::warmImageCaches(GfxRenderer& renderer, const int xOffsetIn, const int yOffsetIn,
                            const bool forceLoadLargeImages, const bool monochromeOutput, const bool alsoWarmGrayscale,
                            const bool redecodeCoarse) const {
@@ -344,8 +550,10 @@ void Page::warmImageCaches(GfxRenderer& renderer, const int xOffsetIn, const int
   for (auto& element : elements) {
     if (CooperativeAbort::wasAborted()) return;
     if (element->getTag() == TAG_PageTable) {
-      static_cast<const PageTableFragment&>(*element).warmCellImages(renderer, forceLoadLargeImages, monochromeOutput,
-                                                                     alsoWarmGrayscale);
+      if (!static_cast<const PageTableFragment&>(*element).warmCellImages(renderer, forceLoadLargeImages,
+                                                                          monochromeOutput, alsoWarmGrayscale)) {
+        return;
+      }
       continue;
     }
     if (element->getTag() != TAG_PageImage) continue;
@@ -360,11 +568,15 @@ void Page::warmImageCaches(GfxRenderer& renderer, const int xOffsetIn, const int
     // instead of paying two. Requires BOTH to be absent — if the BW cache is already on disk
     // the merged pass would redo work that is already done, so the plain second pass below is
     // the cheaper route.
-    const bool mergeVariants = alsoWarmGrayscale && monochromeOutput && !alreadyCached && !ib.hasGrayscaleCache();
+    // Only the Bayer variant is a companion of the 1-bit one: the 8-bit gray cache has a decode of its own.
+    const bool mergeVariants = alsoWarmGrayscale && monochromeOutput && !alreadyCached &&
+                               ImageBlock::grayVariant() == ImageBlock::GrayVariant::Bayer && !ib.hasGrayscaleCache();
     if (!alreadyCached) {
+      const uint32_t shortBefore = image_scratch::heapShortCount();
       static_cast<PageImage&>(*element).renderWithForceLoad(renderer, xOffset, yOffset, forceLoadLargeImages,
                                                             monochromeOutput, mergeVariants);
       if (CooperativeAbort::wasAborted()) return;
+      if (refusalEndsWarm(ib, shortBefore, monochromeOutput)) return;
     }
     // Second decode for the other variant when AA needs the grayscale planes on top of
     // the BW frame. Skipped when monochromeOutput is already false — that pass wrote the
@@ -372,9 +584,10 @@ void Page::warmImageCaches(GfxRenderer& renderer, const int xOffsetIn, const int
     // Left in place as the fallback that keeps this correct for every decoder and every
     // failure: the companion is best-effort (JPEG and GIF ignore it, and its cache file can
     // fail to open on its own), so the re-check is what makes it safe to ask for.
-    if (alsoWarmGrayscale && monochromeOutput && !ib.hasGrayscaleCache()) {
-      static_cast<PageImage&>(*element).renderWithForceLoad(renderer, xOffset, yOffset, forceLoadLargeImages,
-                                                            /*monochromeOutput=*/false);
+    if (alsoWarmGrayscale && monochromeOutput && !ib.hasGrayVariantCache()) {
+      const uint32_t shortBefore = image_scratch::heapShortCount();
+      static_cast<PageImage&>(*element).warmGrayVariant(renderer, xOffset, yOffset, forceLoadLargeImages);
+      if (refusalEndsWarm(ib, shortBefore, /*monochromeOutput=*/false)) return;
     }
   }
 }
@@ -429,29 +642,28 @@ bool Page::renderTextOnly(GfxRenderer& renderer, const int fontId, const int xOf
   return true;
 }
 
-bool Page::serialize(FsFile& file) const {
+bool Page::serialize(serialization::BufferedFileWriter& out) const {
   // Clamped to what deserialize() accepts; the overflow is reported by Section::onPageComplete.
   const uint16_t count = static_cast<uint16_t>(std::min<size_t>(elements.size(), MAX_ELEMENTS));
-  serialization::writePod(file, count);
-  serialization::writePod(file, verticalBlockExtent);
+  out.writePod(count);
+  out.writePod(verticalBlockExtent);
 
   for (uint16_t i = 0; i < count; ++i) {
     const auto& el = elements[i];
     // Use getTag() method to determine type
-    serialization::writePod(file, static_cast<uint8_t>(el->getTag()));
+    out.writePod(static_cast<uint8_t>(el->getTag()));
 
-    if (!el->serialize(file)) {
+    if (!el->serialize(out)) {
       return false;
     }
   }
 
   // Serialize footnotes (clamp to MAX_FOOTNOTES_PER_PAGE to match addFootnote/deserialize limits)
   const uint16_t fnCount = std::min<uint16_t>(footnotes.size(), MAX_FOOTNOTES_PER_PAGE);
-  serialization::writePod(file, fnCount);
+  out.writePod(fnCount);
   for (uint16_t i = 0; i < fnCount; i++) {
     const auto& fn = footnotes[i];
-    if (file.write(fn.number, sizeof(fn.number)) != sizeof(fn.number) ||
-        file.write(fn.href, sizeof(fn.href)) != sizeof(fn.href)) {
+    if (!out.write(fn.number, sizeof(fn.number)) || !out.write(fn.href, sizeof(fn.href))) {
       LOG_ERR("PGE", "Failed to write footnote");
       return false;
     }
@@ -460,11 +672,11 @@ bool Page::serialize(FsFile& file) const {
   return true;
 }
 
-std::unique_ptr<Page> Page::deserialize(FsFile& file, BuildArena* scratch) {
+std::unique_ptr<Page> Page::deserialize(serialization::BufferedFileReader& in, BuildArena* scratch) {
   auto page = std::unique_ptr<Page>(new Page());
 
   uint16_t count = 0;
-  if (file.read(reinterpret_cast<uint8_t*>(&count), sizeof(count)) != sizeof(count)) {
+  if (!in.read(&count, sizeof(count))) {
     LOG_ERR("PGE", "Deserialization failed: missing element count");
     return nullptr;
   }
@@ -477,8 +689,7 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file, BuildArena* scratch) {
     return nullptr;
   }
 
-  if (file.read(reinterpret_cast<uint8_t*>(&page->verticalBlockExtent), sizeof(page->verticalBlockExtent)) !=
-      sizeof(page->verticalBlockExtent)) {
+  if (!in.read(&page->verticalBlockExtent, sizeof(page->verticalBlockExtent))) {
     LOG_ERR("PGE", "Deserialization failed: missing block extent");
     return nullptr;
   }
@@ -486,24 +697,28 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file, BuildArena* scratch) {
   page->elements.reserve(count);
   for (uint16_t i = 0; i < count; i++) {
     uint8_t tag;
-    serialization::readPod(file, tag);
+    in.readPod(tag);
 
     if (tag == TAG_PageLine) {
-      auto pl = PageLine::deserialize(file, scratch);
+      auto pl = PageLine::deserialize(in, scratch);
       if (!pl) return nullptr;
       page->elements.push_back(std::move(pl));
     } else if (tag == TAG_PageImage) {
-      auto pi = PageImage::deserialize(file);
+      auto pi = PageImage::deserialize(in);
       if (!pi) return nullptr;
       page->elements.push_back(std::move(pi));
     } else if (tag == TAG_PageTable) {
-      auto pt = PageTableFragment::deserialize(file, scratch);
+      auto pt = PageTableFragment::deserialize(in, scratch);
       if (!pt) return nullptr;
       page->elements.push_back(std::move(pt));
     } else if (tag == TAG_PageHR) {
-      auto hr = PageHR::deserialize(file);
+      auto hr = PageHR::deserialize(in);
       if (!hr) return nullptr;
       page->elements.push_back(std::move(hr));
+    } else if (tag == TAG_PageBox) {
+      auto box = PageBox::deserialize(in);
+      if (!box) return nullptr;
+      page->elements.push_back(std::move(box));
     } else {
       LOG_ERR("PGE", "Deserialization failed: Unknown tag %u", tag);
       return nullptr;
@@ -512,7 +727,7 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file, BuildArena* scratch) {
 
   // Deserialize footnotes
   uint16_t fnCount;
-  serialization::readPod(file, fnCount);
+  in.readPod(fnCount);
   if (fnCount > MAX_FOOTNOTES_PER_PAGE) {
     LOG_ERR("PGE", "Invalid footnote count %u", fnCount);
     return nullptr;
@@ -529,8 +744,7 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file, BuildArena* scratch) {
   page->footnotes.resize(fnCount);
   for (uint16_t i = 0; i < fnCount; i++) {
     auto& entry = page->footnotes[i];
-    if (file.read(entry.number, sizeof(entry.number)) != sizeof(entry.number) ||
-        file.read(entry.href, sizeof(entry.href)) != sizeof(entry.href)) {
+    if (!in.read(entry.number, sizeof(entry.number)) || !in.read(entry.href, sizeof(entry.href))) {
       LOG_ERR("PGE", "Failed to read footnote %u", i);
       return nullptr;
     }

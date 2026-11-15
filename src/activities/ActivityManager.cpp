@@ -12,6 +12,8 @@
 #include <algorithm>
 
 #include "CrossPointState.h"
+#include "DarkMode.h"
+#include "DarkModeNow.h"
 #include "OpdsServerStore.h"
 #include "SdCardFontGlobals.h"
 #include "SettingsList.h"
@@ -129,6 +131,8 @@ void ActivityManager::renderTaskLoop() {
       // exactly the window a plain RenderLock cannot see — see RenderLock(ExclusiveActivityAccess).
       renderPassActive.store(true, std::memory_order_release);
       renderPassesStarted.fetch_add(1, std::memory_order_relaxed);
+      // A Dark Mode change since the last frame (Settings, the web settings, the light drawer) lands on this one.
+      applyOutputPolarity();
       armGhostClearingRefresh();
       {
         // A screen that draws book text draws its first-sight glyphs in the secondary framebuffer, not on the heap:
@@ -198,8 +202,8 @@ void ActivityManager::renderTaskLoop() {
 //    counts pages (N-1 FAST, then the HALF), so a list ghosts no more than a book does. The
 //    reader runs that same cadence itself (ReaderUtils), and counting it here too would double it.
 // The override stays armed through a pass that ships nothing, so it lands on the next real frame.
-// It also replaces a FULL a screen asked for, which costs nothing on the one panel this is for: its
-// driver has a single waveform for every mode but FAST.
+// It also replaces a FULL a screen asked for, which costs nothing on the panels this is for: their
+// drivers have a single waveform for every mode but FAST (on the T5S3, LgfxEpdDriver's epdModeFor()).
 void ActivityManager::armGhostClearingRefresh() {
   if (!HalCapabilities::clearsGhostsOnEveryScreen()) return;
   const uint32_t changes = activityChanges.load(std::memory_order_relaxed);
@@ -209,6 +213,11 @@ void ActivityManager::armGhostClearingRefresh() {
   const bool cadenceDue = frequency > 0 && !currentActivity->isReaderActivity() &&
                           renderer.ghostClearingHalfWorthwhile(static_cast<uint8_t>(frequency - 1));
   if (activityChanged || cadenceDue) renderer.setNextDisplayRefreshMode(HalDisplay::HALF_REFRESH);
+}
+
+void ActivityManager::applyOutputPolarity() {
+  const auto screen = currentActivity ? currentActivity->outputPolarity() : DarkMode::ScreenPolarity::FollowDarkMode;
+  renderer.setOutputInverted(DarkMode::invertsOutput(DarkModeNow::isDark(), screen, renderer.isOutputInverted()));
 }
 
 void ActivityManager::loop() {
@@ -624,12 +633,14 @@ bool ActivityManager::requiresExclusiveStorageLoop() const {
 }
 
 bool ActivityManager::isReaderActivity() const {
-  if (currentIsReaderActivity()) return true;
+  if (currentActivity && currentActivity->isReaderActivity()) return true;
   return std::any_of(stackActivities.begin(), stackActivities.end(),
                      [](const auto& activity) { return activity->isReaderActivity(); });
 }
 
-bool ActivityManager::currentIsReaderActivity() const { return currentActivity && currentActivity->isReaderActivity(); }
+bool ActivityManager::currentIsReaderActivity() const {
+  return currentActivity && currentActivity->takesReaderControls();
+}
 
 bool ActivityManager::currentMirrorsLeftRight() const { return currentActivity && currentActivity->mirrorsLeftRight(); }
 
@@ -664,9 +675,13 @@ const char* ActivityManager::busyReason(const bool includeBackground) {
   if (mappedInput.hasPendingInput() || buttonEvents.isMidGesture()) return "input";
   // A frame is queued (requestedUpdate, or a notification the render task has not taken), is
   // being drawn (renderPassActive covers the stretch where render() lets go of the mutex), has a
-  // task waiting on it, or is still going onto the panel.
-  if (isUpdateSuperseded() || renderPassActive.load(std::memory_order_acquire) || waitingTaskHandle != nullptr ||
-      RenderLock::peek() || renderer.isRefreshPending()) {
+  // task waiting on it, or is still going onto the panel. The waiter is read under the mux its
+  // writers hold: on the dual-core S3 the render task can clear it while this runs.
+  taskENTER_CRITICAL(&activityStateMux);
+  const bool renderAwaited = waitingTaskHandle != nullptr;
+  taskEXIT_CRITICAL(&activityStateMux);
+  if (isUpdateSuperseded() || renderPassActive.load(std::memory_order_acquire) || renderAwaited || RenderLock::peek() ||
+      renderer.isRefreshPending()) {
     return "render";
   }
   // Between taking its notification and taking the mutex the render task shows none of the above

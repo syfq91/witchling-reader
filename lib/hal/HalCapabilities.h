@@ -162,8 +162,15 @@ inline bool keepsSecondaryBuffer() { return false; }
 // True when an image decode can run through a refresh...
 inline bool decodesThroughRefresh() { return false; }
 
+// A new font on the reader bars' Layout tab waits for them to close; every other value there is laid out under them at
+// once.
+inline bool defersLiveFontChange() { return true; }
+
 // A frontlight is present (none on X4).
 inline bool hasFrontlight() { return false; }
+
+// A frontlight on a board whose hardware RTC keeps the time of day through sleep (none on X4).
+inline bool hasFrontlightAndRtc() { return false; }
 
 // The frontlight has a second (warm) channel.
 inline bool hasColorTemperature() { return false; }

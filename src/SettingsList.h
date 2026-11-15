@@ -1,5 +1,8 @@
 #pragma once
 
+#include <BoardConfig.h>
+#include <Epub/LineSpacing.h>
+#include <Epub/ParagraphIndent.h>
 #include <HalCapabilities.h>
 #include <HalDisplay.h>
 #include <HalGPIO.h>
@@ -112,7 +115,14 @@ inline void buildSettings(const RowSink& emit) {
                                                StrId::STR_BTN_ACT_IGNORE,
                                                StrId::STR_DICTIONARY,
                                                StrId::STR_BTN_ACT_SYNC_PROGRESS,
-                                               StrId::STR_BACK};
+                                               StrId::STR_BACK,
+                                               StrId::STR_BTN_ACT_READER_BARS,
+                                               StrId::STR_CONFIRM,
+                                               StrId::STR_BTN_ACT_LIGHT_TOGGLE,
+                                               StrId::STR_BTN_ACT_LIGHT_BRIGHTER,
+                                               StrId::STR_BTN_ACT_LIGHT_DIMMER,
+                                               StrId::STR_BTN_ACT_LIGHT_WARMER,
+                                               StrId::STR_BTN_ACT_LIGHT_COOLER};
 
   // Prepend the per-button default action to the shared options list.
   assert(1 + btnActionOptions.size() == static_cast<size_t>(CrossPointSettings::BUTTON_ACTION_COUNT) &&
@@ -156,6 +166,7 @@ inline void buildSettings(const RowSink& emit) {
                          {StrId::STR_NEVER, StrId::STR_IN_READER, StrId::STR_ALWAYS}, "hideBatteryPercentage",
                          StrId::STR_CAT_DISPLAY)
            .withSubcategory(StrId::STR_MENU_DISP_BATTERY));
+
   // Home screen entries: on = on the home screen, off = behind its "More" entry.
   emit(SettingInfo::Toggle(StrId::STR_FILE_BROWSER, &CrossPointSettings::showBrowseFilesOnHome, "showBrowseFilesOnHome",
                            StrId::STR_CAT_DISPLAY)
@@ -260,24 +271,41 @@ inline void buildSettings(const RowSink& emit) {
   emit(SettingInfo::Action(StrId::STR_DICTIONARY, SettingAction::DictionarySelect)
            .withDisplayGetter(getDictionaryDisplay)
            .withCategory(StrId::STR_CAT_READER));
+  // Options in stored order (CrossPointSettings::IMAGE_RENDERING): Black & White came last, so it is listed last.
   emit(SettingInfo::Enum(StrId::STR_IMAGES, &CrossPointSettings::imageRendering,
-                         {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS},
+                         {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS,
+                          StrId::STR_IMAGES_DISPLAY_BW},
                          "imageRendering", StrId::STR_CAT_READER)
            .withSubmenu(StrId::STR_IMAGES));
   emit(SettingInfo::Toggle(StrId::STR_LARGE_IMAGE_PLACEHOLDER, &CrossPointSettings::largeImagePlaceholder,
                            "largeImagePlaceholder", StrId::STR_CAT_READER)
            .withSubmenu(StrId::STR_IMAGES));
-  emit(SettingInfo::Value(StrId::STR_SCREEN_MARGIN, &CrossPointSettings::screenMargin, {5, 40, 5}, "screenMargin",
-                          StrId::STR_CAT_READER)
+  // The margins above and below the text, and beside it. Each was "screenMargin", one value for all four sides, before.
+  emit(SettingInfo::Value(StrId::STR_MARGIN_TOP_BOTTOM, &CrossPointSettings::screenMarginVertical,
+                          {CrossPointSettings::SCREEN_MARGIN_MIN, CrossPointSettings::SCREEN_MARGIN_MAX,
+                           CrossPointSettings::SCREEN_MARGIN_STEP},
+                          "screenMarginVertical", StrId::STR_CAT_READER)
            .withSubmenu(StrId::STR_MENU_READER_SPACING));
-  emit(SettingInfo::Enum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing,
-                         {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE, StrId::STR_EXTRA_WIDE,
-                          StrId::STR_WIDEST, StrId::STR_BOOK_S_STYLE},
+  emit(SettingInfo::Value(StrId::STR_MARGIN_LEFT_RIGHT, &CrossPointSettings::screenMarginHorizontal,
+                          {CrossPointSettings::SCREEN_MARGIN_MIN, CrossPointSettings::SCREEN_MARGIN_MAX,
+                           CrossPointSettings::SCREEN_MARGIN_STEP},
+                          "screenMarginHorizontal", StrId::STR_CAT_READER)
+           .withSubmenu(StrId::STR_MENU_READER_SPACING));
+  // Each step's percentage of Normal, then Book's Style: nine numbers and one translated label.
+  emit(SettingInfo::Enum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing, {StrId::STR_BOOK_S_STYLE},
                          "lineSpacing", StrId::STR_CAT_READER)
-           .withSubmenu(StrId::STR_MENU_READER_SPACING));
+           .withLiteralOptions(lineSpacingStepLabel, kLineSpacingPercentSteps, 0)
+           .withSubmenu(StrId::STR_MENU_READER_SPACING)
+           .withSelectorActivity());
   emit(SettingInfo::Toggle(StrId::STR_EXTRA_SPACING, &CrossPointSettings::extraParagraphSpacing,
                            "extraParagraphSpacing", StrId::STR_CAT_READER)
            .withSubmenu(StrId::STR_MENU_READER_SPACING));
+  // None, the sizes in ems (literals: "em" is the unit, not a word), then Book's Style.
+  emit(SettingInfo::Enum(StrId::STR_PARAGRAPH_INDENT, &CrossPointSettings::paragraphIndent,
+                         {StrId::STR_NONE_OPT, StrId::STR_BOOK_S_STYLE}, "paragraphIndent", StrId::STR_CAT_READER)
+           .withLiteralOptions(paragraphIndentSizeLabel, kParagraphIndentFixedSteps - 1, 1)
+           .withSubmenu(StrId::STR_MENU_READER_SPACING)
+           .withSelectorActivity());
 
   emit(SettingInfo::Toggle(StrId::STR_STATUS_BAR, &CrossPointSettings::showStatusBar, "showStatusBar",
                            StrId::STR_CAT_READER));
@@ -300,9 +328,9 @@ inline void buildSettings(const RowSink& emit) {
                          makeBtnActionOptions(StrId::STR_BTN_DEF_GO_HOME), "btnLongBack", StrId::STR_CAT_CONTROLS)
            .withSubmenu(StrId::STR_BTN_BACK)
            .withSelectorActivity());
-  // Confirm button: short=reader menu, double=ignore, long=ignore
+  // Confirm button: short=reader bars, double=ignore, long=ignore
   emit(SettingInfo::Enum(StrId::STR_BTN_SHORT_PRESS, &CrossPointSettings::btnShortConfirm,
-                         {StrId::STR_BTN_DEF_READER_MENU}, "btnShortConfirm", StrId::STR_CAT_CONTROLS)
+                         {StrId::STR_BTN_DEF_READER_BARS}, "btnShortConfirm", StrId::STR_CAT_CONTROLS)
            .withSubmenu(StrId::STR_BTN_CONFIRM));
   emit(SettingInfo::Enum(StrId::STR_BTN_DOUBLE_PRESS, &CrossPointSettings::btnDoubleConfirm,
                          makeBtnActionOptions(StrId::STR_BTN_DEF_IGNORE), "btnDoubleConfirm", StrId::STR_CAT_CONTROLS)
@@ -384,6 +412,7 @@ inline void buildSettings(const RowSink& emit) {
   emit(SettingInfo::Enum(StrId::STR_BTN_LONG_PRESS, &CrossPointSettings::btnLongPower, {StrId::STR_BTN_DEF_SLEEP},
                          "btnLongPower", StrId::STR_CAT_CONTROLS)
            .withSubmenu(StrId::STR_BTN_POWER));
+
   // --- System ---
   emit(SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles, "showHiddenFiles",
                            StrId::STR_CAT_SYSTEM)
@@ -415,14 +444,17 @@ inline bool boardHas(const SettingRequires capability) {
     // swappable grayscale LUT, so every row behind one of those is filtered out
     // rather than offered and then answered "off" on the device.
     case SettingRequires::GrayscalePanel:
+      // cppcheck-suppress knownConditionTrueFalse ; a compile-time constant on Murphy, live on the other boards
       return HalCapabilities::panelShowsGray();
     case SettingRequires::OnePassTextPanel:
       return display.supportsOnePassText();
     case SettingRequires::TouchPanel:
-    case SettingRequires::MultiTouchPanel:
-    case SettingRequires::TiltSensor:
     case SettingRequires::ReadingLight:
     case SettingRequires::WarmLight:
+    case SettingRequires::ReadingLightAndClock:
+    case SettingRequires::MultiTouchPanel:
+    case SettingRequires::TiltSensor:
+    case SettingRequires::SlideSwitch:
       return false;
     case SettingRequires::SunlightFadingPanel:
       return HalCapabilities::panelFadesInSunlight();
@@ -454,7 +486,9 @@ inline bool boardKeeps(const SettingRequires capability) {
     case SettingRequires::GrayscalePanel:
     case SettingRequires::ReadingLight:
     case SettingRequires::WarmLight:
+    case SettingRequires::ReadingLightAndClock:
     case SettingRequires::SunlightFadingPanel:
+    case SettingRequires::SlideSwitch:
       return boardHas(capability);
   }
   return true;

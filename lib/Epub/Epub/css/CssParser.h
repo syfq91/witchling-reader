@@ -14,6 +14,10 @@
 
 #include "CssStyle.h"
 
+namespace serialization {
+class BufferedFileReader;
+}
+
 class BuildArena;  // lib/Memory — optional backing store for the disk index (Phase 2)
 
 /**
@@ -33,9 +37,11 @@ class BuildArena;  // lib/Memory — optional backing store for the disk index (
  *
  * Not supported (silently ignored):
  *   - Sibling combinators (+, ~) and attribute selectors
- *   - Pseudo-classes and pseudo-elements
+ *   - Pseudo-classes and pseudo-elements, but ::first-letter (and :first-letter) after a selector the rules above
+ *     take, kept apart for the paragraph's drop cap (resolveFirstLetterStyle)
  *   - Media queries (content is skipped)
- *   - @import and the other at-rules
+ *   - @import and the other at-rules; an @supports block is skipped too, unless all it tests is initial-letter
+ *     (supportsInitialLetter): its rules are read as if it were not there
  *
  * @font-face rules are not styles: they are collected into a side file next to the rule cache
  * (fontFaces / loadFontFaces), for the book's embedded fonts.
@@ -127,7 +133,11 @@ class CssParser {
   //      lowercased, so a mixed-case class would no longer match its own rule.
   // v34: the font-size keywords take the CSS Fonts 4 scale (small 8/9, x-large 3/2, xx-large 2, xxx-large 3, smaller
   //      1/1.2); a v33 cache stores small and smaller as 0.8, x-large as 1.4 and xx-large as 1.6.
-  static constexpr uint8_t CSS_CACHE_VERSION = 34;
+  // v35: `white-space` is persisted, in bits 12-14 of the flow word (packFlow); a v34 cache never recorded it.
+  // v35 also: `initial-letter` (a byte after the flow word) and ::first-letter rules (flags bit 2) are persisted.
+  // v35 also: borders and background colours (CssBox, three bytes after the initial-letter byte; the <hr> facts too).
+  // v35 also: vertical-align middle, text-top, text-bottom, top, bottom and a length (three vertAlign bytes).
+  static constexpr uint8_t CSS_CACHE_VERSION = 35;
   // Bytes before the complex-rule table and the sorted offset index: version(1) + ruleCount(2) +
   // totalSelectorCandidates(4) + unsupportedSelectorSkips(4) + flags(1) + complexTableBytes(2).
   static constexpr uint32_t CSS_CACHE_HEADER_BYTES = 14;
@@ -201,6 +211,24 @@ class CssParser {
   [[nodiscard]] CssStyle resolveStyle(const std::string& tagName, const std::string& classAttr,
                                       const std::string& idAttr = {}, const Ancestry* ancestry = nullptr,
                                       bool* dependsOnAncestors = nullptr) const;
+
+  // ::first-letter rules (`p.first::first-letter`, `.chapter:first-letter`, `div.chapter > p.first::first-letter`): a
+  // selector the rules of elements take, then the pseudo-element. One of one tag, class, tag.class, id or tag#id is
+  // kept under its selector with the pseudo-element, a compound, descendant or child one in the complex-rule table,
+  // marked. One with a pseudo-class or a sibling combinator is unsupported, as for an element's rule. True when the
+  // sheet has one (persisted, cache flags bit 2).
+  [[nodiscard]] bool hasFirstLetterRules() const { return hasFirstLetterRules_; }
+  // The style the sheet gives the element's first letter: its ::first-letter rules, by the cascade resolveStyle
+  // applies, the descendant and child ones matched against `ancestry` as resolveStyle matches them. Empty when the
+  // sheet has none.
+  [[nodiscard]] CssStyle resolveFirstLetterStyle(const std::string& tagName, const std::string& classAttr,
+                                                 const std::string& idAttr = {},
+                                                 const Ancestry* ancestry = nullptr) const;
+  // Whether an @supports block's prelude ("supports (initial-letter: 3)") holds for this parser: true when the
+  // condition is one or more initial-letter (or -webkit-initial-letter) tests of values it reads, joined by `and` or
+  // `or`. Any other condition, `not` included, is taken to fail, so the block is skipped as every @supports block was
+  // before.
+  [[nodiscard]] static bool supportsInitialLetter(std::string_view prelude);
 
   /**
    * Parse an inline style attribute string.
@@ -477,8 +505,13 @@ class CssParser {
   mutable ResolveStats resolveStats_;
   // Set while parsing when a selector matches on an id, and restored from the cache header
   // otherwise. Conservative default: assume ids matter until something says they do not.
-  mutable bool hasIdSelectors_ = true;   // mutable: restored by the const cache-index load
-  mutable bool rulesTruncated_ = false;  // see rulesTruncated(); restored by the cache load
+  mutable bool hasIdSelectors_ = true;        // mutable: restored by the const cache-index load
+  mutable bool rulesTruncated_ = false;       // see rulesTruncated(); restored by the cache load
+  mutable bool hasFirstLetterRules_ = false;  // see hasFirstLetterRules(); restored by the cache load
+  // resolveStyle's lookups, for the element itself (`pseudo` empty) or its ::first-letter (each key with it appended,
+  // and the complex rules marked as a first letter's).
+  CssStyle resolve(const std::string& tagName, const std::string& classAttr, const std::string& idAttr,
+                   const Ancestry* ancestry, bool* dependsOnAncestors, std::string_view pseudo) const;
 
   bool compileModeActive_ = false;
   bool compileModeFailed_ = false;
@@ -523,6 +556,8 @@ class CssParser {
   static bool interpretImageSize(std::string_view val, CssLength& out);
   /** line-height as a multiple of the element's font size; false for normal, the keywords and what is not a length. */
   static bool interpretLineHeight(std::string_view val, float& em);
+  // vertical-align as a length (CssStyle::verticalAlignShift and verticalAlignPercent); false for anything else.
+  static bool interpretVerticalAlignLength(std::string_view val, int8_t& shift, bool& percent);
   // How text runs. Each leaves `out` alone and returns false for inherit, unset, revert and values it does not know,
   // which leaves the property unset: the element takes its parent's value where the property is inherited.
   static bool interpretWritingMode(std::string_view val, CssWritingMode& out);
@@ -530,6 +565,10 @@ class CssParser {
   static bool interpretTextCombine(std::string_view val, CssTextCombine& out);
   static bool interpretDirection(std::string_view val, CssDirection& out);
   static bool interpretUnicodeBidi(std::string_view val, CssUnicodeBidi& out);
+  static bool interpretWhiteSpace(std::string_view val, CssWhiteSpace& out);
+  // initial-letter: normal | <size> [<sink> | drop | raise], into a CssInitialLetter byte. False for inherit, unset and
+  // what it does not read. Not inherited: unset is `normal`.
+  static bool interpretInitialLetter(std::string_view val, uint8_t& out);
 
   // String utilities
   static std::string normalized(const std::string& s);
@@ -547,6 +586,9 @@ class CssParser {
   bool readRuleFromDiskAtOffset(uint32_t ruleOffset, const std::string& selector, CssStyle& outStyle,
                                 uint16_t& outOrder) const;
   static bool readCssStylePayload(FsFile& file, CssStyle& style);
+  static bool readCssStylePayload(serialization::BufferedFileReader& in, CssStyle& style);
+  // A payload's CSS_FIXED_STYLE_BYTES bytes, as readCssStylePayload reads them, into `style`.
+  static bool decodeCssStylePayload(const uint8_t* bytes, CssStyle& style);
   static void writeCssStylePayload(FsFile& file, const CssStyle& style);
   // The payload writeCssStylePayload writes, into `out` (CSS_FIXED_STYLE_BYTES); its length.
   static size_t encodeCssStylePayload(const CssStyle& style, uint8_t* out);
@@ -575,6 +617,8 @@ class CssParser {
   //              compounds are equal bytes). An element matches a compound when it has every part; bit i of an
   //              element's compound mask says it matches compound i.
   //   rules:     order(2) specificity(2) steps(1) styleLen(1) step(steps) compressed style(styleLen)
+  //              (v35) the steps byte's high bit marks a ::first-letter rule, the style of the subject's first
+  //              letter, not of the subject (resolveFirstLetterStyle); its low 4 bits are the step count.
   //              (v25) the steps are the selector's compounds right to left, the subject first:
   //              each the compound index (low 6 bits) and, from the second on, 0x40 when it must
   //              be the parent of the step before it (`>`) rather than any ancestor (a space).
@@ -584,15 +628,16 @@ class CssParser {
   mutable uint16_t complexBytes_ = 0;
   mutable uint16_t complexCapacity_ = 0;  // of complexHeap_ while parsing
   const uint8_t* complexTable() const { return complexArena_ ? complexArena_ : complexHeap_.get(); }
-  // Adds a compound selector to the table; false (the selector is then unsupported) for anything
-  // that is not one, or when a cap is reached.
-  bool addComplexRule(std::string_view selector, const CssStyle& style, uint16_t order);
+  // Adds a compound selector to the table, the ::first-letter of what it matches with `firstLetter`; false (the
+  // selector is then unsupported) for anything that is not one, or when a cap is reached.
+  bool addComplexRule(std::string_view selector, const CssStyle& style, uint16_t order, bool firstLetter = false);
   bool growComplexTable(size_t needed);
   // The element's compound mask from its names, hashed like the table's (selectorHash of the
   // element name lowercased, of class and id names as written); idHash is nullptr without an id.
   uint64_t matchCompounds(uint32_t tagHash, const uint32_t* idHash, const uint32_t* classHashes,
                           size_t classCount) const;
   // Merges the complex rules that match the element (its compound mask `self`, its ancestors in
-  // `ancestry`) into `cascade`.
-  void applyComplexRules(uint64_t self, const Ancestry* ancestry, Cascade& cascade, bool* dependsOnAncestors) const;
+  // `ancestry`) into `cascade`: the element's own, or with `firstLetter` those of its ::first-letter.
+  void applyComplexRules(uint64_t self, const Ancestry* ancestry, Cascade& cascade, bool* dependsOnAncestors,
+                         bool firstLetter) const;
 };

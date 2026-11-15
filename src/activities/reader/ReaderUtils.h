@@ -5,6 +5,7 @@
 #include <HalTiltSensor.h>
 #include <Logging.h>
 
+#include <algorithm>
 #include <cstdint>
 
 #include "MappedInputManager.h"
@@ -37,6 +38,21 @@ inline uint8_t fractionProgressPercentByte(float fraction) {
   return static_cast<uint8_t>(percent);
 }
 
+// The reader's margins, Top & Bottom and Left & Right, added to the panel's viewable insets (getOrientedViewableTRBL)
+// in place. The top and bottom are never less than the status bar's height on their side: the bar is drawn in the
+// margin. One place for every reader (EPUB, TXT, Markdown) and for the pages they draw for the sleep screen, so they
+// all agree on the text area.
+// `horizontal` is the left and right margin the page is laid out with: the setting, or a book's own
+// (EpubReaderActivity::getEffectiveMarginHorizontal).
+inline void addReaderMargins(int& top, int& right, int& bottom, int& left, const int statusBarTop,
+                             const int statusBarBottom, const int horizontal = SETTINGS.screenMarginHorizontal) {
+  const int vertical = SETTINGS.screenMarginVertical;
+  top += std::max(vertical, statusBarTop);
+  right += horizontal;
+  bottom += std::max(vertical, statusBarBottom);
+  left += horizontal;
+}
+
 inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   switch (orientation) {
     case CrossPointSettings::ORIENTATION::PORTRAIT:
@@ -66,10 +82,20 @@ inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
 // reaches the panel, a menu or a sleep image, has to find it off: gray planes are staged rather than
 // uploaded while it is on.
 struct OnePassTextScope {
-  explicit OnePassTextScope(const bool on) { display.setReaderRefresh(on); }
-  ~OnePassTextScope() { display.setReaderRefresh(false); }
+  explicit OnePassTextScope(const bool on) { display.setOnePassText(on); }
+  ~OnePassTextScope() { display.setOnePassText(false); }
   OnePassTextScope(const OnePassTextScope&) = delete;
   OnePassTextScope& operator=(const OnePassTextScope&) = delete;
+};
+
+// Holds the panel's book-page hint for one page's render and display: a panel with a reading waveform (the
+// Picco's) shows the page with it, one-pass text on or off. It switches nothing else on.
+// From CrossPoint Reader's ReaderRefreshScope (crosspoint-reader PR #4362, Justin Mitchell).
+struct ReaderRefreshScope {
+  ReaderRefreshScope() { display.setReaderRefresh(true); }
+  ~ReaderRefreshScope() { display.setReaderRefresh(false); }
+  ReaderRefreshScope(const ReaderRefreshScope&) = delete;
+  ReaderRefreshScope& operator=(const ReaderRefreshScope&) = delete;
 };
 
 struct InputDrainGuard {

@@ -133,6 +133,10 @@ class HalGPIO {
   // Touch query for callers expecting capability check
   inline bool hasTouch() const { return false; }
 
+  // Slide/toggle switch query (e.g. BOOX Picco); false on X4.
+  inline bool hasToggleSwitch() const { return false; }
+  inline bool isToggleSwitchOn() const { return false; }
+
   // Start/stop the background sampler. startInputSampler() must be called once
   // input handling is wanted (end of setup, after the boot-time power-button
   // handling that drives inputMgr.update() directly). Until then update() falls

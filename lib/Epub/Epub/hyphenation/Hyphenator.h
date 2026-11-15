@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "HyphenationCommon.h"
+
 class LanguageHyphenator;
 
 class Hyphenator {
@@ -36,11 +38,38 @@ class Hyphenator {
   //      word from overflowing the page width.
   static std::vector<BreakInfo> breakOffsets(const std::string& word, bool includeFallback);
 
+  // breakOffsets' working memory: the word's code points, the language's break indexes and the breaks found. A layout
+  // keeps one (ParsedText::LayoutScratch) and hands it to every word it hyphenates, so a word costs no allocations
+  // once these have grown to the longest word so far.
+  struct Scratch {
+    std::vector<CodepointInfo> cps;
+    std::vector<size_t> indexes;
+    std::vector<BreakInfo> breaks;
+    // Gives every buffer back (swap: shrink_to_fit frees nothing under -fno-exceptions).
+    void release();
+    // Keeps the buffers while they hold a word of up to kKeptCodepoints, and gives them back once a longer one grew
+    // them: a long token's buffers would otherwise stay for the rest of the pass, beside the lines it lays out.
+    static constexpr size_t kKeptCodepoints = 16;
+    void trim() {
+      if (cps.capacity() > kKeptCodepoints || indexes.capacity() > kKeptCodepoints ||
+          breaks.capacity() > kKeptCodepoints) {
+        release();
+      }
+    }
+  };
+  // The same, in `scratch`: the breaks are left in scratch.breaks (cleared first).
+  static void breakOffsets(const std::string& word, bool includeFallback, Scratch& scratch);
+
   // Where a line may end inside the Myanmar text of `word`, in ascending order, none drawing a hyphen: between two
   // syllables of a run, where the fallback's rule allows a cut (myanmar::breakAllowed), whatever the hyphenation
   // setting. Burmese writes no spaces between words, so a phrase is split at a line end as a Hangul word is
   // (the Myanmar design's PR 3). Empty for a word without Myanmar text, and between Myanmar and another script.
   static std::vector<BreakInfo> myanmarLineEndBreaks(const std::string& word);
+
+  // Where `word` may be cut when nothing else lets it fit a line: between any two of its code points but inside an
+  // Indic syllable, an Arabic cluster or a Myanmar syllable (the fallback's rule), none drawing a hyphen. A token of
+  // text that keeps its spaces (CSS white-space: pre) is cut here, as CSS's overflow-wrap cuts, not at its syllables.
+  static std::vector<BreakInfo> anywhereBreaks(const std::string& word);
 
   // Provide a publication-level language hint (e.g. "en", "en-US", "ru") used to select hyphenation rules.
   static void setPreferredLanguage(const std::string& lang);

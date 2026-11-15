@@ -1,5 +1,6 @@
 #include "QuickOverridesActivity.h"
 
+#include <Epub/LineSpacing.h>
 #include <GfxRenderer.h>
 #include <HalCapabilities.h>
 #include <HalDisplay.h>
@@ -73,10 +74,11 @@ void QuickOverridesActivity::buildMenuItems() {
         static_cast<QuickOverridesActivity*>(ctx)->pendingEmbeddedStyleOverride = threeStateOverrideFromSlot(v);
       }));
 
-  // Image rendering: default(-1) / display(0) / placeholder(1) / suppress(2)
+  // Image rendering: default(-1) / display(0) / placeholder(1) / suppress(2) / black & white(3)
   menuItems.push_back(SettingInfo::DynamicEnumCtx(
       StrId::STR_IMAGES,
-      {StrId::STR_DEFAULT_VALUE, StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS},
+      {StrId::STR_DEFAULT_VALUE, StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS,
+       StrId::STR_IMAGES_DISPLAY_BW},
       self,
       [](const void* ctx) -> uint8_t {
         const auto* s = static_cast<const QuickOverridesActivity*>(ctx);
@@ -170,6 +172,7 @@ void QuickOverridesActivity::buildMenuItems() {
       }));
 
   // Text anti-aliasing: default / on / off
+  // cppcheck-suppress knownConditionTrueFalse ; a compile-time constant on Murphy, live on the other boards
   if (HalCapabilities::panelShowsGray()) {
     menuItems.push_back(SettingInfo::DynamicEnumCtx(
         StrId::STR_TEXT_AA, {StrId::STR_DEFAULT_VALUE, StrId::STR_STATE_ON, StrId::STR_STATE_OFF}, self,

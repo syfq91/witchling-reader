@@ -343,6 +343,7 @@ bool FileBrowserModel::openIndex() {
 size_t FileBrowserModel::unfilteredEntryCount() const { return fileIndex ? fileIndex->totalCount() : files.size(); }
 
 size_t FileBrowserModel::entryCount() const {
+  if (streamsRecents()) return recentCount;
   if (listsPaths()) return deepResults.size();
   return isFiltered() ? matches.size() : unfilteredEntryCount();
 }
@@ -357,6 +358,11 @@ bool FileBrowserModel::indexEntryAt(const size_t displayIndex, FileIndex::Entry&
 // directory. For the in-RAM backend `files` already stores this form; for the SD
 // index we reconstruct it from the Entry. Out-of-range / index-read failure → "".
 std::string FileBrowserModel::entryName(const size_t displayIndex) {
+  if (streamsRecents()) {
+    if (!ensureRecentRow(displayIndex)) return "";
+    const std::string& bookPath = recentWindow[displayIndex - recentWindowStart].path;
+    return bookPath.size() > 1 && bookPath.front() == '/' ? bookPath.substr(1) : "";
+  }
   if (listsPaths()) {
     return displayIndex < deepResults.size() ? deepResults[displayIndex] : "";
   }
@@ -379,6 +385,12 @@ std::string FileBrowserModel::backendEntryName(const size_t displayIndex) {
 }
 
 size_t FileBrowserModel::findEntry(const std::string& name) {
+  if (streamsRecents()) {
+    // Window by window from the newest, each the one after the last: a few reads for a hundred books.
+    for (size_t i = 0; i < recentCount; i++)
+      if (entryName(i) == name) return i;
+    return recentCount;
+  }
   if (listsPaths()) {
     for (size_t i = 0; i < deepResults.size(); i++)
       if (deepResults[i] == name) return i;
@@ -649,20 +661,39 @@ void FileBrowserModel::resort() {
 }
 
 // The recent-books list, newest first, as paths relative to "/" -- the shape a card-wide search's
-// results already have, so every row accessor serves both. Books no longer on the card are dropped
-// from the list for good, as the Recent Books screen always did on the way in.
+// results already have, so every row accessor serves both. Streamed: its first window now, the
+// rest as the list is scrolled to it (ensureRecentRow).
 void FileBrowserModel::loadRecents() {
   clearDeepSearch();
-  // One load of the list for the prune, its save and the read below; the paths are copied out, so
-  // nothing here outlives the hold (RecentBooksStore::Hold).
-  const RecentBooksStore::Hold recents;
-  if (RECENT_BOOKS.pruneMissing()) RECENT_BOOKS.saveToFile();
   deepRoot = "/";
-  const auto& books = RECENT_BOOKS.getBooks();
-  deepResults.reserve(books.size());
-  for (const auto& book : books) {
-    if (book.path.size() > 1 && book.path.front() == '/') deepResults.push_back(book.path.substr(1));
+  recentCount = RECENT_BOOKS.count();
+  ensureRecentRow(0);
+}
+
+bool FileBrowserModel::ensureRecentRow(const size_t displayIndex) {
+  if (displayIndex >= recentWindowStart && displayIndex < recentWindowStart + recentWindow.size()) return true;
+  if (displayIndex >= recentCount) return false;
+  const size_t start = displayIndex / kRecentWindow * kRecentWindow;
+  uint32_t before = RecentBooksStore::kNewest;
+  size_t at = 0;
+  if (recentWindow.size() == kRecentWindow && start == recentWindowStart + kRecentWindow) {
+    before = recentWindow.back().seq;
+    at = start;
   }
+  std::vector<RecentBooksStore::Row> rows;
+  rows.reserve(kRecentWindow);
+  for (;;) {
+    rows.clear();
+    RECENT_BOOKS.rowsBefore(before, kRecentWindow, rows);
+    if (at == start || rows.size() < kRecentWindow) break;
+    before = rows.back().seq;
+    at += rows.size();
+  }
+  recentWindow = std::move(rows);
+  recentWindowStart = at;
+  // A page drops the books gone from the card that it meets: the list may be shorter than it was counted.
+  recentCount = RECENT_BOOKS.count();
+  return displayIndex >= recentWindowStart && displayIndex < recentWindowStart + recentWindow.size();
 }
 
 void FileBrowserModel::clear() {

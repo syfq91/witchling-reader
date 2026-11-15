@@ -278,9 +278,28 @@ bool HalStorage::mkdir(const char* path, const bool pFlag) {
 
 bool HalStorage::exists(const char* path) { HAL_STORAGE_WRAPPED_CALL(exists, path); }
 
+// SdFat removes a file by opening it for writing, and refuses that for a file with the FAT
+// read-only flag: one set on a PC (Windows' Read-only box, a file locked on a Mac, a read-only file
+// copied from Linux) opens, reads and moves as usual but can never be deleted here (#750). Every
+// remove is either of the firmware's own file or of one the user chose to delete, so the flag is
+// cleared and the remove tried once more. rmdir() takes no such flag into account.
 bool HalStorage::remove(const char* path) {
   noteContentChange(path);
-  HAL_STORAGE_WRAPPED_CALL(remove, path);
+  StorageLock lock;
+  if (SDCard.remove(path)) return true;
+
+  FsFile file = SDCard.open(path, O_RDONLY);
+  if (!file || file.isDirectory()) return false;
+  const int attributes = file.attrib();
+  if (attributes < 0 || (attributes & FS_ATTRIB_READ_ONLY) == 0) return false;
+  const bool cleared = file.attrib(static_cast<uint8_t>(attributes & FS_ATTRIB_USER_SETTABLE & ~FS_ATTRIB_READ_ONLY));
+  file.close();
+  if (!cleared) {
+    LOG_ERR("SD", "Could not clear the read-only flag of %s", path);
+    return false;
+  }
+  LOG_INF("SD", "Cleared the read-only flag of %s to remove it", path);
+  return SDCard.remove(path);
 }
 bool HalStorage::rename(const char* oldPath, const char* newPath) {
   noteContentChange(oldPath);
@@ -473,6 +492,7 @@ size_t HalFile::position() const {
 int HalFile::read(void* buf, size_t count) { HAL_FILE_WRAPPED_CALL(read, buf, count); }
 int HalFile::read() { HAL_FILE_WRAPPED_CALL(read, ); }
 size_t HalFile::write(const void* buf, size_t count) { HAL_FILE_WRAPPED_CALL(write, buf, count); }
+size_t HalFile::write(const uint8_t* buf, size_t count) { HAL_FILE_WRAPPED_CALL(write, buf, count); }
 size_t HalFile::write(uint8_t b) { HAL_FILE_WRAPPED_CALL(write, b); }
 bool HalFile::rename(const char* newPath) {
   Storage.noteContentChange(nullptr);  // the old path is not known here
@@ -487,6 +507,7 @@ bool HalFile::getCreateDateTime(uint16_t* pdate, uint16_t* ptime) {
 bool HalFile::isDirectory() const { HAL_FILE_FORWARD_CALL(isDirectory, ); }  // already thread-safe, no need to wrap
 void HalFile::rewindDirectory() { HAL_FILE_WRAPPED_CALL(rewindDirectory, ); }
 bool HalFile::close() { HAL_FILE_WRAPPED_CALL(close, ); }
+bool HalFile::detectContiguous() { HAL_FILE_WRAPPED_CALL(contiguousRange, nullptr, nullptr); }
 uint64_t HalFile::size64() { HAL_FILE_FORWARD_CALL(size, ); }
 uint64_t HalFile::fileSize64() { HAL_FILE_FORWARD_CALL(fileSize, ); }
 bool HalFile::seek64(uint64_t pos) { HAL_FILE_WRAPPED_CALL(seekSet, pos); }

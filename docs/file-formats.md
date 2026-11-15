@@ -17,7 +17,8 @@ truncates the file in place.
 |---|---|---|---|
 | `settings.json` | `JsonSettingsIO::saveSettings` | `fontSizeOrderV`: `CrossPointSettings::FONT_SIZE_ORDER_VERSION` (2); `gestureDefaultsV`: `GESTURE_DEFAULTS_VERSION` (3) | The settings. From `fontSizeOrderV` 2, `fontSize` and `txtFontSize` are point sizes; an older file is converted as it loads and saved again |
 | `state.json` | `JsonSettingsIO::saveState` | none | The open book, the sleep image, a pending KOReader sync or bookmark jump, the pack offers declined (`hyphenationOffersDeclined`, two-letter keys back to back: a hyphenation pack's language in lower case, `de`; a CJK interface pack's UI language in upper case, `ZH`; a UI language pack's capitalised, `De`), the Library tab last left (`libraryTab`) and the views of its lists (`recentBooksView`, `addedBooksView`, `authorsView`; an old `recentBooksGridView` is read to migrate) |
-| `recent.json` | `JsonSettingsIO::saveRecentBooks` | `fontSizeOrderV` (2), stamped separately from `settings.json` | Recently opened books and their per-book overrides; `fontSizeOverride` is a point size from version 2 |
+| `recent-books.bin` | `RecentBooksStore` (`RecentBooksFile`) | header version 1 | The books lately opened, at most 100 (not the `recent.bin` of CrossPoint's binary settings, long gone, which a card may still carry and nothing reads): a 512 B header (`RCNT`, version, slot count, slot size), a table of 100 x 8 B entries (FNV-1a hash of the book's path, 0 when free; the sequence it was last opened in, the highest the newest) and a 1 KB slot per book (record version, metadata stamp, the lengths and bytes of path, title, author, series and cover path, CRC-32), entry i describing slot i. Written in place: a reopened book its entry, a removal its entry, a new book its slot and then its entry. A row counts when its slot's CRC holds; a path that no longer hashes to its entry puts the entry right. Grows a slot at a time |
+| `recent.json` | (older firmware) | `fontSizeOrderV` (2) | The list before `recent-books.bin`, at most 10 books, with each book's own settings before `overrides.bin`. Read once into `recent-books.bin` (its rows' settings into their books' `overrides.bin`), then deleted |
 | `wifi.json`, `opds.json`, `koreader.json` | `JsonSettingsIO::saveWifi`, `saveOpds`, `saveKOReader` | none | Credentials, obfuscated with the key of the reader that saved them, which `wifi.json` names in `lastKnownMacAddress` and the other two in `keyId`, so a card moved to another reader still decodes; `wifi.json` also keeps `arrivedFrom`, the reader it was re-keyed from when the card moved. A file without `keyId` (older firmware) gets one the first time it loads if its passwords decode to plausible text with this reader's key and `wifi.json` does not say the card came from another reader; otherwise it is left as it is, and no later save records a `keyId` until those passwords are entered again. The web file endpoints refuse them (`lib/FsHelpers/ProtectedPaths.h`) |
 | `weather_settings.json`, `weather_cache.json` | `WeatherSettingsStore`, `WeatherClient::saveCache` | none | Weather settings, and the last forecast (dropped when its `requestSignature` no longer matches the settings) |
 | `autosync.json` | `AutoSyncState::saveToFile` | none | KOReader auto-sync state |
@@ -42,14 +43,15 @@ truncates the file in place.
 `Epub`, `Xtc` and `Txt` constructors; `ReaderActivity::bookCacheDir`). TXT and Markdown books share
 `txt_`. Settings → System → Clear Reading Cache (`ClearCacheActivity`, which also removes
 `fontprev/`) and a book's Delete Book Cache clear them through `BookCache` (`lib/FsHelpers/`):
-**Keep** leaves the reading state, `progress.bin`, `linkstack.bin`, `bookmarks.bin` and
-`koreader_syncmethod.txt` (`BookCache::isReadingState`), and removes the rest; **Reset** removes the
+**Keep** leaves the reading state, `progress.bin`, `linkstack.bin`, `bookmarks.bin`,
+`koreader_syncmethod.txt` and `overrides.bin` (`BookCache::isReadingState`), and removes the rest; **Reset** removes the
 directory whole.
 
 | File | Formats | Version | Contents |
 |---|---|---|---|
 | `progress.bin` | all | none (told apart by length) | Where the book was left: [below](#progressbin) |
 | `bookmarks.bin` | all | `BookmarkStore::FILE_VERSION` (2) | `u8` version, `u16` count, then per bookmark `u16` spine, `u16` page, `u16` name length, the name. Version 1 (no names) still reads |
+| `overrides.bin` | EPUB | `kFormatVersion` (1) in `src/BookReaderOverrides.cpp` | The settings chosen for this book alone (`BookReaderOverridesFile`): `BO`, `u8` format version, `u8` font-size numbering (`FONT_SIZE_ORDER_VERSION`), `u8` line-spacing numbering (`LINE_SPACING_ORDER_VERSION`), `u8` count, then `count` `i8` values in `BookReaderOverrides::Field` order (-1 follows the global setting), `u8` length and the SD font family's name. Fields are only appended: a reader takes the ones it knows. No file while the book follows every setting. Replaced whole through `FileReplace`; a left-over `overrides.bin.old` is read when the file is missing |
 | `details.bin` | all | `BookDetailsCache` `VERSION` (3) | What the Library's lists show: [below](#detailsbin) |
 | `thumb_*.bmp` | all | in the name | Cover thumbnails: [below](#cover-thumbnails) |
 | `cover.bmp` | all | none | The sleep screen's cover (`cover_crop.bmp` for an EPUB's cropped one) |
@@ -220,7 +222,7 @@ if (parsedSize != fileSize) {
 
 One file per spine item and per set of render settings: `spines/<spine / 32>/<spine>_<hash>.bin` in the book's cache directory, `<hash>` being the render settings' property hash in eight hex digits (`Section::getSectionFilePath`, `Epub::spineCacheDir`; 32 is `Epub::SPINE_CACHE_BUCKET_SIZE`). Up to five variants per spine item are kept; past that the oldest by modification date go (`Section::evictOldVariants`). Written and read by `lib/Epub/Epub/Section.cpp`. `SECTION_FILE_VERSION` at the top of that file is bumped on every layout change, so read it there; a number quoted here would go stale within weeks. A file with another version is rejected and rebuilt.
 
-The property hash (`Section::calculatePropertyHash`) covers the header's render settings, font-size normalisation, the inline-footnote-preview setting and, when previews are on, `INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION` (3): a change in how previews expand rebuilds only the sections that show them. It also covers the vertical-text request (`VerticalText`: 0 Automatic, 1 On) when the request is not Off. Off adds nothing, and it is the request of every book in a language that is never set vertically, so those books keep the hash they had.
+The property hash (`Section::calculatePropertyHash`) covers the header's render settings, font-size normalisation, the inline-footnote-preview setting and, when previews are on, `INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION` (3): a change in how previews expand rebuilds only the sections that show them. It also covers the vertical-text request (`VerticalText`: 0 Automatic, 1 On) when the request is not Off. Off adds nothing, and it is the request of every book in a language that is never set vertically, so those books keep the hash they had. The reader's Paragraph Indent (`ParagraphIndent`: 0 None, 1 to 4 half an em to two ems) is covered when it is not Book's Style (5); Book's Style adds nothing, so every section laid out before the setting keeps its hash.
 
 The file is, in order:
 
@@ -459,7 +461,7 @@ A file of another version, or recorded for another book size or sidecar stamp, i
 - `thumb_<W>x<H>.bmp`: the cover drawn into a `W` x `H` box. The Library's Covers view and the finished-book screen fit the cover inside the box, whole (`CoverGridLayout::kThumbCrop` false); the Home carousel crops it to fill its own boxes. The grid's box is the size its cells come out at, at most 196 x 240 (`CoverGridLayout::kThumbWidth`, `kThumbHeight`), which the X3 and X4 use; where the cells come out smaller the box does too (e.g. 154 x 214 on the T5S3; `CoverGridLayout::compute`). The name carries the box, so a new box makes new files.
 - `thumb_<H>.bmp`: the single-height form the other Home themes draw, `H` x 0.6 wide.
 
-A book with no cover at all gets a 1 x 1 placeholder BMP at each size (`ReaderActivity::writeCoverPlaceholderBmp`), so no screen tries it again, and the theme draws its no-cover tile. `recent.json` stores a book's cover as `<cache dir>/thumb_[HEIGHT].bmp` (`ReaderActivity::coverThumbPlaceholder`); `UITheme::getCoverThumbPath` puts in `<H>` or `<W>x<H>` when drawing.
+A book with no cover at all gets a 1 x 1 placeholder BMP at each size (`ReaderActivity::writeCoverPlaceholderBmp`), so no screen tries it again, and the theme draws its no-cover tile. `recent-books.bin` stores a book's cover as `<cache dir>/thumb_[HEIGHT].bmp` (`ReaderActivity::coverThumbPlaceholder`); `UITheme::getCoverThumbPath` puts in `<H>` or `<W>x<H>` when drawing.
 
 ## `library.bin`
 
@@ -595,7 +597,7 @@ produces; a power cut leaves at worst bytes nothing references.
 
 | Offset | Size | Contents |
 |---|---|---|
-| 0 | 4 KB sector | `Header`, written last at install: `u32` magic `CPTT`, `u16` version, `u16` header bytes, the set's 16-byte identity, the `Geometry` (style count, the regions' offsets and sizes, `segmentBytes`), 8 `StyleInfo` (a style block's offset, size, mode and file size; in SD mode also its file's stamp and its outlines, below), then `u32` FNV-1a over all of it |
+| 0 | 4 KB sector | `Header`, written last at install: `u32` magic `CPTT`, `u16` version, `u16` header bytes, the set's 16-byte identity, the `Geometry` (style count, flags, the regions' offsets and sizes, `segmentBytes`; flag 0x01, `kFlagGdefKerning`: installed with GDEF-aware kerning, its byte reserved and zero before, so a store without it is installed again when a family's kerning depends on GDEF), 8 `StyleInfo` (a style block's offset, size, mode and file size; in SD mode also its file's stamp and its outlines, below), then `u32` FNV-1a over all of it |
 | 4 KB | 4 KB sector | The state: 32 face entries `{u32 face, u32 claimed}`, then the `u32` wipe word, then the rebuild journal: 479 entries `{u32 base, u32 done}` |
 | 64 KB | 64 KB pages | The style blocks, each family's styles in the set's order, each on its own page so one maps alone; the SD-mode blocks after every flash-mode one |
 | `indexOffset` | whole pages | Glyph index: 8-byte slots `{u32 key, u32 value}`, open addressing, at most 128 probes |

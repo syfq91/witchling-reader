@@ -216,9 +216,9 @@ TEST(KeyboardLabels, EveryCharacterAndLayoutNameIsInTheUiFace) {
         }
       }
       for (const auto& info : keyboard_layouts::ALL) {
-        if (!info.nativeName) continue;
-        for (const uint32_t cp : formedCodepoints(info.nativeName)) {
-          EXPECT_TRUE(face.holds(cp)) << size.name << " " << slot << ": " << info.nativeName << " U+" << std::hex << cp;
+        if (!info.label) continue;
+        for (const uint32_t cp : formedCodepoints(info.label)) {
+          EXPECT_TRUE(face.holds(cp)) << size.name << " " << slot << ": " << info.label << " U+" << std::hex << cp;
         }
       }
     }

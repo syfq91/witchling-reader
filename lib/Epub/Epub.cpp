@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <limits>
 #include <optional>
 
@@ -865,6 +866,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, BuildArena
 
   // Initialize spine/TOC cache
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  forgetMetadataMemos();
   // Always create CssParser - needed for inline style parsing even without CSS files
   cssParser.reset(new CssParser(cachePath));
 
@@ -1060,6 +1062,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, BuildArena
 
   // Reload the cache from disk so it's in the correct state
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  forgetMetadataMemos();
   if (!bookMetadataCache->load()) {
     LOG_ERR("EBP", "Failed to reload cache after writing");
     return false;
@@ -1189,6 +1192,7 @@ bool Epub::loadForCover(BuildArena* scratch) {
   // book, is both slow and the site of the large manifest-index build). Used by RecentBooks / Home
   // cover thumbnails so showing a thumbnail never triggers a full-book parse.
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  forgetMetadataMemos();
   cssParser.reset(new CssParser(cachePath));  // constructed for API symmetry; not parsed here
 
   // Fast path: a book.bin already exists — it carries coverItemHref, no OPF parse needed.
@@ -1251,6 +1255,7 @@ bool Epub::loadForMetadata(BuildArena* scratch) {
   } scratchScope{loadScratch_};
   loadScratch_ = (scratch != nullptr && scratch->valid()) ? scratch : nullptr;
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  forgetMetadataMemos();
   cssParser.reset(new CssParser(cachePath));  // constructed for API symmetry; not parsed here
 
   // Fast path: an existing book.bin already carries title/author/series, no OPF parse needed.
@@ -2342,7 +2347,28 @@ int Epub::getSpineItemsCount() const {
   return bookMetadataCache->getSpineCount();
 }
 
-size_t Epub::getCumulativeSpineItemSize(const int spineIndex) const { return getSpineItem(spineIndex).cumulativeSize; }
+size_t Epub::getCumulativeSpineItemSize(const int spineIndex) const {
+  for (const CumulativeSizeMemo& memo : cumulativeSizeMemo_) {
+    if (memo.spine == spineIndex && spineIndex >= 0) return memo.size;
+  }
+  const size_t size = getSpineItem(spineIndex).cumulativeSize;
+  if (bookMetadataCache && bookMetadataCache->isLoaded() && spineIndex >= 0 &&
+      spineIndex < bookMetadataCache->getSpineCount()) {
+    cumulativeSizeMemo_[cumulativeSizeMemoNext_] = {spineIndex, size};
+    cumulativeSizeMemoNext_ = static_cast<uint8_t>((cumulativeSizeMemoNext_ + 1) % std::size(cumulativeSizeMemo_));
+  }
+  return size;
+}
+
+void Epub::forgetMetadataMemos() const {
+  bookSizeMemo_ = SIZE_MAX;
+  for (CumulativeSizeMemo& memo : cumulativeSizeMemo_) memo = {};
+  cumulativeSizeMemoNext_ = 0;
+  tocForSpineMemoSpine_ = -1;
+  tocForSpineMemoToc_ = -1;
+  tocEntryMemoIndex_ = -1;
+  tocEntryMemo_ = {};
+}
 
 BookMetadataCache::SpineEntry Epub::getSpineItem(const int spineIndex) const {
   if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
@@ -2381,7 +2407,11 @@ BookMetadataCache::TocEntry Epub::getTocItem(const int tocIndex) const {
     return {};
   }
 
-  return bookMetadataCache->getTocEntry(tocIndex);
+  if (tocEntryMemoIndex_ != tocIndex) {
+    tocEntryMemo_ = bookMetadataCache->getTocEntry(tocIndex);
+    tocEntryMemoIndex_ = tocIndex;
+  }
+  return tocEntryMemo_;
 }
 
 int Epub::getTocItemsCount() const {
@@ -2458,14 +2488,19 @@ int Epub::getTocIndexForSpineIndex(const int spineIndex) const {
     return spineIndex;
   }
 
-  return bookMetadataCache->getSpineEntry(spineIndex).tocIndex;
+  if (tocForSpineMemoSpine_ != spineIndex) {
+    tocForSpineMemoToc_ = bookMetadataCache->getSpineEntry(spineIndex).tocIndex;
+    tocForSpineMemoSpine_ = spineIndex;
+  }
+  return tocForSpineMemoToc_;
 }
 
 size_t Epub::getBookSize() const {
   if (!bookMetadataCache || !bookMetadataCache->isLoaded() || bookMetadataCache->getSpineCount() == 0) {
     return 0;
   }
-  return getCumulativeSpineItemSize(getSpineItemsCount() - 1);
+  if (bookSizeMemo_ == SIZE_MAX) bookSizeMemo_ = getSpineItem(getSpineItemsCount() - 1).cumulativeSize;
+  return bookSizeMemo_;
 }
 
 int Epub::getLargestSpineIndex() const {
@@ -2575,15 +2610,17 @@ void Epub::streamPrintedPageEntries(
   if (!Storage.openFileForRead("EBP", path, f)) {
     return;
   }
+  // Six reads an entry, through a window.
+  uint8_t window[512];
+  serialization::BufferedFileReader in(f, window, sizeof(window));
   uint16_t count = 0;
-  serialization::readPod(f, count);
+  in.readPod(count);
   // Reused across iterations — labels/hrefs are short, so this never grows into the ~200 KB block
   // the full list would reserve. count is never used to pre-size anything: a corrupt/oversized
   // count simply runs the loop until readString hits EOF or a malformed field and we stop.
   std::string href, anchor, label;
   for (uint16_t i = 0; i < count; i++) {
-    if (!serialization::readString(f, href) || !serialization::readString(f, anchor) ||
-        !serialization::readString(f, label)) {
+    if (!in.readString(href) || !in.readString(anchor) || !in.readString(label)) {
       break;  // malformed / oversized field: stop rather than risk desync
     }
     if (!visit(href, anchor, label)) {

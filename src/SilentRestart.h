@@ -6,6 +6,8 @@
 // teardown scatters long-lived allocations across the heap, leaving ~50KB of
 // contiguous space unrecoverable without a reboot.
 
+void restartKeepingFlashArea();
+
 void silentRestart();            // home screen
 void silentRestartToReader();    // currently-open EPUB (APP_STATE.openEpubPath)
 void silentRestartToSettings();  // Settings screen

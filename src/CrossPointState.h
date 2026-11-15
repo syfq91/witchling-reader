@@ -43,6 +43,10 @@ class CrossPointState {
   uint8_t recentBooksView = 1;
   // When false, setup() skips the boot screen on wake (used by reader resume).
   bool showBootScreen = true;
+  // The light drawer's Dark Mode switch while Scheduled runs it: the other polarity until the night hours next change
+  // (DarkMode::NightFlip; epoch seconds, 0 = none).
+  uint32_t darkModeFlipUntil = 0;
+  bool darkModeFlipDark = false;
   // The packs the reader offered and was told no (HyphenationPacks, UiLanguagePacks), as two-letter codes back to back,
   // empty -- no heap -- when none: a hyphenation pack by its language, lower case ("de"), a CJK interface pack by its
   // interface language, upper case ("ZH"). They are not offered again; the Font Manager still has them.

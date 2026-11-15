@@ -11,6 +11,7 @@ class SleepActivity final : public Activity {
   explicit SleepActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool fromTimeout = false)
       : Activity("Sleep", renderer, mappedInput), fromTimeout(fromTimeout) {}
   void onEnter() override;
+  DarkMode::ScreenPolarity outputPolarity() const override { return DarkMode::ScreenPolarity::Normal; }
 
  private:
   void renderSleepScreen();

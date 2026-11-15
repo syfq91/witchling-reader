@@ -24,6 +24,9 @@ struct DirectPixelWriter {
   // (originY 0, clipRows panelHeight) so the clip doubles as a bounds guard.
   int originY;
   int clipRows;
+  // Dark mode (GfxRenderer::keepsImagePolarity): a B/W pass writes every pixel inverted, so the panel's inversion
+  // shows the picture as it is.
+  bool invert = false;
 
   // Orientation is collapsed into a linear transform:
   //   phyX = phyXBase + x * phyXStepX + y * phyXStepY
@@ -40,6 +43,7 @@ struct DirectPixelWriter {
     originY = renderer.getWriteOriginY();
     clipRows = renderer.getWriteRows();
     mode = renderer.getRenderMode();
+    invert = renderer.keepsImagePolarity();
     displayWidthBytes = renderer.getDisplayWidthBytes();
 
     const int phyW = renderer.getDisplayWidth();
@@ -153,8 +157,10 @@ struct DirectPixelWriter {
     bool state;
     switch (mode) {
       case GfxRenderer::BW:
-        draw = (pixelValue < 3);
-        state = true;
+        // Inverted, the white pixels are written too (black in the frame), so the picture shows white where it is
+        // white whatever was under it, and drawing it twice changes nothing.
+        draw = invert || pixelValue < 3;
+        state = !invert || pixelValue == 3;
         break;
       case GfxRenderer::GRAYSCALE_MSB:
         draw = (pixelValue == 1 || pixelValue == 2);
@@ -263,7 +269,14 @@ struct DirectGray8Writer {
   int stride;  // bytes per canvas row; may exceed canvasWidth
   int canvasWidth;
   int canvasHeight;
+  // Where samples may land, in logical coordinates: the oriented screen for a panel's canvas, the buffer for a plain
+  // one. The decoders clip to this rather than to the screen.
+  int logicalWidth;
+  int logicalHeight;
   DirectPixelWriter xf;
+  // A 256-entry tone curve every sample passes through on its way in (the reader's pictures, see picture_tone).
+  // Null: the sample is stored as it comes.
+  const uint8_t* tone = nullptr;
 
   // `gray8Canvas` is the PHYSICAL panel buffer (HalDisplay::borrowGray8Canvas),
   // so its extent is the panel's, not the oriented screen's.
@@ -272,7 +285,24 @@ struct DirectGray8Writer {
     stride = gray8Stride;
     canvasWidth = renderer.getDisplayWidth();
     canvasHeight = renderer.getDisplayHeight();
+    logicalWidth = renderer.getScreenWidth();
+    logicalHeight = renderer.getScreenHeight();
+    tone = nullptr;
     xf.init(renderer);
+  }
+
+  // A plain buffer of `width` x `height` bytes, row after row, where logical and physical are one: a picture decoded
+  // on its own at (0, 0), at any size, as ImageBlock caches it.
+  void initPlain(uint8_t* buffer, const int width, const int height) {
+    canvas = buffer;
+    stride = width;
+    canvasWidth = logicalWidth = width;
+    canvasHeight = logicalHeight = height;
+    tone = nullptr;
+    xf = DirectPixelWriter{};
+    xf.clipRows = height;
+    xf.phyXStepX = 1;  // phyX = x
+    xf.phyYStepY = 1;  // phyY = y
   }
 
   inline void beginRow(int logicalY) { xf.beginRow(logicalY); }
@@ -289,6 +319,6 @@ struct DirectGray8Writer {
     // an image placed at a negative offset, or wider than the panel.
     if (static_cast<unsigned>(phyX) >= static_cast<unsigned>(canvasWidth)) return;
     if (static_cast<unsigned>(phyY) >= static_cast<unsigned>(canvasHeight)) return;
-    canvas[static_cast<uint32_t>(phyY) * stride + phyX] = gray;
+    canvas[static_cast<uint32_t>(phyY) * stride + phyX] = tone ? tone[gray] : gray;
   }
 };

@@ -16,6 +16,7 @@
 #include "TouchUi.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/OtaBootSwitch.h"
 
 namespace fui = freeink::ui;
 
@@ -41,7 +42,28 @@ bool SettingsActivity::releaseBuriedState() {
 
 void SettingsActivity::onEnter() {
   needsHalfRefresh = true;
+  buildRows();
 
+  resetUi();
+  // Opens on the Display tab with the bar focused; TabbedUiListActivity::onEnter() wires the row
+  // and tab actions, points the screen at buildScreen(), and puts focus on the bar.
+  enterCategory(0);
+  TabbedUiListActivity::onEnter();
+  // Another tab when asked for one (the serial CMD:ACT:SETTINGS:<tab>), the way a tap on it goes.
+  if (initialTab > 0) selectTab(initialTab);
+}
+
+void SettingsActivity::rebuildRowsIfShownChanged() {
+  bool changed = false;
+  for (size_t i = 0; i < shownAnswerCount; ++i) changed |= shownAnswers[i].fn() != shownAnswers[i].shown;
+  if (!changed) return;
+  // The rows that come and go follow the one that decides them, so the selected row keeps its index.
+  buildRows();
+  enterCategory(selectedTab());
+}
+
+void SettingsActivity::buildRows() {
+  shownAnswerCount = 0;
   // Build per-category vectors from the shared settings list.
   // addTo tracks the last subcategory per vector and automatically inserts a separator
   // row whenever a setting carries a new subcategory label.
@@ -70,6 +92,18 @@ void SettingsActivity::onEnter() {
 
   forEachSetting([&](const SettingInfo& setting) {
     if (setting.category == StrId::STR_NONE_OPT) return;
+    if (setting.shownWhen) {
+      const bool shown = setting.shownWhen();
+      bool known = false;
+      for (size_t i = 0; i < shownAnswerCount; ++i) known |= shownAnswers[i].fn == setting.shownWhen;
+      if (!known && shownAnswerCount < MAX_SHOWN_ANSWERS) shownAnswers[shownAnswerCount++] = {setting.shownWhen, shown};
+      if (!shown) return;
+    }
+    if (setting.category == StrId::STR_CAT_SYSTEM &&
+        (setting.nameId == StrId::STR_USE_CLOCK || setting.nameId == StrId::STR_CLOCK_FORMAT ||
+         setting.nameId == StrId::STR_TIMEZONE)) {
+      return;
+    }
     // Enrich font-family entries with SD card families discovered at boot.
     // The row is the walk's temporary; the screen keeps its own copy, and only that is enriched.
     SettingInfo enriched = setting;
@@ -131,25 +165,12 @@ void SettingsActivity::onEnter() {
   addToMoved(systemSettings, std::move(SettingInfo::Action(StrId::STR_BOOT_DIAGNOSTICS, SettingAction::BootDiagnostics)
                                            .withSubcategory(StrId::STR_MENU_SYS_SYSTEM)));
 
-  SettingInfo::prepareSubmenus(displaySettings, submenuData);
-  SettingInfo::prepareSubmenus(readerSettings, submenuData);
-  SettingInfo::prepareSubmenus(controlsSettings, submenuData);
-  SettingInfo::prepareSubmenus(systemSettings, submenuData);
-
-  // Now that the tabs hold exactly the rows they will show, group them. prepareSubmenus has done
-  // the same for each submenu's own rows.
-  SettingInfo::insertSubcategorySeparators(displaySettings);
-  SettingInfo::insertSubcategorySeparators(readerSettings);
-  SettingInfo::insertSubcategorySeparators(controlsSettings);
-  SettingInfo::insertSubcategorySeparators(systemSettings);
-
-  resetUi();
-  // Opens on the Display tab with the bar focused; TabbedUiListActivity::onEnter() wires the row
-  // and tab actions, points the screen at buildScreen(), and puts focus on the bar.
-  enterCategory(0);
-  TabbedUiListActivity::onEnter();
-  // Another tab when asked for one (the serial CMD:ACT:SETTINGS:<tab>), the way a tap on it goes.
-  if (initialTab > 0) selectTab(initialTab);
+  // Each tab ends up holding exactly the rows it will show, grouped under its headings; the same
+  // goes for each submenu's own rows.
+  SettingInfo::groupRows(displaySettings, submenuData);
+  SettingInfo::groupRows(readerSettings, submenuData);
+  SettingInfo::groupRows(controlsSettings, submenuData);
+  SettingInfo::groupRows(systemSettings, submenuData);
 }
 
 void SettingsActivity::onExit() {
@@ -192,6 +213,7 @@ void SettingsActivity::activateIndex(const int index) {
         CrossPointSettings::normalizeDependentSettings(SETTINGS);
         SETTINGS.saveToFile();
         needsHalfRefresh = true;
+        rebuildRowsIfShownChanged();
       });
     }
     return;
@@ -245,6 +267,8 @@ void SettingsActivity::activateIndex(const int index) {
   setting.toggleValue();
   CrossPointSettings::normalizeDependentSettings(SETTINGS);
   SETTINGS.saveToFile();
+  // Last use of `setting`: a rebuild replaces the row it refers to.
+  rebuildRowsIfShownChanged();
   // Repaint: nothing else will. Every other way this list changes asks for an
   // update -- moveSelectionTo(), the swipe handler, routeListTouch() -- but the
   // Confirm path in the list controller calls activateIndex() and

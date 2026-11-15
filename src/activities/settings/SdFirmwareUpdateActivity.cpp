@@ -5,15 +5,16 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
-#include <esp_ota_ops.h>
 
 #include "MappedInputManager.h"
+#include "SilentRestart.h"
 #include "activities/home/FileBrowserActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/ConfirmDialog.h"
 #include "components/UITheme.h"
 #include "components/controls/progress-bar.h"
 #include "network/FirmwareFlasher.h"
+#include "network/OtaBootSwitch.h"
 
 void SdFirmwareUpdateActivity::onEnter() {
   Activity::onEnter();
@@ -80,9 +81,9 @@ bool SdFirmwareUpdateActivity::validateFirmware() {
   firmwareSize = file.fileSize();
   file.close();
 
-  const esp_partition_t* dest = esp_ota_get_next_update_partition(nullptr);
+  const esp_partition_t* dest = ota_boot::idleAppPartition();
   if (!dest) {
-    LOG_ERR("FW", "no next-update partition available");
+    LOG_ERR("FW", "no app partition besides the running one");
     errorMessage = tr(STR_INVALID_FIRMWARE);
     return false;
   }
@@ -177,7 +178,7 @@ void SdFirmwareUpdateActivity::performUpdate() {
   }
   requestUpdateAndWait();
   delay(1500);
-  ESP.restart();
+  restartKeepingFlashArea();
 }
 
 void SdFirmwareUpdateActivity::loop() {

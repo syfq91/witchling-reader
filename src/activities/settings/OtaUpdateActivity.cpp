@@ -345,6 +345,6 @@ void OtaUpdateActivity::loop() {
   }
 
   if (state == SHUTTING_DOWN) {
-    ESP.restart();
+    restartKeepingFlashArea();
   }
 }

@@ -19,6 +19,8 @@
 #include <atomic>
 #include <optional>
 
+#include "BookReaderOverrides.h"
+#include "BookSearchSession.h"
 #include "BookmarkStore.h"
 #include "ChapterPageSpan.h"
 #include "CrossPointState.h"
@@ -28,9 +30,10 @@
 #include "EpubReaderMenuActivity.h"
 #include "ImageMemoryLadder.h"
 #include "LaneBeforeBuild.h"
-
 #include "ReaderUtils.h"
 #include "activities/Activity.h"
+
+class ReaderBarsController;
 
 class EpubReaderActivity final : public Activity {
   // Where to land once the target section is loaded (EpubNavigationTarget.h).
@@ -181,6 +184,9 @@ class EpubReaderActivity final : public Activity {
   bool forceLoadLargeImages = false;
   // Set after each render: true if the current page contains at least one placeholder image.
   bool pageHasPlaceholders = false;
+  // The page on the panel went out on the gray canvas (displayPageOnGrayCanvas); its status-bar ticks wait for the
+  // next page (shouldSkipPeriodicUpdate). Under RenderLock.
+  bool grayCanvasOnScreen_ = false;
   bool showTruncatedSectionHintThisRender = false;
   uint8_t truncatedSectionHintRendersRemaining = 0;
   int lastWarnedTruncatedSpineIndex = -1;
@@ -210,7 +216,7 @@ class EpubReaderActivity final : public Activity {
     bool imagePageWithAA = false;
     bool forcedHalfRefresh = false;
     uint8_t orientation = 0;
-    uint8_t imageRendering = 0;
+    uint8_t imageRendering = 0;  // what the chapter is laid out with: Black & White as Display (ReaderImageMode)
     bool embeddedStyle = false;
     bool textAntiAliasing = false;
     int effectiveFontId = 0;
@@ -280,6 +286,9 @@ class EpubReaderActivity final : public Activity {
     // (so `ready` stays true for restoreCurrentPageToBufferIfPreRendered), but the page turn
     // must not show it: it renders the page afresh, by when the pass's own Page is gone.
     bool incomplete = false;
+    // Drawn for an inverted output (Dark Mode): its pictures went into the buffer inverted. Shown only in the polarity
+    // it was drawn for; Scheduled can switch between the pre-render and the page turn that shows it.
+    bool inverted = false;
   };
   PreRenderedPage preRenderedPage;
   // The pre-render staged this page's grayscale planes, so displaying it can go
@@ -498,6 +507,7 @@ class EpubReaderActivity final : public Activity {
   struct PendingGrayscale {
     bool active = false;
     std::shared_ptr<Page> page;  // page whose text needs the AA pass
+    bool imagesGray = true;      // its images replay their gray cache in the pass (not in Black & White)
     int fontId = 0;
     int marginLeft = 0;
     int contentTop = 0;
@@ -564,6 +574,9 @@ class EpubReaderActivity final : public Activity {
   int8_t bookLineSpacingOverride = -1;
   int8_t bookVerticalTextOverride = -1;
   int8_t bookPublisherFontsOverride = -1;
+  int8_t bookMarginHorizontalOverride = -1;
+  int8_t bookExtraParagraphSpacingOverride = -1;
+  int8_t bookTextDarknessOverride = -1;
   // Whether the book's language is ever set vertically (TypographyProfile::verticalAllowed); read once in onEnter.
   bool bookVerticalAllowed_ = false;
 
@@ -976,6 +989,11 @@ class EpubReaderActivity final : public Activity {
   // nothing worth having and cost the next visit a needless re-open.
   void suspendBackgroundWork();
   void resumeBackgroundWork();
+  // Before a screen opens over the page, the bars' own or another (startActivityForResult): Background-B's borrow
+  // handed back and the work staged for the page under it dropped. Under RenderLock.
+  void prepareForOverlay(const char* overlay);
+  // The deferred AA and the pre-render staged for the page dropped, `by` named in the log. Under RenderLock.
+  void dropStagedPageWork(const char* by);
   // Consume a persisted bookmark-jump request (from GlobalBookmarksActivity) for
   // this book. Rewrites progress.bin to the bookmarked position before the normal
   // reader startup path reads it.
@@ -1001,15 +1019,128 @@ class EpubReaderActivity final : public Activity {
                                 int8_t hyphenationOverride, int8_t fontSizeNormalizationOverride,
                                 int8_t inlineFootnotePreviewsOverride, int8_t lineSpacingOverride,
                                 int8_t verticalTextOverride, int8_t publisherFontsOverride);
+  // The book's own settings as this reader holds them (the book*Override members).
+  BookReaderOverrides bookOverrides() const;
   void openReaderMenu();
+  // The reader bars over the page: Confirm, a centre tap and a status-bar tap open them; a key bound to the reader
+  // menu still opens the full menu, which the bars reach through More. Drawn by the reader itself, which lays the page
+  // out again under them at each change; on the C3s a new font waits for them to close
+  // (HalCapabilities::defersLiveFontChange).
+  void openReaderBars();
+  void onReaderBarsClosed(const ActivityResult& result);
+
+  // --- The book's search ---
+  // A search's hits while they are wanted (BookSearchSession): the results list (BookSearchActivity), and a hit shown
+  // on its page, the query outlined there and the hint strip stepping through the others (Left/Right), back to the list
+  // (Confirm) or closing the search (Back). Null while no search is open. Changed on the loop task under the render
+  // lock; the render task reads it under the lock.
+  std::unique_ptr<BookSearchSession> search_;
+  // The results list: the session's last search, or the keyboard for a new one from this page; `startQuery` searches
+  // for a word at once (a long Confirm in word selection).
+  void openBookSearch(std::string startQuery = "");
+  void onBookSearchClosed(const ActivityResult& result);
+  // The page of hit `index`. The first hit a search shows saves where the reader was first (pushLinkOrigin), so Back
+  // after the search returns there.
+  void showSearchHit(int index);
+  void closeBookSearch();
+  bool bookSearchShown() const { return search_ != nullptr && search_->current >= 0; }
+  // Something is drawn over the page (the live bars, a search's strip): it goes out in black and white, and the next
+  // page is not drawn ahead without it.
+  bool uiOverPage() const { return liveBarsOpen() || bookSearchShown(); }
+  // A key while a hit is shown. True when the search took it.
+  bool handleBookSearchKey(const ButtonEventManager::ButtonEvent& ev);
+  // The query outlined wherever it is on the page, and the hint strip. In the page's draw, after the status bar.
+  void drawBookSearchOverlay(const Page& page, int marginLeft, int contentTop) const;
+  // Where the reader is, onto the link Back stack, as a followed link saves it. False with no section to save.
+  bool pushLinkOrigin();
+
+  // --- The reader bars, live ---
+  // Open while the bars are over the page and the reader runs under them: their input in loop(), the build of a
+  // chapter laid out anew in its idle branch, the bars drawn over every page (renderContents, displayBuildPage) or,
+  // where a pass has no page to draw, over the frame on the panel (paintLiveBars). Null while closed. Opened and
+  // closed on the loop task under the render lock; the render task reads it under the lock.
+  std::unique_ptr<ReaderBarsController> liveBars_;
+  // A page is owed under the live bars: a forced refresh asked for one. Cleared by the pass that draws a page
+  // (drawLiveBarsOverPage). Under RenderLock.
+  bool liveBarsPageOwed_ = false;
+  // The page under the live bars is drawn again once the chapter's build is done: a build still running drew it, its
+  // pictures as placeholders, or it was on the panel when the bars opened. Under RenderLock.
+  bool liveBarsRedrawWhenBuilt_ = false;
+  // The bars on the panel are not the ones the controller would draw now: they opened, or their input changed them.
+  // Without it a pass with no page to draw draws nothing. Under RenderLock.
+  bool liveBarsStale_ = false;
+  // A change on the Layout tab waits for the bars showing it to be painted (serviceLiveBars). Loop task only.
+  bool liveLayoutOwed_ = false;
+  // Layouts of this chapter the live bars have seen complete on the card (noteLiveLayoutBuilt): the one they opened
+  // on, every build that ended under them, every page drawn from a complete chapter. A change back to one goes in at
+  // once and its page comes with the bars in one refresh, where a new one shows the bars first while it builds.
+  // Cleared when the bars close. Under RenderLock.
+  struct BuiltLiveLayout {
+    ReaderLayoutValues values;
+    int spine = -1;
+  };
+  std::array<BuiltLiveLayout, 8> builtLiveLayouts_{};
+  uint8_t builtLiveLayoutsNext_ = 0;
+  void noteLiveLayoutBuilt();
+  // The Layout tab asks for a layout other than the page's, and one this chapter already has on the card.
+  bool liveLayoutChangeIsBuilt();
+  // The live bars are open. False at compile time where they never open (the C3s), so their code drops out there.
+  bool liveBarsOpen() const;
+  // One loop() pass with the live bars open: their input, then what it asked for.
+  void serviceLiveBars();
+  // The Layout tab's values applied as they changed, the page owed, and the bars told what the book is read with now.
+  void applyLiveLayout();
+  // The bars closed by their own input: they come down, and the reader does what they asked (onReaderBarsClosed).
+  void closeLiveBars();
+  // The bars down without their result: the reader is leaving, or another screen opens over it. Under RenderLock.
+  void dismissLiveBars();
+  // Whether this pass has a page to draw under the live bars; without one it paints only the bars (render()).
+  bool liveBarsPageDue() const;
+  // The bars over the frame on the panel, for a pass with no page to draw, when they changed. Releases `lock` for the
+  // refresh.
+  void paintLiveBars(RenderLock& lock);
+  // The bars into the frame being drawn, over the page and its status bar; the page is the one owed.
+  // `redrawWhenBuilt`: liveBarsRedrawWhenBuilt_. Under RenderLock.
+  void drawLiveBarsOverPage(bool redrawWhenBuilt);
+  // The sizes the reader's font offers, for the Layout tab.
+  ReaderSizeList layoutSheetSizes() const;
+  // The Layout tab's values (ReaderLayoutValues): as the book is read now, and as the global settings have them.
+  ReaderLayoutValues effectiveLayoutValues() const;
+  static ReaderLayoutValues globalLayoutValues();
+  // The book has settings of its own that the Layout tab shows: its font, or any of the tab's values.
+  bool hasOwnLayout() const;
+  // Lays the book out with the Layout tab's values, as the book's own (`thisBookOnly`) or as the global settings, the
+  // book's own for them, its font among them, dropped then. True when the book is opened again instead.
+  bool applyReaderLayout(const ReaderLayoutValues& values, bool thisBookOnly);
+  // The book*Override members from `overrides`, the reverse of bookOverrides().
+  void setBookOverrides(const BookReaderOverrides& overrides);
+  // After a change of the book's own settings or the global ones: opens the book again where its Publisher Fonts now
+  // apply and were never examined (true), else lays it out again from the page on screen.
+  bool relayoutWithChangedSettings();
+
+  // A tap on the status bar band (TapZones::statusBandFor), touch boards only.
+  bool statusBarTapped() const;
   void openQuickOverrides();
   bool getEffectiveEmbeddedStyle() const;
+  // The Images setting for this book: its override, else the setting (CrossPointSettings::IMAGE_RENDERING).
+  uint8_t imageRenderingSetting() const;
   uint8_t getEffectiveImageRendering() const;
+  // Whether the page's images take part in its gray pass: not in Black & White (ReaderImageMode).
+  bool imagesTakeGrayPass(const Page& page) const;
   uint8_t getEffectiveParagraphAlignment() const;
   bool getEffectiveTextAntiAliasing() const;
+  // The book's own left and right margin, else the setting (CrossPointSettings::screenMarginHorizontal).
+  uint8_t getEffectiveMarginHorizontal() const;
+  bool getEffectiveExtraParagraphSpacing() const;
+  // The book's own text darkness, else the setting. The renderer carries it while the book is open and gets the
+  // setting back on exit, the darkness every other screen draws with.
+  uint8_t getEffectiveTextDarkness() const;
   bool onePassTextFor(const Page& page) const;
   bool onePassComposedFor(const Page& page) const;
   bool displayComposedOnePass(const Page& page, int marginLeft, int contentTop, HalDisplay::RefreshMode mode);
+  bool displayPageOnGrayCanvas(const Page& page, int marginLeft, int contentTop, const uint8_t* capLsb,
+                               const uint8_t* capMsb, bool picturesAreBoxes, bool forceLoadLargeImages);
+  bool picturesGoOutInGray() const;
   bool getEffectiveHyphenation() const;
   bool getEffectiveFontSizeNormalization() const;
   bool getEffectiveInlineFootnotePreviews() const;
@@ -1076,8 +1207,9 @@ class EpubReaderActivity final : public Activity {
   void noteLinkBackStackChanged();
 
  public:
-  explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub)
-      : Activity("EpubReader", renderer, mappedInput), epub(std::move(epub)) {}
+  // Both out of line: liveBars_ holds a type this header only declares.
+  explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub);
+  ~EpubReaderActivity() override;
   void onEnter() override;
   void onExit() override;
   void loop() override;
@@ -1105,6 +1237,8 @@ class EpubReaderActivity final : public Activity {
   // DISP log now says so out loud.
   void startActivityForResult(std::unique_ptr<Activity>&& activity, ActivityResultHandler resultHandler) override;
   bool isReaderActivity() const override { return true; }
+  // Not while the live bars are open: reader actions on keys and gestures would turn the page under them.
+  bool takesReaderControls() const override;
   bool mirrorsLeftRight() const override {
     return pageProgressionRtl_.load() && SETTINGS.pageTurnButtons == CrossPointSettings::PAGE_TURN_FOLLOW_BOOK;
   }

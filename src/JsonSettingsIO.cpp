@@ -2,6 +2,8 @@
 
 #include <ArduinoJson.h>
 #include <BoardConfig.h>
+#include <BufferedPrint.h>
+#include <Epub/LineSpacing.h>
 #include <HalStorage.h>
 #include <HeapFit.h>
 #include <Logging.h>
@@ -10,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <iterator>
 #include <string>
 
 #include "CrossPointSettings.h"
@@ -106,6 +109,10 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
   doc["lastSleepFromReader"] = s.lastSleepFromReader;
   doc["recentBooksView"] = s.recentBooksView;
   doc["showBootScreen"] = s.showBootScreen;
+  if (s.darkModeFlipUntil != 0) {
+    doc["darkModeFlipUntil"] = s.darkModeFlipUntil;
+    doc["darkModeFlipDark"] = s.darkModeFlipDark;
+  }
   doc["hyphenationOffersDeclined"] = s.hyphenationOffersDeclined;
   doc["fontOffersDeclined"] = s.fontOffersDeclined;
   // Information about a pending bookmark jump
@@ -125,13 +132,19 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
     return false;
   }
 
+  // Streamed rather than serialised into a String first, to keep the heap out of it (it runs on the way to sleep).
+  // ArduinoJson writes the punctuation a character at a time, so a small buffer on the stack gathers the ~900 bytes
+  // into a handful of writes instead of several hundred, each taking the storage lock.
   const size_t expected = measureJson(doc);
-  const size_t written = serializeJson(doc, file);
+  uint8_t streamBuffer[256];
+  BufferedPrint out(file, streamBuffer, sizeof(streamBuffer));
+  const size_t written = serializeJson(doc, out);
+  const bool flushed = out.flushBuffer();
   file.flush();
   if (!file.close()) {
     return false;
   }
-  return written == expected;
+  return flushed && written == expected;
 }
 
 bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
@@ -156,6 +169,8 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
     s.recentBooksView = CrossPointSettings::BROWSER_VIEW_DETAILS;
   }
   s.showBootScreen = doc["showBootScreen"] | true;
+  s.darkModeFlipUntil = doc["darkModeFlipUntil"].as<uint32_t>();  // absent: 0, no flip
+  s.darkModeFlipDark = doc["darkModeFlipDark"].as<bool>();
   s.hyphenationOffersDeclined = doc["hyphenationOffersDeclined"] | std::string("");
   s.fontOffersDeclined = doc["fontOffersDeclined"] | std::string("");
 
@@ -204,6 +219,8 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   // Which meaning the fontSize value below carries (point sizes since version 2).
   // See CrossPointSettings::FONT_SIZE_ORDER_VERSION.
   doc["fontSizeOrderV"] = CrossPointSettings::FONT_SIZE_ORDER_VERSION;
+  // Which numbering lineSpacing is in. See LINE_SPACING_ORDER_VERSION (Epub/LineSpacing.h).
+  doc["lineSpacingOrderV"] = LINE_SPACING_ORDER_VERSION;
   if (s.dictionaryName[0] != '\0') {
     doc["dictionaryName"] = s.dictionaryName;
   }
@@ -265,8 +282,8 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   };
 #endif
 
-  const bool staleButtonActions =
-      doc["buttonActionsV"].as<int>() < static_cast<int>(CrossPointSettings::BUTTON_ACTIONS_VERSION);
+  const int storedButtonActions = doc["buttonActionsV"].as<int>();
+  const bool staleButtonActions = storedButtonActions < static_cast<int>(CrossPointSettings::BUTTON_ACTIONS_VERSION);
   if (staleButtonActions && needsResave) *needsResave = true;
 
   const auto isButtonActionKey = [](const char* key) {
@@ -318,13 +335,25 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
       if (staleButtonActions && isButtonActionKey(info.key) && !doc[info.key].isNull()) {
         const bool isConfirmDoubleOrLong =
             std::strcmp(info.key, "btnDoubleConfirm") == 0 || std::strcmp(info.key, "btnLongConfirm") == 0;
-        if (BoardConfig::isMurphyM3() && isConfirmDoubleOrLong && v == CrossPointSettings::BTN_DEFAULT) {
+        if (storedButtonActions < 1 && BoardConfig::isMurphyM3() && isConfirmDoubleOrLong &&
+            v == CrossPointSettings::BTN_DEFAULT) {
           // On Murphy the Confirm double/long defaults replace missing Back and
           // Power keys. Keep explicit custom mappings, but migrate the old
           // built-in values to the board's keymap defaults.
           s.*field = fieldDefault;
           return;
         }
+        if (storedButtonActions < 3 && std::strcmp(info.key, "btnShortPower") == 0 &&
+            v == CrossPointSettings::BTN_DEFAULT) {
+          // Built-in short Power did nothing before version 3; on a board with no Back or Home key it is Confirm
+          // now (applyDeviceButtonDefaults). Everywhere else the default is still Built-in, so this changes nothing.
+          s.*field = fieldDefault;
+          return;
+        }
+
+        // Actions inserted before the board-gated light actions since the file was written: shift what it stored
+        // after them so it keeps its meaning.
+        v = CrossPointSettings::upgradeStoredAction(v, storedButtonActions);
       }
       if (info.persistPtr) {
         // A slider's range is its own; anything past it falls back rather than driving the
@@ -452,6 +481,26 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
     if (fileVersion < CrossPointSettings::FONT_SIZE_ORDER_VERSION && needsResave) *needsResave = true;
   }
 
+  // The line-spacing steps were renumbered at LINE_SPACING_ORDER_VERSION 1 (90% below the old Tight, 145% to 175% above
+  // its Widest). Read from the document, as the sizes above are: the loop above bounds an old value by the new list and
+  // keeps its number, which now names another step. An old Book's Style stays Book's Style.
+  {
+    const auto fileVersion = static_cast<uint8_t>(doc["lineSpacingOrderV"].as<int>());
+    if (fileVersion < LINE_SPACING_ORDER_VERSION) {
+      const uint8_t step = lineSpacingStepFromStored(doc["lineSpacing"] | -1, fileVersion);
+      s.lineSpacing = step != kNoLineSpacingStep ? step : static_cast<uint8_t>(CrossPointSettings::LINE_SPACING_100);
+      if (needsResave) *needsResave = true;
+    }
+  }
+
+  // One margin for all four sides before Top & Bottom and Left & Right: a file with "screenMargin" gives it to each of
+  // the two it has no key for (one written before them has neither). The old key goes with the save this asks for.
+  if (const int legacyMargin = doc["screenMargin"] | -1; legacyMargin >= 0) {
+    s.screenMarginVertical = CrossPointSettings::screenMarginFromStored(doc["screenMarginVertical"] | -1, legacyMargin);
+    s.screenMarginHorizontal =
+        CrossPointSettings::screenMarginFromStored(doc["screenMarginHorizontal"] | -1, legacyMargin);
+    if (needsResave) *needsResave = true;
+  }
   LOG_DBG("CPS", "Settings loaded from file");
 
   return true;
@@ -641,44 +690,35 @@ bool JsonSettingsIO::loadWifi(WifiCredentialStore& store, const char* json, bool
 
 // ---- RecentBooksStore ----
 
-bool JsonSettingsIO::saveRecentBooks(const RecentBooksStore& store, const char* path) {
-  JsonDocument doc;
-  // Which numbering each book's fontSizeOverride is in. Its own stamp rather than the settings
-  // file's: the two files are written independently, so one can be migrated while the other is
-  // still on the old numbering. See CrossPointSettings::FONT_SIZE_ORDER_VERSION.
-  doc["fontSizeOrderV"] = CrossPointSettings::FONT_SIZE_ORDER_VERSION;
-  JsonArray arr = doc["books"].to<JsonArray>();
-  for (const auto& book : store.getBooks()) {
-    JsonObject obj = arr.add<JsonObject>();
-    obj["path"] = book.path;
-    obj["title"] = book.title;
-    obj["author"] = book.author;
-    obj["series"] = book.series;
-    obj["coverBmpPath"] = book.coverBmpPath;
-    obj["metadataStamp"] = book.metadataStamp;
-    obj["embeddedStyleOverride"] = book.embeddedStyleOverride;
-    obj["imageRenderingOverride"] = book.imageRenderingOverride;
-    obj["fontFamilyOverride"] = book.fontFamilyOverride;
-    if (!book.sdFontFamilyOverride.empty()) {
-      obj["sdFontFamilyOverride"] = book.sdFontFamilyOverride;
-    }
-    obj["fontSizeOverride"] = book.fontSizeOverride;
-    obj["paragraphAlignmentOverride"] = book.paragraphAlignmentOverride;
-    obj["textAntiAliasingOverride"] = book.textAntiAliasingOverride;
-    obj["hyphenationOverride"] = book.hyphenationOverride;
-    obj["fontSizeNormalizationOverride"] = book.fontSizeNormalizationOverride;
-    obj["inlineFootnotePreviewsOverride"] = book.inlineFootnotePreviewsOverride;
-    obj["lineSpacingOverride"] = book.lineSpacingOverride;
-    obj["verticalTextOverride"] = book.verticalTextOverride;
-    obj["publisherFontsOverride"] = book.publisherFontsOverride;
-  }
+namespace {
+// Each book override's key in recent.json, which carried a book's own settings before they moved to its folder and
+// still holds them for a book not opened since. The SD family name is the one that is not a number, and goes apart.
+struct OverrideKey {
+  BookReaderOverrides::Field field;
+  const char* key;
+};
+using Field = BookReaderOverrides::Field;
+constexpr OverrideKey kRecentBookOverrideKeys[] = {
+    {Field::EmbeddedStyle, "embeddedStyleOverride"},
+    {Field::ImageRendering, "imageRenderingOverride"},
+    {Field::FontFamily, "fontFamilyOverride"},
+    {Field::FontSize, "fontSizeOverride"},
+    {Field::BionicReading, "bionicReadingOverride"},
+    {Field::ParagraphAlignment, "paragraphAlignmentOverride"},
+    {Field::TextAntiAliasing, "textAntiAliasingOverride"},
+    {Field::Hyphenation, "hyphenationOverride"},
+    {Field::FontSizeNormalization, "fontSizeNormalizationOverride"},
+    {Field::GuideDots, "guideDotsOverride"},
+    {Field::InlineFootnotePreviews, "inlineFootnotePreviewsOverride"},
+    {Field::LineSpacing, "lineSpacingOverride"},
+    {Field::VerticalText, "verticalTextOverride"},
+    {Field::PublisherFonts, "publisherFontsOverride"},
+};
+static_assert(std::size(kRecentBookOverrideKeys) == BookReaderOverrides::kLegacyFieldCount,
+              "every override recent.json carried has its key; later ones live only in overrides.bin");
+}  // namespace
 
-  String json;
-  serializeJson(doc, json);
-  return Storage.writeFile(path, json);
-}
-
-RecentBooksLoad JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) {
+RecentBooksLoad JsonSettingsIO::loadRecentBooks(std::vector<LegacyRecentBook>& out, const char* json) {
   JsonDocument doc;
   auto error = deserializeJson(doc, json);
   if (error == DeserializationError::NoMemory) {
@@ -690,35 +730,31 @@ RecentBooksLoad JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const c
     return RecentBooksLoad::Broken;
   }
 
-  store.recentBooks.clear();
+  out.clear();
   JsonArray arr = doc["books"].as<JsonArray>();
-  // The list and every entry's strings come from the throwing operator new, which aborts the device on a short heap
-  // (a book opened at the memory ladder's lowest, 2026-10): the list asked for in one block, and the strings, at most
-  // the file's own text and their block headers, against what is free. Short, nothing is read.
+  // The rows and every row's strings come from the throwing operator new, which aborts the device on a short heap
+  // (a book opened at the memory ladder's lowest, 2026-10): the rows asked for in one block, and the strings, at most
+  // the file's own text and their block headers, against what is free. Short, nothing is read. recent.json never held
+  // more than 10 rows.
   constexpr size_t kMaxBooks = 10;
-  constexpr size_t kStringOverhead = 6 * 16;  // a heap block header for each of an entry's strings
+  constexpr size_t kStringOverhead = 6 * 16;  // a heap block header for each of a row's strings
   const size_t count = std::min<size_t>(arr.size(), kMaxBooks);
-  if (!heapHasBlockFor(count * sizeof(RecentBook)) ||
-      !heapHasFree(count * (sizeof(RecentBook) + kStringOverhead) + strlen(json))) {
+  if (!heapHasBlockFor(count * sizeof(LegacyRecentBook)) ||
+      !heapHasFree(count * (sizeof(LegacyRecentBook) + kStringOverhead) + strlen(json))) {
     LOG_ERR("RBS", "No memory to read %u recent books", static_cast<unsigned>(count));
     return RecentBooksLoad::ShortOfMemory;
   }
-  store.recentBooks.reserve(count);
+  out.reserve(count);
   // Which meaning the per-book size overrides in this file carry (point sizes since version 2).
   // Absent (0) is every file written before the sizes were put in pixel order.
-  const auto fontSizeOrderV = static_cast<uint8_t>(doc["fontSizeOrderV"] | 0);
-  auto clampInt8 = [](int value, int minValue, int maxValue, int8_t fallback) -> int8_t {
-    if (value < minValue || value > maxValue) {
-      return fallback;
-    }
-    return static_cast<int8_t>(value);
-  };
+  const auto fontSizeOrderV = static_cast<uint8_t>(doc["fontSizeOrderV"].as<int>());
+  // And which numbering the per-book line-spacing overrides are in: absent (0) before 90% and 145% to 175% existed.
+  const auto lineSpacingOrderV = static_cast<uint8_t>(doc["lineSpacingOrderV"].as<int>());
 
   for (JsonObject obj : arr) {
-    // The list as filled so far, not getCount(): that asks ensureLoaded(), and the store is not loaded until this
-    // returns.
-    if (store.recentBooks.size() >= kMaxBooks) break;
-    RecentBook book;
+    if (out.size() >= kMaxBooks) break;
+    LegacyRecentBook row;
+    RecentBook& book = row.book;
     book.path = obj["path"] | std::string("");
     book.title = obj["title"] | std::string("");
     book.author = obj["author"] | std::string("");
@@ -726,37 +762,16 @@ RecentBooksLoad JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const c
     book.coverBmpPath = obj["coverBmpPath"] | std::string("");
     // Absent in files written before it existed: 0, so an entry whose book has
     // a sidecar is refreshed once.
-    book.metadataStamp = obj["metadataStamp"] | 0u;
-    book.embeddedStyleOverride = clampInt8(obj["embeddedStyleOverride"] | -1, -1, 1, -1);
-    book.imageRenderingOverride = clampInt8(obj["imageRenderingOverride"] | -1, -1, 2, -1);
-    book.fontFamilyOverride =
-        clampInt8(obj["fontFamilyOverride"] | -1, -1, CrossPointSettings::FONT_FAMILY_COUNT - 1, -1);
-    book.sdFontFamilyOverride = obj["sdFontFamilyOverride"] | std::string("");
-    if (!book.sdFontFamilyOverride.empty()) {
-      // Keep built-in and SD font overrides mutually exclusive.
-      book.fontFamilyOverride = -1;
+    book.metadataStamp = obj["metadataStamp"].as<unsigned>();
+    const BookReaderOverrides::Numbering numbering{fontSizeOrderV, lineSpacingOrderV};
+    row.overrides.setSdFontFamilyFromStored(obj["sdFontFamilyOverride"] | std::string(""));
+    for (const OverrideKey& entry : kRecentBookOverrideKeys) {
+      row.overrides.setFromStored(entry.field, obj[entry.key] | -1, numbering);
     }
-    // -1 means "follow the default". Anything else is a size in this file's meaning; one that does
-    // not convert to a usable point size goes back to the default rather than to a guess.
-    const uint8_t overridePt =
-        CrossPointSettings::fontPointSizeFromStored(obj["fontSizeOverride"] | -1, fontSizeOrderV);
-    book.fontSizeOverride = overridePt != 0 ? static_cast<int8_t>(overridePt) : -1;
-    book.paragraphAlignmentOverride =
-        clampInt8(obj["paragraphAlignmentOverride"] | -1, -1, CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT - 1, -1);
-    book.textAntiAliasingOverride = clampInt8(obj["textAntiAliasingOverride"] | -1, -1, 1, -1);
-    book.hyphenationOverride = clampInt8(obj["hyphenationOverride"] | -1, -1, 1, -1);
-    book.fontSizeNormalizationOverride = clampInt8(obj["fontSizeNormalizationOverride"] | -1, -1, 1, -1);
-    book.inlineFootnotePreviewsOverride = clampInt8(obj["inlineFootnotePreviewsOverride"] | -1, -1, 1, -1);
-    book.lineSpacingOverride =
-        clampInt8(obj["lineSpacingOverride"] | -1, -1, CrossPointSettings::LINE_COMPRESSION_COUNT - 1, -1);
-    book.verticalTextOverride =
-        clampInt8(obj["verticalTextOverride"] | -1, -1, CrossPointSettings::VERTICAL_TEXT_COUNT - 1, -1);
-    book.publisherFontsOverride =
-        clampInt8(obj["publisherFontsOverride"] | -1, -1, CrossPointSettings::PUBLISHER_FONTS_COUNT - 1, -1);
-    store.recentBooks.push_back(std::move(book));
+    out.push_back(std::move(row));
   }
 
-  LOG_DBG("RBS", "Recent books loaded from file (%u entries)", static_cast<unsigned>(store.recentBooks.size()));
+  LOG_DBG("RBS", "recent.json read (%u rows)", static_cast<unsigned>(out.size()));
   return RecentBooksLoad::Loaded;
 }
 

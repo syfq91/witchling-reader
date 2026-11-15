@@ -209,8 +209,12 @@ bool FlashGlyphStore::finishInstall() {
   installing_.reset();
   if (!written) {
     LOG_ERR("GST", "install: header write failed");
+    return false;
   }
-  return written;
+  // A store held in RAM keeps the install across a power cut from here on (NorFlash::sync); flash has it already.
+  // The glyphs written while reading wait for the next sync, before deep sleep at the latest.
+  flash_.sync();
+  return true;
 }
 
 // --- Session ---
@@ -235,6 +239,9 @@ FlashGlyphStore::OpenResult FlashGlyphStore::open(const uint8_t identity[kIdenti
     return OpenResult::MapFailed;
   }
   geometry_ = g;
+  uint32_t checked = kErased;
+  kerningHonoursGdef_ = (g.flags & kFlagGdefKerning) != 0 ||
+                        (flash_.read(kGdefCheckedOffset, &checked, sizeof checked) && checked == kGdefCheckedMagic);
   firstSd_ = g.styleCount;
   for (uint8_t s = 0; s < g.styleCount; ++s) {
     styleOffset_[s] = header->styles[s].offset;
@@ -282,6 +289,18 @@ FlashGlyphStore::OpenResult FlashGlyphStore::open(const uint8_t identity[kIdenti
   return OpenResult::Ready;
 }
 
+bool FlashGlyphStore::markKerningHonoursGdef() {
+  if (!region_) return false;
+  if (kerningHonoursGdef_) return true;
+  const uint32_t magic = kGdefCheckedMagic;
+  if (!flash_.program(kGdefCheckedOffset, &magic, sizeof magic)) {
+    LOG_ERR("GST", "could not record the GDEF kerning check");
+    return false;
+  }
+  kerningHonoursGdef_ = true;
+  return true;
+}
+
 void FlashGlyphStore::close() {
   if (styleMap_) flash_.unmap(styleMap_);
   if (sdMap_) flash_.unmap(sdMap_);
@@ -291,6 +310,7 @@ void FlashGlyphStore::close() {
   firstSd_ = 0;
   region_ = index_ = pairs_ = log_ = nullptr;
   geometry_ = Geometry{};
+  kerningHonoursGdef_ = false;
   resetRing();
   journal_ = Journal{};
   rebuilds_ = 0;

@@ -105,7 +105,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   xSemaphoreGive(modeMutex);
 }
 
-void HalPowerManager::ensureFullSpeedForRadio() {
+void HalPowerManager::ensureFullSpeed() {
   if (normalFreq <= 0) {
     return;  // begin() not called yet — nothing to restore to
   }

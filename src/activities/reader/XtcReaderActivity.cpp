@@ -208,6 +208,7 @@ void XtcReaderActivity::render(RenderLock&&) {
 }
 
 void XtcReaderActivity::renderPage() {
+  const ReaderUtils::ReaderRefreshScope readerRefresh;
   const uint16_t pageWidth = xtc->getPageWidth();
   const uint16_t pageHeight = xtc->getPageHeight();
   const uint8_t bitDepth = xtc->getBitDepth();
@@ -264,6 +265,12 @@ void XtcReaderActivity::renderPage() {
 
     // Display BW with conditional refresh based on pagesUntilFullRefresh
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+
+    // Inverted output (Dark Mode) keeps no gray planes: the page stays as the B/W pass drew it.
+    if (renderer.isOutputInverted()) {
+      free(row);
+      return;
+    }
 
     // Passes 2 and 3 through the readers' shared plane sequence: LSB marks DARK gray only (XTH value 1), MSB LIGHT
     // and DARK gray (value 1 or 2); in the LUT a 0 bit applies the gray, a 1 bit leaves the pixel. A row the stream
@@ -457,11 +464,12 @@ void XtcReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION a
       ReaderUtils::enforceExitFullRefresh(renderer);
       finish();
       break;
-    // The chapter list is the whole of this reader's navigation, so it answers both names: a
-    // gesture bound to "Table of contents" and one bound to "Reader menu" find the same thing,
+    // The chapter list is the whole of this reader's navigation, so it answers all three names: a
+    // gesture bound to "Table of contents", "Reader menu" or "Reader bars" finds the same thing,
     // rather than one of them silently doing nothing here.
     case BA::BTN_OPEN_TOC:
     case BA::BTN_READER_MENU:
+    case BA::BTN_READER_BARS:
       openChapterSelection();
       break;
     case BA::BTN_SYNC_PROGRESS: {

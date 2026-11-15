@@ -1,5 +1,6 @@
 // A TextBlock line of a vertical-rl page (spec 5): each word runs down its column, drawn in the turned frame. Against
 // the fixed-width shim of test/word_size_layout: every codepoint 10 px, ascender 16.
+#include <BufferedFileIO.h>
 #include <GfxRenderer.h>
 #include <gtest/gtest.h>
 
@@ -191,7 +192,11 @@ TEST(VerticalTextBlock, TheVerticalBitSurvivesTheCache) {
   for (const bool vertical : {true, false}) {
     const auto block = line({"日", "本"}, {0, 10}, EpdFontFamily::REGULAR, {}, vertical);
     FsFile file = HalFile::forReadWrite();
-    ASSERT_TRUE(block->serialize(file));
+    {
+      serialization::BufferedFileWriter writer(file);
+      ASSERT_TRUE(block->serialize(writer));
+      ASSERT_TRUE(writer.flush());
+    }
     ASSERT_TRUE(file.seek(0));
     std::string bytes(file.size(), '\0');
     file.read(bytes.data(), bytes.size());
@@ -200,7 +205,8 @@ TEST(VerticalTextBlock, TheVerticalBitSurvivesTheCache) {
     FsFile again = HalFile::forReadWrite();
     again.write(bytes.data(), bytes.size());
     ASSERT_TRUE(again.seek(0));
-    const auto restored = TextBlock::deserialize(again);
+    serialization::BufferedFileReader reader(again);
+    const auto restored = TextBlock::deserialize(reader);
     ASSERT_NE(nullptr, restored);
     EXPECT_EQ(vertical, restored->isVertical());
     EXPECT_EQ(2, restored->wordCount());
@@ -213,7 +219,11 @@ TEST(VerticalTextBlock, TheCentredMarksBitSurvivesTheCache) {
     const auto block = line({"日", "本"}, {0, 10});
     block->setCentredMarks(centred);
     FsFile file = HalFile::forReadWrite();
-    ASSERT_TRUE(block->serialize(file));
+    {
+      serialization::BufferedFileWriter writer(file);
+      ASSERT_TRUE(block->serialize(writer));
+      ASSERT_TRUE(writer.flush());
+    }
     ASSERT_TRUE(file.seek(0));
     std::string bytes(file.size(), '\0');
     file.read(bytes.data(), bytes.size());
@@ -222,7 +232,8 @@ TEST(VerticalTextBlock, TheCentredMarksBitSurvivesTheCache) {
     FsFile again = HalFile::forReadWrite();
     again.write(bytes.data(), bytes.size());
     ASSERT_TRUE(again.seek(0));
-    const auto restored = TextBlock::deserialize(again);
+    serialization::BufferedFileReader reader(again);
+    const auto restored = TextBlock::deserialize(reader);
     ASSERT_NE(nullptr, restored);
     EXPECT_EQ(centred, restored->centredMarks());
     EXPECT_TRUE(restored->isVertical());
@@ -296,14 +307,19 @@ TEST(VerticalTextBlock, ACombinedWordTakesOneCentredEmphasisMark) {
 TEST(VerticalTextBlock, TheCombineRecordSurvivesTheCache) {
   const auto block = line({"日", "13"}, {0, 10}, EpdFontFamily::REGULAR, {combine(1, 10)});
   FsFile file = HalFile::forReadWrite();
-  ASSERT_TRUE(block->serialize(file));
+  {
+    serialization::BufferedFileWriter writer(file);
+    ASSERT_TRUE(block->serialize(writer));
+    ASSERT_TRUE(writer.flush());
+  }
   ASSERT_TRUE(file.seek(0));
   std::string bytes(file.size(), '\0');
   file.read(bytes.data(), bytes.size());
   FsFile again = HalFile::forReadWrite();
   again.write(bytes.data(), bytes.size());
   ASSERT_TRUE(again.seek(0));
-  const auto restored = TextBlock::deserialize(again);
+  serialization::BufferedFileReader reader(again);
+  const auto restored = TextBlock::deserialize(reader);
   ASSERT_NE(nullptr, restored);
   EXPECT_TRUE(restored->isCombined(1));
   EXPECT_FALSE(restored->isCombined(0));

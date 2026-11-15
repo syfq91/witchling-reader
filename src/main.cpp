@@ -5,6 +5,7 @@
 #include <Epub/BookFonts.h>
 #include <Epub/BookMetadataCache.h>
 #include <Epub/CjkLineBreak.h>
+#include <FlashArea.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
 #include <FsHelpers.h>
@@ -38,6 +39,8 @@
 #include "CjkUiPack.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "DarkMode.h"
+#include "DarkModeNow.h"
 #include "GlobalBookmarkIndex.h"
 #include "HyphenationPacks.h"
 #include "MappedInputManager.h"
@@ -53,6 +56,7 @@
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/OtaBootSwitch.h"
 #include "util/ButtonNavigator.h"
 #include "util/WakeTrace.h"
 
@@ -212,29 +216,37 @@ static void armSilentReboot(const uint32_t target) {
   silentRebootMagic = SILENT_REBOOT_MAGIC;
 }
 
+// The last step before every planned ESP.restart() whose card is still ours: a flash area held in PSRAM (a board
+// without a usable `spiffs` partition) writes what changed to its card file, as before deep sleep, so the language
+// slot, the font cache and the glyphs rendered so far outlive the restart. Nothing is written when nothing changed;
+// on the partition this does nothing.
+void restartKeepingFlashArea() {
+  FlashArea::sync();
+  delay(50);
+  ESP.restart();
+}
+
 void silentRestart() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
   armSilentReboot(SILENT_REBOOT_TARGET_HOME);
   LOG_DBG("MAIN", "Silent restart (target=home)");
-  delay(50);
-  ESP.restart();
+  restartKeepingFlashArea();
 }
 
 void silentRestartToReader() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
   armSilentReboot(SILENT_REBOOT_TARGET_READER);
   LOG_DBG("MAIN", "Silent restart (target=reader)");
-  delay(50);
-  ESP.restart();
+  restartKeepingFlashArea();
 }
 
 void silentRestartToSettings() {
   if (deepSleepInProgress) return;
   armSilentReboot(SILENT_REBOOT_TARGET_SETTINGS);
   LOG_DBG("MAIN", "Silent restart (target=settings)");
-  delay(50);
-  ESP.restart();
+  restartKeepingFlashArea();
 }
+
 bool heapRecoveryRestartAvailable() {
   if (deepSleepInProgress) return false;  // sleeping supersedes the heap-defrag reboot
   if (heapRecoveryRestartLatch == HEAP_RECOVERY_RESTART_LATCH_MAGIC) {
@@ -249,8 +261,7 @@ bool trySilentRestartToReaderForHeapRecovery() {
   heapRecoveryRestartLatch = HEAP_RECOVERY_RESTART_LATCH_MAGIC;
   armSilentReboot(SILENT_REBOOT_TARGET_READER);
   LOG_ERR("MAIN", "Silent restart (target=reader, heap recovery)");
-  delay(50);
-  ESP.restart();
+  restartKeepingFlashArea();
   return true;
 }
 
@@ -261,8 +272,7 @@ bool trySilentRestartToReaderForHeapRecovery() {
 static void silentRestartToSleep(bool fromTimeout) {
   armSilentReboot(fromTimeout ? SILENT_REBOOT_TARGET_SLEEP_TIMEOUT : SILENT_REBOOT_TARGET_SLEEP);
   LOG_INF("MAIN", "Silent restart (target=sleep, framebuffers released, fromTimeout=%d)", fromTimeout ? 1 : 0);
-  delay(50);
-  ESP.restart();
+  restartKeepingFlashArea();
 }
 
 // Earliest millis() value at which a held-power-button press is allowed to trigger sleep.
@@ -442,6 +452,9 @@ void enterDeepSleep(bool fromTimeout = false, BootDiag::SleepTrigger trigger = B
 
   display.deepSleep();
   BootDiag::markSleepStage(BootDiag::SleepStage::PanelAsleep);
+  // A flash area held in RAM (a board without the flash partition) writes what changed since its last sync, the
+  // glyphs rendered while reading among it; on the partition this does nothing.
+  FlashArea::sync();
   // Persist before the last two steps, which are the ones that can strand the device:
   // the release wait and the wake arming. Everything that could still touch the SD card
   // is done, so this is the last safe moment to write. The record is amended in place on
@@ -495,6 +508,9 @@ void setupDisplayAndFonts(bool seamless = false, bool skipSdFontDiscovery = fals
   display.seedLastFastRefreshMs(SETTINGS.measuredFastRefreshMs);
   renderer.begin();
   activityManager.begin();
+  // Dark Mode before the first paint, whichever it is: the splash, a Quick Resume page restored in the polarity it was
+  // saved in, or the reader's first page.
+  activityManager.applyOutputPolarity();
   LOG_DBG("MAIN", "Display initialized");
 
   // Initialize font decompressor for compressed reader fonts
@@ -579,17 +595,22 @@ void setupDisplayAndFonts(bool seamless = false, bool skipSdFontDiscovery = fals
 // activity-side callers out of SdCardFontSystem internals.
 void ensureSdFontLoaded() { sdFontSystem.ensureLoaded(renderer); }
 
-void unloadSdFontIfLoaded() { sdFontSystem.unload(renderer); }
+void unloadSdFontIfLoaded() {
+  sdFontSystem.unload(renderer);
+  // Book close: the glyph store wrote the glyphs this book rendered into the flash area. A PSRAM image keeps them on
+  // the card from here, not only from the next sleep; nothing is written when nothing changed.
+  FlashArea::sync();
+}
 
 namespace {
 // The Publisher Fonts the book is drawn with: its own choice, else the setting.
-uint8_t publisherFontsMode(const RecentBook& book) {
+uint8_t publisherFontsMode(const BookReaderOverrides& book) {
   return CrossPointSettings::publisherFontsFor(book.publisherFontsOverride, SETTINGS.publisherFonts);
 }
 
 // The cache of the EPUB at `path` when Publisher Fonts apply to it, else "": they are on for the book, its own style
 // is in use, and no font family has been chosen for it (a family chosen for a book still beats them).
-std::string publisherFontsCache(const char* path, const RecentBook& book) {
+std::string publisherFontsCache(const char* path, const BookReaderOverrides& book) {
   const bool embeddedStyle =
       book.embeddedStyleOverride >= 0 ? book.embeddedStyleOverride != 0 : SETTINGS.embeddedStyle != 0;
   if (publisherFontsMode(book) == CrossPointSettings::PUBLISHER_FONTS_OFF || !embeddedStyle ||
@@ -605,10 +626,9 @@ std::string publisherFontsCache(const char* path, const RecentBook& book) {
 // book open, which also tries the accent families again that the memory ladder left out (BookFonts::accentLimit).
 bool chooseEpubFonts(const char* path, const bool wait, const bool opening,
                      const char* (&families)[1 + BookFonts::kMaxAccents], std::string& body, uint8_t& size) {
-  // For EPUB: honour per-book SD font and/or size overrides. The book record
-  // is available here — the reader activity hasn't started yet, but
-  // RecentBooksStore already has the persisted overrides for this path.
-  const RecentBook book = RECENT_BOOKS.getBookByPath(path);
+  // For EPUB: honour per-book SD font and/or size overrides. The reader activity has not started yet, but the book's
+  // own settings are on the card already (RecentBooksStore::readerOverrides).
+  const BookReaderOverrides book = RECENT_BOOKS.readerOverrides(path);
   size = (book.fontSizeOverride >= 0) ? static_cast<uint8_t>(book.fontSizeOverride) : SETTINGS.fontPointSize;
 
   // Publisher Fonts: not examined yet, what is loaded stays, until the reader has examined the book and asks again.
@@ -645,9 +665,10 @@ bool chooseEpubFonts(const char* path, const bool wait, const bool opening,
 }  // namespace
 
 bool bookFontsPendingForPath(const char* path) {
-  // No shortcut on the setting being Off: a book can have them on of its own (RecentBook::publisherFontsOverride).
+  // No shortcut on the setting being Off: a book can have them on of its own
+  // (BookReaderOverrides::publisherFontsOverride).
   if (!path || !FsHelpers::hasEpubExtension(std::string_view(path))) return false;
-  const std::string cachePath = publisherFontsCache(path, RECENT_BOOKS.getBookByPath(path));
+  const std::string cachePath = publisherFontsCache(path, RECENT_BOOKS.readerOverrides(path));
   return !cachePath.empty() && BookFonts::read(cachePath) == BookFonts::State::Pending;
 }
 
@@ -857,6 +878,7 @@ void setup() {
     const bool alreadyAttempted = (heapCorruptionBootLatch == HEAP_CORRUPTION_BOOT_MAGIC);
     if (!alreadyAttempted && !heap_caps_check_integrity_all(/*print_errors=*/true)) {
       heapCorruptionBootLatch = HEAP_CORRUPTION_BOOT_MAGIC;
+      // flash-area: not chosen yet this early in boot, so nothing in it to keep.
       esp_restart();  // clean DRAM reset — heap will be intact on next boot
     }
     heapCorruptionBootLatch = 0;  // clear latch on a clean-heap boot
@@ -1008,7 +1030,8 @@ void setup() {
     // running this firmware at all, so the combo could never fire and the user
     // is left looking at a device that appears dead. See upKeyIsBootStrap().
     const bool upIsStrap = HalCapabilities::upKeyIsBootStrap();
-    if (gpio.isHeldNow(upIsStrap ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP)) {
+    // Not without an app slot to write into (ota_boot::idleAppPartition()): the picker could only fail.
+    if (gpio.isHeldNow(upIsStrap ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP) && ota_boot::idleAppPartition() != nullptr) {
       recoveryFirmwareMode = true;
       LOG_INF("MAIN", "Recovery firmware mode (%s + POWER held at boot)", upIsStrap ? "DOWN" : "UP");
     }
@@ -1042,6 +1065,9 @@ void setup() {
 
   HalSystem::checkPanic();
   HalSystem::clearPanic();  // TODO: move this to an activity when we have one to display the panic info
+  // The flash area before anything uses it, so every boot says in its log where the area is, or that it has none, and
+  // a board without the `spiffs` partition takes its PSRAM image while the PSRAM is still one block.
+  FlashArea::get();
   // A CJK language's pack carries its CJK UI faces, so the faces are read straight from flash
   // instead of decoded per glyph (CjkUiFonts.h). Registered before the first pack is resolved.
   I18N.setPackExtension(&CjkUiFonts::packExtension());
@@ -1145,8 +1171,8 @@ void setup() {
   // what decides whether a big chapter's section build finishes or aborts, so it needs to be
   // attributable to one of these three stores rather than inferred across boots.
   logStartupMemory("before_stores");
-  // The recent-books list is no longer loaded here: it is held only while a screen or a call
-  // needs it (RecentBooksStore::Hold). Loaded at boot it split the largest free block for the
+  // The recent-books list is not loaded here, nor anywhere: each call reads what it needs from
+  // recent-books.bin (RecentBooksStore). Loaded at boot it split the largest free block for the
   // session -- the reader opened every book with 45 KB of it instead of 61 KB (X3).
   logStartupMemory("after_recent_books");
   // Nor is the bookmark index, for the same reason: GlobalBookmarkIndex::Hold.
@@ -1506,7 +1532,14 @@ void loop() {
         case BA::BTN_READER_MENU:
           activityManager.dispatchButtonAction(BA::BTN_READER_MENU);
           break;
-
+        case BA::BTN_READER_BARS:
+          activityManager.dispatchButtonAction(BA::BTN_READER_BARS);
+          break;
+        case BA::BTN_CONFIRM:
+          mappedInputManager.injectLogicalPress(B::Confirm);
+          buttonEventManager.pushEventFront(
+              {B::Confirm, ButtonEventManager::PressType::Short, millis(), /*bypassActionMapping=*/true});
+          break;
         case BA::BTN_CYCLE_FONT_SIZE:
           activityManager.dispatchButtonAction(BA::BTN_CYCLE_FONT_SIZE);
           break;

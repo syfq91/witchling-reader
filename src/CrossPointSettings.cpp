@@ -2,6 +2,7 @@
 
 #include <BoardConfig.h>
 #include <Epub/LineSpacing.h>
+#include <Epub/ParagraphIndent.h>
 #include <HalStorage.h>
 #include <JsonSettingsIO.h>
 #include <Logging.h>
@@ -10,6 +11,8 @@
 #include <cstring>
 #include <string>
 
+#include "DarkMode.h"
+#include "DarkModeNow.h"
 #include "SdCardFontGlobals.h"
 #include "fontIds.h"
 
@@ -44,8 +47,20 @@ CrossPointSettings CrossPointSettings::instance;
 void CrossPointSettings::applyDeviceButtonDefaults() {
   btnDoubleConfirm = BTN_DEFAULT;
   btnLongConfirm = BTN_DEFAULT;
+  btnShortPower = BTN_DEFAULT;
+  btnDoublePower = BTN_LIGHT_TOGGLE;
 
   const auto& input = BoardConfig::ACTIVE.input;
+  // No Back key and no Home key to carry Back and Confirm (BOOX Picco: Power, Up, Down and touch): Power is the
+  // remaining key, so a press of it is Confirm and a double press Back, and both are a key away, not only a box to
+  // tap. The light that double press toggles elsewhere is the slide switch's on that board. Murphy is left out by the
+  // dedicated Power key: its Power is its Confirm.
+  const bool hasDedicatedPowerKey = input.power >= 0 && input.power != input.confirm;
+  if (input.back < 0 && !BoardConfig::hasHomeKey() && hasDedicatedPowerKey) {
+    btnShortPower = BTN_CONFIRM;
+    btnDoublePower = BTN_BACK;
+  }
+
   if (!BoardConfig::isMurphyM3() || input.confirm < 0) return;
 
   if (input.back < 0) btnDoubleConfirm = BTN_BACK;
@@ -80,6 +95,7 @@ bool CrossPointSettings::isReaderScopedAction(const uint8_t action) {
     case BTN_PREV_SECTION:
     case BTN_EXIT_READER:
     case BTN_READER_MENU:
+    case BTN_READER_BARS:
     case BTN_UNUSED_BIONIC_READING:
     case BTN_SYNC_PROGRESS:
     case BTN_CYCLE_FONT_SIZE:
@@ -167,13 +183,25 @@ bool CrossPointSettings::loadFromFile() {
   return false;
 }
 
-static_assert(CrossPointSettings::TIGHT == static_cast<uint8_t>(LineSpacingStep::Tight) &&
-                  CrossPointSettings::NORMAL == static_cast<uint8_t>(LineSpacingStep::Normal) &&
-                  CrossPointSettings::WIDE == static_cast<uint8_t>(LineSpacingStep::Wide) &&
-                  CrossPointSettings::EXTRA_WIDE == static_cast<uint8_t>(LineSpacingStep::ExtraWide) &&
-                  CrossPointSettings::WIDEST == static_cast<uint8_t>(LineSpacingStep::Widest) &&
+static_assert(CrossPointSettings::LINE_SPACING_90 == static_cast<uint8_t>(LineSpacingStep::Pct90) &&
+                  CrossPointSettings::LINE_SPACING_95 == static_cast<uint8_t>(LineSpacingStep::Pct95) &&
+                  CrossPointSettings::LINE_SPACING_100 == static_cast<uint8_t>(LineSpacingStep::Pct100) &&
+                  CrossPointSettings::LINE_SPACING_110 == static_cast<uint8_t>(LineSpacingStep::Pct110) &&
+                  CrossPointSettings::LINE_SPACING_120 == static_cast<uint8_t>(LineSpacingStep::Pct120) &&
+                  CrossPointSettings::LINE_SPACING_130 == static_cast<uint8_t>(LineSpacingStep::Pct130) &&
+                  CrossPointSettings::LINE_SPACING_145 == static_cast<uint8_t>(LineSpacingStep::Pct145) &&
+                  CrossPointSettings::LINE_SPACING_160 == static_cast<uint8_t>(LineSpacingStep::Pct160) &&
+                  CrossPointSettings::LINE_SPACING_175 == static_cast<uint8_t>(LineSpacingStep::Pct175) &&
                   CrossPointSettings::FROM_BOOK == static_cast<uint8_t>(LineSpacingStep::FromBook),
               "the stored line-spacing steps are LineSpacingStep's");
+static_assert(CrossPointSettings::PARAGRAPH_INDENT_NONE == static_cast<uint8_t>(ParagraphIndent::None) &&
+                  CrossPointSettings::PARAGRAPH_INDENT_HALF_EM == static_cast<uint8_t>(ParagraphIndent::HalfEm) &&
+                  CrossPointSettings::PARAGRAPH_INDENT_ONE_EM == static_cast<uint8_t>(ParagraphIndent::OneEm) &&
+                  CrossPointSettings::PARAGRAPH_INDENT_ONE_AND_HALF_EM ==
+                      static_cast<uint8_t>(ParagraphIndent::OneAndHalfEm) &&
+                  CrossPointSettings::PARAGRAPH_INDENT_TWO_EM == static_cast<uint8_t>(ParagraphIndent::TwoEm) &&
+                  CrossPointSettings::PARAGRAPH_INDENT_FROM_BOOK == static_cast<uint8_t>(ParagraphIndent::FromBook),
+              "the stored paragraph indents are ParagraphIndent's");
 
 float CrossPointSettings::getReaderLineCompression() const {
   // Without a book (the dictionary's pages): no CJK pitch, and Book's style reads as Normal.
@@ -188,7 +216,10 @@ unsigned long CrossPointSettings::getSleepTimeoutMs() const {
   return static_cast<unsigned long>(sleepTimeoutMinutes) * 60UL * 1000UL;
 }
 
-int CrossPointSettings::getRefreshFrequency() const { return static_cast<int>(refreshFrequencyPages); }
+// Halved while the screens are dark, which Scheduled leaves to the clock: DarkModeNow, not darkMode alone.
+int CrossPointSettings::getRefreshFrequency() const {
+  return DarkMode::refreshFrequency(static_cast<int>(refreshFrequencyPages), DarkModeNow::isDark());
+}
 
 int CrossPointSettings::getBuiltinReaderFontId(uint8_t family, FONT_SIZE size) {
   switch (family) {

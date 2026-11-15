@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <FlashArea.h>
 #include <FlashFontPartition.h>
 #include <HalCapabilities.h>
 #include <HalStorage.h>
@@ -80,6 +81,8 @@ struct SystemStatus {
   uint64_t sdFreeBytes;
   uint64_t fontCacheUsedBytes;   // bytes used in the flash font partition (0 if empty)
   uint64_t fontCacheTotalBytes;  // total size of the flash font partition
+  FlashArea::Backend flashArea;  // where that area is: the partition, a PSRAM image, or none
+  uint32_t flashPartitionBytes;  // the table's `spiffs` partition, used or not; 0 when it has none
   // Power behaviour since boot. lightSleepSeconds is time the chip was actually
   // halted by the idle light-sleep path; lightSleepPercent is that as a share of
   // uptime, which is the readable proxy for average current. deepSleepSeconds is
@@ -149,32 +152,13 @@ struct SystemStatus {
     s.sdUsedBytes = 0;
     s.sdFreeBytes = 0;
 
-    // Flash font partition — size always available; used bytes from CPFC index
-    // if a valid cache is present, otherwise 0.
+    // The flash area: its size, and what the .cpfont cache in it holds (0 without a valid index).
     {
-      const esp_partition_t* part =
-          esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "spiffs");
-      s.fontCacheTotalBytes = part ? static_cast<uint64_t>(part->size) : 0;
-      s.fontCacheUsedBytes = 0;
-      if (part && FlashFontPartition::hasValidIndex()) {
-        // Read the index to sum up all entry data sizes.
-        // Re-use the public query API to avoid duplicating partition read logic.
-        // We map the CPFC header (8 bytes + up to 16 × 48-byte entries = 776 B).
-        uint8_t buf[8 + 16 * 48];
-        if (esp_partition_read(part, 0, buf, sizeof(buf)) == ESP_OK && buf[0] == 'C' && buf[1] == 'P' &&
-            buf[2] == 'F' && buf[3] == 'C') {
-          const uint8_t count = buf[4];
-          uint64_t usedTotal = 8 + static_cast<uint64_t>(count) * 48;  // header + index
-          for (uint8_t i = 0; i < count && i < 16; i++) {
-            const uint8_t* entry = buf + 8 + i * 48;
-            const uint32_t dataSize = static_cast<uint32_t>(entry[40]) | (static_cast<uint32_t>(entry[41]) << 8) |
-                                      (static_cast<uint32_t>(entry[42]) << 16) |
-                                      (static_cast<uint32_t>(entry[43]) << 24);
-            usedTotal += dataSize;
-          }
-          s.fontCacheUsedBytes = usedTotal;
-        }
-      }
+      const NorFlash* const area = FlashArea::get();
+      s.fontCacheTotalBytes = area ? static_cast<uint64_t>(area->size()) : 0;
+      s.fontCacheUsedBytes = area ? FlashFontPartition::cachedBytes() : 0;
+      s.flashArea = FlashArea::backend();
+      s.flashPartitionBytes = FlashArea::partitionBytes();
     }
 
     const wifi_mode_t mode = WiFi.getMode();

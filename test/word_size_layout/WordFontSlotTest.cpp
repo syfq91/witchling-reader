@@ -13,6 +13,7 @@
 //
 // Per-word font slots follow crosspoint-reader PR #3934 (Justin Mitchell).
 
+#include <BufferedFileIO.h>
 #include <Utf8.h>
 #include <gtest/gtest.h>
 
@@ -51,7 +52,11 @@ std::vector<std::unique_ptr<TextBlock>> layout(ParsedText& text, const GfxRender
 
 std::string serialized(const TextBlock& block) {
   FsFile file = HalFile::forReadWrite();
-  EXPECT_TRUE(block.serialize(file));
+  {
+    serialization::BufferedFileWriter writer(file);
+    EXPECT_TRUE(block.serialize(writer));
+    EXPECT_TRUE(writer.flush());
+  }
   EXPECT_TRUE(file.seek(0));
   std::string bytes(file.size(), '\0');
   file.read(bytes.data(), bytes.size());
@@ -214,7 +219,8 @@ TEST(WordFontSlots, SerializationKeepsTheFontsAndRefusesASlotThatNamesNone) {
   FsFile file = HalFile::forReadWrite();
   file.write(bytes.data(), bytes.size());
   ASSERT_TRUE(file.seek(0));
-  const auto restored = TextBlock::deserialize(file);
+  serialization::BufferedFileReader reader(file);
+  const auto restored = TextBlock::deserialize(reader);
   ASSERT_NE(nullptr, restored);
   EXPECT_EQ(nullptr, restored->wordFont(0));
   ASSERT_NE(nullptr, restored->wordFont(1));
@@ -230,7 +236,8 @@ TEST(WordFontSlots, SerializationKeepsTheFontsAndRefusesASlotThatNamesNone) {
   FsFile bad = HalFile::forReadWrite();
   bad.write(corrupt.data(), corrupt.size());
   ASSERT_TRUE(bad.seek(0));
-  EXPECT_EQ(nullptr, TextBlock::deserialize(bad));
+  serialization::BufferedFileReader badReader(bad);
+  EXPECT_EQ(nullptr, TextBlock::deserialize(badReader));
 }
 
 TEST(SpaceParts, EveryGapIsTheRenderersThoughThePassRemembersItsParts) {

@@ -3,11 +3,12 @@
 #include <HalStorage.h>
 
 #include <cstdint>
+#include <vector>
 
 class CrossPointSettings;
 class CrossPointState;
 class WifiCredentialStore;
-class RecentBooksStore;
+struct LegacyRecentBook;
 class OpdsServerStore;
 enum class RecentBooksLoad : uint8_t;  // RecentBooksStore.h
 
@@ -25,9 +26,8 @@ bool loadState(CrossPointState& s, const char* json);
 bool saveWifi(const WifiCredentialStore& store, const char* path);
 bool loadWifi(WifiCredentialStore& store, const char* json, bool* needsResave = nullptr);
 
-// RecentBooksStore
-bool saveRecentBooks(const RecentBooksStore& store, const char* path);
-RecentBooksLoad loadRecentBooks(RecentBooksStore& store, const char* json);
+// recent.json, read once as the list moves to recent-books.bin (RecentBooksStore)
+RecentBooksLoad loadRecentBooks(std::vector<LegacyRecentBook>& out, const char* json);
 
 // OpdsServerStore
 bool saveOpds(const OpdsServerStore& store, const char* path);
