@@ -279,8 +279,16 @@ Moving within a tab follows **[Moving through lists](#moving-through-lists)**.
 - **Boot Diagnostics**: How this boot started, where the last sleep stopped, and the history pairing each sleep with the boot that followed it. One screenful, meant to be photographed into a bug report when the device fails to sleep or fails to wake.
 
 **Firmware Update**:
-- **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi. The download is always checked against the certificate of GitHub's servers, and the firmware against the SHA-256 checksum the release lists, before the reader switches to it. The reader restarts when you leave this screen.
-- **SD Firmware Update**: Flash a firmware `.bin` file from the SD card. Press **Confirm** on a file to flash it. The **Options** button hint in the file picker opens the sort and visibility options, **Search**, and **Remove** to delete a `.bin` you no longer need.
+- **Check for Updates**: Check for and download Witchling Reader firmware updates over WiFi. When a newer release is found, the question to update shows the release's title and the first few lines of its release notes, so you can see what it brings before you install it. The download is always checked against the certificate of GitHub's servers, and the firmware against the SHA-256 checksum the release lists, before the reader switches to it. When the firmware is up to date, or you decline its update, the same screen goes on to the language and hyphenation packs on the card: a line under the versions says they are up to date, or how many have an update, and then asks whether to update them now. The reader restarts when you leave this screen.
+- **Include Beta Updates**: Whether to include release-candidate builds in update checks. "ON" / "OFF"
+- **SD Firmware Update**: Flash a firmware `.bin` file from the SD card. Press **Confirm** on a file to flash it. The **Options** button hint in the file picker opens the sort and visibility options, **Search**, and **Remove** to delete a `.bin` you no longer need. Use the release's `firmware*.bin` here, not a `full-install-*.bin`.
+
+These updates replace the firmware only. The device's boot loader and partition table stay as they are. If the
+interface stays in English although your language's pack is on the card (an X4 Pro updated from its original
+firmware), when an X3 or X4 says it runs in [emergency mode](#7-troubleshooting-issues--escaping-bootloop), or to give
+an X3 or X4 the faster-waking boot loader, use the **Full install** of the
+[Witch Reader flasher](https://jpirnay.github.io/witchhunt-reader/) once, from a computer. It keeps the SD card. The
+page lists what it resets in the device's own memory.
 
 #### 3.7.5 OPDS Servers (Multiple Libraries)
 
@@ -436,3 +444,8 @@ If an issue or crash is encountered while using Witchling Reader:
 - If there are issues with broken cache or corrupted configuration, delete the `.crosspoint` directory on your SD card (or consider deleting only `settings.json`, `state.json`, or `epub_*` cache directories inside `.crosspoint/`).
 - For locked X4 hardware, the USB port operates purely for power/charging; flashing is performed via SD card (`update.bin`) or Wi-Fi OTA. USB serial data connection, logging, and monitoring are stripped from the firmware to maximize boot speed, eliminate background overhead, and save power.
 
+**The interface is in English after an update or on another card:** every interface language but English reads its pack from the card (`/.crosspoint/lang/`). Pick your language again under **Language** (Settings → System) to download it, or copy it there by hand. If the pack is there and the interface stays English, look at **System Information**, in its Flash section: **Language** shows the language's code and, when its pack is not in use, why (`no pack`, `bad pack`, `no flash area`, `area too small`, `build`, `mmap`, `CRC`), and **Flash area** where the reader keeps it.
+
+**"Emergency mode" on the way to Home (X3, X4):** the device kept the partition table of the firmware it had before (an install over its original firmware, or an SD card or OTA update from another firmware), and that table has no `spiffs` partition for the reader's flash area, or a smaller one than ours (3.4 MB; the X3's original table has 1 MB). The reader keeps its fonts, the interface language and hyphenation patterns there. It still works, but TrueType fonts may not load and more is read from the SD card. We strongly recommend a **Full install** with the [Witch Reader flasher](https://jpirnay.github.io/witchhunt-reader/): it writes our partition table, and the SD card keeps everything. A device that cannot be flashed over USB keeps working as it is. The notice is shown once per layout; **System Information** shows "Emergency mode" in its Flash section until the table is ours. The X4 Pro, T5 S3, Murphy M3 and BOOX Picco keep the area in their PSRAM instead and never run in emergency mode.
+
+**Books are no longer hyphenated after an update:** every language but English now hyphenates with a downloadable pack. With **Hyphenation** on, opening such a book offers its pack; if you answered **No**, install it from its row in the Font Manager (**Hyphenation-German** and so on).

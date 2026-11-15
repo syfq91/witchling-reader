@@ -115,6 +115,7 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
   }
   doc["hyphenationOffersDeclined"] = s.hyphenationOffersDeclined;
   doc["fontOffersDeclined"] = s.fontOffersDeclined;
+  if (s.flashLayoutNoticeFor != 0) doc["flashLayoutNoticeFor"] = s.flashLayoutNoticeFor;
   // Information about a pending bookmark jump
   JsonObject jump = doc["pendingBookmarkJump"].to<JsonObject>();
   jump["active"] = s.pendingBookmarkJump.active;
@@ -173,6 +174,7 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   s.darkModeFlipDark = doc["darkModeFlipDark"].as<bool>();
   s.hyphenationOffersDeclined = doc["hyphenationOffersDeclined"] | std::string("");
   s.fontOffersDeclined = doc["fontOffersDeclined"] | std::string("");
+  s.flashLayoutNoticeFor = doc["flashLayoutNoticeFor"].as<uint32_t>();  // absent: 0, never shown
 
   JsonObject jump = doc["pendingBookmarkJump"].as<JsonObject>();
   s.pendingBookmarkJump.active = jump["active"] | false;

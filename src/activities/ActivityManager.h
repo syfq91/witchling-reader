@@ -177,6 +177,7 @@ class ActivityManager {
   void goToSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
+  void goToFlashLayoutNotice();  // the emergency-mode notice (FlashLayoutNotice); it goes Home when read
   void goToHomeMore();
   // Opens a home screen entry (see HomeMenu.h). A plain goTo*(), so the caller's ReturnHint survives.
   void goToHomeMenuAction(HomeMenuAction action);

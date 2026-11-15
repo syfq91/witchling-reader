@@ -6,6 +6,7 @@
 #include <Logging.h>
 #include <RangeDownload.h>
 #include <SecureHttpClient.h>
+#include <TlsPolicy.h>
 #include <base64.h>
 #include <esp_heap_caps.h>
 #include <esp_wifi.h>
@@ -30,7 +31,12 @@ namespace {
 // This fork has no clock: the system time is never plausible for TLS certificate dates, so every
 // request tolerates date errors (and only date errors). Certificate chains and host names are still
 // verified as TlsPolicy says.
-bool ensureClockForTls() { return false; }
+void ensureClockForTls() {}
+
+bool waiveCertificateDates(const std::string& url, const crosspoint::TlsPlan& plan) {
+  (void)url;
+  return plan.verify;
+}
 
 // Per-request timeout handed to SecureHttpClient::setTimeout(). 60s gives slow
 // servers room to send their first headers; SecureHttpClient reuses it as the
@@ -55,13 +61,13 @@ bool isAuthRefusal(int status) { return status == 401 || status == 403; }
 // heap stats and ensures the wall clock is set so TLS cert-date validation
 // can succeed. Shared by both TLS backends. Returns false when https was requested and the
 // clock could not be established — the caller then permits date errors alone.
-bool logPreCallContext(const std::string& url) {
+void logPreCallContext(const std::string& url) {
   LOG_DBG("HTTP", "Heap free: %u, largest block: %u", esp_get_free_heap_size(),
           heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
   if (url.compare(0, 8, "https://") == 0) {
-    return ensureClockForTls();
+    // Its verdict is not needed here: waiveCertificateDates() asks the clock after it.
+    ensureClockForTls();
   }
-  return true;
 }
 
 // The servers whose certificate could not be verified this session (VerifiedThenUnverified): a later
@@ -112,7 +118,7 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
                                            const std::string& password, Sink& sink, HttpDownloader::TlsPolicy tls,
                                            const HttpDownloader::RedirectFilter& redirectAllowed) {
   const WifiPowerSaveGuard psGuard;
-  const bool clockReady = logPreCallContext(url);
+  logPreCallContext(url);
   const unsigned long startMs = millis();
   LOG_DBG("HTTP", "Phase start @%lums heap=%u largest=%u", millis() - startMs, esp_get_free_heap_size(),
           heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
@@ -125,7 +131,7 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   // Never retry unverified behind the caller's back: only the policy that says so does.
   http.setAllowInsecureFallback(plan.fallbackOnVerifyError);
   http.setUnverifiableHosts(&g_unverifiableHosts);
-  http.setAllowCertificateDateErrors(!clockReady);
+  http.setAllowCertificateDateErrors(waiveCertificateDates(url, plan));
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.setUserAgent("WitchReader-ESP32-" CROSSPOINT_VERSION);
   if (!username.empty() && !password.empty()) {
@@ -211,7 +217,7 @@ HttpDownloader::DownloadError runGetSecureOnSession(HttpDownloader::Session& ses
   auto* impl = session.impl();
   // Evaluated on every call, not just when the session is created: a session opened before the
   // clock was set must not keep that verdict for the rest of its life (nor the reverse).
-  const bool clockReady = logPreCallContext(url);
+  logPreCallContext(url);
   if (!impl->http) {
     impl->http = std::make_unique<crosspoint::SecureHttpClient>();
     impl->http->setTimeout(HTTP_TIMEOUT_MS);
@@ -223,7 +229,7 @@ HttpDownloader::DownloadError runGetSecureOnSession(HttpDownloader::Session& ses
   impl->http->setCACert(plan.verify ? CROSSPOINT_ROOTS_PEM : nullptr);
   impl->http->setAllowInsecureFallback(plan.fallbackOnVerifyError);
   impl->http->setUnverifiableHosts(&g_unverifiableHosts);
-  impl->http->setAllowCertificateDateErrors(!clockReady);
+  impl->http->setAllowCertificateDateErrors(waiveCertificateDates(url, plan));
   impl->http->clearHeaders();
   // Unconditionally, so a file without credentials does not inherit the previous one's
   // (sendRequest() leaves basic auth out unless both are set).

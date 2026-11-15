@@ -10,6 +10,7 @@
 
 #include "CrossPointRoots.h"
 #include "SecureHttpClient.h"
+#include "TlsPolicy.h"
 
 namespace crosspoint {
 
