@@ -72,10 +72,8 @@
 #include "PreRenderGate.h"
 #include "QuickOverridesActivity.h"
 #include "ReaderActivity.h"
-#include "ReaderBarsController.h"
 #include "ReaderGrayCanvas.h"
 #include "ReaderImageMode.h"
-#include "ReaderLayoutControls.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontGlobals.h"
@@ -846,8 +844,6 @@ void EpubReaderActivity::onEnter() {
 
 void EpubReaderActivity::onExit() {
   Activity::onExit();
-  // The live bars go with the reader, their result unused. ActivityManager holds the render lock here.
-  dismissLiveBars();
   // A book's own darkness stays with the book: every other screen draws with the setting.
   renderer.setTextDarkness(SETTINGS.textDarkness);
   logReaderMemSnapshot("onExit_before_release");
@@ -1035,12 +1031,6 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  // The live bars take the input, ahead of the automatic page turn, which waits under them.
-  if (liveBarsOpen()) {
-    serviceLiveBars();
-    return;
-  }
-
   bool buttonPrevTurn = false;
   bool buttonNextTurn = false;
   using BA = CrossPointSettings::BUTTON_ACTION;
@@ -1057,7 +1047,7 @@ void EpubReaderActivity::loop() {
           requestUpdate();
           return;
         }
-        openReaderBars();
+        openReaderMenu();
         return;
       }
     }
@@ -1247,8 +1237,7 @@ void EpubReaderActivity::serviceBackgroundWork() {
 }
 
 bool EpubReaderActivity::lookAheadMayRun() const {
-  // Not under the live bars: the next change on their Layout tab would throw the work away.
-  return epub && section && readerPhase_ == ReaderPhase::READING && !backgroundWorkSuspended_ && !liveBarsOpen() &&
+  return epub && section && readerPhase_ == ReaderPhase::READING && !backgroundWorkSuspended_ &&
          !pendingPreRender && !usePreRenderedBuffer && !renderer.isRefreshPending() && !imageProcessingActive_;
 }
 
@@ -1535,9 +1524,6 @@ void EpubReaderActivity::startActivityForResult(std::unique_ptr<Activity>&& acti
                                                 ActivityResultHandler resultHandler) {
   {
     RenderLock lock(*this);
-    // Another screen opens over the live bars (a global action, the light drawer): they come down without their result,
-    // and the page is drawn afresh when that screen closes.
-    dismissLiveBars();
     prepareForOverlay(activity ? activity->getName().c_str() : "<null>");
   }
   Activity::startActivityForResult(std::move(activity), std::move(resultHandler));
@@ -2737,7 +2723,6 @@ void EpubReaderActivity::stepCurrentSectionBuild() {
 #endif
   LOG_INF("ERS", "Background-C spine=%d complete: %u pages", currentSpineIndex, section->pageCount);
   const bool bodySizeChanged = adoptBuiltBodySize(*section);
-  noteLiveLayoutBuilt();
   SerialTestApi::noteBuildDone(currentSpineIndex, section->pageCount);
   readerPhase_ = ReaderPhase::READING;
 
@@ -2797,7 +2782,7 @@ bool EpubReaderActivity::keepBuildPageOnScreen() {
   const BuildPageOnScreen shown = buildPageOnScreen_;
   buildPageOnScreen_ = {};
   if (!section || shown.spine != currentSpineIndex || shown.page != section->currentPage || shown.hasImages ||
-      uiOverPage() || liveBarsOpen()) {
+      uiOverPage()) {
     return false;
   }
   // What the render would have done first: the build is over, so its borrowed buffer goes back (the AA pass needs it).
@@ -3496,8 +3481,7 @@ bool EpubReaderActivity::relayoutWithChangedSettings() {
   // (hasRefreshOverridePending() at the popup then also arms forceHalfRefreshAfterPopup_ for the
   // first content page). Reached only when something actually changed (early-out above), so routine
   // no-op reopens of the menu don't pay for it.
-  // Not under the live bars: no full-screen selector came between, and a HALF at each step would flash the page.
-  if (!liveBarsOpen()) ReaderUtils::enforceExitFullRefresh(renderer);
+  ReaderUtils::enforceExitFullRefresh(renderer);
 
   RenderLock lock(*this);
 
@@ -3626,8 +3610,6 @@ bool EpubReaderActivity::displayPageOnGrayCanvas(const Page& page, const int mar
                                                  const uint8_t* capLsb, const uint8_t* capMsb,
                                                  const bool picturesAreBoxes, const bool forceLoadLargeImages) {
   if constexpr (!HalDisplay::kMayLendGray8Canvas) return false;  // a build without such a panel carries none of this
-  // Under the live bars the page goes out with them, in the frame drawn: the canvas holds the page alone.
-  if (liveBarsOpen()) return false;
   const bool pageHasPictures =
       page.hasImages() && !page.allImagesArePlaceholders(forceLoadLargeImages, /*monochromeOutput=*/true);
   if (!ReaderGrayCanvas::pageGoesOutOnCanvas(renderer.getGrayLevels(), pageHasPictures, picturesAreBoxes,
@@ -5678,7 +5660,6 @@ void EpubReaderActivity::renderSectionBuildingPass(RenderLock& lock, const Rende
   const int built = static_cast<int>(section->activeBuildPageCount());
   if (navTarget.kind == NavigationTarget::Kind::Page && target >= 0 && target < built) {
     if (target == buildDisplayedPage_) {
-      if (liveBarsOpen()) paintLiveBars(lock);  // a pass for the bars, or a page owed that the build has not redrawn
       return;  // already handled this target (drawn, or an image page we're waiting out)
     }
     // Text-only pages render cleanly without the image decode / secondary-buffer dance that the
@@ -5711,13 +5692,6 @@ void EpubReaderActivity::renderSectionBuildingPass(RenderLock& lock, const Rende
     // Image page or load failure: fall through to the popup until the build completes. The
     // page (and its bytes in the block) go first, then the block.
     if (drawBlock.valid()) drawArena->release(drawBlock);
-  }
-
-  // Under the live bars the page they cover stays until the build reaches the text: the popup would land on them, and
-  // the Layout tab already shows the change.
-  if (liveBarsOpen()) {
-    paintLiveBars(lock);
-    return;
   }
 
   // Requested page not built yet (or it's an image page / non-Page target): show the indexing
@@ -5762,11 +5736,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     return;
   }
 
-  // Under the live bars a pass with no page to draw would draw the page on the panel again: it paints only the bars.
-  if (liveBarsOpen() && !liveBarsPageDue()) {
-    paintLiveBars(lock);
-    return;
-  }
   const RenderLayout layout = computeRenderLayout();
   lastRenderStats = {};
   lastRenderStats.orientation = static_cast<uint8_t>(renderer.getOrientation());
@@ -6414,7 +6383,6 @@ void EpubReaderActivity::renderContents(RenderLock& lock, std::unique_ptr<Page> 
     renderer.drawText(UI_10_FONT_ID, hintX, hintY2, line2.c_str(), true);
   }
   drawBookSearchOverlay(*page, orientedMarginLeft, contentTop);
-  drawLiveBarsOverPage(/*redrawWhenBuilt=*/false);
   // Everything the capture was meant to see is drawn. The status bar is inside
   // the window on purpose and costs nothing: UI chrome is 1-bit, so it produces
   // no anti-aliased pixels for the capture to record.
@@ -6729,8 +6697,6 @@ void EpubReaderActivity::displayBuildPage(RenderLock& lock, const Page& page, co
     }
     renderStatusBar();
     drawBookSearchOverlay(page, layout.marginLeft, contentTop);
-    // A page with pictures is drawn again once the build is done, with them; a page of text would come out the same.
-    drawLiveBarsOverPage(/*redrawWhenBuilt=*/page.hasImages());
     buildPageOnScreen_ = {currentSpineIndex, section->currentPage, page.hasImages(), layout.marginLeft, contentTop};
     if (forceHalfRefreshAfterPopup_) {
       // First real page after the indexing popup: establish a clean baseline (see
@@ -7026,10 +6992,6 @@ void EpubReaderActivity::appendDebugState(std::string& out) const {
   appendField(out, "spine", number);
   snprintf(number, sizeof(number), "%d/%d", section ? section->currentPage + 1 : 0, section ? section->pageCount : 0);
   appendField(out, "page", number);
-  if (liveBarsOpen()) {
-    appendField(out, "bars", "live");
-    liveBars_->appendDebugState(out);
-  }
 #if SERIAL_TEST_API
   std::string family;
   resolveReaderFont(&family);
@@ -7070,7 +7032,7 @@ bool EpubReaderActivity::hasPendingBackgroundWork() {
   if (section && section->hasActiveBuild()) return true;
   if (backgroundBuildState_ == BackgroundBuildState::Building) return true;
   // The look-ahead and the glyph store's room wait while the live bars are open (lookAheadMayRun).
-  if (!epub || !section || readerPhase_ != ReaderPhase::READING || backgroundWorkSuspended_ || liveBarsOpen())
+  if (!epub || !section || readerPhase_ != ReaderPhase::READING || backgroundWorkSuspended_)
     return false;
   if (sdFontSystem.ttfNeedsIdleRoom()) return true;  // a glyph-store step is due in idle time (room, or use counts)
   // Work that has not started yet but will on its own. Background-B waits out its quiet period
@@ -7402,7 +7364,7 @@ bool EpubReaderActivity::skipLoopDelay() {
 }
 
 bool EpubReaderActivity::shouldSkipPeriodicUpdate() const {
-  if (!SETTINGS.showStatusBar || liveBarsOpen()) {
+  if (!SETTINGS.showStatusBar) {
     return true;
   }
   // Polled once a minute by ActivityManager::loop() on the loop task with no lock held, so it
@@ -7866,293 +7828,6 @@ void EpubReaderActivity::openReaderMenu() {
       });
 }
 
-bool EpubReaderActivity::statusBarTapped() const { return false; }
-
-void EpubReaderActivity::openReaderBars() {
-  if (!epub) {
-    return;
-  }
-
-  ReaderBarsController::Info info;
-  info.title = epub->getTitle();
-  {
-    RenderLock lock(*this);
-    if (section) {
-      info.starred =
-          bookmarkStore.has(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(section->currentPage));
-      // What the status bar counts: the TOC chapter, which can span several spine items (#325).
-      const ChapterPageSpan::Display chapter = chapterPageDisplay();
-      if (chapter.total > 0) {
-        info.chapterValue =
-            std::to_string(chapter.page) + (chapter.approximate ? " / ~" : " / ") + std::to_string(chapter.total);
-      }
-      info.bookValue = std::to_string(clampPercent(static_cast<int>(statusBarBookPercent() + 0.5f))) + "%";
-    }
-  }
-  // The Layout tab: the values as the book is read and as the settings have them, and the sizes of its font.
-  info.bookValues = effectiveLayoutValues();
-  info.globalValues = globalLayoutValues();
-  info.thisBookOnly = hasOwnLayout();
-  info.sizes = layoutSheetSizes();
-  info.hasPrintedPages = epub->hasNumericPrintedPages();
-  info.hasSync = false;
-  info.orientation = SETTINGS.orientation;
-
-  // Drawn by the reader, which keeps running under them. The first pass paints them over the frame on the panel
-  // (paintLiveBars): the page under them stays as it is until a change asks for it again.
-  auto bars = makeUniqueNoThrow<ReaderBarsController>(renderer, std::move(info));
-  if (!bars) {
-    LOG_ERR("ERS", "Reader bars: no memory for them");
-    return;
-  }
-  bars->begin(mappedInput.hasTouch(), HalCapabilities::defersLiveFontChange());
-  {
-    RenderLock lock(*this);
-    prepareForOverlay("ReaderBars");
-    liveBars_ = std::move(bars);
-    liveBarsPageOwed_ = false;
-    liveBarsRedrawWhenBuilt_ = section && section->hasActiveBuild();
-    liveBarsStale_ = true;
-    noteLiveLayoutBuilt();
-  }
-  requestUpdate();
-}
-
-ReaderSizeList EpubReaderActivity::layoutSheetSizes() const {
-  return sdFontSystem.sizeListFor(bookSdFontFamily(bookFontFamilyOverride, bookSdFontFamilyOverride));
-}
-
-void EpubReaderActivity::serviceLiveBars() {
-  const ReaderBarsController::Event event = liveBars_->loop(mappedInput);
-  // The keys' events are the bars': left queued, the page turns would replay them once the bars close. Not drain():
-  // that also drops the edges and touches the bars read.
-  ButtonEventManager::ButtonEvent ev;
-  while (buttonEvents.consumeEvent(ev)) {
-  }
-  switch (event) {
-    case ReaderBarsController::Event::None:
-      // The change the bars show goes in once their repaint is on its way (below), during its refresh.
-      if (liveLayoutOwed_) {
-        bool painted = false;
-        {
-          RenderLock lock(*this);
-          painted = !liveBarsStale_;
-        }
-        if (painted) {
-          liveLayoutOwed_ = false;
-          applyLiveLayout();
-          return;
-        }
-      }
-      // Idle: the build of a chapter laid out anew runs on under the bars. Not while a render pass holds the lock: the
-      // loop would wait for it and take no input meanwhile. The look-ahead and the pre-render wait for the bars to
-      // close (lookAheadMayRun, renderContents): the next change would throw their work away.
-      if (!RenderLock::peek()) serviceBackgroundWork();
-      return;
-    case ReaderBarsController::Event::Redraw:
-    case ReaderBarsController::Event::LayoutChanged: {
-      // A layout this chapter already has on the card goes in at once: its page loads in a moment and comes with the
-      // bars in one refresh. Painting the bars first held that page behind their own refresh, 0.3 s (X4 Pro).
-      if (event == ReaderBarsController::Event::LayoutChanged && liveLayoutChangeIsBuilt()) {
-        liveLayoutOwed_ = false;
-        applyLiveLayout();
-        return;
-      }
-      RenderLock lock(*this);
-      liveBarsStale_ = true;
-    }
-      // A change is applied after the bars showing it are painted: the new value is on the panel at once, and the
-      // rebuild follows. Presses in between go in as one change.
-      if (event == ReaderBarsController::Event::LayoutChanged) liveLayoutOwed_ = true;
-      requestUpdate();
-      return;
-    case ReaderBarsController::Event::Closed:
-      closeLiveBars();
-      return;
-  }
-}
-
-void EpubReaderActivity::applyLiveLayout() {
-  // No page owed for it here. Every value but the darkness lays the chapter out again, and that pass draws the page
-  // (liveBarsPageDue); the darkness only picks the gray levels, which the black and white page under the bars does not
-  // draw (GfxRenderer's drawMaskFor2BitMode): it shows once they close.
-  // True when the book opens again: this reader is on its way out, the bars with it (onExit).
-  if (applyReaderLayout(liveBars_->liveLayoutValues(), liveBars_->layoutIsThisBooks())) return;
-  liveBars_->resync(effectiveLayoutValues(), globalLayoutValues(), layoutSheetSizes());
-}
-
-void EpubReaderActivity::closeLiveBars() {
-  // A change still waiting for its bars to be painted goes in now, unless a font that waited carries every value in
-  // the result (onReaderBarsClosed). True: the book opens again, the bars with it.
-  if (liveLayoutOwed_) {
-    liveLayoutOwed_ = false;
-    if (!liveBars_->result().layoutChanged &&
-        applyReaderLayout(liveBars_->liveLayoutValues(), liveBars_->layoutIsThisBooks())) {
-      return;
-    }
-  }
-  const ReaderBarsResult result = liveBars_->result();
-  {
-    RenderLock lock(*this);
-    dismissLiveBars();
-    // Anything staged under the bars (an image lane may arm a pre-render): the pass that takes them off is a Normal
-    // one.
-    dropStagedPageWork("Reader bars closing");
-  }
-  // The key or the tap that closed them is not the page's.
-  buttonEvents.drain();
-  onReaderBarsClosed(ActivityResult(result));
-}
-
-void EpubReaderActivity::dismissLiveBars() {
-  if (!liveBarsOpen()) return;
-  liveBars_->end();
-  liveBars_.reset();
-  liveBarsPageOwed_ = false;
-  liveBarsRedrawWhenBuilt_ = false;
-  liveBarsStale_ = false;
-  liveLayoutOwed_ = false;
-  builtLiveLayouts_ = {};
-  builtLiveLayoutsNext_ = 0;
-}
-
-void EpubReaderActivity::noteLiveLayoutBuilt() {
-  if (!liveBarsOpen() || !section || section->hasActiveBuild() || section->pageCount == 0) return;
-  const ReaderLayoutValues values = effectiveLayoutValues();
-  for (const BuiltLiveLayout& built : builtLiveLayouts_) {
-    if (built.spine == currentSpineIndex && !ReaderLayout::laysOutDifferently(built.values, values)) return;
-  }
-  builtLiveLayouts_[builtLiveLayoutsNext_] = {values, currentSpineIndex};
-  builtLiveLayoutsNext_ = static_cast<uint8_t>((builtLiveLayoutsNext_ + 1) % builtLiveLayouts_.size());
-}
-
-bool EpubReaderActivity::liveLayoutChangeIsBuilt() {
-  const ReaderLayoutValues wanted = liveBars_->liveLayoutValues();
-  // A change the page shows without a new layout (the darkness, This book only) is not one: its bars repaint alone.
-  if (!ReaderLayout::laysOutDifferently(effectiveLayoutValues(), wanted)) return false;
-  RenderLock lock(*this);
-  for (const BuiltLiveLayout& built : builtLiveLayouts_) {
-    if (built.spine == currentSpineIndex && !ReaderLayout::laysOutDifferently(built.values, wanted)) return true;
-  }
-  return false;
-}
-
-bool EpubReaderActivity::liveBarsOpen() const { return liveBars_ != nullptr; }
-
-bool EpubReaderActivity::takesReaderControls() const { return !liveBarsOpen(); }
-
-bool EpubReaderActivity::liveBarsPageDue() const {
-  if (liveBarsPageOwed_) return true;
-  switch (classifyRenderPass()) {
-    case RenderPass::BuildSection:
-      return true;
-    case RenderPass::SectionBuilding: {
-      // The page the build's pass would draw (renderSectionBuildingPass): the reader's, written and not drawn yet.
-      const int target = section->currentPage;
-      return navTarget.kind == NavigationTarget::Kind::Page && target >= 0 &&
-             target < static_cast<int>(section->activeBuildPageCount()) && target != buildDisplayedPage_;
-    }
-    case RenderPass::Normal:
-      return liveBarsRedrawWhenBuilt_;
-    case RenderPass::FinishedBook:
-    case RenderPass::PreRender:
-    case RenderPass::BufferDisplay:
-      // A pre-render armed under the bars waits for them to close (closeLiveBars drops it).
-      return false;
-  }
-  return false;
-}
-
-void EpubReaderActivity::paintLiveBars(RenderLock& lock) {
-  // Nothing new to show: the pass came for the page (the build's end, a picture landing) and found none to draw.
-  if (!liveBarsStale_) return;
-  liveBarsStale_ = false;
-  // The frame on the panel under them: displayBuffer() ends in a swap, so the write buffer is two frames behind. The
-  // bars only grow over the page while they are open (a panel closing closes them), so the rest of it is the page.
-  renderer.syncWriteBufferFromDisplayed();
-  liveBars_->draw();
-  // Started, then waited for without the lock, as a page is (renderContents): the loop task takes the bars' input and
-  // applies the change they show (serviceLiveBars), and the build slices on where it can run through a refresh
-  // (stepCurrentSectionBuild). Held through it, the lock kept the loop out for the whole refresh: 0.95 s on the X4 Pro.
-  renderer.triggerDisplay(HalDisplay::FAST_REFRESH);
-  lock.unlock();
-  renderer.completeDisplay();
-}
-
-void EpubReaderActivity::drawLiveBarsOverPage(const bool redrawWhenBuilt) {
-  if (!liveBarsOpen()) return;
-  liveBars_->draw();
-  liveBarsStale_ = false;
-  liveBarsPageOwed_ = false;
-  liveBarsRedrawWhenBuilt_ = redrawWhenBuilt;
-  noteLiveLayoutBuilt();
-}
-
-void EpubReaderActivity::onReaderBarsClosed(const ActivityResult& result) {
-  using MenuAction = EpubReaderMenuActivity::MenuAction;
-  {
-    // Over a chapter still being built, the build's pass draws its page once, and its popup once: both again now, or
-    // the bars stayed on the panel until the build was done.
-    RenderLock lock(*this);
-    buildDisplayedPage_ = -1;
-    buildingPopupShown_ = false;
-  }
-  const auto* bars = std::get_if<ReaderBarsResult>(&result.data);
-  if (bars && bars->starToggled) onReaderMenuConfirm(MenuAction::STAR_PAGE);
-  // The Layout tab's values before anything else: the book may be laid out again with them, or opened again.
-  if (bars && bars->layoutChanged && applyReaderLayout(bars->layout, bars->thisBookOnly)) return;
-  // Every path below draws the page afresh, or puts another screen up: the bars covered parts of it and kept no copy.
-  if (!bars) {
-    requestUpdate();
-    return;
-  }
-  switch (bars->action) {
-    case ReaderBarsResult::Action::None:
-      requestUpdate();
-      return;
-    case ReaderBarsResult::Action::Contents:
-      onReaderMenuConfirm(MenuAction::SELECT_CHAPTER);
-      return;
-    case ReaderBarsResult::Action::More:
-      openReaderMenu();
-      return;
-    case ReaderBarsResult::Action::PrevChapter:
-      onButtonAction(CrossPointSettings::BTN_PREV_SECTION);
-      requestUpdate();
-      return;
-    case ReaderBarsResult::Action::NextChapter:
-      onButtonAction(CrossPointSettings::BTN_NEXT_SECTION);
-      requestUpdate();
-      return;
-    case ReaderBarsResult::Action::GoToPercent:
-      onReaderMenuConfirm(MenuAction::GO_TO_PERCENT);
-      return;
-    case ReaderBarsResult::Action::Exit:
-      onReaderMenuConfirm(MenuAction::GO_HOME);
-      return;
-    case ReaderBarsResult::Action::BookInfo:
-      onReaderMenuConfirm(MenuAction::BOOK_INFO);
-      return;
-    case ReaderBarsResult::Action::StarredPages:
-      onReaderMenuConfirm(MenuAction::STARRED_PAGES);
-      return;
-    case ReaderBarsResult::Action::PrintedPage:
-      onReaderMenuConfirm(MenuAction::GO_TO_PRINTED_PAGE);
-      return;
-    case ReaderBarsResult::Action::Search:
-      openBookSearch();
-      return;
-    case ReaderBarsResult::Action::Orientation:
-      applyOrientation(bars->orientation);
-      requestUpdate();
-      return;
-    case ReaderBarsResult::Action::SyncPull:
-    case ReaderBarsResult::Action::SyncPush:
-      onReaderMenuConfirm(MenuAction::SYNC_PROGRESS);
-      return;
-  }
-}
-
 void EpubReaderActivity::openBookSearch(std::string startQuery) {
   if (!epub) return;
   {
@@ -8345,52 +8020,6 @@ void EpubReaderActivity::drawBookSearchOverlay(const Page& page, const int margi
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
-ReaderLayoutValues EpubReaderActivity::effectiveLayoutValues() const {
-  ReaderLayoutValues values;
-  // The book's own fonts while Publisher Fonts apply to it and no family was chosen for it; else its family's option.
-  const bool bookFonts = CrossPointSettings::publisherFontsFor(bookPublisherFontsOverride, SETTINGS.publisherFonts) !=
-                             CrossPointSettings::PUBLISHER_FONTS_OFF &&
-                         bookFontFamilyOverride < 0 && bookSdFontFamilyOverride.empty();
-  const int option = fontFamilyOptionForOverrides(bookFontFamilyOverride, bookSdFontFamilyOverride);
-  values.font = bookFonts ? 0 : static_cast<uint8_t>(1 + (option >= 0 ? option : fontFamilyDynamicGetter(nullptr)));
-  values.fontSize = bookFontSizeOverride >= 0 ? static_cast<uint8_t>(bookFontSizeOverride) : SETTINGS.fontPointSize;
-  values.lineSpacing =
-      bookLineSpacingOverride >= 0 ? static_cast<uint8_t>(bookLineSpacingOverride) : SETTINGS.lineSpacing;
-  values.marginHorizontal = getEffectiveMarginHorizontal();
-  values.extraParagraphSpacing = getEffectiveExtraParagraphSpacing();
-  values.paragraphAlignment = getEffectiveParagraphAlignment();
-  values.hyphenation = getEffectiveHyphenation();
-  values.textDarkness = getEffectiveTextDarkness();
-  values.embeddedStyle = getEffectiveEmbeddedStyle();
-  return values;
-}
-
-ReaderLayoutValues EpubReaderActivity::globalLayoutValues() {
-  ReaderLayoutValues values;
-  values.font = SETTINGS.publisherFonts != CrossPointSettings::PUBLISHER_FONTS_OFF
-                    ? 0
-                    : static_cast<uint8_t>(1 + fontFamilyDynamicGetter(nullptr));
-  values.fontSize = SETTINGS.fontPointSize;
-  values.lineSpacing = SETTINGS.lineSpacing;
-  values.marginHorizontal = SETTINGS.screenMarginHorizontal;
-  values.extraParagraphSpacing = SETTINGS.extraParagraphSpacing != 0;
-  values.paragraphAlignment = SETTINGS.paragraphAlignment;
-  values.hyphenation = SETTINGS.hyphenationEnabled != 0;
-  values.textDarkness = SETTINGS.textDarkness;
-  values.embeddedStyle = SETTINGS.embeddedStyle != 0;
-  return values;
-}
-
-bool EpubReaderActivity::hasOwnLayout() const {
-  for (const int8_t own :
-       {bookFontSizeOverride, bookLineSpacingOverride, bookMarginHorizontalOverride, bookExtraParagraphSpacingOverride,
-        bookParagraphAlignmentOverride, bookHyphenationOverride, bookTextDarknessOverride, bookEmbeddedStyleOverride,
-        bookFontFamilyOverride, bookPublisherFontsOverride}) {
-    if (own >= 0) return true;
-  }
-  return !bookSdFontFamilyOverride.empty();
-}
-
 void EpubReaderActivity::setBookOverrides(const BookReaderOverrides& overrides) {
   bookEmbeddedStyleOverride = overrides.embeddedStyleOverride;
   bookImageRenderingOverride = overrides.imageRenderingOverride;
@@ -8408,59 +8037,6 @@ void EpubReaderActivity::setBookOverrides(const BookReaderOverrides& overrides) 
   bookMarginHorizontalOverride = overrides.marginHorizontalOverride;
   bookExtraParagraphSpacingOverride = overrides.extraParagraphSpacingOverride;
   bookTextDarknessOverride = overrides.textDarknessOverride;
-}
-
-bool EpubReaderActivity::applyReaderLayout(const ReaderLayoutValues& values, const bool thisBookOnly) {
-  if (!epub) return false;
-  const ReaderLayoutValues before = effectiveLayoutValues();
-  BookReaderOverrides next = bookOverrides();
-  // The book's own value, or none: the setting then decides.
-  const auto own = [thisBookOnly](int8_t& field, const int value) {
-    field = thisBookOnly ? static_cast<int8_t>(value) : int8_t{-1};
-  };
-  own(next.fontSizeOverride, values.fontSize);
-  own(next.lineSpacingOverride, values.lineSpacing);
-  own(next.marginHorizontalOverride, values.marginHorizontal);
-  own(next.extraParagraphSpacingOverride, values.extraParagraphSpacing ? 1 : 0);
-  own(next.paragraphAlignmentOverride, values.paragraphAlignment);
-  own(next.hyphenationOverride, values.hyphenation ? 1 : 0);
-  own(next.textDarknessOverride, values.textDarkness);
-  own(next.embeddedStyleOverride, values.embeddedStyle ? 1 : 0);
-  // The font: the book's own fonts (Publisher Fonts' All Text) or a family, as the book's or as the settings'.
-  next.fontFamilyOverride = -1;
-  next.sdFontFamilyOverride.clear();
-  next.publisherFontsOverride = -1;
-  if (thisBookOnly && values.font == 0) next.publisherFontsOverride = CrossPointSettings::PUBLISHER_FONTS_ALL;
-  if (thisBookOnly && values.font > 0) {
-    fontFamilyOverridesForOption(static_cast<uint8_t>(values.font - 1), next.fontFamilyOverride,
-                                 next.sdFontFamilyOverride);
-  }
-  if (!thisBookOnly) {
-    // The values are the global settings now, for every book that has none of its own; and this book follows the
-    // settings, its font as well.
-    SETTINGS.fontPointSize = values.fontSize;
-    SETTINGS.lineSpacing = values.lineSpacing;
-    SETTINGS.screenMarginHorizontal = values.marginHorizontal;
-    SETTINGS.extraParagraphSpacing = values.extraParagraphSpacing ? 1 : 0;
-    SETTINGS.paragraphAlignment = values.paragraphAlignment;
-    SETTINGS.hyphenationEnabled = values.hyphenation ? 1 : 0;
-    SETTINGS.textDarkness = values.textDarkness;
-    SETTINGS.embeddedStyle = values.embeddedStyle ? 1 : 0;
-    SETTINGS.publisherFonts =
-        values.font == 0 ? CrossPointSettings::PUBLISHER_FONTS_ALL : CrossPointSettings::PUBLISHER_FONTS_OFF;
-    if (values.font > 0) fontFamilyDynamicSetter(nullptr, static_cast<uint8_t>(values.font - 1));
-    SETTINGS.saveToFile();
-  }
-  LOG_INF("ERS", "Layout tab: %s, size %u, line step %u, margin %u", thisBookOnly ? "this book" : "global settings",
-          static_cast<unsigned>(values.fontSize), static_cast<unsigned>(values.lineSpacing),
-          static_cast<unsigned>(values.marginHorizontal));
-  setBookOverrides(next);
-  RECENT_BOOKS.setReaderOverrides(epub->getPath(), bookOverrides());
-  const ReaderLayoutValues after = effectiveLayoutValues();
-  if (after.textDarkness != before.textDarkness) renderer.setTextDarkness(after.textDarkness);
-  if (ReaderLayout::laysOutDifferently(before, after) && relayoutWithChangedSettings()) return true;
-  requestUpdate();
-  return false;
 }
 
 void EpubReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION action) {
@@ -8598,13 +8174,10 @@ void EpubReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION 
       finish();
       break;
     case BA::BTN_READER_MENU:
+    case BA::BTN_READER_BARS:
       if (epub) {
         openReaderMenu();
       }
-      break;
-    case BA::BTN_READER_BARS:
-      // Live bars run inside the reader, which still gets the actions: a second press would stack a second set.
-      if (!liveBarsOpen()) openReaderBars();
       break;
     case BA::BTN_CYCLE_FONT_SIZE:
       if (epub) {
@@ -8655,8 +8228,6 @@ bool EpubReaderActivity::handleForcedRefresh(const HalDisplay::RefreshMode mode)
     preRenderedPage.ready = false;
     preRenderedPlanesStaged_ = false;
     forceRefreshModeNextRender_ = static_cast<int8_t>(mode);
-    // Under the live bars too: the page and the bars over it.
-    if (liveBarsOpen()) liveBarsPageOwed_ = true;
   }
   requestUpdate();
   return true;

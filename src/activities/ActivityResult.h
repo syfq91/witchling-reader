@@ -8,8 +8,6 @@
 #include <utility>
 #include <variant>
 
-#include "reader/ReaderLayoutValues.h"
-
 struct WifiResult {
   bool connected = false;
   std::string ssid;
@@ -130,41 +128,10 @@ struct WordSearchResult {
   std::string word;
 };
 
-// What the reader does once its bars (ReaderBarsController) close: the control that closed them, and whether the page's
-// star was flipped while they were open. The reader owns the bookmarks and the navigation, so the bars only report.
-struct ReaderBarsResult {
-  enum class Action : uint8_t {
-    None,
-    Contents,
-    More,
-    PrevChapter,
-    NextChapter,
-    GoToPercent,
-    Exit,
-    BookInfo,
-    StarredPages,
-    PrintedPage,
-    Search,
-    Orientation,
-    SyncPull,
-    SyncPush
-  };
-  Action action = Action::None;
-  // Action::Orientation: the one chosen, a CrossPointSettings::ORIENTATION.
-  uint8_t orientation = 0;
-  bool starToggled = false;
-  // A font that waited for the bars to close (HalCapabilities::defersLiveFontChange): the Layout tab's values to lay
-  // the book out with, and whether they are the book's own ("This book only") or the global settings. The reader
-  // applies them before it acts on `action`; every other change it applied while the bars were open.
-  bool layoutChanged = false;
-  bool thisBookOnly = false;
-  ReaderLayoutValues layout{};
-};
-
 using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult,
                                    PageResult, SyncResult, NetworkModeResult, FootnoteResult, FilePathResult,
                                    StarredPageResult, PrintedPageResult, DictionarySwitchResult, OpdsProgressionResult,
-                                   ConfirmResult, ReaderBarsResult, BookSearchResult, WordSearchResult>;
+                                   ConfirmResult, BookSearchResult, WordSearchResult>;
 
 struct ActivityResult {
   bool isCancelled = false;
