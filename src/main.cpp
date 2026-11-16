@@ -249,7 +249,6 @@ void silentRestartToSettings() {
   restartKeepingFlashArea();
 }
 
-
 bool heapRecoveryRestartAvailable() {
   if (deepSleepInProgress) return false;  // sleeping supersedes the heap-defrag reboot
   if (heapRecoveryRestartLatch == HEAP_RECOVERY_RESTART_LATCH_MAGIC) {
@@ -1270,7 +1269,8 @@ void loop() {
   // Must follow the drain above and precede every power consumer below.
   serviceBootPowerRelease();
   halTiltSensor.update(static_cast<CrossPointTiltPageTurn::Value>(SETTINGS.tiltPageTurn),
-                       static_cast<CrossPointOrientation::Value>(SETTINGS.orientation),
+                       static_cast<TiltRate::Axis>(SETTINGS.tiltAxis),
+                       static_cast<CrossPointOrientation::Value>(SETTINGS.orientation), SETTINGS.autoRotate != 0,
                        activityManager.isReaderActivity());
   powerManager.serviceGaugeCapacityLoad();
 
@@ -1348,6 +1348,10 @@ void loop() {
   // Refresh the battery icon when USB is plugged or unplugged.
   // Placed after sleep guards so we never queue a render that won't be processed.
   if (gpio.wasUsbStateChanged()) {
+    activityManager.requestUpdate();
+  }
+  // A wall charger enumerates no host, so only the charger IC sees it come and go (Picco, T5S3).
+  if (powerManager.wasChargerInputChanged()) {
     activityManager.requestUpdate();
   }
 

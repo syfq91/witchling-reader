@@ -137,6 +137,8 @@ struct PageTurnResult {
 // differently under fast repeated presses. One path for all four keeps them identical.
 inline PageTurnResult detectTiltPageTurn() { return {false, false}; }
 
+inline bool takeAutoRotation(uint8_t&) { return false; }
+
 // Where a reader's one-line message goes. A fixed 300 is below the bottom of a landscape 240 px panel.
 inline int messageY(const GfxRenderer& renderer) { return PanelMetrics::capped(300, renderer.getScreenHeight() / 2); }
 
