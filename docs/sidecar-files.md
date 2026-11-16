@@ -25,7 +25,10 @@ Implemented by `ReaderActivity::sidecarCoverPath()`.
 The bundled `metadata-editor` plugin manages this from the web UI — preview the
 current cover, replace it from a local file, paste an image copied from any
 website, search Open Library / Goodreads / Google Books, or remove it. See
-[sd-plugins.md](sd-plugins.md).
+[sd-plugins.md](sd-plugins.md). Saving a cover there also deletes the book's cached
+thumbnails, so every view draws the new one. So does any upload, fetch or WebDAV write
+(`PUT`, `COPY`, `MOVE`) of a cover sidecar, and deleting one in the file browser
+(`clearBookCacheIfNeeded()`, `src/BookCacheReset.cpp`).
 
 **Replacing a cover takes effect on the next load.** The rendered thumbnail is
 cached per book, and `ReaderActivity::ensureCoverThumb()` compares the sidecar's

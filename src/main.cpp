@@ -5,6 +5,8 @@
 #include <Epub/BookFonts.h>
 #include <Epub/BookMetadataCache.h>
 #include <Epub/CjkLineBreak.h>
+#include <Epub/Section.h>
+#include <Epub/WordShapeCache.h>
 #include <FlashArea.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
@@ -246,6 +248,7 @@ void silentRestartToSettings() {
   LOG_DBG("MAIN", "Silent restart (target=settings)");
   restartKeepingFlashArea();
 }
+
 
 bool heapRecoveryRestartAvailable() {
   if (deepSleepInProgress) return false;  // sleeping supersedes the heap-defrag reboot
@@ -1127,6 +1130,9 @@ void setup() {
   setupDisplayAndFonts(resume != BootResume::Splash);
   BootDiag::markPhase(BootPhase::DisplayFonts);
   logStartupMemory("after_display_fonts");
+  // A chapter build with nothing lent takes a region of PSRAM, as large as the block the board lends instead of its
+  // framebuffer, rather than the 10 KB parse arena: the X4 Pro's resident builds laid out at less than half the speed.
+  if (HalCapabilities::keepsSecondaryBuffer()) Section::setOwnedBuildRegionBytes(WordShapeCache::kLargeArenaBytes);
 
   switch (resume) {
     case BootResume::Silent:
@@ -1203,6 +1209,7 @@ void setup() {
     activityManager.goToReader(APP_STATE.openEpubPath);
   } else if (resume == BootResume::Silent && silentRebootTargetSnapshot == SILENT_REBOOT_TARGET_SETTINGS) {
     activityManager.goToSettings();
+
   } else if (resume == BootResume::Silent) {
     // target == home (or reader with no open book): land on home — don't fall
     // through to the sleep-wake "resume reader" logic, which fires on stale

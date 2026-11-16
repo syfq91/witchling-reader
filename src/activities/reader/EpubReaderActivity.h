@@ -107,6 +107,8 @@ class EpubReaderActivity final : public Activity {
   // here. Device-observed
   // (X3, 2026-08-11): B took the buffer 731 ms after a book's first page appeared and lost it
   // 513 ms later, because it wasn't measuring from the last frame time.
+  unsigned long lastPageTurnTime = 0UL;
+  unsigned long pageTurnDuration = 0UL;
   unsigned long lastPageOnScreenMs_ = 0UL;
   bool pendingHalfRefreshAfterImagePage = false;
   // Force-refresh button: -1 = none, else a HalDisplay::RefreshMode to apply on the next
@@ -152,9 +154,9 @@ class EpubReaderActivity final : public Activity {
   int glyphStarvedSpine_ = -1;
   int glyphStarvedPage_ = -1;
   bool glyphStarvedRedraw_ = false;  // that redraw is owed by the pass that found the gap
-  // The ladder left an accent family out (or found no font it could load): the next render lays the chapter out again
-  // with the fonts loaded now, at the same position.
-  bool fontRelayoutPending_ = false;
+  // The next render lays the chapter out again at the same position: the ladder left an accent family out (or found no
+  // font it could load), or a build decided the book's body size (adoptBuiltBodySize).
+  bool relayoutPending_ = false;
   // Arms forceHalfRefreshAfterPopup_ for the NEXT incremental section build, marking that build's
   // popup -> content transition as "dramatic" and worth a clean HALF baseline (vs. the routine,
   // frequent forward-reading crossing into a still-building Background-B section, where forcing
@@ -438,6 +440,21 @@ class EpubReaderActivity final : public Activity {
   // Page last drawn by the SectionBuilding pass (-1 = none yet / popup showing). Stops the
   // pass redrawing the same page every idle tick.
   int buildDisplayedPage_ = -1;
+  // The page displayBuildPage() last put on the panel, where it drew it (spine -1: none, or the popup since). When the
+  // build ends on it, it stays there with its provisional page count instead of being drawn again
+  // (keepBuildPageOnScreen).
+  struct BuildPageOnScreen {
+    int spine = -1;
+    int page = -1;
+    bool hasImages = false;
+    int marginLeft = 0;
+    int contentTop = 0;
+  };
+  BuildPageOnScreen buildPageOnScreen_;
+  // keepBuildPageOnScreen() owes the page's AA pass on a panel that otherwise draws AA inline: the pass asks for the
+  // next page's pre-render once it is done, as it does on the deferred-AA panels.
+  bool preRenderAfterAa_ = false;
+  bool keepBuildPageOnScreen();
   // The text a relayout or a sync landed on (noteLandedText). Cleared by a page turn.
   struct LandedText {
     int spine = -1;
@@ -582,6 +599,26 @@ class EpubReaderActivity final : public Activity {
 
   // Bookmarks (starred pages)
   BookmarkStore bookmarkStore;
+  // The chapter layout whose stars stepStarredPages() last found nothing owed for: spine, Section::layoutFingerprint()
+  // and page count. Forgotten when a star is made or a jump learns where one's text is.
+  struct StarsSettled {
+    int spine = -1;
+    uint32_t layout = 0;
+    uint16_t pageCount = 0;
+    bool operator==(const StarsSettled& o) const {
+      return spine == o.spine && layout == o.layout && pageCount == o.pageCount;
+    }
+  };
+  StarsSettled starsSettledFor_;
+  // The page on screen whose star changed while input was waiting (stepStarredPages): redrawn once input is idle, if
+  // nothing has been drawn since. The page a turn lands on draws its own star.
+  struct StarMarkerRedraw {
+    bool owed = false;
+    int spine = -1;
+    int page = 0;
+    unsigned long drawnAt = 0UL;  // lastPageOnScreenMs_ of the page it is owed to
+  };
+  StarMarkerRedraw starMarkerRedraw_;
 
   // Footnote support
   std::vector<FootnoteEntry> currentPageFootnotes;
@@ -733,6 +770,18 @@ class EpubReaderActivity final : public Activity {
   // One step of making room in the TrueType glyph store (a segment reclaimed or the index rebuilt), under a Try
   // RenderLock. True when it did work; the tick then yields to the loop.
   bool stepGlyphStoreRoom();
+  // One step of the starred pages' upkeep (StarAnchoring): the chapter on screen's stars counted in another layout
+  // moved onto their text, or a new star's text named. At most one chapter parse, in the lent secondary framebuffer,
+  // under a Try RenderLock, at the glyph-store step's moments. True when it did work; the tick then yields to the loop.
+  bool stepStarredPages();
+  // Stars or unstars the page on screen; a new star keeps what finds its text again (StarAnchoring::forPage). The
+  // caller holds the render lock.
+  void toggleStarOnCurrentPage();
+  // Where a jump to the star on (spine, page) lands: the page holding its text, by the offset it keeps while that was
+  // counted under this section format (StarAnchoring::knownOffset). Without one, that page while the star was counted
+  // in `expectedLayout`, the layout the chapter will be shown in (0: not known yet), else by its XPath (a chapter
+  // parse). A star without an anchor goes by its page. The caller holds the render lock.
+  NavigationTarget starJumpTarget(uint16_t spine, uint16_t page, uint32_t expectedLayout);
   // The gates Background-B and the idle glyph-store step share: a section on screen in the READING phase, background
   // work not suspended, and no pre-render, pre-rendered page, display refresh or image decode pending.
   bool lookAheadMayRun() const;
@@ -826,6 +875,12 @@ class EpubReaderActivity final : public Activity {
   mutable BlockFontFamilies bookFontFamilies_;
   // The size of the book's running text (BodySize), read once at open: 100 until it has been measured.
   uint8_t bookBodySizePct_ = 100;
+  // Not measured yet (BodySize::read gave 0): the builds count their running text (BuildParams::measureBodySize) until
+  // one decides it (adoptBuiltBodySize).
+  bool bodySizeUndecided_ = false;
+  // Takes the body size `built` decided, if it is the first to: keeps it for the book, and returns true when it is not
+  // the size the chapters were laid out at so far, so the chapter on screen is to be laid out again (relayoutPending_).
+  bool adoptBuiltBodySize(const Section& built);
   // Drop all Background-B state (aborting a partial build and deleting its partial cache
   // file via ~Section). Resets the overlay percent.
   void resetBackgroundBuild();
@@ -996,8 +1051,9 @@ class EpubReaderActivity final : public Activity {
   void dropStagedPageWork(const char* by);
   // Consume a persisted bookmark-jump request (from GlobalBookmarksActivity) for
   // this book. Rewrites progress.bin to the bookmarked position before the normal
-  // reader startup path reads it.
-  void applyPendingBookmarkJump();
+  // reader startup path reads it. True when it applied one: onEnter() then lets the
+  // star's text decide the page, once the book's stars are loaded (starJumpTarget).
+  bool applyPendingBookmarkJump();
 #if SERIAL_TEST_API
   // Opens at APP_STATE.pendingPercentJump (set by the serial CMD:ACT:READER:<path>@<n>%).
   void applyPendingPercentJump();

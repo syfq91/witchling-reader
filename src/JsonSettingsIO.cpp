@@ -6,6 +6,7 @@
 #include <Epub/LineSpacing.h>
 #include <HalStorage.h>
 #include <HeapFit.h>
+#include <JsonFile.h>
 #include <Logging.h>
 #include <ObfuscationUtils.h>
 
@@ -234,23 +235,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   // Left out while unconfigured, so the default keeps following the UI language.
   if (s.keyboardLayouts != 0) doc["keyboardLayouts"] = s.keyboardLayouts;
 
-  // Write nothing rather than a file cut short: a truncated settings.json reads back as a parse
-  // error and every setting returns to its default. The document reports a refused allocation
-  // itself; the String does not (ArduinoJson's String writer counts bytes it failed to append),
-  // so its length is checked against what the document should serialise to.
-  if (doc.overflowed()) {
-    LOG_ERR("CPS", "Settings not saved: JSON document out of memory");
-    return false;
-  }
-  const size_t expected = measureJson(doc);
-  String json;
-  serializeJson(doc, json);
-  if (json.length() != expected) {
-    LOG_ERR("CPS", "Settings not saved: %u of %u bytes of JSON fitted", static_cast<unsigned>(json.length()),
-            static_cast<unsigned>(expected));
-    return false;
-  }
-  return Storage.writeFile(path, json);
+  return JsonFile::save("CPS", path, doc);
 }
 
 bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool* needsResave) {
@@ -508,6 +493,7 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   return true;
 }
 
+
 // ---- WifiCredentialStore ----
 
 bool JsonSettingsIO::saveWifi(const WifiCredentialStore& store, const char* path) {
@@ -549,9 +535,7 @@ bool JsonSettingsIO::saveWifi(const WifiCredentialStore& store, const char* path
     }
   }
 
-  String json;
-  serializeJson(doc, json);
-  return Storage.writeFile(path, json);
+  return JsonFile::save("WCS", path, doc);
 }
 
 bool JsonSettingsIO::loadWifi(WifiCredentialStore& store, const char* json, bool* needsResave) {
@@ -800,9 +784,7 @@ bool JsonSettingsIO::saveOpds(const OpdsServerStore& store, const char* path) {
     obj["password_obf"] = obfuscation::obfuscateToBase64(server.password);
   }
 
-  String json;
-  serializeJson(doc, json);
-  return Storage.writeFile(path, json);
+  return JsonFile::save("OPS", path, doc);
 }
 
 bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* needsResave) {

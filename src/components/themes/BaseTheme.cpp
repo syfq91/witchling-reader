@@ -211,6 +211,57 @@ int BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const siz
   return bottom;
 }
 
+int BaseTheme::hintLabelWidth(const GfxRenderer& renderer, const int fontId, const char* label) {
+  return label != nullptr && label[0] != '\0' ? renderer.getTextWidth(fontId, label) : 0;
+}
+
+BaseTheme::FittedHintLabel BaseTheme::fitHintLabel(const GfxRenderer& renderer, const int fontId, const char* label,
+                                                   const int maxWidth) {
+  const int fitted = renderer.getTextWidth(fontId, label) > maxWidth ? FIT_SMALL_FONT_ID : fontId;
+  return {fitted, renderer.truncatedText(fitted, label, maxWidth)};
+}
+
+BaseTheme::FittedMessage BaseTheme::fitMessage(const GfxRenderer& renderer, const char* text, const int fontId,
+                                               const int smallerFontId, const int maxWidth, const int maxLines,
+                                               const bool bold) {
+  const EpdFontFamily::Style style = bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+  const int width = std::max(1, maxWidth);
+  const int fitted = renderer.getTextWidth(fontId, text, style) <= width ? fontId : smallerFontId;
+  return {fitted, renderer.wrappedText(fitted, text, width, maxLines, style)};
+}
+
+void BaseTheme::layOutButtonHints(const GfxRenderer& renderer, const int fontId, const int base, const int (&tuned)[4],
+                                  const char* const (&labels)[4], int (&x)[4], int (&width)[4]) {
+  const int maxWidth = HintLayout::bottomMaxWidth(renderer.getScreenWidth(), base, tuned);
+  for (int i = 0; i < 4; i++) {
+    const int needed = hintLabelWidth(renderer, fontId, labels[i]) + HintLayout::BOTTOM_LABEL_PADDING;
+    width[i] = HintLayout::grow(base, needed, maxWidth);
+  }
+  HintLayout::placeBottom(renderer.getScreenWidth(), base, tuned, width, x);
+}
+
+HintLayout::Span BaseTheme::sideHintSpan(const GfxRenderer& renderer) {
+  // The header sits at the logical top, which crosses the side column only in the two portrait
+  // frames; the landscape ones run it along another panel edge.
+  const GfxRenderer::Orientation orientation = renderer.getOrientation();
+  const bool landscape = orientation == GfxRenderer::Orientation::LandscapeClockwise ||
+                         orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
+  const HintLayout::HeaderEdge header =
+      orientation == GfxRenderer::Orientation::Portrait           ? HintLayout::HeaderEdge::PanelTop
+      : orientation == GfxRenderer::Orientation::PortraitInverted ? HintLayout::HeaderEdge::PanelBottom
+                                                                  : HintLayout::HeaderEdge::None;
+  // Read live: the bottom strip and the header both grow with the UI font size.
+  const ThemeMetrics& metrics = UITheme::getInstance().getMetrics();
+  const int panelHeight = landscape ? renderer.getScreenWidth() : renderer.getScreenHeight();
+  return HintLayout::sideFreeSpan(panelHeight, metrics.buttonHintsHeight, metrics.topPadding + metrics.headerHeight,
+                                  header);
+}
+
+int BaseTheme::sideHintNeededLength(const GfxRenderer& renderer, const int fontId, const char* upLabel,
+                                    const char* downLabel) {
+  return std::max(hintLabelWidth(renderer, fontId, upLabel), hintLabelWidth(renderer, fontId, downLabel)) +
+         HintLayout::SIDE_LABEL_PADDING;
+}
 void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                 const char* btn4) const {
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
@@ -667,11 +718,25 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
       renderer.drawCenteredText(UI_10_FONT_ID, continueY, tr(STR_CONTINUE_READING), !bookSelected);
     }
   } else {
-    // No book to continue reading
-    const int y =
-        bookY + (bookHeight - renderer.getLineHeight(UI_12_FONT_ID) - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
-    renderer.drawCenteredText(UI_12_FONT_ID, y, "No open book");
-    renderer.drawCenteredText(UI_10_FONT_ID, y + renderer.getLineHeight(UI_12_FONT_ID), "Start reading below");
+    // No book to continue reading. Each line stays inside the card: a size smaller when it does not
+    // fit, wrapped only when even that does not. German's "Aktuell kein Buch geöffnet" is twice
+    // the length of "No open book". Ported from crosspoint-reader PR #4330 (Mikalai Kryvusha).
+    const int textWidth = bookWidth - 16;
+    const FittedMessage title = fitMessage(renderer, tr(STR_NO_OPEN_BOOK), UI_12_FONT_ID, UI_10_FONT_ID, textWidth, 3);
+    const FittedMessage hint = fitMessage(renderer, tr(STR_START_READING), UI_10_FONT_ID, SMALL_FONT_ID, textWidth, 3);
+    const int titleLineHeight = renderer.getLineHeight(title.fontId);
+    const int hintLineHeight = renderer.getLineHeight(hint.fontId);
+    const int blockHeight =
+        static_cast<int>(title.lines.size()) * titleLineHeight + static_cast<int>(hint.lines.size()) * hintLineHeight;
+    int y = bookY + (bookHeight - blockHeight) / 2;
+    for (const auto& line : title.lines) {
+      renderer.drawCenteredText(title.fontId, y, line.c_str());
+      y += titleLineHeight;
+    }
+    for (const auto& line : hint.lines) {
+      renderer.drawCenteredText(hint.fontId, y, line.c_str());
+      y += hintLineHeight;
+    }
   }
 }
 

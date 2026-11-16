@@ -112,6 +112,7 @@ add_executable(EpubPipelineTest
   FingerprintTest.cpp
   LostTocRetryTest.cpp
   TocSourceTest.cpp
+  LinkTargetTest.cpp
   PageListSinkTest.cpp
   MetadataSidecarTest.cpp
   SidecarFilesTest.cpp
@@ -122,12 +123,16 @@ add_executable(EpubPipelineTest
   ParagraphAnchorTest.cpp
   SavedPositionRestoreTest.cpp
   KeptReadingStateTest.cpp
+  LayoutFingerprintTest.cpp
+  StarredPageRelayoutTest.cpp
   PagesWithoutPicturesTest.cpp
   EpubMetadataMemoTest.cpp
   ParsedTextOffsetTest.cpp
   LowHeapLoadTest.cpp
   LongChapterPageTablesTest.cpp
   TableCellTextHeapTest.cpp
+  BlockImageHeapTest.cpp
+  PageHeapTest.cpp
   TableRowFallbackArenaTest.cpp
   AnchorMapTest.cpp
   AnchorPageAccuracyTest.cpp
@@ -155,6 +160,7 @@ add_executable(EpubPipelineTest
   FontFamilyLayoutTest.cpp
   SpineCacheLayoutTest.cpp
   SaxStateInArenaTest.cpp
+  OwnedBuildRegionTest.cpp
   JpegDownscaleTest.cpp
   CompanionCacheTest.cpp
   ImageParkTest.cpp
@@ -194,6 +200,7 @@ add_executable(EpubPipelineTest
   ${REPO_ROOT}/lib/Epub/Epub/BookFonts.cpp
   # The reader's navigation target: resolves a saved position against a built Section.
   ${REPO_ROOT}/src/activities/reader/EpubNavigationTarget.cpp
+
   # No-op HeapTrack: PipelineRunner brackets the dump read-back with pause/resume, and the gtest
   # binary must NOT get the real one (it overrides malloc/free process-wide). The two dump
   # targets pick their own implementation, so this cannot be moved into PIPELINE_SOURCES.
@@ -203,7 +210,9 @@ add_executable(EpubPipelineTest
   ${REPO_ROOT}/test/book_metadata_cache/AllocationRefusal.cpp
   ${PIPELINE_SOURCES}
 )
-target_include_directories(EpubPipelineTest PRIVATE ${PIPELINE_INCLUDES})
+target_include_directories(EpubPipelineTest PRIVATE ${PIPELINE_INCLUDES}
+  # src/StarAnchoring.cpp names the mappers as the firmware does, without the lib/ prefix.
+  ${REPO_ROOT}/lib/KOReaderSync)
 target_compile_definitions(EpubPipelineTest PRIVATE
   CORPUS_DIR="${REPO_ROOT}/test/epubs"
   GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/goldens"
@@ -217,6 +226,10 @@ target_compile_definitions(EpubPipelineTest PRIVATE
   CHUNKED_VECTOR_FAULT_INJECTION
   # TableCellTextHeapTest refuses table cells their text (ChapterHtmlSlimParser::makeCellText). Inert otherwise.
   TABLE_CELL_FAULT_INJECTION
+  # BlockImageHeapTest refuses block images their ImageBlock (ChapterHtmlSlimParser::placeImageWithBlockSpacing).
+  BLOCK_IMAGE_FAULT_INJECTION
+  # PageHeapTest refuses the build its pages (ChapterHtmlSlimParser::ensurePage). Inert otherwise.
+  PAGE_FAULT_INJECTION
   # Central-directory walk counters (ZipFile.h), for the tests that bound them. Inert otherwise.
   ZIP_FILE_SCAN_STATS
 )

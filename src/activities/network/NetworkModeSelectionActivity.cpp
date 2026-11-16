@@ -2,6 +2,8 @@
 
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
+#include <WiFi.h>
 
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"

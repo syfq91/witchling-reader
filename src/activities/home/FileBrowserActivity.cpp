@@ -25,14 +25,18 @@
 #include "../ListRowTap.h"
 #include "../reader/FinishedBookActivity.h"
 #include "../reader/ReaderActivity.h"
+#include "../settings/ClearCacheActivity.h"
 #include "../util/BmpViewerActivity.h"
 #include "../util/ConfirmationActivity.h"
 #include "../util/KeyboardEntryActivity.h"
+#include "BookCacheReset.h"
+#include "BookDetails.h"
 #include "BookInfoActivity.h"
 #include "CoverThumbLoader.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "FileContextMenuActivity.h"
+#include "GlobalBookmarkIndex.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "SerialTestApi.h"
@@ -680,16 +684,6 @@ bool FileBrowserActivity::handleCoverTouch() {
 #endif
 }
 
-void FileBrowserActivity::clearFileMetadata(const std::string& fullPath, const BookCache::Keep keep) {
-  if (FsHelpers::hasEpubExtension(fullPath)) {
-    Epub(fullPath, "/.crosspoint").clearCache(keep);
-    LOG_DBG("FileBrowser", "Cleared metadata cache for: %s", fullPath.c_str());
-  } else if (FsHelpers::hasXtcExtension(fullPath)) {
-    Xtc(fullPath, "/.crosspoint").clearCache(keep);
-    LOG_DBG("FileBrowser", "Cleared metadata cache for: %s", fullPath.c_str());
-  }
-}
-
 // Iterative post-order traversal: clear book caches then delete files/dirs.
 // Adapted from upstream PR #1892 (WuTofu) to handle our EPUB+XTC cache clearing.
 bool FileBrowserActivity::removeDirRecursive(const std::string& fullPath) {
@@ -701,7 +695,7 @@ bool FileBrowserActivity::removeDirRecursive(const std::string& fullPath) {
   if (!file.isDirectory()) {
     file.close();
     if (!Storage.remove(fullPath.c_str())) return false;
-    clearFileMetadata(fullPath);
+    clearBookCacheIfNeeded(fullPath);
     return true;
   }
   file.close();
@@ -755,7 +749,7 @@ bool FileBrowserActivity::removeDirRecursive(const std::string& fullPath) {
           dir.close();
           return false;
         }
-        clearFileMetadata(entryPath);
+        clearBookCacheIfNeeded(entryPath);
       }
     }
     dir.close();
@@ -1843,16 +1837,23 @@ void FileBrowserActivity::doSetAsSleepCover(const std::string& fullPath) {
 }
 
 void FileBrowserActivity::doDeleteCache(const std::string& fullPath, const std::string& entry) {
-  startActivityForResult(
-      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_CACHE_QUESTION), utf8NfcNorm(entry)),
-      [this, fullPath](const ActivityResult& res) {
-        if (!res.isCancelled) {
-          clearFileMetadata(fullPath);
-          bookRows.clear();  // its progress went with the cache
-          LOG_INF("FBR", "Cache deleted for: %s", fullPath.c_str());
-        }
-        requestUpdate();
-      });
+  auto confirmation = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput,
+                                                              ClearCacheActivity::bookQuestion(utf8NfcNorm(entry)));
+  if (!confirmation) {
+    LOG_ERR("FBR", "OOM: delete cache confirmation (%zu bytes)", sizeof(ConfirmationActivity));
+    return;
+  }
+  startActivityForResult(std::move(confirmation), [this, fullPath](const ActivityResult& res) {
+    if (!res.isCancelled) {
+      const BookCache::Keep keep = ClearCacheActivity::keepFor(res);
+      clearBookCacheIfNeeded(fullPath, keep);
+      // The bookmarks went with the cache: the Bookmarks list forgets them now, not at its next open.
+      if (keep == BookCache::Keep::Nothing) GLOBAL_BOOKMARKS.removeBySourcePath(fullPath);
+      bookRows.clear();  // its cover went with the cache, and its progress unless it was kept
+      LOG_INF("FBR", "Cache deleted for: %s", fullPath.c_str());
+    }
+    requestUpdate();
+  });
 }
 
 // As with a move: deleting a book from the book browser deletes the sidecars that browser never
@@ -1874,7 +1875,7 @@ void FileBrowserActivity::doRemove(const std::string& fullPath, const std::strin
                                // only once the book has.
                                deleted = Storage.remove(fullPath.c_str());
                                if (deleted) {
-                                 clearFileMetadata(fullPath);
+                                 clearBookCacheIfNeeded(fullPath);
                                  if (withSidecars && !SidecarFiles::removeAll(fullPath)) {
                                    LOG_ERR("FBR", "Deleted %s but not all of its sidecars", fullPath.c_str());
                                  }

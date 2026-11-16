@@ -84,6 +84,24 @@ inline size_t& tableCellTextsLeft() {
 }
 #endif
 
+#ifdef PAGE_FAULT_INJECTION
+// Host tests only (firmware never defines it): how many more pages the build may get before each one is refused as if
+// the heap were out. SIZE_MAX = never refuse. Drives ensurePage's out-of-memory path.
+inline size_t& pagesLeft() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+#endif
+
+#ifdef BLOCK_IMAGE_FAULT_INJECTION
+// Host tests only (firmware never defines it): how many more block images may get their ImageBlock before each one is
+// refused as if the heap were out. SIZE_MAX = never refuse. Drives placeImageWithBlockSpacing's out-of-memory path.
+inline size_t& blockImagesLeft() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+#endif
+
 class ChapterHtmlSlimParser final : public Print {
   std::shared_ptr<Epub> epub;
   GfxRenderer& renderer;
@@ -522,6 +540,9 @@ class ChapterHtmlSlimParser final : public Print {
   // Body size census (setSizeCensus): the running text's characters are counted here by their size, and nothing is
   // laid out. Null for a build.
   BodySize::Census* census_ = nullptr;
+  // The build's sample of the book's body size (setBuildCensus): the running text it lays out is counted here as the
+  // census counts it. Null when the body size is known.
+  BodySize::Census* buildCensus_ = nullptr;
   // The book's body size as a factor (setBodySizePct): the sizes on the text's scale are taken relative to it
   // (normalizeFontSizeForElement). 1 when it is the reader's size, or normalization is off.
   float bodyScale_ = 1.0f;
@@ -580,8 +601,8 @@ class ChapterHtmlSlimParser final : public Print {
   bool effectiveSizeFromRoot_ = false;
   // The current block's font size in percent of the body's, resolved or not; 100 without a block.
   int currentBlockSizePct() const;
-  // Census mode: counts the word in partWordBuffer at its size (see setSizeCensus).
-  void countCensusWord();
+  // Counts the word in partWordBuffer into `census` at its size (setSizeCensus, setBuildCensus).
+  void countCensusWord(BodySize::Census& census);
   // Streaming table model. A row is buffered only until its </tr>, where it is laid out, packed
   // into the pending fragment and freed. The whole table was buffered until </table> once, because
   // grid layout needs the column count before the first row can be placed -- but our columns are
@@ -851,7 +872,8 @@ class ChapterHtmlSlimParser final : public Print {
   int progressStepPercent = 0;
   bool progressUiEnabled = true;
   bool streamFailed = false;
-  // Set when the heap gate refused an image-header read (see imageHeaderDegraded()).
+  // Set when the heap gate refused an image-header read, or an image was dropped because its page element could not be
+  // had (see imageHeaderDegraded(), noteImageDroppedForHeap()).
   bool imageHeaderSkippedForHeap = false;
   // Set when any table row was demoted to paragraphs (degradeRow), for any reason: the pages
   // are usable but the cache holds a layout the heap chose, not the book. See tableRowDegraded().
@@ -1134,6 +1156,9 @@ class ChapterHtmlSlimParser final : public Print {
   // heading text and takes both (applyHeadingScope): otherwise only the first such block got them,
   // by merging into the heading's still-empty block. INT_MAX when no heading is open.
   int headingDepth_ = INT_MAX;
+  // Whether the block starting now may hyphenate: the reader's setting, and never inside a heading, where a title
+  // split mid-word reads badly. Ported from crosspoint-reader PR #4442 by kanavnet.
+  bool blockHyphenates() const { return hyphenationEnabled && headingDepth_ == INT_MAX; }
   // The outermost open <center>: every block inside it is centred (startElement).
   int centerDepth_ = INT_MAX;
   CssTextAlign headingAlignment_ = CssTextAlign::Center;
@@ -1224,6 +1249,11 @@ class ChapterHtmlSlimParser final : public Print {
   void placeBackgroundImage(const std::string& resolvedPath, int elementDepth);
   // Place an already-built ImageBlock as a centered, full-width block element, page-breaking if needed.
   void placeImageBlockAsBlock(std::unique_ptr<ImageBlock> image);
+  // An image whose page element (ImageBlock, PageImage, the page) the heap could not hold is dropped. That says no more
+  // about the image than a refused header read does: the same chapter built with more headroom places it. So it takes
+  // the same latch, and the section is rebuilt as for a refused header (imageHeaderDegraded()) instead of being cached
+  // without the image for good.
+  void noteImageDroppedForHeap() { imageHeaderSkippedForHeap = true; }
   // An image of the flow on a line of its own, centred, with the spacing of the empty block it stands in (a figure's or
   // a paragraph's margins), which it uses up: the block's style is reset for the text after it. A page break pending
   // goes first, and a page that has no room for it ends. False when no page or image could be had.
@@ -1280,6 +1310,14 @@ class ChapterHtmlSlimParser final : public Print {
   // in lockstep. Every page break MUST go through this helper; open-coded completePageFn
   // calls risk desynchronising paragraphLutPerPage and failing the size check in Section.cpp.
   void emitPage();
+  // The page the next element goes on: the current one, else a new one at y 0. False when the heap holds no Page: the
+  // build then stops as any build the heap refuses stops (streamFailed, layoutFailed, the parser stopped), the pages
+  // so far kept and the section marked truncated, and the caller places nothing. A bare `new Page()` aborted the
+  // firmware there (-fno-exceptions), mid-build, and the next open of the chapter rebuilt into the same abort.
+  [[nodiscard]] bool ensurePage();
+  // The heap refused `bytes` for `what`, which the build cannot go on without: stop it as every such refusal does
+  // (streamFailed, layoutFailed, the parser stopped). The pages so far are kept, the section marked truncated.
+  void stopForHeap(const char* what, size_t bytes);
   // Take a pending page break (pageBreakPending_): emit the page if anything is on it. Called
   // where the content before the break has been laid out and the next is about to be placed.
   void applyPendingPageBreak();
@@ -1363,9 +1401,10 @@ class ChapterHtmlSlimParser final : public Print {
   bool finalize();
   [[nodiscard]] bool streamSucceeded() const { return !streamFailed; }
   // True when at least one image was dropped to alt text because the heap gate refused its
-  // header read — a transient condition, unlike an unreadable or unsupported image. The pages
-  // are usable but incomplete, and the caller must not keep them: see the latch site in
-  // startElement's image branch.
+  // header read, or dropped because the heap could not hold its page element — a transient
+  // condition, unlike an unreadable or unsupported image. The pages are usable but incomplete,
+  // and the caller must not keep them: see the latch site in startElement's image branch and
+  // noteImageDroppedForHeap().
   [[nodiscard]] bool imageHeaderDegraded() const { return imageHeaderSkippedForHeap; }
   // True when at least one table row was emitted as paragraphs instead of a grid (heap gate,
   // row byte budget, an open-cell overflow). Latched into the section status byte so the
@@ -1486,6 +1525,9 @@ class ChapterHtmlSlimParser final : public Print {
   // countCensusWord), and lays nothing out: no line, no page, no image, no table. A block keeps its first word only,
   // so it is empty or not as in a build, which is what the next block's style depends on (startNewTextBlock's merge).
   void setSizeCensus(BodySize::Census* census) { census_ = census; }
+  // For a build, set before setup(): the running text it lays out is also counted into `census`, by the rules of the
+  // census above (countCensusWord), for the book's body size while it is not known (BodySize, Section::bodySizeSample).
+  void setBuildCensus(BodySize::Census* census) { buildCensus_ = census; }
   // The size of the book's running text in percent of the reader's (BodySize::read), set before setup(). With
   // font-size normalization on, the book's sizes are taken relative to it, so that text reads at the reader's size;
   // off, or 100, nothing changes. Only the book's own CSS has sizes to take it out of.

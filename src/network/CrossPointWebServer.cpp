@@ -16,6 +16,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "BookCacheReset.h"
+#include "BootDiagnostics.h"
 #include "ChunkedResponse.h"
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
@@ -107,15 +109,6 @@ String lastDeleteName;
 size_t lastDeleteCount = 0;
 unsigned long lastDeleteAt = 0;
 
-void clearBookCacheIfNeeded(const String& filePath) {
-  if (FsHelpers::hasEpubExtension(filePath)) {
-    Epub(filePath.c_str(), "/.crosspoint").clearCache();
-    LOG_DBG("WEB", "Cleared epub cache for: %s", filePath.c_str());
-  } else if (FsHelpers::hasXtcExtension(filePath)) {
-    Xtc(filePath.c_str(), "/.crosspoint").clearCache();
-    LOG_DBG("WEB", "Cleared xtc cache for: %s", filePath.c_str());
-  }
-}
 
 // An upload (HTTP or WebSocket) is written to <file>.part and takes the place of <file> only once
 // it has all arrived, so one that breaks off -- Wi-Fi gone, the browser closed, Back on the device

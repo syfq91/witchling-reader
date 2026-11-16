@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <CooperativeAbort.h>
+#include <FirmwareFiles.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <HalSystem.h>
@@ -118,6 +119,7 @@ size_t FileBrowserModel::readDirectory(const size_t keep, const uint32_t heapFlo
       file.close();
       continue;
     }
+
     ++accepted;
     // Below the floor nothing more is kept, even should the heap recover: the list stays a prefix.
     if (files.size() < room && heapFloor > 0 && ESP.getFreeHeap() < heapFloor) room = files.size();

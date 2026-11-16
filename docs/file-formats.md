@@ -37,6 +37,12 @@ truncates the file in place.
 | `opds_<hash>_disc.json` | `saveOpdsDiscovery` | `"v"` (`OPDS_DISCOVERY_VERSION`, 2) | An OPDS server's navigation entries and search template; `<hash>` is FNV-1a of the server's URL. Version 2: a template from an OpenSearch description is its Atom one |
 | `epub_<hash>/`, `xtc_<hash>/`, `txt_<hash>/` | | | One per book: next table |
 
+The JSON files above but `state.json` (`settings.json`, the three credential stores, `autosync.json`, both weather
+files, `opds_<hash>_disc.json`) go through `JsonFile::save()` (`lib/Serialization/JsonFile.h`): written whole or not
+at all. A document that ran out of memory as it was built, or a text shorter than `measureJson()` says (ArduinoJson's
+String writer stops appending, without an error, when the String cannot grow), is refused and logged, and the file on
+the card stays as it was. `state.json` is streamed to its file and checked against `measureJson()` the same way.
+
 ### Per book
 
 `<hash>` is `std::hash` of the book's path, so a book moved or renamed gets a new directory (the
@@ -50,25 +56,25 @@ directory whole.
 | File | Formats | Version | Contents |
 |---|---|---|---|
 | `progress.bin` | all | none (told apart by length) | Where the book was left: [below](#progressbin) |
-| `bookmarks.bin` | all | `BookmarkStore::FILE_VERSION` (2) | `u8` version, `u16` count, then per bookmark `u16` spine, `u16` page, `u16` name length, the name. Version 1 (no names) still reads |
+| `bookmarks.bin` | all | `BookmarkStore::FILE_VERSION` (4) | `u8` version, `u16` count, then per bookmark `u16` spine, `u16` page, `u16` name length, the name, and what finds an EPUB page's text again after a relayout (`StarAnchor`): `u32` layout (`Section::layoutFingerprint()` of the layout the page was counted in; 0 = not known: a TXT page, or a bookmark from older firmware, which the reader anchors when its chapter is first shown complete, its page taken as counted in that layout), `u16` that layout's page count for the chapter, `u16` XPath length, the KOReader XPath of the page's first text (at most 512 bytes; longer is written as none), `u8` the section format the offset was counted under (`Section::formatVersion()`; 0 = none) and `u32` the visible-text offset of that text in the chapter. The offset finds the text with no parse while that format stands; the XPath is what the text is, resolved again under another format. Versions 3 (no offset; it never left test devices), 2 (no anchor) and 1 (no names either) still read. Replaced whole through `FileReplace`. The anchors stay out of `global_bookmarks.bin` |
 | `overrides.bin` | EPUB | `kFormatVersion` (1) in `src/BookReaderOverrides.cpp` | The settings chosen for this book alone (`BookReaderOverridesFile`): `BO`, `u8` format version, `u8` font-size numbering (`FONT_SIZE_ORDER_VERSION`), `u8` line-spacing numbering (`LINE_SPACING_ORDER_VERSION`), `u8` count, then `count` `i8` values in `BookReaderOverrides::Field` order (-1 follows the global setting), `u8` length and the SD font family's name. Fields are only appended: a reader takes the ones it knows. No file while the book follows every setting. Replaced whole through `FileReplace`; a left-over `overrides.bin.old` is read when the file is missing |
 | `details.bin` | all | `BookDetailsCache` `VERSION` (3) | What the Library's lists show: [below](#detailsbin) |
 | `thumb_*.bmp` | all | in the name | Cover thumbnails: [below](#cover-thumbnails) |
 | `cover.bmp` | all | none | The sleep screen's cover (`cover_crop.bmp` for an EPUB's cropped one) |
-| `book.bin` | EPUB | `BOOK_CACHE_VERSION` (18) | Metadata, spine and TOC: [below](#bookbin) |
+| `book.bin` | EPUB | `BOOK_CACHE_VERSION` (19) | Metadata, spine and TOC: [below](#bookbin) |
 | `fingerprint.bin`, `toc.retry` | EPUB | none | [below](#fingerprintbin-and-tocretry) |
 | `pagelist.bin` | EPUB | none | The printed-page list: [below](#pagelistbin) |
 | `css_rules.cache`, `css_bg.bin`, `css_fonts.bin` | EPUB | `CSS_CACHE_VERSION` (34), `BACKGROUND_IMAGES_FILE_VERSION` (1) | [below](#css_rulescache-css_bgbin-and-css_fontsbin) |
 | `spines/<n>/<spine>_<hash>.bin` | EPUB | `SECTION_FILE_VERSION` | Laid-out pages: [`section.bin`](#sectionbin) |
 | `spines/<n>/html_<spine>.bin` | EPUB | none | The spine item's inflated XHTML, banked by its build for the footnote pass and later builds; checked against the inflated size |
 | `pages.bin` | EPUB | `kFormatVersion` (1) in `SpinePageIndex.cpp`, plus the section version and property hash | Each spine item's page count and size under one render variant (`SpinePageIndex`), to count pages across a chapter split over several files |
-| `footnotes.bin` | EPUB | `CACHE_VERSION` (3) | Inline footnote previews: [below](#footnotesbin) |
+| `footnotes.bin` | EPUB | `CACHE_VERSION` (4) | Inline footnote previews: [below](#footnotesbin) |
 | `images.bin`, `images.pending` | EPUB | `EpubImageManifest::VERSION` (5) | Image sizes, 12 B per image (FNV-1a 64 of its path in the EPUB, width, height), and the queue of images whose size is still to be read |
 | `img_<hash><ext>`, `<image>.1bit.pxc`, `<image>.bayer.pxc` | EPUB | `PixelCache::PXC_MAGIC` | Images extracted from the book (`<hash>` is FNV-1a 64 of the entry), and their dithered pixel caches: `u16` magic, `u16` width, `u16` height, 2-bit pixels |
 | `cover.img` | EPUB | none | The cover image's bytes, extracted once (or copied from a cover sidecar) |
 | `linkstack.bin` | EPUB | `EpubLinkBackStack::kVersion` (1) | The link Back stack: [below](#linkstackbin) |
 | `fonts.bin`, `fonts/<style>.ttf`, `fonts/accent<n>/<style>.ttf` | EPUB | `BookFonts::kVersion` (7) | The book's embedded body and accent fonts (Publisher Fonts): [below](#fontsbin) |
-| `bodysize.bin` | EPUB | `BodySize::kVersion` (1) | The size of the book's running text, for Normalize Font Size (`lib/Epub/Epub/BodySize.h`): `u8` version, `u8` body size in percent of the reader's size (0: the last measurement failed), `u8` failed attempts. Measured after the CSS is compiled, removed when it is compiled again |
+| `bodysize.bin` | EPUB | `BodySize::kVersion` (1) | The size of the book's running text, for Normalize Font Size (`lib/Epub/Epub/BodySize.h`): `u8` version, `u8` body size in percent of the reader's size (0: an older firmware's measurement failed), `u8` its failed attempts. Written by the first chapter build with 8,000 characters of running text (`BodySize::kDecideChars`) while the book has none, removed when the CSS is compiled again |
 | `kosync_push.bin` | EPUB | `LastPush::kVersion` (1) | Our last KOReader push: [below](#kosync_pushbin) |
 | `koreader_docid.txt`, `koreader_syncmethod.txt` | EPUB | none | The KOReader document id, after the file size and fingerprint it was computed for, and the match method learned for the book |
 | `index.bin` | TXT, Markdown | `CACHE_VERSION`: TXT 2 (magic `TXTI`), Markdown 11 (`MKDI`) | Page offsets under the current layout. `SleepActivity` checks the TXT magic and version too |
@@ -87,7 +93,8 @@ CSS pass), `spines/<n>/anchors_<spine>.tmp` (a section's anchor map), `footnotes
 | `/fonts_manifest.tmp`, `/fonts_manifest_web.tmp` | Font Manager, web UI | The downloaded font manifest; removed once parsed |
 | `/.tmp_opds_cache.dat`, `/.tmp_opds_cover.*` | `OpdsBookBrowserActivity` | The OPDS browser's entries and the cover being shown; removed when it closes, and the cover files also when it opens (a power cut or a crash leaves them) |
 | `/sleep.bmp` | `BmpViewerActivity` | An image set as the sleep screen. A rendered one goes through `/sleep.bmp.tmp`, the old file kept as `/sleep.bmp.bak` until the swap is done |
-| `/crash_report.txt` | `HalSystem` | The last panic |
+| `/sleep/weather.bmp` | `WeatherActivity` | The last fetched forecast as a custom sleep image, the panel's pixels in portrait as `ScreenshotUtil` writes them. Goes through `/sleep/weather.bmp.tmp` and `FileReplace` |
+| `/crash_report.txt` | `HalSystem::checkPanic` | The last panic, written at the first boot after it: the firmware version, the panic reason, the last log lines and the stack. A watchdog reset writes one only when the panic handler ran first (`PanicReboot::isFromPanic()`). The Library's Books tab and All Files list it; New and Authors, Recent books and the next-book suggestion leave it out (`FirmwareFiles`) |
 | `/screenshots/*.bmp` | `ScreenshotUtil` | Screenshots |
 | `<dictionary>.qidx`, `.sidx` | `Dictionary` | Lookup indexes beside a dictionary's `.idx` and `.syn`, `SIDECAR_VERSION` (2): [dictionary.md](dictionary.md) |
 
@@ -108,7 +115,7 @@ from its pack on the card, a page at a time.
 
 ## `book.bin`
 
-Written by `BookMetadataCache`. The version byte is `BOOK_CACHE_VERSION` in `lib/Epub/Epub/BookMetadataCache.cpp`; it is bumped when the layout changes, and an older cache is rebuilt on the next open. The pattern below matches version 18.
+Written by `BookMetadataCache`. The version byte is `BOOK_CACHE_VERSION` in `lib/Epub/Epub/BookMetadataCache.cpp`; it is bumped when the layout or what it resolves changes, and an older cache is rebuilt on the next open. The pattern below matches version 19 (whose layout is version 18's).
 
 ImHex Pattern:
 
@@ -118,7 +125,7 @@ import std.string;
 import std.core;
 
 // === Configuration ===
-#define EXPECTED_VERSION 18
+#define EXPECTED_VERSION 19
 #define MAX_STRING_LENGTH 65535
 
 // === String Structure ===
@@ -354,7 +361,7 @@ The book's inline footnote previews (`lib/Epub/Epub/FootnotePreviews.*`), filled
 
 ```text
 u32 magic               'FNP1'
-u16 version             CACHE_VERSION in FootnotePreviews.cpp (3)
+u16 version             CACHE_VERSION in FootnotePreviews.cpp (4)
 u16 count               at most FootnotePreviews::MAX_ENTRIES (2048)
 u32 indexOffset
 u8  resolved[64]        one bit per spine item whose links are scanned and whose notes are all stored
@@ -362,7 +369,7 @@ blob                    count x { u16 textLen, text }, at most 240 bytes of text
 index (at indexOffset)  count x { u32 keyHash, u32 blobOffset }, sorted by keyHash
 ```
 
-The key is FNV-1a (32-bit) of `"<targetSpineIndex>#<fragment>"`. Each pass writes its notes over the old index and a merged index after them; while it runs, the old index is parked in `footnotes.bin.idx`. A store with another magic or version, or whose index does not end the file, is deleted and started again. Version 3 trims Unicode spaces at a note's edges and stores no note made of nothing else.
+The key is FNV-1a (32-bit) of `"<targetSpineIndex>#<fragment>"`. Each pass writes its notes over the old index and a merged index after them; while it runs, the old index is parked in `footnotes.bin.idx`. A store with another magic or version, or whose index does not end the file, is deleted and started again. Version 3 trims Unicode spaces at a note's edges and stores no note made of nothing else; version 4 resolves a caller's href against its chapter's folder.
 
 ## `progress.bin`
 
@@ -474,7 +481,7 @@ that do not fit the file, make it invalid, and a build replaces it.
 
 | Section | Layout |
 |---|---|
-| Header, 48 B | magic `WLIB`; `u8` version (3); `u8` flags (bit 0: partial, the card held more than 2,000 books); `u8` acceptRules (bit 0: the *Show Hidden Files* setting the walk used; bits 1-7: the revision of the folders the walk always leaves out, now 1); `u8` reserved; `u32` buildGen; `u16` bookCount, authorCount, newCount; `u16` reserved; `u32` offsets of the five sections below; `u32` blob length; `u32` newestDate, the newest date among the books and the folders the walk listed (0 for none) |
+| Header, 48 B | magic `WLIB`; `u8` version (3); `u8` flags (bit 0: partial, the card held more than 2,000 books); `u8` acceptRules (bit 0: the *Show Hidden Files* setting the walk used; bits 1-7: the revision of what the walk always leaves out, now 2: 1 added `holdsNoBooks` at any depth, 2 the firmware's own files at the root); `u8` reserved; `u32` buildGen; `u16` bookCount, authorCount, newCount; `u16` reserved; `u32` offsets of the five sections below; `u32` blob length; `u32` newestDate, the newest date among the books and the folders the walk listed (0 for none) |
 | Records | bookCount × 24 B, **in identity order**: `u32` identity, authorHash, date (FAT `date << 16 \| time`), pathOff, sidecarSig, firstSeen |
 | New | newCount (≤ 10) × `u16` record index, newest first |
 | Authors | authorCount × 12 B, **in sort-key order**: `u32` hash, nameOff; `u16` firstBook, count |
