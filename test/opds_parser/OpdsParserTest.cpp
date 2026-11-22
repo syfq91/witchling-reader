@@ -573,3 +573,59 @@ TEST(OpdsParser, BuyLinkAloneIsNotListed) {
   const auto entries = parseFeed(xml, parser);
   EXPECT_TRUE(entries.empty());
 }
+
+// --- OPDS Progression 1.0 service link -------------------------------------------------------
+// The plugin (Jellyfin.Plugin.Opds) emits both the rel and the media type; either one alone is
+// enough for other catalogs. Losing this link means no sync config is saved on download, so
+// OpdsProgressionSync::hasSyncConfig() is always false and no progression is ever exchanged.
+
+TEST(OpdsParser, ProgressionLinkByRelAndTypeIsKept) {
+  const char* xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Example Book</title>
+    <id>p1</id>
+    <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/example.epub"/>
+    <link rel="http://opds-spec.org/progression" type="application/opds-progression+json"
+          href="/opds/progression/11111111-2222-3333-4444-555555555555"/>
+  </entry>
+</feed>)";
+  OpdsParser parser;
+  const auto entries = parseFeed(xml, parser);
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0].progressionHref, "/opds/progression/11111111-2222-3333-4444-555555555555");
+  ASSERT_TRUE(assertSingleFormat(entries[0], "epub", ".epub"));
+}
+
+TEST(OpdsParser, ProgressionLinkByTypeIsKept) {
+  const char* xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Type Only</title>
+    <id>p2</id>
+    <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/books/type-only.epub"/>
+    <link rel="progression" type="application/opds-progression+json" href="/progress/p2"/>
+  </entry>
+</feed>)";
+  OpdsParser parser;
+  const auto entries = parseFeed(xml, parser);
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0].progressionHref, "/progress/p2");
+}
+
+TEST(OpdsParser, ProgressionLinkLeavesEntryTypeAlone) {
+  const char* xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Navigation With Progression</title>
+    <id>n4</id>
+    <link rel="subsection" type="application/atom+xml;profile=opds-catalog;kind=acquisition" href="/opds/n4"/>
+    <link rel="http://opds-spec.org/progression" type="application/opds-progression+json" href="/progress/n4"/>
+  </entry>
+</feed>)";
+  OpdsParser parser;
+  const auto entries = parseFeed(xml, parser);
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0].type, OpdsEntryType::NAVIGATION);
+  EXPECT_EQ(entries[0].progressionHref, "/progress/n4");
+}

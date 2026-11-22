@@ -225,6 +225,12 @@ void OpdsParser::startElement(void* userData, const char* name, const char** att
           // Some servers leave type= off their cover links; only a type that is not an image rules
           // one out. From witchling-reader commit 111f6ecc (syfq91).
           self->currentEntry.imageHref = href;
+        } else if ((rel && strstr(rel, "opds-spec.org/progression") != nullptr) ||
+                   (type && strcmp(type, "application/opds-progression+json") == 0)) {
+          // Without this the per-book sync config is never saved on download and progression sync
+          // stays dormant. From witchling-reader commit 0017708de (syfq91); dropped in a later
+          // upstream merge and restored here.
+          self->currentEntry.progressionHref = href;
         } else if (type && strstr(type, "application/atom+xml") != nullptr) {
           if (self->currentEntry.type != OpdsEntryType::BOOK) {
             self->currentEntry.type = OpdsEntryType::NAVIGATION;
