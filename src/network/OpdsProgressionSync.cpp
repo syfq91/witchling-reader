@@ -26,19 +26,25 @@ constexpr const char* TAG = "OPDS_SYNC";
 // the cache dir (HalStorage::removeDir's keepFile), so the config outlives a wipe of its own dir.
 std::string syncFilePath(const std::string& cachePath) { return cachePath + "/" + kBookCacheStateFile; }
 
+// Howard Hinnant's days-from-civil algorithm (public domain), avoiding mktime()'s local-timezone
+// dependence and non-standard timegm().
+int64_t daysFromCivil(int y, unsigned m, unsigned d) {
+  y -= m <= 2;
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(y - era * 400);
+  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
+}
+
 // Parses an ISO 8601 string (e.g. "2026-09-01T12:00:00Z" or "2026-09-01T12:00:00.000Z") to time_t in UTC.
 time_t parseIso8601(const std::string& iso) {
   if (iso.empty()) return 0;
   int y = 0, M = 0, d = 0, h = 0, m = 0, s = 0;
   if (sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &M, &d, &h, &m, &s) >= 3) {
-    struct tm tmUtc{};
-    tmUtc.tm_year = y - 1900;
-    tmUtc.tm_mon = M - 1;
-    tmUtc.tm_mday = d;
-    tmUtc.tm_hour = h;
-    tmUtc.tm_min = m;
-    tmUtc.tm_sec = s;
-    return mktime(&tmUtc);
+    if (M < 1 || M > 12 || d < 1 || d > 31) return 0;
+    const int64_t days = daysFromCivil(y, static_cast<unsigned>(M), static_cast<unsigned>(d));
+    return static_cast<time_t>(days * 86400LL + h * 3600LL + m * 60LL + s);
   }
   return 0;
 }
@@ -101,19 +107,16 @@ bool hasSyncConfig(const std::string& cachePath) {
   return Storage.exists(syncFilePath(cachePath).c_str());
 }
 
-bool saveSyncConfig(const std::string& cachePath, const std::string& progressionUrl, const std::string& serverUrl) {
-  if (cachePath.empty() || progressionUrl.empty()) return false;
+bool saveSyncConfig(const std::string& cachePath, const SyncConfig& config) {
+  if (cachePath.empty() || config.progressionUrl.empty()) return false;
 
   Storage.mkdir(cachePath.c_str());
 
-  SyncConfig existing;
-  loadSyncConfig(cachePath, existing);
-
   JsonDocument doc;
-  doc["progressionUrl"] = progressionUrl;
-  doc["serverUrl"] = serverUrl.empty() ? existing.serverUrl : serverUrl;
-  doc["lastSyncedModified"] = existing.lastSyncedModified;
-  doc["lastSyncedProgression"] = existing.lastSyncedProgression;
+  doc["progressionUrl"] = config.progressionUrl;
+  doc["serverUrl"] = config.serverUrl;
+  doc["lastSyncedModified"] = config.lastSyncedModified;
+  doc["lastSyncedProgression"] = config.lastSyncedProgression;
 
   std::string jsonStr;
   serializeJson(doc, jsonStr);
@@ -128,6 +131,18 @@ bool saveSyncConfig(const std::string& cachePath, const std::string& progression
   f.close();
   LOG_DBG(TAG, "Saved sync config to %s", configPath.c_str());
   return true;
+}
+
+bool saveSyncConfig(const std::string& cachePath, const std::string& progressionUrl, const std::string& serverUrl) {
+  if (cachePath.empty() || progressionUrl.empty()) return false;
+
+  SyncConfig config;
+  loadSyncConfig(cachePath, config);
+  config.progressionUrl = progressionUrl;
+  if (!serverUrl.empty()) {
+    config.serverUrl = serverUrl;
+  }
+  return saveSyncConfig(cachePath, config);
 }
 
 bool loadSyncConfig(const std::string& cachePath, SyncConfig& config) {
@@ -202,13 +217,15 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
   bool remoteValid = false;
 
   if (getStatus == 200) {
-    const DeserializationError parseErr = parseProgressionBody(client.getBody(), remote);
-    if (!parseErr) {
-      remoteValid = true;
-      LOG_INF(TAG, "Remote: progress=%.3f modified=%s title=%s ref=%s", remote.progression, remote.modified.c_str(),
-              remote.title.c_str(), remote.reference.c_str());
-    } else {
-      LOG_ERR(TAG, "Failed to parse remote progression JSON: %s", parseErr.c_str());
+    if (!client.getBody().empty()) {
+      const DeserializationError parseErr = parseProgressionBody(client.getBody(), remote);
+      if (!parseErr) {
+        remoteValid = true;
+        LOG_INF(TAG, "Remote: progress=%.3f modified=%s title=%s ref=%s", remote.progression, remote.modified.c_str(),
+                remote.title.c_str(), remote.reference.c_str());
+      } else {
+        LOG_ERR(TAG, "Failed to parse remote progression JSON: %s", parseErr.c_str());
+      }
     }
   } else if (getStatus != 404 && getStatus != 204) {
     LOG_ERR(TAG, "Failed GET progression: HTTP %d", getStatus);
@@ -218,40 +235,51 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
   const time_t remoteTime = remoteValid ? parseIso8601(remote.modified) : 0;
   const time_t lastLocalSyncedTime = parseIso8601(config.lastSyncedModified);
 
+  const bool localMoved = std::fabs(localProgression - config.lastSyncedProgression) > 0.001f;
+  const bool remoteMoved = remoteValid && remoteTime > lastLocalSyncedTime &&
+                           std::fabs(remote.progression - config.lastSyncedProgression) > 0.001f;
+  const bool differs = remoteValid && std::fabs(remote.progression - localProgression) > 0.001f;
+
   // Both sides have moved since they last agreed: the server holds a progression this device never
   // recorded, and this device holds one the server does not.
-  const bool diverged = remoteValid && remoteTime > lastLocalSyncedTime &&
-                        std::fabs(remote.progression - config.lastSyncedProgression) > 0.001f &&
-                        std::fabs(remote.progression - localProgression) > 0.001f;
+  const bool diverged = localMoved && remoteMoved && differs;
 
   // Which side wins, now that the exchange has the server's current state in hand.
   //
   // TAKE_REMOTE does not re-test `diverged`: the user answered against this same state, so
   // re-deriving whether it counts as a divergence could flip the answer on a clock or a rounding
   // edge. It only needs the two to disagree, which is what it is being asked to settle.
-  if (resolution == ConflictResolution::TAKE_REMOTE && remoteValid &&
-      std::fabs(remote.progression - localProgression) > 0.001f) {
+  if (resolution == ConflictResolution::TAKE_REMOTE && differs) {
     config.lastSyncedModified = remote.modified;
     config.lastSyncedProgression = remote.progression;
-    saveSyncConfig(cachePath, config.progressionUrl, config.serverUrl);
+    saveSyncConfig(cachePath, config);
     LOG_INF(TAG, "Remote progress adopted (%.1f%%)", remote.progression * 100.0f);
     return {SyncStatus::SUCCESS_REMOTE_NEWER, remote, ""};
   }
   // ASK has no say in a divergence: it reports one and stops, leaving lastSynced* untouched so the
   // next exchange sees the same question rather than a half-resolved one.
-  if (resolution == ConflictResolution::ASK && diverged) {
-    LOG_INF(TAG, "Diverged: device %.1f%% vs server %.1f%%; deferring to the user", localProgression * 100.0f,
-            remote.progression * 100.0f);
-    return {SyncStatus::CONFLICT, remote, ""};
+  if (resolution == ConflictResolution::ASK) {
+    if (diverged) {
+      LOG_INF(TAG, "Diverged: device %.1f%% vs server %.1f%%; deferring to the user", localProgression * 100.0f,
+              remote.progression * 100.0f);
+      return {SyncStatus::CONFLICT, remote, ""};
+    }
+    if (!localMoved && remoteMoved && differs) {
+      config.lastSyncedModified = remote.modified;
+      config.lastSyncedProgression = remote.progression;
+      saveSyncConfig(cachePath, config);
+      LOG_INF(TAG, "Remote progress is newer (%.1f%%); adopting", remote.progression * 100.0f);
+      return {SyncStatus::SUCCESS_REMOTE_NEWER, remote, ""};
+    }
   }
   // ConflictResolution::TAKE_LOCAL -- and a TAKE_REMOTE whose state already matches the device --
   // fall through: in-sync below when they agree, the push otherwise.
 
   // If local and remote match closely, no update needed
-  if (remoteValid && std::fabs(remote.progression - localProgression) <= 0.001f) {
+  if (remoteValid && !differs) {
     config.lastSyncedModified = remote.modified;
     config.lastSyncedProgression = localProgression;
-    saveSyncConfig(cachePath, config.progressionUrl, config.serverUrl);
+    saveSyncConfig(cachePath, config);
     return {SyncStatus::SUCCESS_IN_SYNC, remote, ""};
   }
 
@@ -291,7 +319,7 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
     // an existing one); both mean the push landed.
     config.lastSyncedModified = nowIso;
     config.lastSyncedProgression = localProgression;
-    saveSyncConfig(cachePath, config.progressionUrl, config.serverUrl);
+    saveSyncConfig(cachePath, config);
     LOG_INF(TAG, "Progress pushed successfully");
     return {SyncStatus::SUCCESS_LOCAL_PUSHED, {}, ""};
   }
@@ -318,7 +346,7 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
       }
       config.lastSyncedModified = remoteNow.modified;
       config.lastSyncedProgression = remoteNow.progression;
-      saveSyncConfig(cachePath, config.progressionUrl, config.serverUrl);
+      saveSyncConfig(cachePath, config);
       LOG_INF(TAG, "Push rejected as stale, but the server already holds the same position");
       return {SyncStatus::SUCCESS_IN_SYNC, remoteNow, ""};
     }

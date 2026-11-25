@@ -53,6 +53,7 @@ bool hasSyncConfig(const std::string& cachePath);
 
 // Save or update OPDS progression sync configuration for a book.
 bool saveSyncConfig(const std::string& cachePath, const std::string& progressionUrl, const std::string& serverUrl);
+bool saveSyncConfig(const std::string& cachePath, const SyncConfig& config);
 
 // Load sync configuration from disk.
 bool loadSyncConfig(const std::string& cachePath, SyncConfig& config);
