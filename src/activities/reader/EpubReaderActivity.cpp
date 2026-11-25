@@ -2932,10 +2932,10 @@ void EpubReaderActivity::syncProgression(const ProgressionSyncMode mode) {
                              resumeBackgroundWork();
                              if (!result.isCancelled && std::holds_alternative<OpdsProgressionResult>(result.data)) {
                                const auto& res = std::get<OpdsProgressionResult>(result.data);
-                               if (!res.reference.empty()) {
-                                 navigateToHref(res.reference, true);
-                               } else if (res.progression >= 0.0f) {
-                                 jumpToPercent(clampPercent(static_cast<int>(res.progression * 100.0f + 0.5f)));
+                               if (res.reference.empty() || !navigateToHref(res.reference, true)) {
+                                 if (res.progression >= 0.0f) {
+                                   jumpToPercent(clampPercent(static_cast<int>(res.progression * 100.0f + 0.5f)));
+                                 }
                                }
                              }
                              requestUpdate();
@@ -2951,10 +2951,15 @@ void EpubReaderActivity::syncProgression(const ProgressionSyncMode mode) {
   currentSyncPosition(bookProgress, currentTitle, currentRef);
 
   const auto res = OpdsProgressionSync::performSync(cachePath, bookProgress, currentTitle, currentRef);
-  // With resolution left at ASK this exchange never moves the reader: it records progress, reports
-  // no change, or comes back CONFLICT. Only the dialog hands a position back, which is why a
-  // divergence is the one outcome worth acting on here.
-  if (res.status == OpdsProgressionSync::SyncStatus::CONFLICT && mode == ProgressionSyncMode::Prompt) {
+  if (res.status == OpdsProgressionSync::SyncStatus::SUCCESS_REMOTE_NEWER && mode == ProgressionSyncMode::Prompt) {
+    LOG_INF("ERS", "OPDS progression is newer on server; jumping to %.1f%%", res.remote.progression * 100.0f);
+    if (res.remote.reference.empty() || !navigateToHref(res.remote.reference, true)) {
+      if (res.remote.progression >= 0.0f) {
+        jumpToPercent(clampPercent(static_cast<int>(res.remote.progression * 100.0f + 0.5f)));
+      }
+    }
+    requestUpdate();
+  } else if (res.status == OpdsProgressionSync::SyncStatus::CONFLICT && mode == ProgressionSyncMode::Prompt) {
     LOG_INF("ERS", "OPDS progression diverged on open; putting it to the user");
     syncProgression(ProgressionSyncMode::Explicit);
   }
@@ -7413,8 +7418,8 @@ bool EpubReaderActivity::shouldSkipPeriodicUpdate() const {
   return true;
 }
 
-void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
-  if (!epub) return;
+bool EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
+  if (!epub) return false;
 
   int sourceSpineIndex;
   {
@@ -7434,7 +7439,7 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
 
   if (targetSpineIndex < 0) {
     LOG_DBG("ERS", "Could not resolve href: %s", hrefStr.c_str());
-    return;
+    return false;
   }
 
   // The origin is pushed only once the jump is certain. Pushing first and popping it again on an
@@ -7452,6 +7457,7 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
   }
   requestUpdate();
   LOG_DBG("ERS", "Navigated to spine %d for href: %s", targetSpineIndex, hrefStr.c_str());
+  return true;
 }
 
 bool EpubReaderActivity::pushLinkOrigin() {

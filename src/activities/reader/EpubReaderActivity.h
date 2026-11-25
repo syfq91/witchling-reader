@@ -1191,7 +1191,7 @@ class EpubReaderActivity final : public Activity {
   // The two kinds are still told apart, but only where the distinction is harmless -- the
   // footnote list groups them (see pageLinkInfoForCurrentPage). Following one always leaves a
   // way back.
-  void navigateToHref(const std::string& href, bool savePosition = false);
+  bool navigateToHref(const std::string& href, bool savePosition = false);
   void restoreSavedPosition();
   // A followed link's anchor has resolved to `page` of the current spine: if that is where an
   // earlier link was followed from, unwinds the Back stack below it (EpubLinkBackStack::returnDepth).
