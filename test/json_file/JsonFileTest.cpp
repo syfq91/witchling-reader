@@ -1,14 +1,13 @@
 // A JSON file written to the card whole, or not at all (lib/Serialization/JsonFile).
 //
 // Only settings.json checked that its JSON had serialised in full. koreader.json, wifi.json,
-// opds.json, the auto-sync state, both weather files and the OPDS discovery cache wrote whatever the
+// opds.json, the auto-sync state and the OPDS discovery cache wrote whatever the
 // String held: on a heap with no block big enough, ArduinoJson's String writer stops appending
 // without an error, and the short JSON replaced a complete file. wifi.json is rewritten right after a
 // connect, the C3's tightest moment, and a cut one loses every saved network.
 // After matcha-reader PR #315 and PR #508 by Eszter Schuffert.
 #include <ArduinoJson.h>
 #include <JsonFile.h>
-#include <WeatherSettingsStore.h>
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -19,7 +18,6 @@
 namespace {
 
 constexpr char kPath[] = "/.crosspoint/test.json";
-constexpr char kWeatherPath[] = "/.crosspoint/weather_settings.json";
 constexpr size_t kNoLimit = static_cast<size_t>(-1);
 
 // Grants the first `allowed` allocations, then refuses every one after: a heap that runs out while
@@ -112,22 +110,6 @@ TEST_F(JsonFileTest, AnOverflowedDocumentLeavesTheFileAsItWas) {
   EXPECT_FALSE(JsonFile::save("TEST", kPath, doc));
   EXPECT_EQ(json_file_fixture::state.writes, 0);
   EXPECT_EQ(json_file_fixture::state.files[kPath], "{\"previous\":true}");
-}
-
-// One of the stores that wrote the String unchecked: on a heap where the String cannot grow, the
-// weather settings on the card stay as they were.
-TEST_F(JsonFileTest, WeatherSettingsAreNotCutShort) {
-  auto& store = WeatherSettingsStore::getInstance();
-  store.setLocation(52520000, 13405000, "Berlin");
-  store.setForecastDays(5);
-  ASSERT_TRUE(store.saveToFile());
-  const std::string saved = json_file_fixture::state.files[kWeatherPath];
-  ASSERT_NE(saved.find("\"Berlin\""), std::string::npos) << saved;
-
-  store.setLocation(48137000, 11575000, "Munich");
-  String::growLimit() = 40;
-  EXPECT_FALSE(store.saveToFile());
-  EXPECT_EQ(json_file_fixture::state.files[kWeatherPath], saved);
 }
 
 }  // namespace

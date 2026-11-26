@@ -7,8 +7,11 @@
 #include <Logging.h>
 #include <XteinkDetect.h>  // applyXteinkDisplayController() — see begin()
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <atomic>
+#include <cstring>
 
 #include "HalSpiBus.h"
 
@@ -57,6 +60,16 @@ static BootHeapProbe s_probePostDisplay(1);
 // and immune to static-init order — but its VALUE is the default, not the
 // detection result. Anything that differs per board within a binary must be
 // read in begin(), not here.
+#if FREEINK_DEVICE_X3 && FREEINK_DEVICE_X4
+static_assert(BoardConfig::XTEINK_X3.display.sclk == BoardConfig::XTEINK_X4.display.sclk &&
+                  BoardConfig::XTEINK_X3.display.mosi == BoardConfig::XTEINK_X4.display.mosi &&
+                  BoardConfig::XTEINK_X3.display.cs == BoardConfig::XTEINK_X4.display.cs &&
+                  BoardConfig::XTEINK_X3.display.dc == BoardConfig::XTEINK_X4.display.dc &&
+                  BoardConfig::XTEINK_X3.display.rst == BoardConfig::XTEINK_X4.display.rst &&
+                  BoardConfig::XTEINK_X3.display.busy == BoardConfig::XTEINK_X4.display.busy,
+              "X3 and X4 ship in one binary but disagree on display pins; HalDisplay's constructor "
+              "runs before selectDevice() and would latch the wrong ones");
+#endif
 
 HalDisplay::HalDisplay()
     : einkDisplay(BoardConfig::ACTIVE.display.sclk, BoardConfig::ACTIVE.display.mosi, BoardConfig::ACTIVE.display.cs,
@@ -87,6 +100,26 @@ void HalDisplay::begin(bool seamless) {
 #if !FREEINK_MCU_C3
   // Resolve which panel controller this unit actually carries, before
   // einkDisplay.begin() picks a driver from it.
+  //
+  // The Xteink 800x480 boards ship two different controllers depending on
+  // production batch -- the original SSD1677 and, in newer batches, an UltraChip
+  // UC8179/UC8279. FreeInkDisplay::begin() selects the driver purely from
+  // BoardConfig::ACTIVE.displayController, and the ONLY thing that ever writes
+  // that field is this probe. Without it a newer X4 Pro gets driven with
+  // SSD1677 command streams and develops no image.
+  //
+  // The C3 already does this inside HalGPIO::begin(), which is where it has to
+  // happen there: the probe bit-bangs the display pins, and the C3 pre-claims
+  // them with SPI.begin() in that same function. Every other board leaves the
+  // pins alone until EpdBus claims them inside einkDisplay.begin() below, so
+  // here is that board's equivalent moment -- after gpio.begin(), before SPI.
+  // Guarded rather than unconditional so the C3 does not probe a second time
+  // with SPI already holding the bus.
+  //
+  // Safe to run on a unit that turns out NOT to be UltraChip: the probe only
+  // resets and reads, and a part that does not answer the UC81xx read registers
+  // leaves the profile's own controller in place. Matches upstream/develop,
+  // which does the same call from setupDisplayAndFonts().
   static bool controllerResolved = false;
   if (!controllerResolved) {
     controllerResolved = true;
@@ -95,6 +128,12 @@ void HalDisplay::begin(bool seamless) {
     }
   }
 #endif
+
+  // Set X3-specific panel mode before initializing.
+  if (gpio.deviceIsX3()) {
+    einkDisplay.setDisplayX3();
+  }
+
   // Drop the CPU clock while the render task sleeps out a waveform (any BUSY
   // wait that proves long — the SDK's bus fires the hooks around the ISR sleep
   // or the poll loop) and restore it before the post-waveform SPI work. Policy
@@ -113,7 +152,7 @@ void HalDisplay::begin(bool seamless) {
           profile.displayControllerVariant);
 
   // Request resync after specific wakeup events to ensure clean display state.
-  // Skip when seamless=true so the current panel content is preserved (e.g. reader resume).
+  // Skip when seamless=true so the current panel content is preserved (Quick Resume).
   if (!seamless) {
     const auto wakeupReason = gpio.getWakeupReason();
     if (wakeupReason == HalGPIO::WakeupReason::PowerButton || wakeupReason == HalGPIO::WakeupReason::AfterFlash ||
@@ -159,7 +198,24 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
   }
 }
 
-void HalDisplay::requestResync(uint8_t /*settlePasses*/) {}
+void HalDisplay::armSettleFor(const RefreshMode mode) {
+  const bool half = HalCapabilities::panelNeedsHalfRefreshSettle() && mode == RefreshMode::HALF_REFRESH;
+  if (half || pendingX3SettlePasses > 0) {
+    // The request is for the refresh about to start. A refresh still pending, shipped async (an Indexing popup), is
+    // finished first: its finish clears the request (Uc8253X3Driver::displayFinish), and the X3's HALF went out without
+    // its full sync and settle passes (TXT first open after the popup: X3_DRF_half 462 ms against X3_DRF_full 938 ms
+    // and two settle passes, 2026-11-17).
+    einkDisplay.finishDisplayAsync();
+    einkDisplay.requestResync(half ? (pendingX3SettlePasses > 1 ? pendingX3SettlePasses : 1) : pendingX3SettlePasses);
+  }
+  pendingX3SettlePasses = 0;
+}
+
+void HalDisplay::requestResync(uint8_t settlePasses) {
+  if (HalCapabilities::panelNeedsHalfRefreshSettle() && settlePasses > pendingX3SettlePasses) {
+    pendingX3SettlePasses = settlePasses;
+  }
+}
 
 void HalDisplay::setInverted(const bool inverted) {
   if (einkDisplay.isInverted() == inverted) return;  // every render pass asks; no bus lock for a no-op
@@ -194,6 +250,8 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
 
   lastRefreshMode = mode;
   lastDisplayModeByte = refreshModeToByte(mode);
+
+  armSettleFor(mode);
 
   // Panel time, measured at the one place every paint funnels through. The boot trace
   // (main.cpp) shows the splash costing seconds; without this the host-side compose and
@@ -245,12 +303,19 @@ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen
   lastRefreshMode = mode;
   lastDisplayModeByte = refreshModeToByte(mode);
 
+  armSettleFor(mode);
+
   const unsigned long refreshStart = millis();
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
   [[maybe_unused]] const unsigned long seq = nextPanelSeq();
   LOG_DBG("DISP", "#%lu refreshDisplay mode=%s took %lu ms", seq,
           mode == RefreshMode::FAST_REFRESH ? "FAST" : (mode == RefreshMode::HALF_REFRESH ? "HALF" : "FULL"),
           millis() - refreshStart);
+}
+
+void HalDisplay::powerOffPanelBetweenFrames() {
+  HalSpiBus::Lock spiLock;
+  einkDisplay.powerOffBetweenFrames();
 }
 
 void HalDisplay::deepSleep() {
@@ -359,6 +424,7 @@ bool HalDisplay::lendsPsramArena() const { return HalCapabilities::keepsSecondar
 // care about the buffer itself ask einkDisplay directly.
 bool HalDisplay::hasSecondaryBuffer() const { return einkDisplay.hasSecondaryBuffer() && !psramArenaLent; }
 bool HalDisplay::keepsPreviousFrame() const { return einkDisplay.hasSecondaryBuffer(); }
+bool HalDisplay::secondaryHoldsFrameOnScreen() const { return einkDisplay.secondaryHoldsFrameOnScreen(); }
 
 // The four buffer-ownership transitions below all take the SPI bus lock, for two reasons that
 // both trace back to them running on the LOOP task (reader background builds) while the render
@@ -407,9 +473,7 @@ uint8_t* HalDisplay::borrowSecondaryBufferDuringRefresh(size_t* size) {
   return buf;
 }
 
-bool HalDisplay::lendsDuringRefresh() const {
-  return !HalCapabilities::keepsSecondaryBuffer() && einkDisplay.asyncRefreshHoldsFrameBuffer();
-}
+bool HalDisplay::lendsDuringRefresh() const { return !HalCapabilities::keepsSecondaryBuffer(); }
 
 bool HalDisplay::returnSecondaryBuffer() {
   if (psramArenaLent.exchange(false)) {
@@ -470,6 +534,11 @@ void HalDisplay::triggerDisplayAsync(RefreshMode mode, bool turnOffScreen) {
 }
 
 bool HalDisplay::supportsAsyncRefresh() const { return einkDisplay.supportsAsyncRefresh(); }
+
+bool HalDisplay::keepsDeferredGrayPass() const {
+  const char* const controller = einkDisplay.getControllerName();
+  return controller != nullptr && (strcmp(controller, "SSD2677") == 0 || strcmp(controller, "UC8253") == 0);
+}
 
 void HalDisplay::finishDisplayAsync() {
   HalSpiBus::Lock spiLock;
@@ -552,6 +621,20 @@ bool HalDisplay::displayLabFrame(const uint8_t* bw, const uint8_t* red, const ui
   return einkDisplay.displayLabFrame(bw, red, lut);
 }
 
+bool HalDisplay::setLabRegisters(const uint8_t* records, const size_t len) {
+  return einkDisplay.setLabRegisters(records, len);
+}
+
+bool HalDisplay::setGray16Calibration(const uint8_t black[3], const uint8_t white[3], const uint8_t erase,
+                                      const uint8_t (*paths)[3]) {
+  // The driver checks new doses against the paths in force and new paths against the doses in force, so a change of
+  // both could be refused for a mix of old and new. Every level undriven first fits any doses.
+  static constexpr uint8_t kUndriven[16][3] = {};
+  HalSpiBus::Lock spiLock;  // a 16-level image on the glass gives its drive back first: refreshes
+  return einkDisplay.setGray16Levels(kUndriven) && einkDisplay.setGray16Passes(black, white, erase) &&
+         einkDisplay.setGray16Levels(paths);
+}
+
 bool HalDisplay::supportsAbsoluteGrayPlanes() const {
   return einkDisplay.grayscaleCapabilities(freeink::GrayscaleMode::Absolute).supported();
 }
@@ -601,16 +684,32 @@ uint8_t* HalDisplay::borrowGray8Canvas(uint16_t* stride) {
   return einkDisplay.borrowGray8Canvas(stride);
 }
 
-void HalDisplay::displayGray8Canvas(RefreshMode refreshMode, bool turnOffScreen) {
+bool HalDisplay::displayGray8Canvas(RefreshMode refreshMode, bool turnOffScreen) {
   HalSpiBus::Lock spiLock;
   [[maybe_unused]] const unsigned long seq = nextPanelSeq();
   LOG_DBG("DISP", "#%lu displayGray8Canvas levels=%u", seq, static_cast<unsigned>(einkDisplay.grayLevels()));
-  einkDisplay.displayGray8Canvas(convertRefreshMode(refreshMode), turnOffScreen);
+  if (!einkDisplay.displayGray8Canvas(convertRefreshMode(refreshMode), turnOffScreen)) return false;
   // Record it like every other display path: the driver substitutes a clean-bank
   // refresh, so the page summary must not claim whatever mode the caller asked
   // for. See the note on displayGrayscaleFrame().
   lastRefreshMode = RefreshMode::FULL_REFRESH;
   lastDisplayModeByte = refreshModeToByte(RefreshMode::FULL_REFRESH);
+  return true;
+}
+
+const gray_levels::Plan* HalDisplay::grayLevelPlan() const { return nullptr; }
+
+bool HalDisplay::displayGrayLevelBase(const uint8_t* frame, RefreshMode refreshMode) {
+  (void)frame;
+  (void)refreshMode;
+  LOG_ERR("DISP", "displayGrayLevelBase: this panel has no gray-level plan");
+  return false;
+}
+
+bool HalDisplay::displayGrayLevelPass(const uint8_t pass, const bool turnOffScreen) {
+  (void)turnOffScreen;
+  LOG_ERR("DISP", "displayGrayLevelPass %u: this panel has no gray-level plan", static_cast<unsigned>(pass));
+  return false;
 }
 
 void HalDisplay::displayGrayBuffer(bool turnOffScreen) {
@@ -664,6 +763,24 @@ bool HalDisplay::fastRefreshNeedsHostFrame() const { return einkDisplay.fastRefr
 bool HalDisplay::asyncRefreshHoldsFrameBuffer() const { return einkDisplay.asyncRefreshHoldsFrameBuffer(); }
 
 bool HalDisplay::ghostsUnderFastRefresh() const { return einkDisplay.ghostsUnderFastRefresh(); }
+
+bool HalDisplay::refreshLeavesBusToCard() const {
+  return HalCapabilities::sdUsesSpi() &&
+         BoardConfig::ACTIVE.displayController != BoardConfig::DisplayController::LgfxEpd &&
+         !einkDisplay.asyncRefreshHoldsFrameBuffer();
+}
+
+// A waveform is 0.5 to 1.7 s; the finish that follows is up to this much later than the BUSY edge.
+static constexpr uint32_t REFRESH_OFF_BUS_POLL_MS = 5;
+
+void HalDisplay::waitRefreshOffBus() {
+  // Polled, not the driver's wait on the BUSY edge: that one runs inside the finish, under the lock. The poll reads
+  // the BUSY pin and no bus. A task that finishes the refresh meanwhile (any display call drains it first, under the
+  // lock) ends this wait as well: nothing is pending then.
+  while (einkDisplay.refreshBusy()) {
+    vTaskDelay(pdMS_TO_TICKS(REFRESH_OFF_BUS_POLL_MS));
+  }
+}
 
 uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
 

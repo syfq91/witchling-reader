@@ -23,7 +23,6 @@
 #include "activities/home/LibraryTab.h"
 #include "network/WebAssets.h"
 #include "util/ButtonPressQueue.h"
-#include "util/ScreenshotUtil.h"
 #include "util/SerialCommandGrammar.h"
 
 #if SERIAL_TEST_API
@@ -2014,11 +2013,6 @@ void cmdReboot(std::string_view /*arg*/) {
 }
 #endif  // SERIAL_TEST_API
 
-// Answered by sendScreenshot() once ScreenshotUtil serves the request. One at a time, so each gets its reply.
-void cmdScreenshot(std::string_view /*arg*/) {
-  if (!ScreenshotUtil::request(ScreenshotUtil::Target::Host)) reply("SCREENSHOT_ERROR:busy");
-}
-
 // On-demand replay of this session's boot summary, for when the monitor was attached too late to
 // catch it and the automatic repeats are used up. The summary is log lines; the reply after them
 // tells a script it is complete.
@@ -2065,7 +2059,7 @@ struct Command {
   Handler run;
 };
 constexpr Command kCommands[] = {
-    {"BTN", &cmdButton},      {"ACT", &cmdActivity},  {"STATE", &cmdState}, {"SCREENSHOT", &cmdScreenshot},
+    {"BTN", &cmdButton},      {"ACT", &cmdActivity},  {"STATE", &cmdState},
     {"BOOTLOG", &cmdBootLog}, {"WEB", &cmdWeb},       {"HELP", &cmdHelp},
 #if SERIAL_TEST_API
     {"IDLE", &cmdIdle},       {"EVENTS", &cmdEvents}, {"GET", &cmdGet},     {"SET", &cmdSet},

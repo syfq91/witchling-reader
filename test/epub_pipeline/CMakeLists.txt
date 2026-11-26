@@ -7,7 +7,6 @@ enable_language(C)
 set(PIPELINE_SOURCES
   PipelineRunner.cpp
   LoggingImpl.cpp
-  BookProtectionStub.cpp
   # lib/Epub — the code under test
   ${REPO_ROOT}/lib/Epub/Epub.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
@@ -91,7 +90,6 @@ set(PIPELINE_INCLUDES
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/lib/ZipFile
-  ${REPO_ROOT}/lib/BookProtection  # BookSession.h, ProtectionManifest.h: BookProtectionStub.cpp
   ${REPO_ROOT}/lib/InflateReader
   ${REPO_ROOT}/lib/uzlib/src
   ${REPO_ROOT}/lib/FsHelpers
@@ -126,12 +124,10 @@ add_executable(EpubPipelineTest
   SpinePageIndexTest.cpp
   FootnotePreviewStoreTest.cpp
   FootnoteResolveSliceTest.cpp
-  FootnoteNoteCaptureTest.cpp
   ParagraphAnchorTest.cpp
   SavedPositionRestoreTest.cpp
   KeptReadingStateTest.cpp
   LayoutFingerprintTest.cpp
-  StarredPageRelayoutTest.cpp
   PagesWithoutPicturesTest.cpp
   EpubMetadataMemoTest.cpp
   ParsedTextOffsetTest.cpp
@@ -171,7 +167,6 @@ add_executable(EpubPipelineTest
   CacheFileIdentityTest.cpp
   HeadingCarryTest.cpp
   CarriedDocumentTest.cpp
-  HeadingJoinTest.cpp
   SaxStateInArenaTest.cpp
   OwnedBuildRegionTest.cpp
   JpegDownscaleTest.cpp
@@ -340,44 +335,3 @@ target_link_libraries(epub_pipeline_dump_noheap PRIVATE
   crosspoint_test_common
   SaxParser
 )
-
-# A protected book through the whole pipeline: the real lib/BookProtection in place of
-# BookProtectionStub.cpp, OpenSSL standing in for the chip's AES and wolfCrypt
-# (test/book_protection/shims), and protected/HalClock.h for the loan clock. Skipped without OpenSSL.
-find_package(OpenSSL)
-if(OPENSSL_FOUND)
-  set(PROTECTED_PIPELINE_SOURCES ${PIPELINE_SOURCES})
-  list(REMOVE_ITEM PROTECTED_PIPELINE_SOURCES BookProtectionStub.cpp)
-  add_executable(EpubProtectedPipelineTest
-    ProtectedBookPipelineTest.cpp
-    HeapTrackStub.cpp
-    ${REPO_ROOT}/lib/BookProtection/AesCbcCipher.cpp
-    ${REPO_ROOT}/lib/BookProtection/BookKey.cpp
-    ${REPO_ROOT}/lib/BookProtection/BookSession.cpp
-    ${REPO_ROOT}/lib/BookProtection/CacheAtRest.cpp
-    ${REPO_ROOT}/lib/BookProtection/EncryptionXmlParser.cpp
-    ${REPO_ROOT}/lib/BookProtection/ProtectionManifest.cpp
-    ${REPO_ROOT}/lib/DeviceSecret/DeviceSecret.cpp
-    ${PROTECTED_PIPELINE_SOURCES}
-  )
-  target_include_directories(EpubProtectedPipelineTest PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/protected
-    ${REPO_ROOT}/test/book_protection/shims
-    ${REPO_ROOT}/test/book_protection
-    ${PIPELINE_INCLUDES}
-    ${REPO_ROOT}/lib/DeviceSecret
-  )
-  target_compile_definitions(EpubProtectedPipelineTest PRIVATE
-    CORPUS_DIR="${REPO_ROOT}/test/epubs"
-    FIXTURE_EPUB="${REPO_ROOT}/test/fixtures/moby-dick.epub"
-    ENABLE_SERIAL_LOG=1
-    LOG_LEVEL=2
-  )
-  target_link_libraries(EpubProtectedPipelineTest PRIVATE
-    crosspoint_test_common
-    SaxParser
-    OpenSSL::Crypto
-    GTest::gtest_main
-  )
-  gtest_discover_tests(EpubProtectedPipelineTest PROPERTIES TIMEOUT 300)
-endif()

@@ -1436,7 +1436,7 @@ bool EpubReaderActivity::inkOnlyPrerenderAvailable() const {
   const int fontId = getEffectiveReaderFontId();
   const auto it = renderer.getSdCardFonts().find(fontId);
   return it != renderer.getSdCardFonts().end() && it->second && it->second->hasTwoBitBitmaps() &&
-         renderer.fontBaseScale(fontId) == 1.0f;
+         renderer.fontBaseScale(fontId) == TextScale{};
 }
 
 bool EpubReaderActivity::pageDrawsUnscaled(const Page& page) {
@@ -2843,7 +2843,8 @@ void EpubReaderActivity::jumpToPercent(const int percent) {
   {
     RenderLock lock(*this);
     currentSpineIndex = targetSpineIndex;
-    navTarget = NavigationTarget::makePercent(spineProgress);
+    navTarget = NavigationTarget::makePercent(
+        ProgressPpb(static_cast<uint32_t>(spineProgress * 1000000000.0F)));
     section.reset();
   }
 }

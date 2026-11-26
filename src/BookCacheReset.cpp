@@ -1,6 +1,5 @@
 #include "BookCacheReset.h"
 
-#include <BookSession.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -70,9 +69,6 @@ void clearBookCacheIfNeeded(const std::string& path, const BookCache::Keep keep)
   // and for TXT and Markdown the reading state is kept when asked, as for the others.
   const std::string cacheDir = cacheDirFor(path);
   if (cacheDir.empty()) return;
-  // A protected book's protection stays registered under its path, holding the manifest in this folder, until the book
-  // is closed: closed first, as Epub::clearCache() does. Nothing is registered for any other book.
-  book_protection::closeBook(path);
   if (BookCache::clear(cacheDir, keep)) {
     LOG_DBG("BCR", "Cleared the cache of %s", path.c_str());
   } else {

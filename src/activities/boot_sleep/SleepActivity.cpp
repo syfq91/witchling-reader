@@ -539,11 +539,11 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
                                  SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP);
   const int x = placement.x;
   const int y = placement.y;
-  const float cropX = placement.cropX;
-  const float cropY = placement.cropY;
+  const BoxCut& draw = placement.draw;
 
-  LOG_DBG("SLP", "bitmap %d x %d, screen %d x %d: drawing to %d x %d, crop %f x %f", bitmap.getWidth(),
-          bitmap.getHeight(), pageWidth, pageHeight, x, y, cropX, cropY);
+  LOG_DBG("SLP", "bitmap %d x %d, screen %d x %d: drawing to %d x %d, shown %d x %d within %d x %d", bitmap.getWidth(),
+          bitmap.getHeight(), pageWidth, pageHeight, x, y, draw.visibleWidth, draw.visibleHeight, draw.maxWidth,
+          draw.maxHeight);
   renderer.clearScreen();
 
   // The tone filters are greyscale modes too: they change how levels are derived, not
@@ -566,7 +566,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
   const bool nativeGray = hasGreyscale && renderer.getGrayLevels() > 4;
 
   if (!nativeGray) {
-    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+    renderer.drawBitmap(bitmap, x, y, draw.maxWidth, draw.maxHeight, draw.visibleWidth, draw.visibleHeight);
 
     if (SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
       renderer.invertScreen();
@@ -582,7 +582,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
       }
       const GfxRenderer::Gray8Target target{canvas, canvasStride};
       bitmap.rewindToData();
-      renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY, &target);
+      renderer.drawBitmap(bitmap, x, y, draw.maxWidth, draw.maxHeight, draw.visibleWidth, draw.visibleHeight, &target);
       renderer.displayGray8Canvas();
       LOG_INF("SLP", "Sleep bitmap rendered at %u levels", static_cast<unsigned>(renderer.getGrayLevels()));
       return;
@@ -629,7 +629,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
       renderer.clearScreen(absolutePass ? 0xFF : 0x00);
       renderer.setRenderMode(mode);
       renderer.setAbsoluteGrayPlanes(absolutePass);
-      renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+      renderer.drawBitmap(bitmap, x, y, draw.maxWidth, draw.maxHeight, draw.visibleWidth, draw.visibleHeight);
       // setRenderMode(BW) also clears the absolute flag, hence re-arming it per
       // plane above.
       if (absolutePass) renderer.setRenderMode(GfxRenderer::BW);

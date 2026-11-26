@@ -104,7 +104,9 @@ bool buildDictionaryHtmlPages(GfxRenderer& renderer, const std::string& definiti
     // <img> entirely, and every path that dereferences epub sits behind either
     // that check or a non-empty image src that only that path can set.
     auto parser = makeUniqueNoThrow<ChapterHtmlSlimParser>(
-        nullptr, renderer, fontId, SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing != 0,
+        nullptr, renderer, fontId,
+        TextScale::fromRaw(static_cast<uint32_t>(SETTINGS.getReaderLineCompression() * 1048576.0F)),
+        SETTINGS.extraParagraphSpacing != 0,
         SETTINGS.paragraphAlignment, viewportWidth, viewportHeight, SETTINGS.hyphenationEnabled != 0,
         SETTINGS.fontSizeNormalization != 0, /*bionicReadingEnabled=*/false,
         // Always true: past a limit the pages are dropped here, and the parse is left to finish.

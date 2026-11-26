@@ -155,6 +155,8 @@ class HalFile : public Print {
   size_t write(uint8_t b) override;
   bool rename(const char* newPath);
   bool getModifyDateTime(uint16_t* pdate, uint16_t* ptime);
+  // The file's first cluster (0 while empty): tells a replaced file from the one it replaced.
+  uint32_t firstCluster();
   bool getCreateDateTime(uint16_t* pdate, uint16_t* ptime);
   bool isDirectory() const;
   // Where the entry sits in its folder: two handles in one folder with the same index are the same entry, however

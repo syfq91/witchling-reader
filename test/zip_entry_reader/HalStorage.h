@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,7 @@ class HalFile : public Print {
     ++opens;
     fp_ = fopen(path.c_str(), "rb");
     applyStdioPolicy(fp_);
+    if (fp_ && trackOpenPaths) openPaths[fp_] = path;
     return fp_ != nullptr;
   }
 
@@ -95,6 +97,7 @@ class HalFile : public Print {
     ++opens;
     fp_ = fopen(path.c_str(), "w+b");
     applyStdioPolicy(fp_);
+    if (fp_ && trackOpenPaths) openPaths[fp_] = path;
     return fp_ != nullptr;
   }
 
@@ -105,6 +108,7 @@ class HalFile : public Print {
     ++opens;
     fp_ = fopen(path.c_str(), "r+b");
     applyStdioPolicy(fp_);
+    if (fp_ && trackOpenPaths) openPaths[fp_] = path;
     return fp_ != nullptr;
   }
 
@@ -120,6 +124,9 @@ class HalFile : public Print {
     }
     return closeQuiet();
   }
+
+  // The real HalFile exposes the file's first cluster; host tests only need a stable value to mix.
+  uint32_t firstCluster() const { return 0; }
 
   // Directory handle, so tests can exercise code that walks the SD card
   // (DictionaryRegistry scans /dictionaries/*/ for index stems). Entries are
@@ -171,6 +178,16 @@ class HalFile : public Print {
   // directory walk there.
   static inline size_t calls = 0;
   static inline size_t opens = 0;
+  // Test instrumentation for the anchor-spill abort case: record paths still open when removed.
+  static inline bool trackOpenPaths = false;
+  static inline std::vector<std::string> removedWhileOpen;
+  static inline std::map<FILE*, std::string> openPaths;
+  static bool isOpenPath(const std::string& path) {
+    for (const auto& [fp, p] : openPaths) {
+      if (p == path) return true;
+    }
+    return false;
+  }
   // Folders opened by path: on the device each one searches its parent from the first entry.
   static inline size_t folderOpens = 0;
   // And flushes: on the device a sync writes the file's data and its directory entry out to the card.
@@ -300,6 +317,7 @@ class HalFile : public Print {
   // both tolerate a handle that was never opened.
   bool closeQuiet() {
     if (fp_) {
+      openPaths.erase(fp_);
       fclose(fp_);
       fp_ = nullptr;
     }
@@ -371,7 +389,10 @@ class HalStorage {
     std::error_code ec;
     return recursive ? std::filesystem::create_directories(path, ec) : std::filesystem::create_directory(path, ec);
   }
-  bool remove(const char* path) { return std::filesystem::remove(path); }
+  bool remove(const char* path) {
+    if (HalFile::trackOpenPaths && HalFile::isOpenPath(path)) HalFile::removedWhileOpen.emplace_back(path);
+    return std::filesystem::remove(path);
+  }
   bool rename(const char* oldPath, const char* newPath) {
     std::error_code ec;
     std::filesystem::rename(oldPath, newPath, ec);

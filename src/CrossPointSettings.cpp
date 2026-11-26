@@ -208,7 +208,7 @@ float CrossPointSettings::getReaderLineCompression() const {
   const LineSpacingScale scale = getReaderFontId() == getBuiltinReaderFontIdForPoints(NOTOSANS, fontPointSize)
                                      ? LineSpacingScale::BuiltinNotoSans
                                      : LineSpacingScale::Font;
-  return lineSpacingFor(lineSpacing, scale, fontPointSize, 0).compression;
+  return static_cast<float>(lineSpacingFor(lineSpacing, scale, fontPointSize, 0).compression.raw()) / 1048576.0F;
 }
 
 unsigned long CrossPointSettings::getSleepTimeoutMs() const {

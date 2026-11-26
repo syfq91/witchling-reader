@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <BoardConfig.h>  // FREEINK_DRIVER_LGFX_EPD
 #include <EInkDisplay.h>
+#include <GrayLevelPlan.h>
 
 class HalDisplay {
  public:
@@ -20,7 +21,7 @@ class HalDisplay {
 
   // Initialize the display hardware and driver.
   // When seamless=true, skip the on-wake resync so existing panel content is preserved
-  // (used when resuming into reader or after a silent reboot without a boot screen).
+  // (used by Quick Resume to bring back the last reader page without a boot screen).
   void begin(bool seamless = false);
 
   // Display dimensions
@@ -60,6 +61,19 @@ class HalDisplay {
   // the reader's inline AA -- must ask this rather than infer it from the board,
   // or they pay the plane/gray/restore cost with no overlap to hide it in.
   bool supportsAsyncRefresh() const;
+  // The gray pass of a two-pass page stays the deferred one on this panel although its refresh can overlap work.
+  // A driver that starts to defer moves its panel to the inline pass by that alone (usesDeferredAa() asks
+  // supportsAsyncRefresh()), which waits AA_SETTLE_MS for a press before its gray and holds the render lock to its
+  // end: the T5S3 lost a ghosting fix that way (docs/lilygo-t5s3-display-stack.md, section 7). Named here:
+  //  - the Picco's SE0400 (SSD2677), whose driver defers a refresh (freeink-sdk, Ssd2677Driver::displayStart). With
+  //    that driver its two-pass pages took the deferred pass on the device, none the inline one (2026-11-17); it
+  //    has not been run inline.
+  //  - the Murphy's UC8253, whose driver defers as well (Uc8253MurphyDriver::displayStart). With that driver its
+  //    two-pass pages took the deferred pass on the device, none the inline one (2026-11-17); it has not been run
+  //    inline.
+  // By the SDK's controller identity, so a Picco with an SSD1677 panel keeps the inline pass it has. The X3's UC8253
+  // answers true as well, which changes nothing there: it defers for asyncRefreshHoldsFrameBuffer().
+  bool keepsDeferredGrayPass() const;
   void finishDisplayAsync();
   bool isRefreshPending() const;
   // The pending refresh's waveform still runs (the panel's BUSY line); its finish is still owed after it ends.
@@ -95,6 +109,10 @@ class HalDisplay {
   bool invertsGrayFrame() const;
 
   // Power management
+  // Powers the panel's analog circuits down between frames (HalCapabilities::powersPanelOffWhenIdle),
+  // after any refresh still going onto the panel. RAM and the previous frame stay. Loop task, with
+  // the render lock held and no render pass in flight.
+  void powerOffPanelBetweenFrames();
   void deepSleep();
 
   // Access to frame buffer
@@ -129,6 +147,10 @@ class HalDisplay {
   // The display itself still holds its previous frame, which a PSRAM arena lend leaves in place
   // even though hasSecondaryBuffer() is false. For code that wants that frame, not the lend state.
   bool keepsPreviousFrame() const;
+  // That buffer holds the frame on the glass, so a RED seed taken from it now (syncRedRamFromFrameBuffer) is the frame
+  // on screen. False once a lend has come back: the return seeds it from the write buffer. See
+  // FreeInkDisplay::secondaryHoldsFrameOnScreen.
+  bool secondaryHoldsFrameOnScreen() const;
 
   // Borrow/return variant of release/realloc: the display drops to the same
   // single-buffer mode, but the block stays owned by the display and is lent to
@@ -149,8 +171,10 @@ class HalDisplay {
   // not being painted, so nothing waits for the waveform, and the caller owes finishDisplayAsync() before it next
   // draws. Elsewhere it is borrowSecondaryBuffer(). See FreeInkDisplay::borrowSecondaryBufferDuringRefresh.
   uint8_t* borrowSecondaryBufferDuringRefresh(size_t* size);
-  // The X3's framebuffer lend: its pending refresh re-reads only the frame it paints. Not the PSRAM arena boards, whose
-  // lend never waited, but whose popup ships blocking until a device run says otherwise.
+  // The framebuffer lend (the C3s): a pending refresh's finish reads only the frame it paints, if anything, so the lend
+  // takes the other one without waiting (FreeInkDisplay::borrowSecondaryBufferDuringRefresh, every panel since SDK
+  // a0e2025). Not the PSRAM arena boards, whose lend never waits (lendsPsramArena). How the reader's Indexing popups
+  // use either: IndexingPopupGate.h.
   bool lendsDuringRefresh() const;
 
   // Allow fast differential refresh to continue (X4) after the secondary buffer
@@ -223,6 +247,13 @@ class HalDisplay {
   void displayOnePassFrame(RefreshMode refreshMode, bool turnOffScreen);
   // Development builds only (the serial test API's LAB command): both planes and an external LUT as given.
   bool displayLabFrame(const uint8_t* bw, const uint8_t* red, const uint8_t* lut);
+  // Register writes sent with every lab frame until cleared (FreeInkDisplay::setLabRegisters()); development builds.
+  bool setLabRegisters(const uint8_t* records, size_t len);
+  // A 16-level panel's calibration (FreeInkDisplay::setGray16Passes and setGray16Levels): three doses toward black and
+  // three toward white in frames, the fast-turn erase, and each level's path {black dose 0..3, white dose 0..3, deep
+  // 0/1}. Kept until the next call or a restart. False where the panel has no 16 levels or a path nets outside the
+  // give-back's range. Development builds only (the serial test API's LAB:G16).
+  bool setGray16Calibration(const uint8_t black[3], const uint8_t white[3], uint8_t erase, const uint8_t (*paths)[3]);
   // Compose the intact B/W framebuffer with the LSB/MSB planes staged by
   // copyGrayscale*Buffers() and display the result in one refresh. Falls back to
   // a plain displayBuffer() on a panel that cannot, so callers need no branch of
@@ -236,8 +267,9 @@ class HalDisplay {
   // Grey levels this panel resolves in one refresh. 4 on every dual-plane
   // controller (X3, X4, X4 Pro, M5 Paper Mono) — two selector bits per pixel is
   // the whole state space, so it is a hard ceiling, not a setting — and 16 on a
-  // panel whose driver keeps a multi-bit buffer of its own (T5S3). Callers that
-  // can render either way branch on this; everyone else keeps the plane path.
+  // panel whose driver keeps a multi-bit buffer of its own (T5S3; the Picco's
+  // 16-level image). Callers that can render either way branch on this;
+  // everyone else keeps the plane path.
   uint8_t getGrayLevels() const;
   // Borrow the driver's composition buffer and paint 8-bit grey straight into
   // it: one byte per pixel (0x00 black, 0xFF white), `stride` bytes per row,
@@ -257,7 +289,26 @@ class HalDisplay {
   // Quantise the borrowed canvas to the panel's native depth and show it as one
   // waveform. The driver picks a bank that can land every level, so this may
   // refresh more thoroughly (and more slowly) than `refreshMode` asked for.
-  void displayGray8Canvas(RefreshMode refreshMode, bool turnOffScreen = false);
+  // False when nothing reached the panel (the X4 Pro without PSRAM for its
+  // planes, say): the previous frame stays up, and the caller draws this one
+  // another way.
+  bool displayGray8Canvas(RefreshMode refreshMode, bool turnOffScreen = false);
+
+  // A panel without such a canvas can still show more than four levels where its driver runs a gray-level plan
+  // (GrayLevelPlan.h: a B/W base, then passes of 1-bit planes the host draws). getGrayLevels() stays at what the
+  // canvas offers, so callers that only know the canvas are not sent to one that is not there.
+  //
+  // nullptr on every panel for now: the waveforms (Free-Ink #220 on the X3; the X4 Pro and X4 to follow) are not
+  // in the SDK yet. Once they are, the plan comes from the driver and the two calls below forward to it.
+  const gray_levels::Plan* grayLevelPlan() const;
+  // Whether this build's panel driver can answer with a plan at all. Known when building, as kMayLendGray8Canvas
+  // is: code that runs a plan is compiled out of every other build (on the C3 it is ~7.7 KB of flash, most of it
+  // the quantizer's soft-float setup). Turn it on with the first driver that carries a plan.
+  static constexpr bool kMayRunGrayLevelPlan = false;
+  // The plan's base, from `frame`. False, before any bus traffic, where the panel has no plan.
+  bool displayGrayLevelBase(const uint8_t* frame, RefreshMode refreshMode);
+  // Pass `pass` of the plan over the planes uploaded since the last step (copyGrayscaleLsbBuffers/MsbBuffers).
+  bool displayGrayLevelPass(uint8_t pass, bool turnOffScreen = false);
 
   // What the panel does, from the SDK (FreeInkDisplay): ask these rather than which board this
   // is. They are what the old deviceIsX3() callers meant, and an X4 Pro can come up on any of
@@ -272,6 +323,19 @@ class HalDisplay {
   bool asyncRefreshHoldsFrameBuffer() const;
   // Repeated FAST refreshes leave residue only a HALF clears (the X3's UC8253 / UC8279d).
   bool ghostsUnderFastRefresh() const;
+  // The card is on the panel's SPI bus, and a pending refresh needs that bus only to start and to finish: between the
+  // two the controller runs the waveform from its own RAM, with its chip select released. Card work can then use the
+  // waveform, if whoever waits for it does so without the bus lock (waitRefreshOffBus). The X4, on any of its three
+  // controllers. Not where the card has a bus of its own (nothing to hand over: HalCapabilities::decodesThroughRefresh
+  // covers those), not the T5S3 (a host task clocks the waveform out; card traffic beside it has not been tried), and
+  // not the X3 (asyncRefreshHoldsFrameBuffer: the finish can read the frame back into the controller, the UC8279d's
+  // after every refresh and the UC8253's after a full sync, with its conditioning passes; its Indexing popup is built
+  // through already, borrowSecondaryBufferDuringRefresh, the page refresh has not been tried).
+  bool refreshLeavesBusToCard() const;
+  // Sleeps until the pending refresh's waveform has ended, WITHOUT the bus lock every other display entry point takes,
+  // so that the card can be read meanwhile. Only where refreshLeavesBusToCard(). The finish is still owed:
+  // completeDisplay() next, which takes the lock and finds the waveform over. Returns at once with nothing pending.
+  void waitRefreshOffBus();
 
   // Runtime geometry passthrough
   uint16_t getDisplayWidth() const;
@@ -281,6 +345,9 @@ class HalDisplay {
 
  private:
   EInkDisplay einkDisplay;
+  uint8_t pendingX3SettlePasses = 0;
+  // The UC8253's settle for the refresh displayBuffer() / refreshDisplay() is about to start (requestResync).
+  void armSettleFor(RefreshMode mode);
   RefreshMode lastRefreshMode = RefreshMode::FAST_REFRESH;
 
   // How long this panel's last FAST refresh actually took, in ms. Measured rather than derived

@@ -20,6 +20,8 @@
 
 #include <WString.h>
 
+inline constexpr const char* kBookCacheStateFile = "opds_sync.json";
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -55,6 +57,21 @@ class HalFile {
   size_t write(const uint8_t* buffer, size_t bytes);
   size_t getName(char* name, size_t len) const;
   uint32_t dirIndex() const;
+  uint32_t firstCluster() const { return 0; }
+  bool seek(size_t pos) {
+    position_ = pos;
+    return true;
+  }
+  bool seekSet(size_t pos) { return seek(pos); }
+  bool seekCur(int64_t offset) {
+    position_ = static_cast<size_t>(static_cast<int64_t>(position_) + offset);
+    return true;
+  }
+  size_t position() const { return position_; }
+  uint64_t position64() const { return position_; }
+  bool seek64(uint64_t pos) { return seek(static_cast<size_t>(pos)); }
+  bool seekSet64(uint64_t pos) { return seek64(pos); }
+  bool isOpen() const { return open_; }
   HalFile openNextFile();
   // Device parity: the HAL asserts on closing a handle nothing opened.
   bool close() {
@@ -176,6 +193,21 @@ class HalStorage {
       file.sfn_ = sfn;
     }
     return file;
+  }
+  bool openFileForRead(const char*, const char* path, HalFile& file) {
+    file = HalFile();
+    const auto parent = find(parentOf(path));
+    const std::vector<std::string> names = segments(path);
+    if (!parent || names.empty() || !isFolderKey(*parent)) return false;
+    const std::string k = join(*parent, names.back());
+    const auto it = entries.find(k);
+    if (it == entries.end() || it->second.folder) return false;
+    file.key_ = k;
+    file.open_ = true;
+    return true;
+  }
+  bool openFileForRead(const char* module, const std::string& path, HalFile& file) {
+    return openFileForRead(module, path.c_str(), file);
   }
   bool openFileForWrite(const char*, const char* path, HalFile& file) {
     file = HalFile();

@@ -552,10 +552,11 @@ void setupDisplayAndFonts(bool seamless = false, bool skipSdFontDiscovery = fals
   for (const auto& rung : CrossPointSettings::FONT_SIZE_RUNGS) {
     if (rung.points <= CrossPointSettings::BUILTIN_FACE_MAX_POINTS) continue;
     const float scale = CrossPointSettings::builtinFaceScale(rung.points);
+    const TextScale faceScale = TextScale::fromRaw(static_cast<uint32_t>(scale * 1048576.0F));
     renderer.insertScaledFont(CrossPointSettings::getBuiltinReaderFontId(CrossPointSettings::SERIF, rung.size),
-                              serif18FontFamily, scale);
+                              serif18FontFamily, faceScale);
     renderer.insertScaledFont(CrossPointSettings::getBuiltinReaderFontId(CrossPointSettings::NOTOSANS, rung.size),
-                              notosans18FontFamily, scale);
+                              notosans18FontFamily, faceScale);
   }
   // CJK glyphs behind every UI face, so a Chinese, Japanese or Korean UI draws, and the language
   // picker draws those languages' names whatever the UI language is. See CjkUiFonts.h.

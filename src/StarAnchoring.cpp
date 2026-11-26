@@ -6,31 +6,13 @@
 #include <string>
 #include <utility>
 
-#include "ChapterXPathIndexer.h"
-
 namespace StarAnchoring {
 
 namespace {
 
-// The pull's reverse mapping, as far as a star needs it: the offset of the text the XPath names. Our own push names
-// text to the codepoint (/text()[N].M); only stray text in a table row is named by its element, which an exact match
-// anchors at that text. Anything else is a stand-in (an ancestor, a sibling) and lands nowhere a page starts.
-std::optional<uint32_t> resolveXPath(const std::shared_ptr<Epub>& epub, const int spineIndex, const std::string& xpath,
-                                     BuildArena* const scratch) {
-  ProgressPpb intra;
-  bool exact = false;
-  uint32_t offset = 0;
-  bool textPoint = false;
-  const unsigned long start = millis();
-  const bool found = ChapterXPathIndexer::findProgressForXPath(epub, spineIndex, xpath, intra, exact, nullptr, &offset,
-                                                               &textPoint, scratch);
-  const unsigned long took = millis() - start;
-  if (!found || (!textPoint && !exact)) {
-    LOG_INF("STAR", "Spine %d: %s did not resolve (%lu ms)", spineIndex, xpath.c_str(), took);
-    return std::nullopt;
-  }
-  LOG_INF("STAR", "Spine %d: %s -> offset %u (%lu ms)", spineIndex, xpath.c_str(), static_cast<unsigned>(offset), took);
-  return offset;
+// XPath indexing is omitted without KOReader sync; bookmarks anchor by visible text offset.
+std::optional<uint32_t> resolveXPath(const std::shared_ptr<Epub>&, const int, const std::string&, BuildArena* const) {
+  return std::nullopt;
 }
 
 // The page `offset` is on: the star's own page while that still starts there (a page that shares its start with the
@@ -178,20 +160,7 @@ Work parseNext(BookmarkStore& store, const std::shared_ptr<Epub>& epub, const Se
     const StarAnchor& anchor = anchors[i];
     if (!anchor.nameOwed || anchor.mappingFailed || !knownOffset(anchor)) continue;
     store.noteNameTried(i);
-    const unsigned long start = millis();
-    std::string xpath =
-        ChapterXPathIndexer::findXPathForVisibleOffset(epub, stars[i].spineIndex, anchor.offset, scratch);
-    const unsigned long took = millis() - start;
-    if (xpath.empty() || xpath.size() > bookmark_file::kMaxXPathBytes) {
-      // Not a failed mapping: the offset still finds the text, so the star still settles by it.
-      LOG_INF("STAR", "Spine %u: no XPath for offset %u (%lu ms)", static_cast<unsigned>(stars[i].spineIndex),
-              static_cast<unsigned>(anchor.offset), took);
-    } else {
-      LOG_INF("STAR", "Spine %u: offset %u named %s (%lu ms)", static_cast<unsigned>(stars[i].spineIndex),
-              static_cast<unsigned>(anchor.offset), xpath.c_str(), took);
-      store.setXPath(i, std::move(xpath));
-    }
-    return Work::Parsed;
+    return Work::None;
   }
   return Work::None;
 }

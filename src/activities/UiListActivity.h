@@ -101,7 +101,8 @@ class UiListActivity : public Activity, protected UiAppHost {
   // The list's area below the header: screen margins from listContentRect() (both hint strips
   // reserved) plus the theme's top padding and header height, then the theme's spacer. extraTop /
   // extraBottom make room for a screen's own panel above the list or band below it.
-  void layoutListArea(UiScreen& screen, int16_t extraTop = 0, int16_t extraBottom = 0);
+  void layoutListArea(UiScreen& screen, int16_t extraTop = 0, int16_t extraBottom = 0, bool spacer = true,
+                      const char* headerSubtitle = nullptr);
   // The props every list here starts from: rows act on tap, touch input, body-text labels up to two
   // lines. The caller sets items / count / rowProvider and anything it draws differently.
   [[nodiscard]] freeink::ui::ListProps listProps(UiScreen& screen) const;

@@ -2,9 +2,7 @@
 
 #include <Bitmap.h>
 #include <BookCache.h>
-#include <BookSession.h>
 #include <BufferedFileIO.h>
-#include <CacheAtRest.h>
 #include <CooperativeAbort.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>

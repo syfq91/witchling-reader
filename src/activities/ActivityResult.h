@@ -128,10 +128,15 @@ struct WordSearchResult {
   std::string word;
 };
 
+// A headword chosen from "Did you mean" (DictionarySuggestionsActivity), for DictionaryWordSelectActivity to look up.
+struct DictionarySuggestionResult {
+  std::string headword;
+};
+
 using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult,
                                    PageResult, SyncResult, NetworkModeResult, FootnoteResult, FilePathResult,
                                    StarredPageResult, PrintedPageResult, DictionarySwitchResult, OpdsProgressionResult,
-                                   ConfirmResult, BookSearchResult, WordSearchResult>;
+                                   ConfirmResult, BookSearchResult, WordSearchResult, DictionarySuggestionResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

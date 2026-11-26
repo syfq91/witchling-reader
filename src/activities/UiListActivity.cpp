@@ -141,7 +141,8 @@ void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, c
 
 // Out of line on purpose: every list screen's buildScreen() calls these, and inlined they cost
 // about 800 B of FreeInkUI code per screen.
-void UiListActivity::layoutListArea(UiScreen& screen, const int16_t extraTop, const int16_t extraBottom) {
+void UiListActivity::layoutListArea(UiScreen& screen, const int16_t extraTop, const int16_t extraBottom,
+                                    const bool spacer, const char* headerSubtitle) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect fullRect = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/false);
   const Rect listRect = listContentRect();
@@ -151,10 +152,12 @@ void UiListActivity::layoutListArea(UiScreen& screen, const int16_t extraTop, co
   const int16_t rightMargin =
       static_cast<int16_t>(renderer.getScreenWidth() - (fullRect.x + fullRect.width)) + sideInsetRight;
   const int16_t leftMargin = static_cast<int16_t>(fullRect.x) + sideInsetLeft;
+  const Rect body = headerSubtitle ? UITheme::getBodyRect(renderer, true, true, headerSubtitle)
+                                    : Rect{listRect.x, listRect.y, listRect.width, listRect.height};
   screen.setContentMarginFromScreen(fui::Insets{
       static_cast<int16_t>(listRect.y + metrics.topPadding + metrics.headerHeight + extraTop), rightMargin,
-      static_cast<int16_t>(renderer.getScreenHeight() - (listRect.y + listRect.height) + extraBottom), leftMargin});
-  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+      static_cast<int16_t>(renderer.getScreenHeight() - (body.y + body.height) + extraBottom), leftMargin});
+  if (spacer) screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 }
 
 fui::ListProps UiListActivity::listProps(UiScreen& screen) const {

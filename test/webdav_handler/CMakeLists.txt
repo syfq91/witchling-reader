@@ -1,9 +1,8 @@
 add_executable(WebDAVHandlerTest
   WebDAVHandlerTest.cpp
-  BookCacheResetTest.cpp
   WebPathGuardTest.cpp
   stubs/BookRelocation.cpp
-  stubs/BookSession.cpp
+  stubs/EpubCachePath.cpp
   ${REPO_ROOT}/src/network/WebDAVHandler.cpp
   ${REPO_ROOT}/src/network/WebPathGuard.cpp
   ${REPO_ROOT}/src/BookCacheReset.cpp
@@ -19,10 +18,18 @@ target_include_directories(WebDAVHandlerTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${REPO_ROOT}/src
   ${REPO_ROOT}/src/network
-  ${REPO_ROOT}/lib/BookProtection
+  ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/FsHelpers
   ${REPO_ROOT}/lib/Logging
   ${REPO_ROOT}/lib/Memory
+  ${REPO_ROOT}/lib/Serialization
+  ${REPO_ROOT}/lib/Xtc
+  ${REPO_ROOT}/lib/ZipFile
+  ${REPO_ROOT}/lib/InflateReader
+  ${REPO_ROOT}/lib/uzlib/src
+  ${REPO_ROOT}/lib/GfxRenderer
+  ${REPO_ROOT}/lib/CooperativeAbort
+  ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/test/shims
 )
 
