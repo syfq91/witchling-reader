@@ -21,6 +21,7 @@
 #include "hyphenation/Hyphenator.h"
 
 class GfxRenderer;
+class GlyphPrefetchBatch;
 class BuildArena;
 class ShapingFace;
 class WordShapeCache;
@@ -140,7 +141,7 @@ class ParsedText {
   static constexpr uint8_t MAX_WORD_SIZE_PCT = 250;
   static constexpr uint8_t DEFAULT_WORD_SIZE_PCT = 100;
   // The smallest scale a combined word is drawn at to fit one em: a run wider than two ems stays sideways.
-  static constexpr float kMinCombineScale = 0.5f;
+  static constexpr TextScale kMinCombineScale = TextScale::ratio(1, 2);
 
  private:
   // Start and End (text-align: start / end, kept for the layout while the direction is unset or auto) become Left or
@@ -174,8 +175,12 @@ class ParsedText {
   // the parser opens), or the heap when null. The parser sets it on its main text block (with
   // beforeLine_, see there for why the two go together) and on table cells laid out as a grid
   // (without the hook: the row is placed as a whole inside a block of its own). A cell laid out
-  // as a fallback paragraph keeps the heap.
+  // as a fallback paragraph is wired as a page paragraph, hook and all (ChapterHtmlSlimParser::emitCellAsParagraph).
   BuildArena* lineArena_ = nullptr;
+  // What each line may take from lineArena_, object and bytes (TextBlock::ArenaRoom, TextBlock::make): the page's, held
+  // by the parser. Null, unless the caller hands one: the object on the heap, the bytes in lineArena_ while it has
+  // room.
+  TextBlock::ArenaRoom* lineRoom_ = nullptr;
   // Called with the line's largest word-size percent, and whether the line carries ruby, just before the line is
   // materialised. The parser uses it to run its page-fit test BEFORE the allocation: a line that does not
   // fit is then allocated from the page it lands on, not from the block of the page it
@@ -298,12 +303,12 @@ class ParsedText {
   // Runs the line pass over tokens [first, first + count) into bidiState_->line, with the workspace borrowed from
   // lineArena_ for the pass alone. A token with shaped pieces is cut at their edges (cutShapedTokens). False, logged,
   // when it could not run: the line is then laid out without bidi.
-  bool layOutBidiLine(const GfxRenderer& renderer, int fontId, size_t first, size_t count);
+  bool layOutBidiLine(size_t first, size_t count);
   // Gives each of the line's tokens with more than one shaped piece its cut points (BidiLine::Token::cuts): where each
   // piece after the first begins, in bidiState_->tokenCuts, and records each token's cut count (tokenCutCount) for
   // the materialisation, which runs after the tokens are gone. A token whose cuts the heap has no room for, or that
   // break their contract, gets none (logged, latched): its pieces are then drawn as the line pass's code points.
-  void cutShapedTokens(const GfxRenderer& renderer, int fontId, size_t first, size_t count, BidiLine::Token* tokens);
+  void cutShapedTokens(size_t first, size_t count, BidiLine::Token* tokens);
   // What each of the line's pieces is drawn as, in bidiState_'s pieceForms and pieceGlyphs, and its width, in
   // lineXPosScratch_: the line pass's display form and its measure, unless the piece draws a shaped token's store piece
   // that is not Text (a glyph run, or a Reordered form, at the store's width). An empty run (a letter its glued
@@ -392,16 +397,21 @@ class ParsedText {
   // Token i's pieces, found in the store, else replayed from the word cache or shaped now, their glyphs warmed and
   // their widths set, and *width their sum; false: it is laid out as its code points (and latched when it could not be
   // shaped, or its pieces measured for want of memory).
-  bool shapeToken(const GfxRenderer& renderer, int fontId, size_t i, uint16_t* width);
+  bool shapeToken(const GfxRenderer& renderer, int fontId, size_t i, uint16_t* width,
+                  GlyphPrefetchBatch* prefetchBatch = nullptr);
+  // Plain binary search for the widest legal Myanmar syllable prefix fitting `availableWidth`.
+  // `breaks` must be ascending in `(0, words[wordIndex].size())` (as myanmarLineEndBreaks returns).
+  bool chooseMyanmarBreak(const GfxRenderer& renderer, int fontId, size_t wordIndex, int availableWidth,
+                          const std::vector<Hyphenator::BreakInfo>& breaks, size_t& chosenOffset, int& chosenWidth);
   // *width, the sum of token i's stored pieces' widths, and true; false when the store holds none for it. Nothing is
-  // shaped: a paragraph that needs bidi shapes its tokens before the line pass's workspace is borrowed.
-  bool storedWidth(const GfxRenderer& renderer, int fontId, size_t i, uint16_t* width) const;
+  // shaped: a paragraph that needs bidi, or that mixes shaped styles, shapes its tokens before the width loop.
+  bool storedWidth(size_t i, uint16_t* width) const;
   // The width of words[i]'s first `bytes` bytes and a hyphen when `hyphen`: a candidate the breaker measures, shaped in
   // the store's scratch entry (nothing is kept), or measured as code points when it is not shaped (and latched when it
   // could not be, or its pieces measured). The candidate's string was reserved by hyphenateWordAtIndex.
   int shapedPrefixWidth(const GfxRenderer& renderer, int fontId, size_t i, size_t bytes, bool hyphen);
   // Whether token i's first piece (its last, when `last`) is a glyph run: a glued gap there takes no kerning (step 8).
-  bool glyphEdge(const GfxRenderer& renderer, int fontId, size_t i, bool last) const;
+  bool glyphEdge(size_t i, bool last) const;
   // A line of a paragraph that shapes, tokens [first, first + count) placed: when a token has pieces, each token
   // becomes its pieces, in order (step 7), and true. The first piece keeps the token's boundary, the others are glued;
   // each takes the token's style and size; a Glyphs piece is drawn as its run, a Reordered piece as its form (without
@@ -446,9 +456,9 @@ class ParsedText {
   void applyBionicReadingTransform();
   // Effective measurement scale of words[i]: the block-level multiplier (a word font's own scale for a word in
   // another family) combined with the word's own inline size percentage.
-  float wordScale(const size_t i) const {
+  TextScale wordScale(const size_t i) const {
     const TextBlock::WordFont& font = fontSlots_[wordSizes[i].fontSlot];
-    return (font.fontId != 0 ? font.scale : blockStyle.fontSizeMultiplier) * (wordSizes[i].pct / 100.0f);
+    return (font.fontId != 0 ? font.scale : blockStyle.fontSizeMultiplier) * TextScale::percent(wordSizes[i].pct);
   }
   // The font words[i] is measured in: its slot's, else the block's (`fontId`).
   int wordFontId(const size_t i, const int fontId) const {
@@ -703,8 +713,11 @@ class ParsedText {
   // never hyphenates. Survives reset(); the parser sets it for every block it starts (ChapterHtmlSlimParser::
   // blockHyphenates).
   void setHyphenationEnabled(const bool enabled) { hyphenationEnabled = enabled; }
-  // See lineArena_ / beforeLine_. Both survive reset().
-  void setLineArena(BuildArena* arena) { lineArena_ = arena; }
+  // See lineArena_ / lineRoom_ / beforeLine_. All survive reset().
+  void setLineArena(BuildArena* arena, TextBlock::ArenaRoom* room = nullptr) {
+    lineArena_ = arena;
+    lineRoom_ = room;
+  }
   // A run laid out as its code points because it could not be shaped (no memory, or the font failed it) sets *latch
   // (Section's kStatusShapingDegraded). Survives reset().
   void setShapingLatch(bool* latch) { shapingLatch_ = latch; }

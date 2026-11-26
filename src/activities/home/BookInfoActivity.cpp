@@ -16,15 +16,16 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ByteSize.h"
 
 std::string BookInfoActivity::formatFileSize(const size_t bytes) {
   char buf[16];
   if (bytes < 1024) {
     snprintf(buf, sizeof(buf), "%u B", static_cast<unsigned>(bytes));
   } else if (bytes < 1024 * 1024) {
-    snprintf(buf, sizeof(buf), "%.1f KB", bytes / 1024.0f);
+    byte_size::formatTenths(buf, sizeof(buf), bytes, byte_size::KB, "KB");
   } else {
-    snprintf(buf, sizeof(buf), "%.1f MB", bytes / (1024.0f * 1024.0f));
+    byte_size::formatTenths(buf, sizeof(buf), bytes, byte_size::MB, "MB");
   }
   return buf;
 }

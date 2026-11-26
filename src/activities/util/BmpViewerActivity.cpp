@@ -1,20 +1,20 @@
 #include "BmpViewerActivity.h"
 
 #include <Bitmap.h>
+#include <Epub/blocks/ImageBlock.h>
 #include <Epub/converters/ImageDecoderFactory.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <ImageScale.h>
 #include <Memory.h>
-
-#include <cmath>
 
 #include "../reader/ReaderUtils.h"
 #include "CrossPointSettings.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/FramebufferUtil.h"
+#include "util/ScreenshotUtil.h"
 
 namespace {
 constexpr const char* SLEEP_BMP_PATH = "/sleep.bmp";
@@ -37,15 +37,15 @@ void computeCenteredImagePlacement(const int imageWidth, const int imageHeight, 
   renderHeight = imageHeight;
 
   if (imageWidth > pageWidth || imageHeight > pageHeight) {
-    const float ratio = static_cast<float>(imageWidth) / static_cast<float>(imageHeight);
-    const float screenRatio = static_cast<float>(pageWidth) / static_cast<float>(pageHeight);
-
-    if (ratio > screenRatio) {
+    // Cross-multiplied, the shapes compare exactly.
+    const int64_t imageW = imageWidth;
+    const int64_t imageH = imageHeight;
+    if (imageW * pageHeight > pageWidth * imageH) {
       renderWidth = pageWidth;
-      renderHeight = std::max(1, static_cast<int>(std::round(static_cast<float>(pageWidth) / ratio)));
+      renderHeight = std::max(1, roundedQuotient(pageWidth * imageH, imageW));
     } else {
       renderHeight = pageHeight;
-      renderWidth = std::max(1, static_cast<int>(std::round(static_cast<float>(pageHeight) * ratio)));
+      renderWidth = std::max(1, roundedQuotient(pageHeight * imageW, imageH));
     }
 
     x = std::max(0, (pageWidth - renderWidth) / 2);
@@ -267,12 +267,19 @@ bool BmpViewerActivity::renderDecodedImage(const bool showControls) {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   };
 
+  // A file the decoder could not read draws a frame in its place (the reader's way); here that is the failure it was,
+  // not a picture to keep, or to set as the sleep screen.
+  const auto decodeChecked = [&]() {
+    const uint32_t failedBefore = image_scratch::decodeFailedCount();
+    return decoder->decodeToFramebuffer(filePath, renderer, config) &&
+           image_scratch::decodeFailedCount() == failedBefore;
+  };
   if (!grayscaleDisplay) {
     // Pure black-and-white path: single decode with 1-bit Atkinson dither.
     config.monochromeOutput = true;
     renderer.setRenderMode(GfxRenderer::BW);
     renderer.clearScreen();
-    if (!decoder->decodeToFramebuffer(filePath, renderer, config)) {
+    if (!decodeChecked()) {
       return false;
     }
     drawHints();
@@ -287,7 +294,7 @@ bool BmpViewerActivity::renderDecodedImage(const bool showControls) {
 
   renderer.setRenderMode(GfxRenderer::BW);
   renderer.clearScreen();
-  if (!decoder->decodeToFramebuffer(filePath, renderer, config)) {
+  if (!decodeChecked()) {
     return false;
   }
   drawHints();
@@ -295,7 +302,7 @@ bool BmpViewerActivity::renderDecodedImage(const bool showControls) {
 
   renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-  if (!decoder->decodeToFramebuffer(filePath, renderer, config)) {
+  if (!decodeChecked()) {
     renderer.setRenderMode(GfxRenderer::BW);
     return false;
   }
@@ -303,7 +310,7 @@ bool BmpViewerActivity::renderDecodedImage(const bool showControls) {
 
   renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-  if (!decoder->decodeToFramebuffer(filePath, renderer, config)) {
+  if (!decodeChecked()) {
     renderer.setRenderMode(GfxRenderer::BW);
     return false;
   }
@@ -413,8 +420,7 @@ void BmpViewerActivity::setAsSleepScreen() {
     const bool renderedForCapture = renderDecodedImage(false);
     if (renderedForCapture) {
       Storage.remove(SLEEP_BMP_TMP_PATH);
-      if (FramebufferUtil::saveFramebufferAsBmp(SLEEP_BMP_TMP_PATH, renderer.getFrameBuffer(),
-                                                display.getDisplayWidth(), display.getDisplayHeight())) {
+      if (ScreenshotUtil::saveFramebufferAsBmp(SLEEP_BMP_TMP_PATH, renderer, GfxRenderer::Portrait)) {
         success = replaceSleepBmpFromTemp();
       }
     }

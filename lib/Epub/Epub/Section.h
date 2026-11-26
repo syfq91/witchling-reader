@@ -25,6 +25,26 @@ namespace serialization {
 class BufferedFileWriter;
 }
 
+#ifdef SECTION_SETUP_FAULT_INJECTION
+// Host tests only (firmware never defines it): which of the build setup's allocations are refused as if the heap were
+// out (Section::runBuildSetup: the chapter parser, the TOC anchor pool in the arena, the same on the heap), and where
+// the last pool came from. Inert until a test sets a flag.
+struct SectionSetupFaults {
+  enum class PoolSource { None, Arena, Heap };
+  bool refuseParser = false;
+  // Stands in for a board that builds in PSRAM (the pool may then live in the region); the host has no PSRAM macro.
+  bool poolInRegion = false;
+  bool refuseTocPoolArena = false;
+  bool refuseTocPoolHeap = false;
+  PoolSource lastPoolSource = PoolSource::None;
+  size_t lastPoolBytes = 0;
+};
+inline SectionSetupFaults& sectionSetupFaults() {
+  static SectionSetupFaults faults;
+  return faults;
+}
+#endif
+
 class Section {
  public:
   // Forward-declared so the by-reference build/hash API below can name it; defined fully below.
@@ -91,10 +111,15 @@ class Section {
   // Records this spine's page count in the book's SpinePageIndex under `requestedHash`. No-op for
   // a truncated or empty section.
   void recordPageCount(uint32_t requestedHash) const;
-  void writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
-                              uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
-                              bool embeddedStyle, bool bionicReadingEnabled, uint8_t imageRendering,
-                              VerticalText verticalText);
+  bool carriesPrevious(const BuildParams& p) const;
+  bool carriedAway(const BuildParams& p) const;
+  // A carried item: no page and no file, its SpinePageIndex entry marked (recordCarried). What loadSectionFile and a
+  // build make of it.
+  void becomeCarried(const BuildParams& p);
+  void writeSectionFileHeader(int fontId, TextScale lineCompression, bool extraParagraphSpacing,
+                              uint8_t paragraphAlignment, uint16_t viewportWidth, uint16_t viewportHeight,
+                              bool hyphenationEnabled, bool embeddedStyle, bool bionicReadingEnabled,
+                              uint8_t imageRendering, VerticalText verticalText);
   uint32_t onPageComplete(std::unique_ptr<Page> page, serialization::BufferedFileWriter& out);
 
   struct TocBoundary {
@@ -116,6 +141,9 @@ class Section {
   // set it vertical-rl (kStatusVertical): what flowContext() is made of. Here, in the padding before buildState_.
   VerticalText request_ = VerticalText::Off;
   bool vertical_ = false;
+  // The answer this section's load or build took to whether its layout takes in the heading file before it
+  // (carriesPrevious; carriesHeadingFile). In the same padding.
+  bool carriesHeading_ = false;
 
   void buildTocBoundariesFromFile(FsFile& f);
   void buildPageBreakLabelsFromFile(FsFile& f) const;
@@ -158,6 +186,12 @@ class Section {
   // live state retained in BuildState for the next call.
   BuildPhaseResult runBuildParse(BuildState& st, uint32_t budgetMs);
   BuildPhaseResult runBuildFinalize(BuildState& st);
+  // The carried heading file's XHTML banked beside its own spine's, as its build would leave it, and where its body's
+  // content lies in that copy (BuildState::Carry). Between the extraction and the parse; the file is 4 KB at most.
+  bool prepareCarry(BuildState& st);
+  // Scopes the book's CSS to the stylesheets the chapter links (and the carried heading file), from the head of its
+  // XHTML on the card, before the parser's setup makes the first style lookup. False when the file cannot be rewound.
+  bool scopeStylesheets(BuildState& st);
   // Runs between the parse phases, once the spine's inflated XHTML is on SD and no ZIP state is
   // live: makes sure every note this spine references has its text in the book's preview store,
   // then points the visitor at it. Never fails the build — see the definition.
@@ -209,13 +243,22 @@ class Section {
   int currentPage = 0;
 
   // What this section's page numbers are counted in: the cache variant it was loaded or is built as (the no-CSS one
-  // when it fell back to that), under this section format. Two sections of a chapter with the same fingerprint lay
-  // its pages out alike, so a page number saved with it (a starred page, BookmarkStore) stands while it is
-  // unchanged. 0 while the section has neither loaded nor started a build. The page count is not part of it: a
-  // build in progress knows it only at the end.
+  // when it fell back to that, the one carrying the heading file before it when it does), under this section format.
+  // Two sections of a chapter with the same fingerprint lay its pages out alike, so a page number saved with it (a
+  // starred page, BookmarkStore) stands while it is unchanged. 0 while the section has neither loaded nor started a
+  // build. The page count is not part of it: a build in progress knows it only at the end.
   uint32_t layoutFingerprint() const { return layoutFingerprint_; }
   // The fingerprint a section loaded or built from `p` gets, short of the no-CSS fallback only a load finds out about.
   static uint32_t layoutFingerprintFor(const BuildParams& p);
+  // The same for spine item `spineIndex` of `epub`, which may carry the heading file before it (HeadingCarry).
+  static uint32_t layoutFingerprintFor(const Epub& epub, int spineIndex, const BuildParams& p);
+  // HeadingCarry under the reader's vertical request (never under one that is not Off): spine item `spineIndex` holds
+  // only its chapter's heading and has no page of its own, the next item's first page showing it (carriedAwayOf); or
+  // the item before it is such a file, which its layout takes in (carriesPreviousOf). The Epub decides
+  // (isCarriedSpine) and remembers its last answers.
+  // `scratch`: where a heading file not banked yet may be inflated for the answer (HeadingCarry::scanSpine).
+  static bool carriedAwayOf(const Epub& epub, int spineIndex, VerticalText request, BuildArena* scratch = nullptr);
+  static bool carriesPreviousOf(const Epub& epub, int spineIndex, VerticalText request, BuildArena* scratch = nullptr);
   // The section file format (SECTION_FILE_VERSION). What its offset table counts (VisibleText.h) is the book's source,
   // whatever the layout; a firmware with another format may count it otherwise, so a visible-text offset saved for
   // later (a starred page's, BookmarkStore) is good while this is the format it was counted under.
@@ -226,10 +269,10 @@ class Section {
   // build can carry them across slices without re-passing ten arguments each call.
   struct BuildParams {
     int fontId = 0;
-    float lineCompression = 1.0f;
+    TextScale lineCompression;
     // Book's style line spacing (LineSpacing.h): a block's CSS line-height, in ems of lineHeightEmPx, sets its pitch,
     // never below this compression. 0 = off. Hashed only when on, so the variants without it keep their key.
-    float bookLineHeightFloor = 0.0f;
+    TextScale bookLineHeightFloor = TextScale::fromRaw(0);
     uint16_t lineHeightEmPx = 0;
     bool extraParagraphSpacing = false;
     uint8_t paragraphAlignment = 0;
@@ -401,7 +444,12 @@ class Section {
   bool isEmbeddedStyleFallback() const { return embeddedStyleFallback; }
   // True when the last build's CSS resolution hit low-heap skips (styles silently
   // missing from the cached pages), or when the loaded cache was written by such a build.
+  // Also when the heap refused the build the book's stylesheet table, which left it unscoped.
   bool isCssLowHeapDegraded() const { return cssLowHeapDegraded_; }
+  // True when this section's layout takes in the heading file before it at the top of its first page (HeadingCarry):
+  // the answer its load or build took. The reader reads it (a star on that file is this first page's) rather than ask
+  // again from the render task, where the question may inflate the file on the heap.
+  bool carriesHeadingFile() const { return carriesHeading_; }
   // True when the last build demoted a table row to paragraphs, or the loaded cache was written
   // by such a build. The reader rebuilds such a chapter once per session when it is entered.
   bool isTableRowDegraded() const { return tableRowDegraded_; }

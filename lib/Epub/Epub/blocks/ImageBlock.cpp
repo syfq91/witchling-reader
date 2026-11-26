@@ -21,6 +21,7 @@
 #include "../converters/DirectPixelWriter.h"
 #include "../converters/ImageDecoderFactory.h"
 #include "../converters/PixelCache.h"
+#include "../converters/PixelCacheReplay.h"
 #include "../converters/PngToFramebufferConverter.h"
 #include "PictureTone.h"
 
@@ -111,6 +112,7 @@ namespace image_scratch {
 namespace {
 BuildArena* g_arena = nullptr;
 uint32_t g_heapShort = 0;
+uint32_t g_decodeFailed = 0;
 CoarseNeed g_coarseNeed;
 bool g_canWait = false;
 }  // namespace
@@ -120,6 +122,8 @@ bool canWait() { return g_canWait; }
 void setCanWait(const bool canWait) { g_canWait = canWait; }
 void noteHeapShort() { ++g_heapShort; }
 uint32_t heapShortCount() { return g_heapShort; }
+void noteDecodeFailed() { ++g_decodeFailed; }
+uint32_t decodeFailedCount() { return g_decodeFailed; }
 void noteCoarse(const CoarseNeed& need) {
   noteHeapShort();
   if (need.bytes > g_coarseNeed.bytes) g_coarseNeed = need;
@@ -287,71 +291,10 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
     }
   }
 
-  // Read several rows per SD access. A full-page image is replayed from cache up to
-  // 3x per page with AA on (BW plane + both grayscale planes), and a one-row-per-read
-  // loop here means hundreds of tiny reads through the storage mutex + SdFat each time —
-  // the dominant cost of displaying an image page. Batching rows into a ~4KB buffer
-  // cuts that down dramatically without holding the whole image.
-  // (Ported from upstream commit d9bcef7a, crosspoint-reader#2230, when the multi-strip
-  // grayscale passes made this ~14x; the strips are gone but the batching still pays.)
-  int rowsPerRead = 4096 / bytesPerRow;
-  if (rowsPerRead < 1) rowsPerRead = 1;
-  if (rowsPerRead > rowsToRender) rowsPerRead = rowsToRender;
-  uint8_t* readBuffer = (uint8_t*)malloc((size_t)rowsPerRead * bytesPerRow);
-  if (!readBuffer) {
-    // Fall back to a single-row buffer under memory pressure.
-    rowsPerRead = 1;
-    readBuffer = (uint8_t*)malloc(bytesPerRow);
-  }
-  if (!readBuffer) {
-    LOG_ERR("IMG", "Failed to allocate row buffer");
-    cacheFile.close();
-    return false;
-  }
-
-  DirectPixelWriter pw;
-  pw.init(renderer);
-
-  int rowsInBuffer = 0;
-  int bufferRow = 0;
-  for (int row = 0; row < rowsToRender; row++) {
-    if (bufferRow >= rowsInBuffer) {
-      const int toRead = (rowsToRender - row < rowsPerRead) ? (rowsToRender - row) : rowsPerRead;
-      const size_t bytes = (size_t)toRead * bytesPerRow;
-      const int bytesRead = cacheFile.read(readBuffer, bytes);
-      if (bytesRead < 0 || static_cast<size_t>(bytesRead) != bytes) {
-        LOG_ERR("IMG", "Cache read error at row %d", srcYOffset + row);
-        free(readBuffer);
-        cacheFile.close();
-        return false;
-      }
-      rowsInBuffer = toRead;
-      bufferRow = 0;
-    }
-
-    const uint8_t* rowBuffer = readBuffer + (size_t)bufferRow * bytesPerRow;
-    bufferRow++;
-
-    const int destY = y + row;
-    pw.beginRow(destY);
-    // Column window for the active write target. The strip-based grayscale passes are
-    // gone (isStripActive() is hardcoded false), so this is the full image width today
-    // and the range doubles as a bounds guard.
-    int colStart, colEnd;
-    pw.bandColRange(x, cachedWidth, colStart, colEnd);
-    for (int col = colStart; col < colEnd; col++) {
-      const int byteIdx = col >> 2;            // col / 4
-      const int bitShift = 6 - (col & 3) * 2;  // MSB first within byte
-      uint8_t pixelValue = (rowBuffer[byteIdx] >> bitShift) & 0x03;
-
-      pw.writePixel(x + col, pixelValue);
-    }
-  }
-
-  free(readBuffer);
+  const bool ok = pixel_cache::replayRows(cacheFile, renderer, cachedWidth, rowsToRender, x, y);
   cacheFile.close();
-  LOG_TRC("IMG", "Cache render complete");
-  return true;
+  if (ok) LOG_TRC("IMG", "Cache render complete");
+  return ok;
 }
 
 }  // namespace
@@ -522,6 +465,8 @@ void ImageBlock::warmGrayVariant(GfxRenderer& renderer, const int x, const int y
 bool ImageBlock::cacheGray8(GfxRenderer& renderer) const {
   if (!HalDisplay::kMayLendGray8Canvas) return false;  // no canvas in this build: none of the decode below
   if (hasGray8Cache()) return true;
+  // A picture that failed to decode in this session is not decoded again by every warm.
+  if (decodeFailures_ != nullptr && decodeFailures_->has(DecodeFailures::hashOf(imagePath))) return false;
   const uint32_t shortBefore = image_scratch::heapShortCount();
   const std::unique_ptr<uint8_t[]> samples = decodeGray8Picture(renderer);
   // Not a picture decoded short of memory (a coarse one among them): a later decode can do better.
@@ -676,13 +621,19 @@ bool ImageBlock::placeholderOnly_ = false;
 ImageBlock::Placeholder ImageBlock::placeholderOnlyKind_ = ImageBlock::Placeholder::Loading;
 uint16_t ImageBlock::placeholdersDrawn_ = 0;
 uint16_t ImageBlock::lowMemoryDrawn_ = 0;
+DecodeFailures* ImageBlock::decodeFailures_ = nullptr;
 
 void ImageBlock::renderPlaceholder(GfxRenderer& renderer, const int x, const int y, const Placeholder kind) const {
   constexpr int BORDER = 1;
   constexpr int PADDING = 6;
 
   if (kind == Placeholder::LowMemory && lowMemoryDrawn_ < UINT16_MAX) lowMemoryDrawn_++;
+  // The failed picture's frame is the decoder's (framedGap), which leaves a box past the screen undrawn: so does this.
+  const bool offScreen =
+      x < 0 || y < 0 || x + width > renderer.getScreenWidth() || y + height > renderer.getScreenHeight();
+  if (kind == Placeholder::Failed && offScreen) return;
   renderer.drawRect(x, y, width, height, BORDER, true);
+  if (kind == Placeholder::Failed) return;  // as the decoder's own frame for a file it cannot draw (framedGap)
 
   const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
   const bool hasAlt = !altText.empty();
@@ -761,6 +712,14 @@ void ImageBlock::renderUpright(GfxRenderer& renderer, const int x, const int y, 
     return;
   }
 
+  // A picture that failed to decode in this session: its frame, not another decode of the same file. Not in a pass that
+  // writes the caches alone (the image lane, getWriteRows() 0): the framebuffer holds another page there.
+  const uint32_t failureHash = DecodeFailures::hashOf(imagePath);
+  if (decodeFailures_ != nullptr && decodeFailures_->has(failureHash)) {
+    if (renderer.getWriteRows() > 0) renderPlaceholder(renderer, x, y, Placeholder::Failed);
+    return;
+  }
+
   if (wouldShowPlaceholder(forceLoad, monochromeOutput)) {
     LOG_DBG("IMG", "Large image placeholder at %d,%d (%dx%d): %s", x, y, width, height, imagePath.c_str());
     renderPlaceholder(renderer, x, y, Placeholder::Large);
@@ -835,7 +794,9 @@ void ImageBlock::renderUpright(GfxRenderer& renderer, const int x, const int y, 
   if (!epubFilePath_.empty() && !epubEntryPath_.empty()) {
     Epub epub(epubFilePath_, "/.crosspoint");
     size_t entrySize = 0;
-    if (epub.getItemSize(epubEntryPath_, &entrySize) && entrySize != 0 && entrySize != fileSize) {
+    bool sizeExact = true;  // an encrypted image's size can be an estimate (ZipFile::hasExactSize)
+    if (epub.getItemSize(epubEntryPath_, &entrySize, &sizeExact) && sizeExact && entrySize != 0 &&
+        entrySize != fileSize) {
       LOG_ERR("IMG", "Extract is %u bytes, entry is %u: re-extracting %s", static_cast<unsigned>(fileSize),
               static_cast<unsigned>(entrySize), epubEntryPath_.c_str());
       Storage.remove(imagePath.c_str());
@@ -867,7 +828,12 @@ void ImageBlock::renderUpright(GfxRenderer& renderer, const int x, const int y, 
   // A resumed decode draws only the rows after its park; the finished cache has them all.
   const bool resuming = jpeg && Storage.exists(config.checkpointPath.c_str());
   const uint32_t heapShortBefore = image_scratch::heapShortCount();
+  const uint32_t decodeFailedBefore = image_scratch::decodeFailedCount();
   bool success = decoder->decodeToFramebuffer(imagePath, renderer, config);
+  // The decoder drew the frame itself. What it counted as the file's fault is not tried again until the book closes.
+  if (decodeFailures_ != nullptr && image_scratch::decodeFailedCount() != decodeFailedBefore) {
+    decodeFailures_->add(failureHash);
+  }
   if (!success) {
     LOG_ERR("IMG", "Failed to decode image: %s", imagePath.c_str());
     // Short of memory: say so in the image's place rather than leave it blank. Not in a pass that writes the

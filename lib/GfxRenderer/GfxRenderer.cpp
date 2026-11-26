@@ -15,7 +15,6 @@
 #include <SdCardFont.h>
 #include <SmallCaps.h>
 #include <TextTruncation.h>
-#include <TouchTransform.h>
 #include <Utf8.h>
 #include <esp_heap_caps.h>
 
@@ -25,9 +24,12 @@
 
 #include "BitmapRowTarget.h"
 #include "FontCacheManager.h"
+#include "FrameRegion.h"
 #include "GlyphRun.h"
 #include "Gray8Compose.h"
 #include "ImagePolarity.h"
+#include "ImageScale.h"
+#include "PackedPlaneTiles.h"
 #include "ScaledGlyphResample.h"
 #include "UiShapedText.h"
 
@@ -145,15 +147,6 @@ static inline uint16_t scaledGlyphMaskBytes(const int w, const int h) {
   return static_cast<uint16_t>((static_cast<int>(w) * h + 7) / 8 + 1);
 }
 
-// Reinterpret a float's bits so cache keys compare exactly. Two words laid out
-// with the same CSS scale produce the same float, so this is a reliable identity
-// without the rounding risk of quantising the scale into a fixed-point key.
-static inline uint32_t floatBits(const float f) {
-  uint32_t bits;
-  memcpy(&bits, &f, sizeof(bits));
-  return bits;
-}
-
 // Allocate the scaled-glyph cache. Call this EARLY — at reader entry, not on first scaled glyph.
 //
 // It is ~4.9 KB in two blocks (80 entries + a 3584-byte mask arena), taken here at reader entry and
@@ -206,20 +199,19 @@ bool GfxRenderer::ensureScaledGlyphCache(const int bodyFontId) const {
   return true;
 }
 
-const uint8_t* GfxRenderer::findScaledGlyphMask(const void* fontData, const uint32_t cp, const float scale,
+const uint8_t* GfxRenderer::findScaledGlyphMask(const void* fontData, const uint32_t cp, const TextScale scale,
                                                 const uint8_t sel, const int w, const int h) const {
   if (!scaledGlyphArena_) return nullptr;
   const ScaledGlyphKey key = scaledGlyphKeyOf(cp);
   if (!key.cacheable) return nullptr;  // alloc never stores one
-  const uint32_t bits = floatBits(scale);
   for (uint8_t i = 0; i < scaledGlyphCount_; i++) {
     const ScaledGlyphEntry& e = scaledGlyphEntries_[i];
-    if (scaledGlyphEntryMatches(e, fontData, key, bits, sel, w, h)) return scaledGlyphArena_.get() + e.offset;
+    if (scaledGlyphEntryMatches(e, fontData, key, scale, sel, w, h)) return scaledGlyphArena_.get() + e.offset;
   }
   return nullptr;
 }
 
-uint8_t* GfxRenderer::allocScaledGlyphMask(const void* fontData, const uint32_t cp, const float scale,
+uint8_t* GfxRenderer::allocScaledGlyphMask(const void* fontData, const uint32_t cp, const TextScale scale,
                                            const uint8_t sel, const int w, const int h) const {
   // Dimensions are stored as uint8 and the mask must stay well under the arena;
   // oversized glyphs render uncached rather than evicting the body-text set.
@@ -257,7 +249,7 @@ uint8_t* GfxRenderer::allocScaledGlyphMask(const void* fontData, const uint32_t 
   e.fontData = fontData;
   e.id = key.id;
   e.kind = key.kind;
-  e.scaleBits = floatBits(scale);
+  e.scaleRaw = scale.raw();
   e.offset = scaledGlyphUsed_;
   e.sel = sel;
   e.w = static_cast<uint8_t>(w);
@@ -1163,8 +1155,8 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
 // into. Enlarged and shrunk glyphs alike: both carry AA levels (emitScaledGlyphPixels).
 static void captureScaledGlyphPlane(const GfxRenderer& renderer, uint8_t* const plane, const uint8_t drawMask,
                                     const uint8_t* const bitmap, const bool is2Bit, const int srcW, const int srcH,
-                                    const int dstW, const int dstH, const float scale, const int baseX, const int baseY,
-                                    const EpdFontData* const fontData, const uint32_t cp) {
+                                    const int dstW, const int dstH, const TextScale scale, const int baseX,
+                                    const int baseY, const EpdFontData* const fontData, const uint32_t cp) {
   if (plane == nullptr || drawMask == 0) return;  // 0x00 == "Maximum" darkness: no grayscale at all
 
   const uint8_t* mask = renderer.findScaledGlyphMask(fontData, cp, scale, drawMask, dstW, dstH);
@@ -1206,7 +1198,7 @@ static void captureScaledGlyphPlane(const GfxRenderer& renderer, uint8_t* const 
 // (scaledGlyphKeyOf). renderCharAtScale resolves a codepoint for it, drawGlyphRun a glyph ID.
 static void drawResolvedGlyphAtScale(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
                                      const EpdFontData* fontData, const EpdGlyphRef& glyph, const uint32_t cacheCp,
-                                     int cursorX, int cursorY, const bool pixelState, const float scale,
+                                     int cursorX, int cursorY, const bool pixelState, const TextScale scale,
                                      const uint8_t minRaw2Bit) {
   const uint8_t* bitmap = renderer.getGlyphBitmap(fontData, glyph);
   if (!bitmap) return;
@@ -1215,12 +1207,12 @@ static void drawResolvedGlyphAtScale(const GfxRenderer& renderer, GfxRenderer::R
   const int srcH = glyph.height;
   if (srcW <= 0 || srcH <= 0) return;
 
-  const int dstW = static_cast<int>(srcW * scale + 0.5f);
-  const int dstH = static_cast<int>(srcH * scale + 0.5f);
+  const int dstW = scale.apply(srcW);
+  const int dstH = scale.apply(srcH);
   if (dstW <= 0 || dstH <= 0) return;
 
-  const int baseX = cursorX + static_cast<int>(glyph.left * scale + 0.5f);
-  const int baseY = cursorY - static_cast<int>(glyph.top * scale + 0.5f);
+  const int baseX = cursorX + scale.apply(glyph.left);
+  const int baseY = cursorY - scale.apply(glyph.top);
   const bool is2Bit = fontData->is2Bit;
 
   // The resampled glyph carries 2-bit AA levels at every scale, and the render mode's drawMask
@@ -1284,7 +1276,7 @@ static void drawResolvedGlyphAtScale(const GfxRenderer& renderer, GfxRenderer::R
 // masks cached under `cp`.
 static void renderCharAtScale(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
                               const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
-                              const bool pixelState, const EpdFontFamily::Style style, const float scale,
+                              const bool pixelState, const EpdFontFamily::Style style, const TextScale scale,
                               const uint8_t minRaw2Bit = 1) {
   const EpdGlyphRef glyph = fontFamily.getGlyph(cp, style);
   if (!glyph) return;
@@ -1393,13 +1385,9 @@ void GfxRenderer::writePhysicalPortraitPackedRow(const int physicalY, const uint
 }
 
 // The base scale is applied at the PUBLIC boundary only, and the guard below is not an
-// optimisation: `scale == 1.0f` returns the integer untouched, so every font that ships real faces
-// measures and draws exactly as it did before this existed. That matters because the pipeline
-// goldens are byte-identical by invariant -- a float round-trip on the common path would break
-// them for no reason.
-static inline int applyBase(const int v, const float scale) {
-  return scale == 1.0f ? v : static_cast<int>(v * scale + 0.5f);
-}
+// optimisation: a scale of 1 returns the integer untouched, so every font that ships real faces
+// measures and draws exactly as it did before this existed.
+static inline int applyBase(const int v, const TextScale scale) { return scale.isOne() ? v : scale.apply(v); }
 
 // UI text in a face that draws Arabic as its presentation forms (EpdFontFamily::formsArabic): the formed string, kept
 // in `holder`; any other text as it is. Measuring, fitting and drawing all take the formed string, so each sees the
@@ -1416,7 +1404,7 @@ static const char* arabicUiForms(const EpdFontFamily& family, const char* text, 
 static const char* indicUiOrder(const char* text, std::string& holder) { return ui_shaping::reordered(text, holder); }
 
 bool GfxRenderer::shapesUiText(const int fontId, const EpdFontFamily::Style style) const {
-  return fontBaseScale(fontId) == 1.0f && (style & EpdFontFamily::SMALL_CAPS) == 0 &&
+  return fontBaseScale(fontId).isOne() && (style & EpdFontFamily::SMALL_CAPS) == 0 &&
          !(fontCacheManager_ && fontCacheManager_->isScanning());
 }
 
@@ -1482,10 +1470,10 @@ bool GfxRenderer::getTextInkMetrics(const int fontId, const char* text, const Ep
   }
   // Ink extents are pixel metrics like every other accessor here, so a synthesised size must
   // report its own, not its master's.
-  const float base = fontBaseScale(fontId);
-  if (base != 1.0f) {
-    *aboveBaseline = static_cast<int>(*aboveBaseline * base + 0.5f);
-    *belowBaseline = static_cast<int>(*belowBaseline * base + 0.5f);
+  const TextScale base = fontBaseScale(fontId);
+  if (!base.isOne()) {
+    *aboveBaseline = base.apply(*aboveBaseline);
+    *belowBaseline = base.apply(*belowBaseline);
   }
   return any;
 }
@@ -1531,8 +1519,8 @@ void GfxRenderer::drawFormedText(const int fontId, const int x, const int y, con
   // it walks raw glyph advances, which belong to the master. Hand it to the resampling path at
   // the font's own scale. Real faces (the overwhelming majority) skip this with one comparison.
   {
-    const float base = fontBaseScale(fontId);
-    if (base != 1.0f) {
+    const TextScale base = fontBaseScale(fontId);
+    if (!base.isOne()) {
       drawTextAtScale(fontId, x, y, text, black, style, base);
       return;
     }
@@ -1594,7 +1582,7 @@ void GfxRenderer::drawCodepoints(const EpdFontFamily& font, const int x, const i
     // where they fall on the line.
     if (prevCp != 0) {
       auto kernFP = static_cast<int32_t>(font.getKerning(prevCp, cp, style));  // 4.4 fixed-point kern
-      if (folded) kernFP = static_cast<int32_t>(kernFP * smallCaps::SCALE + 0.5f);
+      if (folded) kernFP = smallCaps::SCALE.apply(kernFP);
       lastBaseX += fp4::toPixel(prevAdvanceFP + kernFP);  // snap 12.4 fixed-point to nearest pixel
     }
 
@@ -1611,10 +1599,10 @@ void GfxRenderer::drawCodepoints(const EpdFontFamily& font, const int x, const i
     }
 
     // Folded glyphs render at smallCaps::SCALE, so layout metrics scale to match.
-    const int effLeft = folded ? static_cast<int>(glyph.left * smallCaps::SCALE) : glyph.left;
-    const int effWidth = folded ? static_cast<int>(glyph.width * smallCaps::SCALE + 0.5f) : glyph.width;
-    const int effHeight = folded ? static_cast<int>(glyph.height * smallCaps::SCALE + 0.5f) : glyph.height;
-    const int effTop = folded ? static_cast<int>(glyph.top * smallCaps::SCALE) : glyph.top;
+    const int effLeft = folded ? smallCaps::SCALE.applyTruncated(glyph.left) : glyph.left;
+    const int effWidth = folded ? smallCaps::SCALE.apply(glyph.width) : glyph.width;
+    const int effHeight = folded ? smallCaps::SCALE.apply(glyph.height) : glyph.height;
+    const int effTop = folded ? smallCaps::SCALE.applyTruncated(glyph.top) : glyph.top;
 
     lastBaseLeft = effLeft;
     lastBaseWidth = effWidth;
@@ -1625,7 +1613,7 @@ void GfxRenderer::drawCodepoints(const EpdFontFamily& font, const int x, const i
     // an explicit per-word size percentage (ChapterHtmlSlimParser), so they arrive via
     // drawTextScaled. The SUP/SUB style bits only shift the baseline in TextBlock::render.
     if (folded) {
-      lastBaseAdvanceFP = static_cast<int>(lastBaseAdvanceFP * smallCaps::SCALE + 0.5f);
+      lastBaseAdvanceFP = smallCaps::SCALE.apply(lastBaseAdvanceFP);
     }
     prevAdvanceFP = lastBaseAdvanceFP;
 
@@ -1709,14 +1697,23 @@ void GfxRenderer::drawShapedUiText(const int fontId, const EpdFontFamily& font, 
 
 // Whether a total scale draws on the unscaled blitter: within 1% of 1 the resample is not worth its blur. One
 // definition for drawTextScaled and for glyph runs, so a shaped run and its unshaped fallback agree.
-static bool drawsUnscaled(const float total) { return total > 0.99f && total < 1.01f; }
+static bool drawsUnscaled(const TextScale total) {
+  return total > TextScale::percent(99) && total < TextScale::percent(101);
+}
+
+// A caller's residual scale times the font's base scale. A zero residual has always meant "draw as is", not "draw
+// nothing": an early version of the scaled wrapper returned instead, which silently changed behaviour for any caller
+// passing 0 to mean unscaled.
+static TextScale totalScale(const TextScale scale, const TextScale base) {
+  return (scale.raw() == 0 ? TextScale() : scale) * base;
+}
 
 // Public entry: `scale` is the CSS/heading residual, compounded with the font's base scale so a
 // heading at 1.6em inside synthesised 24 pt body text is ONE resample at 1.2 x 1.6, not two.
 void GfxRenderer::drawTextScaled(const int fontId, const int x, const int y, const char* text, const bool black,
-                                 const EpdFontFamily::Style style, const float scale) const {
+                                 const EpdFontFamily::Style style, const TextScale scale) const {
   // Unscaled it is drawText, which forms, shapes or orders the text once (the order is not idempotent).
-  if (drawsUnscaled((scale <= 0.0f ? 1.0f : scale) * fontBaseScale(fontId))) {
+  if (drawsUnscaled(totalScale(scale, fontBaseScale(fontId)))) {
     drawText(fontId, x, y, text, black, style);
     return;
   }
@@ -1732,11 +1729,8 @@ void GfxRenderer::drawTextScaled(const int fontId, const int x, const int y, con
 }
 
 void GfxRenderer::drawFormedTextScaled(const int fontId, const int x, const int y, const char* text, const bool black,
-                                       const EpdFontFamily::Style style, const float scale) const {
-  // A non-positive scale has always meant "draw as is" here, not "draw nothing". Keep it: the
-  // first version of this wrapper returned instead, which silently changed behaviour for any
-  // caller passing 0 to mean unscaled.
-  const float total = (scale <= 0.0f ? 1.0f : scale) * fontBaseScale(fontId);
+                                       const EpdFontFamily::Style style, const TextScale scale) const {
+  const TextScale total = totalScale(scale, fontBaseScale(fontId));
   if (drawsUnscaled(total)) {
     // Exactly 1 after compounding: the unscaled blitter is both faster and sharper. The text is formed already (a
     // page's word or piece), so it is drawn as given: drawText would form, shape or order it again, and the order is
@@ -1748,7 +1742,7 @@ void GfxRenderer::drawFormedTextScaled(const int fontId, const int x, const int 
 }
 
 void GfxRenderer::drawTextAtScale(const int fontId, const int x, const int y, const char* text, const bool black,
-                                  const EpdFontFamily::Style style, const float scale) const {
+                                  const EpdFontFamily::Style style, const TextScale scale) const {
   if (text == nullptr || *text == '\0') return;
 
   if (fontCacheManager_ && fontCacheManager_->isScanning()) {
@@ -1763,7 +1757,7 @@ void GfxRenderer::drawTextAtScale(const int fontId, const int x, const int y, co
   const auto renderModeSnapshot = getRenderMode();
 
   // RAW: `scale` already carries the font's base, so the public accessor would apply it twice.
-  const int yPos = y + static_cast<int>(rawFontAscenderSize(fontId) * scale + 0.5f);
+  const int yPos = y + scale.apply(rawFontAscenderSize(fontId));
   int32_t cursorFP = x << 4;  // 12.4 fixed-point
 
   const bool smallCapsStyle = (style & EpdFontFamily::SMALL_CAPS) != 0;
@@ -1776,7 +1770,7 @@ void GfxRenderer::drawTextAtScale(const int fontId, const int x, const int y, co
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&p)))) {
     // Small-caps composes with the heading scale: folded glyphs render at scale*SCALE.
     const bool folded = smallCapsStyle && smallCaps::fold(cp);
-    const float effScale = folded ? scale * smallCaps::SCALE : scale;
+    const TextScale effScale = folded ? scale * smallCaps::SCALE : scale;
 
     const EpdGlyphRef glyph = font.getGlyph(cp, style);
     if (!glyph) {
@@ -1786,26 +1780,22 @@ void GfxRenderer::drawTextAtScale(const int fontId, const int x, const int y, co
 
     // Apply kerning scaled
     if (prevCp) {
-      int kern = font.getKerning(prevCp, cp, style);
-      cursorFP += static_cast<int>(kern * effScale + 0.5f);
+      const int kern = font.getKerning(prevCp, cp, style);
+      cursorFP += effScale.apply(kern);
     }
 
     const int cursorX = (cursorFP + 8) >> 4;
     renderCharAtScale(*this, renderModeSnapshot, font, cp, cursorX, yPos, black, style, effScale,
                       /*minRaw2Bit=*/(folded || isSupSub) ? 2 : 1);
 
-    const int scaledAdvanceFP = static_cast<int>(glyph.advanceX * effScale + 0.5f);
+    const int scaledAdvanceFP = effScale.apply(glyph.advanceX);
     cursorFP += scaledAdvanceFP;
     prevCp = cp;
   }
 }
 
-// The scale a glyph run is drawn at: drawTextScaled's residual (a non-positive one meaning none) times the font's base
-// scale. Unscaled (drawsUnscaled) the run takes drawText's blitter and pen, at anything else drawTextAtScale's.
-static float glyphRunScale(const float scale, const float base) { return (scale <= 0.0f ? 1.0f : scale) * base; }
-
 void GfxRenderer::drawGlyphRun(const int fontId, const int x, const int y, const GlyphRun& run, const bool black,
-                               const EpdFontFamily::Style style, const float scale) const {
+                               const EpdFontFamily::Style style, const TextScale scale) const {
   if (run.count == 0) return;
 
   if (fontCacheManager_ && fontCacheManager_->isScanning()) {
@@ -1829,11 +1819,13 @@ void GfxRenderer::drawGlyphRun(const int fontId, const int x, const int y, const
     return;
   }
 
-  const float total = glyphRunScale(scale, fontBaseScale(fontId));
+  // drawTextScaled's total scale: unscaled (drawsUnscaled) the run takes drawText's blitter and pen, at anything else
+  // drawTextAtScale's.
+  const TextScale total = totalScale(scale, fontBaseScale(fontId));
   const bool scaled = !drawsUnscaled(total);
   // drawText's baseline at 1 (where its base scale is 1 too), drawTextAtScale's otherwise.
   const int ascender = rawFontAscenderSize(fontId);
-  const int yPos = y + (scaled ? static_cast<int>(ascender * total + 0.5f) : ascender);
+  const int yPos = y + (scaled ? total.apply(ascender) : ascender);
   const EpdFontData* const fontData = family->getData(style);  // findGlyphKey's font (getFont(style))
   const auto renderModeSnapshot = getRenderMode();
   const int screenWidth = getScreenWidth();
@@ -1847,10 +1839,10 @@ void GfxRenderer::drawGlyphRun(const int fontId, const int x, const int y, const
     if (!glyph) return;  // a glyph the font lacks: nothing drawn, and the pen moves on
 
     // Skip rasterization for glyphs wholly outside the logical viewport, as drawText does, at the size drawn.
-    const int left = scaled ? static_cast<int>(glyph.left * total + 0.5f) : glyph.left;
-    const int top = scaled ? static_cast<int>(glyph.top * total + 0.5f) : glyph.top;
-    const int width = scaled ? static_cast<int>(glyph.width * total + 0.5f) : glyph.width;
-    const int height = scaled ? static_cast<int>(glyph.height * total + 0.5f) : glyph.height;
+    const int left = scaled ? total.apply(glyph.left) : glyph.left;
+    const int top = scaled ? total.apply(glyph.top) : glyph.top;
+    const int width = scaled ? total.apply(glyph.width) : glyph.width;
+    const int height = scaled ? total.apply(glyph.height) : glyph.height;
     const int glyphPenX = penX + record.dx;
     const int glyphPenY = yPos + record.dy;
     const int glyphX = glyphPenX + left;
@@ -1869,8 +1861,16 @@ void GfxRenderer::drawGlyphRun(const int fontId, const int x, const int y, const
   });
 }
 
-int GfxRenderer::glyphRunWidth(const int fontId, const GlyphRun& run, const float scale) const {
-  return glyphRunAdvance(run, !drawsUnscaled(glyphRunScale(scale, fontBaseScale(fontId))));
+int GfxRenderer::glyphRunWidth(const int fontId, const GlyphRun& run, const TextScale scale) const {
+  return glyphRunAdvance(run, !drawsUnscaled(totalScale(scale, fontBaseScale(fontId))));
+}
+
+void GfxRenderer::prefetchGlyphs(const int fontId, const uint16_t* const glyphs, const size_t count,
+                                 const EpdFontFamily::Style style) const {
+  if (count == 0) return;
+  if (const EpdFontFamily* const family = findFontFamily(fontId); family && family->drawsGlyphKeys(style)) {
+    family->prefetchGlyphs(glyphs, count, style);
+  }
 }
 
 void GfxRenderer::prefetchGlyphRun(const int fontId, const GlyphRun& run, const EpdFontFamily::Style style) const {
@@ -1893,16 +1893,16 @@ void GfxRenderer::prefetchGlyphRun(const int fontId, const GlyphRun& run, const 
 // The three *Scaled accessors take the CSS/heading residual and compound it with the font's own
 // base scale, from the RAW measure -- going through the public accessor would apply the base twice.
 int GfxRenderer::getTextWidthScaled(const int fontId, const char* text, const EpdFontFamily::Style style,
-                                    const float scale) const {
-  return static_cast<int>(rawTextWidth(fontId, text, style) * fontBaseScale(fontId) * scale + 0.5f);
+                                    const TextScale scale) const {
+  return (fontBaseScale(fontId) * scale).apply(rawTextWidth(fontId, text, style));
 }
 
-int GfxRenderer::getLineHeightScaled(const int fontId, const float scale) const {
-  return static_cast<int>(rawLineHeight(fontId) * fontBaseScale(fontId) * scale + 0.5f);
+int GfxRenderer::getLineHeightScaled(const int fontId, const TextScale scale) const {
+  return (fontBaseScale(fontId) * scale).apply(rawLineHeight(fontId));
 }
 
-int GfxRenderer::getFontAscenderSizeScaled(const int fontId, const float scale) const {
-  return static_cast<int>(rawFontAscenderSize(fontId) * fontBaseScale(fontId) * scale + 0.5f);
+int GfxRenderer::getFontAscenderSizeScaled(const int fontId, const TextScale scale) const {
+  return (fontBaseScale(fontId) * scale).apply(rawFontAscenderSize(fontId));
 }
 
 void GfxRenderer::drawLine(int x1, int y1, int x2, int y2, const bool state) const {
@@ -2518,10 +2518,9 @@ void GfxRenderer::drawIconInverted(const uint8_t bitmap[], const int x, const in
 //   Inner loop: bmpX — reads one 2-bit pixel, writes one bit to the correct physical row.
 //   This eliminates rotateCoordinates(), the bounds-check log, and redundant byte/bit
 //   recomputation from drawPixel(), giving ~2× on the inner loop.
-//   (The 8×8 transpose used for glyphs would give ~8× but requires all rows in RAM
-//   simultaneously; bitmap rows are read sequentially from the BMP file, so they
-//   cannot be buffered for transposition without a separate heap allocation.
-//   The column loop is the practical optimum for the streaming-read model.)
+//   Unscaled, drawBitmap() goes further when it can have eight rows of room (PortraitRowBatch): it keeps the rows
+//   that share a framebuffer byte column and writes them a byte at a time through an 8×8 transpose
+//   (PackedPlaneTiles.h). This column loop stays as the path without that room.
 //
 // =============================================================================
 
@@ -2677,10 +2676,89 @@ class PolarityOnReturn {
   int x_, y_, w_, h_;
 };
 
-// How many pixels a run of `source` pixels covers once drawn at `scale` (pixel i lands at floor(i * scale)).
-int scaledExtent(const int source, const bool isScaled, const float scale) {
-  if (source <= 0) return 0;
-  return isScaled ? static_cast<int>(std::floor(static_cast<float>(source - 1) * scale)) + 1 : source;
+// Portrait bitmap rows gathered per framebuffer byte column and drawn eight at a time (PackedPlaneTiles.h): the bits
+// bitmapWritePortraitColumn() (or, on absolute planes, drawPixel()) writes a pixel at a time. Rows of an unscaled draw
+// land on distinct panel columns, so the order they come in (a bottom-up BMP comes last row first) does not matter; a
+// lane met twice is flushed first, so the later row is written later, as the per-pixel paths write it.
+class PortraitRowBatch {
+ public:
+  // Source columns [first, end) are drawn; column `first` lands on physical row phyYFirst, the next phyYStep further.
+  // A row for a physical column outside [0, phyXLimit) draws nothing.
+  PortraitRowBatch(uint8_t* frameBuffer, const int widthBytes, const int phyXLimit, const int rowBytes, uint8_t* lanes,
+                   const packed_plane::Op op, const int first, const int end, const int phyYFirst, const int phyYStep)
+      : frameBuffer_(frameBuffer),
+        widthBytes_(widthBytes),
+        phyXLimit_(phyXLimit),
+        rowBytes_(rowBytes),
+        lanes_(lanes),
+        op_(op),
+        first_(first),
+        end_(end),
+        phyYFirst_(phyYFirst),
+        phyYStep_(phyYStep) {}
+  PortraitRowBatch(const PortraitRowBatch&) = delete;
+  PortraitRowBatch& operator=(const PortraitRowBatch&) = delete;
+
+  // A row whose pixels go to physical column phyX; outside the frame it draws nothing, as the per-pixel path.
+  void add(const uint8_t* row, const int phyX) {
+    if (phyX < 0 || phyX >= phyXLimit_ || first_ >= end_) return;
+    const int byteCol = phyX >> 3;
+    const uint8_t laneBit = static_cast<uint8_t>(0x80u >> (phyX & 7));
+    if (filled_ && (byteCol != byteCol_ || (filled_ & laneBit))) flush();
+    byteCol_ = byteCol;
+    memcpy(lanes_ + static_cast<size_t>(phyX & 7) * rowBytes_, row, rowBytes_);
+    filled_ |= laneBit;
+  }
+
+  void flush() {
+    if (!filled_) return;
+    const uint8_t* rows[8];
+    for (int lane = 0; lane < 8; lane++) {
+      rows[lane] = (filled_ & (0x80u >> lane)) ? lanes_ + static_cast<size_t>(lane) * rowBytes_ : nullptr;
+    }
+    packed_plane::drawByteColumn(rows, rowBytes_, first_, end_,
+                                 frameBuffer_ + static_cast<ptrdiff_t>(phyYFirst_) * widthBytes_ + byteCol_,
+                                 static_cast<ptrdiff_t>(phyYStep_) * widthBytes_, op_);
+    filled_ = 0;
+  }
+
+ private:
+  uint8_t* frameBuffer_;
+  int widthBytes_;
+  int phyXLimit_;
+  int rowBytes_;
+  uint8_t* lanes_;
+  packed_plane::Op op_;
+  int first_;
+  int end_;
+  int phyYFirst_;
+  int phyYStep_;
+  int byteCol_ = 0;
+  uint8_t filled_ = 0;
+};
+
+}  // namespace
+
+namespace {
+// drawGray8Pixel() for each shown sample of a bitmap row, sample i at screen x + scale.apply(i). rotateCoordinates()
+// is affine in x, so the row's panel origin and step are found once instead of a switch and the geometry a pixel.
+void drawGray8Row(const GfxRenderer::Gray8Target& gray8, const GfxRenderer::Orientation orientation,
+                  const int displayWidth, const int displayHeight, const int screenWidth, const uint8_t* samples,
+                  const int count, const ImageScale& scale, const int x, const int screenY) {
+  int originX = 0, originY = 0, nextX = 0, nextY = 0;
+  rotateCoordinates(orientation, 0, screenY, &originX, &originY, displayWidth, displayHeight);
+  rotateCoordinates(orientation, 1, screenY, &nextX, &nextY, displayWidth, displayHeight);
+  const int stepX = nextX - originX;
+  const int stepY = nextY - originY;
+  for (int i = 0; i < count; i++) {
+    const int screenX = scale.apply(i) + x;  // the offset should not be scaled
+    if (screenX >= screenWidth) break;
+    if (screenX < 0) continue;
+    const int phyX = originX + screenX * stepX;
+    const int phyY = originY + screenX * stepY;
+    if (phyX < 0 || phyX >= displayWidth || phyY < 0 || phyY >= displayHeight) continue;
+    gray8.canvas[static_cast<uint32_t>(phyY) * gray8.stride + phyX] = samples[i];
+  }
 }
 }  // namespace
 
@@ -2694,52 +2772,101 @@ void GfxRenderer::drawGray8Pixel(const Gray8Target& gray8, const int x, const in
   gray8.canvas[static_cast<uint32_t>(phyY) * gray8.stride + phyX] = gray;
 }
 
+namespace {
+// One bit of a 1-bpp plane in the framebuffer's physical layout (MSB first, as drawPixel writes it).
+inline void writePlaneBit(uint8_t* plane, const int widthBytes, const int phyX, const int phyY, const bool bit) {
+  uint8_t& byte = plane[static_cast<uint32_t>(phyY) * widthBytes + (phyX >> 3)];
+  const uint8_t mask = static_cast<uint8_t>(0x80u >> (phyX & 7));
+  byte = bit ? static_cast<uint8_t>(byte | mask) : static_cast<uint8_t>(byte & ~mask);
+}
+}  // namespace
+
+void GfxRenderer::drawLevelPlanePixel(const LevelPlaneTarget& planes, const int x, const int y,
+                                      const uint8_t gray) const {
+  int phyX = 0;
+  int phyY = 0;
+  const int displayWidth = getDisplayWidth();
+  const int displayHeight = getDisplayHeight();
+  rotateCoordinates(getOrientation(), x, y, &phyX, &phyY, displayWidth, displayHeight);
+  if (phyX < 0 || phyX >= displayWidth || phyY < 0 || phyY >= displayHeight) return;
+  // Physical coordinates pick the dither threshold, so every draw of the picture gives this pixel the same ink.
+  const uint8_t ink = planes.quantizer->ink(gray, static_cast<unsigned>(phyX), static_cast<unsigned>(phyY));
+  const int widthBytes = getDisplayWidthBytes();
+  writePlaneBit(frameBuffer, widthBytes, phyX, phyY, planes.first.bitFor(ink));
+  if (planes.second) writePlaneBit(planes.second, widthBytes, phyX, phyY, planes.secondPlane.bitFor(ink));
+}
+
+void GfxRenderer::clearLevelPlanes(const LevelPlaneTarget& planes) const {
+  clearScreen(planes.first.bitFor(0) ? 0xFF : 0x00);
+  if (planes.second) memset(planes.second, planes.secondPlane.bitFor(0) ? 0xFF : 0x00, frameBufferSize);
+}
+
+void GfxRenderer::bwRectToLevelPlanes(const LevelPlaneTarget& planes, const int x, const int y, const int width,
+                                      const int height) const {
+  if (!frameBuffer || !planes.quantizer || width <= 0 || height <= 0) return;
+  const uint8_t darkest = planes.quantizer->darkest();
+  const int displayWidth = getDisplayWidth();
+  const int displayHeight = getDisplayHeight();
+  const int widthBytes = getDisplayWidthBytes();
+  const int xEnd = std::min(x + width, getScreenWidth());
+  const int yEnd = std::min(y + height, getScreenHeight());
+  for (int row = std::max(0, y); row < yEnd; row++) {
+    for (int col = std::max(0, x); col < xEnd; col++) {
+      int phyX = 0;
+      int phyY = 0;
+      rotateCoordinates(getOrientation(), col, row, &phyX, &phyY, displayWidth, displayHeight);
+      if (phyX < 0 || phyX >= displayWidth || phyY < 0 || phyY >= displayHeight) continue;
+      // Read before the framebuffer's own bit is overwritten with the first plane's.
+      const uint8_t ink = getPixel(col, row) ? darkest : 0;
+      if (planes.second) writePlaneBit(planes.second, widthBytes, phyX, phyY, planes.secondPlane.bitFor(ink));
+      writePlaneBit(frameBuffer, widthBytes, phyX, phyY, planes.first.bitFor(ink));
+    }
+  }
+}
+
 void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, const int maxWidth, const int maxHeight,
-                             const float cropX, const float cropY, const Gray8Target* gray8) const {
+                             const int visibleWidth, const int visibleHeight, const Gray8Target* gray8,
+                             const LevelPlaneTarget* planes) const {
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
+  if (planes && (!planes->quantizer || planes->quantizer->levels() < 2)) {
+    LOG_ERR("GFX", "drawBitmap: level planes without a quantizer");
+    return;
+  }
+  const int shownWidth = (visibleWidth > 0 && visibleWidth < bitmap.getWidth()) ? visibleWidth : bitmap.getWidth();
+  const int shownHeight =
+      (visibleHeight > 0 && visibleHeight < bitmap.getHeight()) ? visibleHeight : bitmap.getHeight();
   // For 1-bit bitmaps, use optimized 1-bit rendering path (no crop support for 1-bit)
-  if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f) {
+  if (bitmap.is1Bit() && shownWidth == bitmap.getWidth() && shownHeight == bitmap.getHeight()) {
     drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight);
     return;
   }
 
-  float scale = 1.0f;
-  bool isScaled = false;
-  int cropPixX = std::floor(bitmap.getWidth() * cropX / 2.0f);
-  int cropPixY = std::floor(bitmap.getHeight() * cropY / 2.0f);
+  // The first shown column and row; an odd remainder is cut from the right and the bottom.
+  const int cropPixX = (bitmap.getWidth() - shownWidth) / 2;
+  const int cropPixY = (bitmap.getHeight() - shownHeight) / 2;
 
-  const float croppedWidth = (1.0f - cropX) * static_cast<float>(bitmap.getWidth());
-  const float croppedHeight = (1.0f - cropY) * static_cast<float>(bitmap.getHeight());
-  bool hasTargetBounds = false;
-  float fitScale = 1.0f;
-
-  if (maxWidth > 0 && croppedWidth > 0.0f) {
-    fitScale = static_cast<float>(maxWidth) / croppedWidth;
-    hasTargetBounds = true;
-  }
-
-  if (maxHeight > 0 && croppedHeight > 0.0f) {
-    const float heightScale = static_cast<float>(maxHeight) / croppedHeight;
-    fitScale = hasTargetBounds ? std::min(fitScale, heightScale) : heightScale;
-    hasTargetBounds = true;
-  }
-
-  if (hasTargetBounds && fitScale < 1.0f) {
-    scale = fitScale;
-    isScaled = true;
-  }
+  // Scaled down to fit the bounds given, never up.
+  ImageScale fit;
+  if (maxWidth > 0) fit = ImageScale(maxWidth, shownWidth);
+  if (maxHeight > 0)
+    fit = maxWidth > 0 ? ImageScale::smaller(fit, ImageScale(maxHeight, shownHeight))
+                       : ImageScale(maxHeight, shownHeight);
+  const bool isScaled = fit.isDownscale();
+  const ImageScale scale = isScaled ? fit : ImageScale();
 
   // Calculate output row size (2 bits per pixel, packed into bytes)
   // IMPORTANT: Use int, not uint8_t, to avoid overflow for images > 1020 pixels wide
   const int outputRowSize = (bitmap.getWidth() + 3) / 4;
-  auto* outputRow = static_cast<uint8_t*>(malloc(outputRowSize));
+  // One row of 8-bit samples, only when a canvas or level planes are actually
+  // being painted, and then the 2-bit row is not made at all (readNextRow() below).
+  // Stack allocation is not an option: a row is one image width,
+  // thousands of bytes, and the ESP32-C3 stack budget for a call frame is 256.
+  const bool wantsGray8 = gray8 != nullptr || planes != nullptr;
+  auto* outputRow = wantsGray8 ? nullptr : static_cast<uint8_t*>(malloc(outputRowSize));
   auto* rowBytes = static_cast<uint8_t*>(malloc(bitmap.getRowBytes()));
-  // One row of 8-bit samples, only when a canvas is actually being painted.
-  // Stack allocation is not an option: a row is one image width, thousands of
-  // bytes, and the ESP32-C3 stack budget for a call frame is 256.
-  auto* gray8Row = gray8 ? static_cast<uint8_t*>(malloc(bitmap.getWidth())) : nullptr;
+  auto* gray8Row = wantsGray8 ? static_cast<uint8_t*>(malloc(bitmap.getWidth())) : nullptr;
 
-  if (!outputRow || !rowBytes || (gray8 && !gray8Row)) {
+  if ((!wantsGray8 && !outputRow) || !rowBytes || (wantsGray8 && !gray8Row)) {
     LOG_ERR("GFX", "!! Failed to allocate BMP row buffers");
     free(outputRow);
     free(rowBytes);
@@ -2753,10 +2880,9 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
   const int displayHeight = getDisplayHeight();
   const int widthBytes = getDisplayWidthBytes();
   // Width of the rendered (post-crop) region in source pixels
-  const int renderWidth = bitmap.getWidth() - 2 * cropPixX;
-  // A canvas paint leaves the frame alone.
-  const PolarityOnReturn polarity(*this, gray8 == nullptr, x, y, scaledExtent(renderWidth, isScaled, scale),
-                                  scaledExtent(bitmap.getHeight() - 2 * cropPixY, isScaled, scale));
+  const int renderWidth = shownWidth;
+  // A canvas paint leaves the frame alone, and level planes are controller bits, not a picture to invert.
+  const PolarityOnReturn polarity(*this, !wantsGray8, x, y, scale.extent(renderWidth), scale.extent(shownHeight));
 
   // Pixel write state for each render mode:
   //   BW: black pixels (state=true clears the bit)
@@ -2781,27 +2907,56 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
   // Absolute planes carry the whole image rather than a mask over the B/W base,
   // so a value outside this plane's set has to be written CLEAR, not skipped.
-  // The row blitter writes one polarity per call, so the fast path cannot
-  // express that in a single pass; take the per-pixel path instead of paying
-  // four more template instantiations of it in a build already within ~177 KB
-  // of filling its flash partition. Nothing is lost by it: the absolute
-  // waveform this feeds runs for about a second, so the pixel loop is not what
-  // the pass waits on.
+  // bitmapFastRow() writes one polarity per call and cannot express that; the
+  // byte-at-a-time paths below can (WriteLowBit, WriteHighBit), and the
+  // per-pixel loop takes what they do not (a scaled picture, no room for the
+  // batch). Each plane is drawn before the waveform it feeds starts, so its
+  // draw is time the sleep screen waits: an X3 cover's plane took 1.36 s a
+  // pixel at a time and 0.78 s batched, reading and dithering included
+  // (2026-11-25).
   const bool absolutePlanes = renderModeSnapshot != BW && getAbsoluteGrayPlanes();
 
+  // Unscaled rows go out a framebuffer byte at a time instead of a pixel at a time: in portrait a byte column of eight
+  // rows (without the 8 rows of room, the per-row paths below, which draw the same bits), in landscape on absolute
+  // planes eight pixels of a row (the other landscape planes already take bitmapFastRow()'s 8-pixel chunks).
+  const bool portrait = orientation == Portrait || orientation == PortraitInverted;
+  const packed_plane::Op planeOp =
+      renderModeSnapshot == BW ? packed_plane::Op::BlackUnlessWhite
+      : absolutePlanes
+          ? (renderModeSnapshot == GRAYSCALE_LSB ? packed_plane::Op::WriteLowBit : packed_plane::Op::WriteHighBit)
+      : renderModeSnapshot == GRAYSCALE_MSB ? packed_plane::Op::SetAnyGray
+                                            : packed_plane::Op::SetDarkGray;
+  uint8_t* batchLanes = nullptr;
+  if (!wantsGray8 && !isScaled && portrait && frameBuffer) {
+    batchLanes = static_cast<uint8_t*>(malloc(static_cast<size_t>(outputRowSize) * 8));
+  }
+  const bool absoluteRowSpans = !wantsGray8 && !isScaled && absolutePlanes && !portrait && frameBuffer;
+  // The source columns that land on the panel, as the per-pixel paths' bounds decide: in portrait the panel row
+  // (bitmapWritePortraitColumn()'s phyY guard), in landscape the screen width (the per-pixel loop's break).
+  const int shownFirst = std::max(0, -x);
+  const int shownLast = std::min(renderWidth - 1, (portrait ? displayHeight : displayWidth) - 1 - x);
+  // drawPixel() bounds the panel column by displayWidth, the fast path by the frame's bytes: the same on every panel.
+  PortraitRowBatch batch(frameBuffer, widthBytes, absolutePlanes ? displayWidth : widthBytes * 8, outputRowSize,
+                         batchLanes, planeOp, cropPixX + shownFirst, cropPixX + shownLast + 1,
+                         orientation == Portrait ? displayHeight - 1 - x - shownFirst : x + shownFirst,
+                         orientation == Portrait ? -1 : 1);
+
   const int screenHeight = getScreenHeight();
-  for (int bmpY = 0; bmpY < (bitmap.getHeight() - cropPixY); bmpY++) {
+  for (int bmpY = 0; bmpY < bitmap.getHeight(); bmpY++) {
     // The BMP's (0, 0) is the bottom-left corner (if the height is positive, top-left if negative).
     // Screen's (0, 0) is the top-left corner.
-    const auto target = bitmap_rows::rowTarget(bmpY, bitmap.getHeight(), bitmap.isTopDown(), cropPixY, isScaled, scale,
-                                               y, screenHeight);
+    const auto target = bitmap_rows::rowTarget(bmpY, bitmap.getHeight(), bitmap.isTopDown(), cropPixY, shownHeight,
+                                               scale, y, screenHeight);
     if (target.fate == bitmap_rows::RowFate::Stop) {
       break;
     }
 
-    // Rows are read in file order, so one left off the screen is read all the same.
+    // Rows are read in file order, so one left off the screen is read all the same. A canvas or level planes take the
+    // 8-bit samples alone: the 2-bit row, and the dither that makes it, would go unread.
     if (bitmap.readNextRow(outputRow, rowBytes, gray8Row) != BmpReaderError::Ok) {
       LOG_ERR("GFX", "Failed to read row %d from bitmap", bmpY);
+      batch.flush();  // the rows read so far are drawn, as the per-row path had drawn them
+      free(batchLanes);
       free(outputRow);
       free(rowBytes);
       free(gray8Row);
@@ -2813,7 +2968,24 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
     }
     const int screenY = target.screenY;
 
-    if (!gray8 && !isScaled && !absolutePlanes && drawMask != 0x00) {
+    if (batchLanes) {
+      batch.add(outputRow, orientation == Portrait ? screenY : displayWidth - 1 - screenY);
+      continue;
+    }
+    if (absoluteRowSpans) {
+      // Landscape: column c lands on panel x (c - cropPixX) + x counter-clockwise, mirrored clockwise; the panel row is
+      // drawPixel()'s, inside the panel or skipped.
+      const bool ccw = orientation == LandscapeCounterClockwise;
+      const int phyY = ccw ? screenY : displayHeight - 1 - screenY;
+      if (phyY >= 0 && phyY < displayHeight) {
+        packed_plane::drawRowSpan(outputRow, outputRowSize, cropPixX + shownFirst, cropPixX + shownLast + 1,
+                                  frameBuffer + static_cast<ptrdiff_t>(phyY) * widthBytes,
+                                  ccw ? x - cropPixX : displayWidth - 1 - x + cropPixX, ccw ? 1 : -1, displayWidth,
+                                  planeOp);
+      }
+      continue;
+    }
+    if (!wantsGray8 && !isScaled && !absolutePlanes && drawMask != 0x00) {
       // Fast path: write up to 8 pixels per call directly to the framebuffer.
       switch (drawMask) {
         case 0x07:
@@ -2839,13 +3011,15 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
       }
       continue;
     }
+    if (gray8) {
+      // The whole point of this path: store the sample, let the panel quantise.
+      drawGray8Row(*gray8, orientation, displayWidth, displayHeight, getScreenWidth(), gray8Row + cropPixX, shownWidth,
+                   scale, x, screenY);
+      continue;
+    }
 
-    for (int bmpX = cropPixX; bmpX < bitmap.getWidth() - cropPixX; bmpX++) {
-      int screenX = bmpX - cropPixX;
-      if (isScaled) {
-        screenX = std::floor(screenX * scale);
-      }
-      screenX += x;  // the offset should not be scaled
+    for (int bmpX = cropPixX; bmpX < cropPixX + shownWidth; bmpX++) {
+      const int screenX = scale.apply(bmpX - cropPixX) + x;  // the offset should not be scaled
       if (screenX >= getScreenWidth()) {
         break;
       }
@@ -2853,9 +3027,8 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
         continue;
       }
 
-      if (gray8) {
-        // The whole point of this path: store the sample, let the panel quantise.
-        drawGray8Pixel(*gray8, screenX, screenY, gray8Row[bmpX]);
+      if (planes) {
+        drawLevelPlanePixel(*planes, screenX, screenY, gray8Row[bmpX]);
         continue;
       }
 
@@ -2879,6 +3052,8 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
     }
   }
 
+  batch.flush();
+  free(batchLanes);
   free(outputRow);
   free(rowBytes);
   free(gray8Row);
@@ -2886,20 +3061,21 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
 void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y, const int maxWidth,
                                  const int maxHeight) const {
-  float scale = 1.0f;
+  // The smaller of the bounds' ratios, up or down; a ratio of exactly 1 binds nothing.
+  ImageScale scale;
   bool isScaled = false;
   if (maxWidth > 0) {
-    const float s = static_cast<float>(maxWidth) / static_cast<float>(bitmap.getWidth());
-    if (s != 1.0f) {
+    const ImageScale s(maxWidth, bitmap.getWidth());
+    if (!s.isIdentity()) {
       scale = s;
       isScaled = true;
     }
   }
   if (maxHeight > 0) {
-    const float s = static_cast<float>(maxHeight) / static_cast<float>(bitmap.getHeight());
-    if (s < scale || (scale == 1.0f && s != 1.0f)) {
+    const ImageScale s(maxHeight, bitmap.getHeight());
+    if (s < scale || (scale.isIdentity() && !s.isIdentity())) {
       scale = s;
-      isScaled = (scale != 1.0f);
+      isScaled = !scale.isIdentity();
     }
   }
 
@@ -2922,9 +3098,8 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
   const int displayHeight = getDisplayHeight();
   const int widthBytes = getDisplayWidthBytes();
   // The scaled path below folds every source column into max(1, floor(width * scale)) destination columns.
-  const int drawnWidth =
-      isScaled ? std::max(1, static_cast<int>(std::floor(bitmap.getWidth() * scale))) : bitmap.getWidth();
-  const PolarityOnReturn polarity(*this, true, x, y, drawnWidth, scaledExtent(bitmap.getHeight(), isScaled, scale));
+  const int drawnWidth = isScaled ? std::max(1, scale.apply(bitmap.getWidth())) : bitmap.getWidth();
+  const PolarityOnReturn polarity(*this, true, x, y, drawnWidth, scale.extent(bitmap.getHeight()));
 
   // ── Unscaled fast path (scale == 1.0): draw each source row 1:1. ──────────────
   //
@@ -2997,7 +3172,7 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
   // black only when they are the majority — i.e. resample by coverage, not by presence.
   const int srcW = bitmap.getWidth();
   const int srcH = bitmap.getHeight();
-  const int dstW = std::max(1, static_cast<int>(std::floor(srcW * scale)));
+  const int dstW = std::max(1, scale.apply(srcW));
 
   // Per-destination-column accumulators for the destination row currently being built.
   auto* blackCount = static_cast<uint16_t*>(calloc(dstW, sizeof(uint16_t)));
@@ -3033,15 +3208,15 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
       break;
     }
     const int bmpYOffset = bitmap.isTopDown() ? bmpY : srcH - 1 - bmpY;
-    const int dstScreenY = y + static_cast<int>(std::floor(bmpYOffset * scale));
+    const int dstScreenY = y + scale.apply(bmpYOffset);
     if (dstScreenY != curDstY) {
       if (curDstY != -1) flushDstRow(curDstY);
       curDstY = dstScreenY;
     }
     // Accumulate this source row's pixels into their destination columns.
     for (int bmpX = 0; bmpX < srcW; bmpX++) {
-      int dx = static_cast<int>(std::floor(bmpX * scale));
-      if (dx >= dstW) dx = dstW - 1;  // guard fp rounding at the right edge
+      int dx = scale.apply(bmpX);
+      if (dx >= dstW) dx = dstW - 1;  // an upscale's last columns, and dstW's floor of 1
       const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
       totalCount[dx]++;
       if (val < 3) blackCount[dx]++;  // 0,1,2 = black; 3 = white
@@ -3357,98 +3532,37 @@ int GfxRenderer::getScreenWidth() const { return getScreenWidth(getOrientation()
 
 int GfxRenderer::getScreenHeight() const { return getScreenHeight(getOrientation()); }
 
-// Inverse of rotateCoordinates: panel-native normalized touch -> logical px.
-// Ported from upstream/develop so the layers above stay diff-comparable. Clamp
-// first, then rotate, so an out-of-range report from the controller can never
-// produce an off-screen logical point.
-//
-// One deliberate difference from upstream: our `orientation` member is a
-// std::atomic<int>, not a plain enum, so this reads it once through
-// getOrientation() instead of switching on the member directly. Reading it once
-// also keeps the transform self-consistent if the reader rotates mid-call.
-// The transform itself lives in TouchTransform.h so it can be host-tested
-// without Arduino; keep the two orientation orders in lockstep.
-static_assert(static_cast<int>(GfxRenderer::Portrait) == touchtransform::Portrait &&
-                  static_cast<int>(GfxRenderer::LandscapeClockwise) == touchtransform::LandscapeClockwise &&
-                  static_cast<int>(GfxRenderer::PortraitInverted) == touchtransform::PortraitInverted &&
-                  static_cast<int>(GfxRenderer::LandscapeCounterClockwise) == touchtransform::LandscapeCounterClockwise,
-              "touchtransform::Orientation must mirror GfxRenderer::Orientation");
+static_assert(static_cast<int>(GfxRenderer::Portrait) == frameregion::Portrait &&
+                  static_cast<int>(GfxRenderer::LandscapeClockwise) == frameregion::LandscapeClockwise &&
+                  static_cast<int>(GfxRenderer::PortraitInverted) == frameregion::PortraitInverted &&
+                  static_cast<int>(GfxRenderer::LandscapeCounterClockwise) == frameregion::LandscapeCounterClockwise,
+              "frameregion::Orientation must mirror GfxRenderer::Orientation");
 
-void GfxRenderer::tapToLogical(const float nx, const float ny, int& outX, int& outY) const {
-  // The held frame, read once: touch is read off the render task, and a vertical page holds the turned frame
-  // as the live one for its whole draw.
-  tapToLogical(getHeldOrientation(), nx, ny, outX, outY);
-}
-
-void GfxRenderer::tapToLogical(const Orientation orientation, const float nx, const float ny, int& outX,
-                               int& outY) const {
-  touchtransform::tapToLogical(static_cast<int>(orientation), panelWidth, panelHeight, nx, ny, outX, outY);
-}
-
-void GfxRenderer::logicalToTap(const int x, const int y, float& outNx, float& outNy) const {
-  touchtransform::logicalToTap(static_cast<int>(getHeldOrientation()), panelWidth, panelHeight, x, y, outNx, outNy);
-}
-
-static bool logicalRectToPhysicalBounds(GfxRenderer::Orientation orientation, int lx, int ly, int lw, int lh,
-                                        uint16_t panelWidth, uint16_t panelHeight, int* outX0, int* outY0, int* outX1,
-                                        int* outY1) {
-  if (lw <= 0 || lh <= 0) return false;
-  int minX = INT32_MAX, minY = INT32_MAX, maxX = INT32_MIN, maxY = INT32_MIN;
-  const int corners[4][2] = {{lx, ly}, {lx + lw - 1, ly}, {lx, ly + lh - 1}, {lx + lw - 1, ly + lh - 1}};
-  for (auto& c : corners) {
-    int phyX, phyY;
-    rotateCoordinates(orientation, c[0], c[1], &phyX, &phyY, panelWidth, panelHeight);
-    if (phyX < minX) minX = phyX;
-    if (phyY < minY) minY = phyY;
-    if (phyX > maxX) maxX = phyX;
-    if (phyY > maxY) maxY = phyY;
-  }
-  if (minX < 0) minX = 0;
-  if (minY < 0) minY = 0;
-  if (maxX >= panelWidth) maxX = panelWidth - 1;
-  if (maxY >= panelHeight) maxY = panelHeight - 1;
-  if (minX > maxX || minY > maxY) return false;
-  *outX0 = minX;
-  *outY0 = minY;
-  *outX1 = maxX;
-  *outY1 = maxY;
-  return true;
+// One call site for the three region helpers, so frameregion::spanOf() is compiled once.
+static bool regionSpan(const GfxRenderer::Orientation orientation, const int lx, const int ly, const int lw,
+                       const int lh, const uint16_t panelWidth, const uint16_t panelHeight, frameregion::Span* span) {
+  return frameregion::spanOf(static_cast<int>(orientation), lx, ly, lw, lh, panelWidth, panelHeight, span);
 }
 
 size_t GfxRenderer::getRegionByteSize(int lx, int ly, int lw, int lh) const {
-  int x0, y0, x1, y1;
-  if (!logicalRectToPhysicalBounds(getOrientation(), lx, ly, lw, lh, panelWidth, panelHeight, &x0, &y0, &x1, &y1))
-    return 0;
-  const int byteX0 = x0 / 8;
-  const int byteX1 = x1 / 8;
-  return static_cast<size_t>(byteX1 - byteX0 + 1) * static_cast<size_t>(y1 - y0 + 1);
+  frameregion::Span span;
+  if (!regionSpan(getOrientation(), lx, ly, lw, lh, panelWidth, panelHeight, &span)) return 0;
+  return span.size();
 }
 
 bool GfxRenderer::copyRegionToBuffer(int lx, int ly, int lw, int lh, uint8_t* buf, size_t bufSize) const {
-  int x0, y0, x1, y1;
-  if (!logicalRectToPhysicalBounds(getOrientation(), lx, ly, lw, lh, panelWidth, panelHeight, &x0, &y0, &x1, &y1))
-    return false;
-  const int byteX0 = x0 / 8;
-  const int bytesPerRow = x1 / 8 - byteX0 + 1;
-  const int rowCount = y1 - y0 + 1;
-  const size_t needed = static_cast<size_t>(bytesPerRow) * static_cast<size_t>(rowCount);
-  if (bufSize < needed || !frameBuffer || !buf) return false;
-  for (int row = 0; row < rowCount; row++)
-    memcpy(buf + row * bytesPerRow, frameBuffer + (y0 + row) * panelWidthBytes + byteX0, bytesPerRow);
+  frameregion::Span span;
+  if (!regionSpan(getOrientation(), lx, ly, lw, lh, panelWidth, panelHeight, &span)) return false;
+  if (bufSize < span.size() || !frameBuffer || !buf) return false;
+  frameregion::copyOut(frameBuffer, panelWidthBytes, span, buf);
   return true;
 }
 
 bool GfxRenderer::copyBufferToRegion(int lx, int ly, int lw, int lh, const uint8_t* buf, size_t bufSize) const {
-  int x0, y0, x1, y1;
-  if (!logicalRectToPhysicalBounds(getOrientation(), lx, ly, lw, lh, panelWidth, panelHeight, &x0, &y0, &x1, &y1))
-    return false;
-  const int byteX0 = x0 / 8;
-  const int bytesPerRow = x1 / 8 - byteX0 + 1;
-  const int rowCount = y1 - y0 + 1;
-  const size_t needed = static_cast<size_t>(bytesPerRow) * static_cast<size_t>(rowCount);
-  if (bufSize < needed || !frameBuffer || !buf) return false;
-  for (int row = 0; row < rowCount; row++)
-    memcpy(frameBuffer + (y0 + row) * panelWidthBytes + byteX0, buf + row * bytesPerRow, bytesPerRow);
+  frameregion::Span span;
+  if (!regionSpan(getOrientation(), lx, ly, lw, lh, panelWidth, panelHeight, &span)) return false;
+  if (bufSize < span.size() || !frameBuffer || !buf) return false;
+  frameregion::copyIn(frameBuffer, panelWidthBytes, span, buf);
   return true;
 }
 
@@ -3496,8 +3610,8 @@ int GfxRenderer::snapSpaceAdvance(const int fontId, const int32_t totalFP) const
   //
   // Scaling the combined fixed-point sum rather than the snapped pixel keeps the property the
   // comment above is about: one rounding step, not two.
-  const float base = fontBaseScale(fontId);
-  return fp4::toPixel(base == 1.0f ? totalFP : static_cast<int32_t>(totalFP * base + (totalFP < 0 ? -0.5f : 0.5f)));
+  const TextScale base = fontBaseScale(fontId);
+  return fp4::toPixel(base.isOne() ? totalFP : base.applySymmetric(totalFP));
 }
 
 int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint32_t rightCp,
@@ -3508,10 +3622,8 @@ int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint3
   // Scaled before the snap, for the same reason getSpaceAdvance() is: ParsedText adds this to
   // word widths when breaking lines, so a synthesised size kerning at its master's scale would
   // mis-measure every line.
-  const float base = fontBaseScale(fontId);
-  if (base != 1.0f) {
-    return fp4::toPixel(static_cast<int>(kernFP * base + (kernFP < 0 ? -0.5f : 0.5f)));
-  }
+  const TextScale base = fontBaseScale(fontId);
+  if (!base.isOne()) return fp4::toPixel(base.applySymmetric(kernFP));
   return fp4::toPixel(kernFP);  // snap 4.4 fixed-point to nearest pixel
 }
 
@@ -3519,7 +3631,7 @@ int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint3
 // advance added in 12.4, one snap at the end. Any divergence here shows up as text that does not
 // fit the box it was measured into.
 int GfxRenderer::scaledTextAdvanceX(const EpdFontFamily& font, const char* text, const EpdFontFamily::Style style,
-                                    const float scale) const {
+                                    const TextScale scale) const {
   uint32_t cp;
   uint32_t prevCp = 0;
   int32_t cursorFP = 0;  // 12.4 fixed-point, exactly as the draw cursor
@@ -3527,18 +3639,15 @@ int GfxRenderer::scaledTextAdvanceX(const EpdFontFamily& font, const char* text,
     if (overlaysItsBase(cp)) continue;
     cp = font.applyLigatures(cp, text, style);
     const bool folded = (style & EpdFontFamily::SMALL_CAPS) != 0 && smallCaps::fold(cp);
-    const float effScale = folded ? scale * smallCaps::SCALE : scale;
+    const TextScale effScale = folded ? scale * smallCaps::SCALE : scale;
 
-    if (prevCp != 0) {
-      const int kern = font.getKerning(prevCp, cp, style);
-      cursorFP += static_cast<int>(kern * effScale + (kern < 0 ? -0.5f : 0.5f));
-    }
+    if (prevCp != 0) cursorFP += effScale.applySymmetric(font.getKerning(prevCp, cp, style));
     const EpdGlyphRef glyph = font.getGlyph(cp, style);
     if (!glyph) {
       prevCp = 0;
       continue;
     }
-    cursorFP += static_cast<int>(glyph.advanceX * effScale + 0.5f);
+    cursorFP += effScale.apply(glyph.advanceX);
     prevCp = cp;
   }
   return (cursorFP + 8) >> 4;  // the same snap the draw applies to a glyph position
@@ -3550,12 +3659,12 @@ bool GfxRenderer::getGlyphInk(const int fontId, const uint32_t cp, const EpdFont
   if (!family) return false;
   const EpdGlyphRef glyph = family->getGlyph(cp, style);
   if (!glyph) return false;
-  const float scale = fontBaseScale(fontId);
-  ink.left = static_cast<int>(glyph.left * scale);
-  ink.width = static_cast<int>(glyph.width * scale + 0.5f);
-  ink.top = static_cast<int>(glyph.top * scale);
-  ink.height = static_cast<int>(glyph.height * scale + 0.5f);
-  ink.advance = static_cast<int>(fp4::toPixel(glyph.advanceX) * scale + 0.5f);
+  const TextScale scale = fontBaseScale(fontId);
+  ink.left = scale.applyTruncated(glyph.left);
+  ink.width = scale.apply(glyph.width);
+  ink.top = scale.applyTruncated(glyph.top);
+  ink.height = scale.apply(glyph.height);
+  ink.advance = scale.apply(fp4::toPixel(glyph.advanceX));
   return true;
 }
 
@@ -3597,8 +3706,8 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   // base would agree with neither, and ParsedText uses this for every word width when breaking
   // lines -- which is how 24 pt came to measure its words at the 20 pt master's size while drawing
   // them at 24, so the layout believed a line held more than it did.
-  const float baseScale = fontBaseScale(fontId);
-  if (baseScale != 1.0f) {
+  const TextScale baseScale = fontBaseScale(fontId);
+  if (!baseScale.isOne()) {
     return scaledTextAdvanceX(*family, text, style, baseScale);
   }
   // Unscaled, drawText's own walk: differential rounding, kerning, ligatures and small caps as it draws them.
@@ -3764,12 +3873,36 @@ uint8_t GfxRenderer::getGrayLevels() const { return display.getGrayLevels(); }
 
 uint8_t* GfxRenderer::borrowGray8Canvas(uint16_t* stride) const { return display.borrowGray8Canvas(stride); }
 
-void GfxRenderer::displayGray8Canvas() const {
+const gray_levels::Plan* GfxRenderer::grayLevelPlan() const { return display.grayLevelPlan(); }
+
+bool GfxRenderer::displayGrayLevelBase() const {
+  // Checked first so a panel without a plan leaves an armed override for the refresh that replaces this one.
+  if (!display.grayLevelPlan()) return false;
+  const HalDisplay::RefreshMode effective = consumeRefreshOverride(HalDisplay::HALF_REFRESH);
+  if (!display.displayGrayLevelBase(frameBuffer, effective)) return false;
+  noteRefresh(effective);
+  // Same contract as displayGrayscaleFrame(): follow the display if it swapped buffers.
+  frameBuffer = display.getFrameBuffer();
+  return true;
+}
+
+bool GfxRenderer::displayGrayLevelPass(const uint8_t pass, const bool lastPass) const {
+  // The panel powers down after the last pass where the fading fix asks for it, as displayGrayBuffer() does.
+  return display.displayGrayLevelPass(pass, lastPass && fadingFix.load(std::memory_order_relaxed));
+}
+
+bool GfxRenderer::displayGray8Canvas() const {
   // A full refresh whatever was asked (the driver forces its clean bank), so it satisfies an armed override too (a
   // book open's HALF), which would otherwise wait for the next refresh and land on the page after.
-  consumeRefreshOverride(HalDisplay::FULL_REFRESH);
+  const unsigned int armed = refreshOverride.exchange(REFRESH_OVERRIDE_NONE, std::memory_order_acq_rel);
+  if (!display.displayGray8Canvas(HalDisplay::FULL_REFRESH, fadingFix)) {
+    // Nothing reached the panel: the override is the fallback refresh's, unless a newer one was armed meanwhile.
+    unsigned int none = REFRESH_OVERRIDE_NONE;
+    if (armed != REFRESH_OVERRIDE_NONE) refreshOverride.compare_exchange_strong(none, armed, std::memory_order_acq_rel);
+    return false;
+  }
   noteRefresh(HalDisplay::FULL_REFRESH);
-  display.displayGray8Canvas(HalDisplay::FULL_REFRESH, fadingFix);
+  return true;
 }
 
 // Bit clear = black is the framebuffer's own convention (see DirectPixelWriter's

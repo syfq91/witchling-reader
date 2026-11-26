@@ -5136,6 +5136,12 @@
             // Log error but continue with original image
             console.error(`Failed to process image ${path}:`, imageError);
             log(`Warning: Failed to process ${path.split('/').pop()}, using original`, 'warning', 'IMG-ERR');
+            // The original bytes keep their original name. Under the .jpg name a PNG, GIF, WebP or
+            // BMP would be mislabelled, and fixOPF() would declare it image/jpeg: this reader
+            // decodes by content, other readers go by the declared type. Every later rewrite of
+            // references (XHTML, OPF, CSS, NCX) reads `renamed`, so dropping the entry leaves them
+            // all pointing at the file as it was (idea from cpr-vcodex ed32d7cc, franssjz).
+            delete renamed[path];
 
             // Use original image data as fallback
             result = {
@@ -5173,7 +5179,7 @@
           logImage(imgName, meta.origW, meta.origH, origFormat, meta.origSize, meta.finalW, meta.finalH, meta.finalSize, meta.wasSplit, meta.splitCount || 0, parts, meta.imageState || 0);
 
           if (parts.length === 1 && parts[0].suffix === '') {
-            const newPath = renamed[path] || path.replace(/\.[^.]+$/, newExt);
+            const newPath = meta.processingError ? path : (renamed[path] || path.replace(/\.[^.]+$/, newExt));
             out.file(newPath, parts[0].data, { compression: 'STORE', createFolders: false });
           } else {
             // Store with full path for collision prevention, but also keep original filename
@@ -6131,7 +6137,15 @@
       setTimeout(() => {
         const input = document.getElementById('renameNewName');
         input.focus();
-        input.select();
+        // A file's name up to its extension, so what the user types keeps ".epub". A folder, a
+        // dot-file and a name without a dot are selected whole. Ported from crosspoint-reader
+        // PR #4547 (Uri Tauber).
+        const dot = isFolder ? -1 : name.lastIndexOf('.');
+        if (dot > 0) {
+          input.setSelectionRange(0, dot);
+        } else {
+          input.select();
+        }
       }, 50);
     }
 
@@ -6296,7 +6310,14 @@
     }
 
     function confirmMove() {
-      const paths = JSON.parse(document.getElementById('moveItemPath').value);
+      const chosen = JSON.parse(document.getElementById('moveItemPath').value);
+      // A protected book's key and licence ("Book.epub.key", "Book.epub.rights") go with the book on the device's
+      // side, so when the book is moved too they are not moved again: their own move would find nothing there.
+      const lower = new Set(chosen.map(p => p.toLowerCase()));
+      const paths = chosen.filter(p => {
+        const m = /^(.*\.epub)\.(key|rights)$/i.exec(p);
+        return !m || !lower.has(m[1].toLowerCase());
+      });
       const destPath = normalizePath(document.getElementById('moveDestPath').value);
 
       if (!destPath) {

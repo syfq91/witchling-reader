@@ -63,7 +63,7 @@ When modifying the header layout, bump `SECTION_FILE_VERSION` to invalidate stal
 
 On the normal path the records are spilled to a scratch file on the SD card as they are recorded, and `Section::createSectionFile` copies them into the section cache when the build ends (`copyAnchorSpill`). The resident vector only holds them if the spill file cannot be opened. The serialized map is the same either way.
 
-For TOC anchors specifically, `startNewTextBlock` also forces a page break before recording, so chapters start on fresh pages rather than mid-page. The parser receives the set of TOC anchor strings via `tocAnchors` (a `std::vector<std::string>`) from `Section::createSectionFile`.
+For TOC anchors specifically, `startNewTextBlock` also forces a page break before recording (`breakPageBeforeTocAnchor`), so chapters start on fresh pages rather than mid-page. Not while a table's rows wait in its fragment packer: they were laid out for the page in progress (on an arena build in its arena block, which emitting the page rewinds), and a table is placed by its rows, as a CSS page break inside one is not taken either. A TOC anchor in a later row (a `<tr>`'s or `<td>`'s id, or the id of a block in a cell) then names the page its row is placed on (`commitPendingRow`); one before the table's first row still starts the table on a fresh page. The parser receives the spine's TOC anchors packed into one pool (`tocAnchorPool`, `"id\0id\0..."`) from the section build's setup.
 
 ### On-disk format
 
@@ -154,6 +154,8 @@ If two elements with `id` attributes appear before any `startNewTextBlock` call 
 ### wordsExtractedInBlock reset on empty block reuse
 
 When `startNewTextBlock` reuses an empty text block (the early-return path), `wordsExtractedInBlock` must be reset to 0. Without this, footnotes in the reused block could be assigned to wrong pages based on stale word counts from a prior block.
+
+The count is stale before that reset, too: a grid table, an `<hr>`, a box's close and a background picture lay the block before them out (`makePages`) without starting a new one, and the count of its tokens stands until the next block resets it. An inline id queued in between (`<table>..</table><span id="x"/><p>..`) therefore waits at index 0, the next line, whenever the block holds no token and no partial word (`inlineAnchorWordIndex`); counted on from the stale count it waited for that many tokens more of the next paragraph, a page or more into a long one (#846).
 
 ### getTocItem() does file I/O
 

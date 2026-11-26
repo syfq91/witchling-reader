@@ -49,7 +49,10 @@ a capability check (see `HalCapabilities::keepsSecondaryBuffer()` for the patter
   `lib/TextShaping`, `lib/OtShaper`, `lib/MiniBidi`: complex scripts and bidi.
 - `test/`: host GoogleTest suites, one folder each; `test/shims/` stands in for Arduino and the HAL.
 - `docs/`: reference docs. `docs/design/`: design records for shipped features. `docs/future_work/`:
-  open work, one file per topic. Read the relevant one before planning in that area.
+  open work, one file per topic. Read the relevant one before planning in that area. A topic that
+  parallel PRs work on keeps one file per item in a folder of the topic's name (`memory-and-parsing/`):
+  a PR deletes the item file it closes and adds a file for a follow-up, and leaves the topic page and
+  the README row alone, so PRs on different items never conflict.
 
 Singletons: `SETTINGS`, `APP_STATE`, `GUI`, `Storage`, `I18N`, `RECENT_BOOKS`, `READING_STATS`,
 `GLOBAL_BOOKMARKS`, `WIFI_STORE`, `OPDS_STORE`, `KOREADER_STORE`, `AUTOSYNC_STATE`, `WEATHER_SETTINGS`.
@@ -80,8 +83,10 @@ Details: `docs/memory-allocation-strategy.md`, `docs/contributing/heap-and-data-
   (`scripts/iram_budget.py`, `tools/iram-budget/`).
 - Flash: each 64 KB of app growth on the C3 costs the font cache one MMU map page. Quote size changes
   from the `RAM:` and `Flash:` lines of `pio run`, compared with a master build in the same worktree.
-- The TTF engine (`lib/EpdFont/ttf/`) must not use floating point: `scripts/check_no_float.py` fails the
-  build.
+- New on-device maths is integer or fixed point: the C3 has no FPU. The sources listed in `FLOAT_FREE` in
+  `scripts/check_no_float.py` (the TTF engine and every area of the integer-maths work, `docs/design/integer-math.md`)
+  fail the build if they use floating point. Images scale by exact ratios (`ImageScale`), text by
+  `TextScale` (2^-20ths of 1, rounded up onto its grid), CSS lengths in 16.16 (`CssLength`, read by `CssNumber`).
 
 ## Activities and rendering
 
@@ -190,7 +195,9 @@ Formats: `docs/file-formats.md`, `docs/sidecar-files.md`.
   valid and render wrong.
 - Settings rows are declared once in `src/SettingsList.h`, which serves the device UI, the web API and
   the serial `GET`/`SET`. `JsonSettingsIO` saves each keyed row in `settings.json`, enums as numbers,
-  and loads the row's default when the key is missing. Append new enum values; never renumber.
+  and loads the row's default when the key is missing. Append new enum values; never renumber. The
+  button and gesture actions are the exception: stored by name (`src/ButtonActionNames.h`), so a new
+  action goes anywhere above the board-gated block and needs only a name there.
 
 ## Generated files
 

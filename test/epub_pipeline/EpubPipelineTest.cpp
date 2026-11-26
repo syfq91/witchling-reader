@@ -31,15 +31,19 @@
 // (<book>_unshaped.golden.txt), as in a font that cannot shape them: IndicReorder's forms, and the line pass's code
 // points. The Arabic one also runs 1,600 px wide (<book>_1600.golden.txt), where its lines pass the line pass's 128
 // slots and take its fallback, and so does the Myanmar one, whose lines end between syllables at both widths.
+#include <CacheCipherFile.h>
+#include <HalStorage.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 
+#include "Epub.h"
 #include "Epub/BlockFontFamilies.h"
 #include "Epub/css/CssParser.h"
 #include "PipelineRunner.h"
@@ -61,18 +65,23 @@ enum class Variant {
   Default,
   Normalization,
   Hyphenation,
+  Bionic,
   Accents,
   BookAlignment,
   Vertical,
   VerticalOn,
   Unshaped,
-  Wide
+  Wide,
+  ParagraphSpacing
 };
 
 // One corpus book under one variant.
 struct Case {
   std::string epub;
   Variant variant = Variant::Default;
+  // Non-zero: every build is lent a region of this many bytes, as a background build is lent the secondary
+  // framebuffer, and lays its lines out in it. The layout must be the heap build's, byte for byte.
+  size_t lentArenaBytes = 0;
 };
 
 const char* variantName(const Variant v) {
@@ -81,6 +90,8 @@ const char* variantName(const Variant v) {
       return "fontSizeNormalization";
     case Variant::Hyphenation:
       return "hyphenation";
+    case Variant::Bionic:
+      return "bionicReading";
     case Variant::Accents:
       return "publisherFontsAccents";
     case Variant::BookAlignment:
@@ -93,6 +104,8 @@ const char* variantName(const Variant v) {
       return "unshaped";
     case Variant::Wide:
       return "viewport1600";
+    case Variant::ParagraphSpacing:
+      return "extraParagraphSpacing";
     case Variant::Default:
       break;
   }
@@ -102,6 +115,7 @@ const char* variantName(const Variant v) {
 // Without this gtest dumps the struct as raw bytes in failure messages.
 void PrintTo(const Case& c, std::ostream* os) {
   *os << fs::path(c.epub).filename().string() << " [" << variantName(c.variant) << "]";
+  if (c.lentArenaBytes != 0) *os << " lent " << c.lentArenaBytes << " B";
 }
 
 std::string stem(const std::string& path) { return fs::path(path).stem().string(); }
@@ -114,6 +128,10 @@ const char* const kNormalizationSensitiveBooks[] = {"test_body_size", "test_font
 // the bottom of a page (the retry).
 const char* const kHyphenationBooks[] = {"test_anchor_pagebreak", "test_inline_images", "test_kerning_ligature",
                                          "test_wrapped_paragraphs"};
+
+// Bionic reading bolds a prefix of every word. Paragraphs over 96 words (test_long_paragraph_spacing
+// has seven) are laid out before they end, and the rebuild resumes where it stopped.
+const char* const kBionicBooks[] = {"test_long_paragraph_spacing", "test_text_rendering"};
 
 // Books set in several font families (see test/epubs/make_test_font_families.py).
 const char* const kFontFamilyBooks[] = {"test_font_families"};
@@ -162,6 +180,10 @@ const char* const kUnshapedBooks[] = {"test_shaped_arabic", "test_shaped_devanag
 // Burmese lines ending between syllables on a line wider than most phrases.
 const char* const kWideBooks[] = {"test_shaped_arabic", "test_shaped_myanmar"};
 
+// Books also laid out with Extra Paragraph Spacing on and a fixed 2 em Paragraph Indent (<book>_spacing.golden.txt):
+// the reader's paragraphs take both, a degraded table's cells neither, a nested table's cells included.
+const char* const kParagraphSpacingBooks[] = {"test_nested_tables"};
+
 // The families as the reader builds them for a 14 pt built-in body (buildBookFontFamilies), with stand-in IDs: the
 // built-in sans-serif's rungs are 2000 + their size, the accent families' native sizes 0x12345600, 0x23456700 and
 // 0x34567800 | px: the book's three accent families (Stage B phase 3) beside the built-in body. All Text sets them
@@ -197,6 +219,8 @@ std::string variantSuffix(const Case& c) {
       return "_norm";
     case Variant::Hyphenation:
       return "_hyph";
+    case Variant::Bionic:
+      return "_bionic";
     case Variant::Accents:
       return "_accents";
     case Variant::BookAlignment:
@@ -209,6 +233,8 @@ std::string variantSuffix(const Case& c) {
       return "_unshaped";
     case Variant::Wide:
       return "_1600";
+    case Variant::ParagraphSpacing:
+      return "_spacing";
     case Variant::Default:
       break;
   }
@@ -219,21 +245,28 @@ std::string runOnce(const Case& c, const std::string& cacheDir) {
   pipeline_harness::Profile profile;
   profile.fontSizeNormalization = c.variant == Variant::Normalization;
   profile.hyphenationEnabled = c.variant == Variant::Hyphenation;
+  profile.bionicReadingEnabled = c.variant == Variant::Bionic;
   if (c.variant == Variant::Accents) profile.fontFamilies = &kAccentsFamilies;
   if (c.variant == Variant::BookAlignment) profile.paragraphAlignment = static_cast<uint8_t>(CssTextAlign::None);
   if (c.variant == Variant::Vertical) profile.verticalText = VerticalText::Automatic;
   if (c.variant == Variant::VerticalOn) profile.verticalText = VerticalText::On;
   if (c.variant == Variant::Wide) profile.viewportWidth = 1600;
+  if (c.variant == Variant::ParagraphSpacing) {
+    profile.extraParagraphSpacing = true;
+    profile.paragraphIndent = static_cast<uint8_t>(ParagraphIndent::TwoEm);
+  }
   if (c.variant != Variant::Unshaped) profile.shapingFontFile = shapingFontOf(stem(c.epub));
+  profile.lentArenaBytes = c.lentArenaBytes;
   std::ostringstream dump;
   const bool ok = pipeline_harness::runAndDump(c.epub, cacheDir, profile, dump);
   EXPECT_TRUE(ok) << "pipeline failed for " << c.epub << " (" << variantName(c.variant) << ")\n" << dump.str();
   return dump.str();
 }
 
-// Unique per (book, variant) so the two variants never share a cache dir.
+// Unique per (book, variant, lent size) so no two cases ever share a cache dir.
 std::string caseCacheDir(const Case& c, const std::string& tag) {
-  return freshCacheDir(stem(c.epub) + variantSuffix(c) + "_" + tag);
+  const std::string lent = c.lentArenaBytes != 0 ? "_lent" + std::to_string(c.lentArenaBytes) : "";
+  return freshCacheDir(stem(c.epub) + variantSuffix(c) + lent + "_" + tag);
 }
 
 bool readFile(const fs::path& path, std::string& out) {
@@ -264,13 +297,18 @@ TEST_P(EpubPipelineWarmTest, RebuildOverWarmBookCacheMatchesColdRun) {
 
 // Built twice, into separate cache dirs: a nondeterministic build (an uninitialised field, a
 // pointer-ordered container) can match the golden once by luck, and must not be allowed to write one.
+// A lent-region case is built once and only compared: the golden is the heap build's.
 TEST_P(EpubPipelineTest, MatchesGolden) {
   const Case c = GetParam();
+  const bool updating = std::getenv("UPDATE_GOLDENS") != nullptr;
+  if (updating && c.lentArenaBytes != 0) GTEST_SKIP() << "a lent-region build never writes a golden";
   const std::string dump = runOnce(c, caseCacheDir(c, "a"));
-  ASSERT_EQ(dump, runOnce(c, caseCacheDir(c, "b"))) << "two cold builds of " << c.epub << " diverged";
+  if (c.lentArenaBytes == 0) {
+    ASSERT_EQ(dump, runOnce(c, caseCacheDir(c, "b"))) << "two cold builds of " << c.epub << " diverged";
+  }
   const fs::path goldenPath = fs::path(GOLDEN_DIR) / (stem(c.epub) + variantSuffix(c) + ".golden.txt");
 
-  if (std::getenv("UPDATE_GOLDENS")) {
+  if (updating) {
     std::ofstream(goldenPath, std::ios::binary) << dump;
     GTEST_SKIP() << "golden regenerated: " << goldenPath;
   }
@@ -308,27 +346,70 @@ std::vector<Case> corpusCases() {
     cases.push_back(Case{path});
     if (listed(kNormalizationSensitiveBooks, stem(path))) cases.push_back(Case{path, Variant::Normalization});
     if (listed(kHyphenationBooks, stem(path))) cases.push_back(Case{path, Variant::Hyphenation});
+    if (listed(kBionicBooks, stem(path))) cases.push_back(Case{path, Variant::Bionic});
     if (listed(kFontFamilyBooks, stem(path))) cases.push_back(Case{path, Variant::Accents});
     if (listed(kBookAlignmentBooks, stem(path))) cases.push_back(Case{path, Variant::BookAlignment});
     if (listed(kVerticalBooks, stem(path))) cases.push_back(Case{path, Variant::Vertical});
     if (listed(kVerticalOnBooks, stem(path))) cases.push_back(Case{path, Variant::VerticalOn});
     if (listed(kUnshapedBooks, stem(path))) cases.push_back(Case{path, Variant::Unshaped});
     if (listed(kWideBooks, stem(path))) cases.push_back(Case{path, Variant::Wide});
+    if (listed(kParagraphSpacingBooks, stem(path))) cases.push_back(Case{path, Variant::ParagraphSpacing});
+  }
+  return cases;
+}
+
+// Every corpus case again, each build lent a region of the X3's framebuffer size: the lines, their TextBlocks and the
+// pages' blocks then live in the region, which this binary fills when a block is rewound (BUILD_ARENA_TRACE), so a
+// line used or destroyed after its page went shows here. Compared with the heap build's goldens.
+std::vector<Case> lentCases() {
+  std::vector<Case> cases = corpusCases();
+  for (Case& c : cases) c.lentArenaBytes = 52272;
+  return cases;
+}
+
+// The X4's 48,000 B, where the line objects' reserve (EpubImageManifest::kWalkArenaReserve) binds: a subset of the
+// corpus in its default layout, one or more books for each kind of content the region holds -- images, deferred image
+// headers, tables, a table's overflowing cells, nested tables, prose, CJK, bidi, footnotes.
+const char* const kX4LentBooks[] = {
+    "test_jpeg_images",
+    "test_jpeg_metadata_heavy",
+    "test_mixed_images",
+    "test_inline_images",
+    "test_tables",
+    "test_table_streaming",
+    "test_table_cell_overflow",
+    "test_nested_tables",
+    "test_wrapped_paragraphs",
+    "test_long_paragraph_spacing",
+    "test_cjk_ja_soseki",
+    "test_cjk_zh_honglou",
+    "test_bidi_text",
+    "test_inline_footnotes",
+    "test_split_footnotes",
+};
+
+std::vector<Case> lentX4Cases() {
+  std::vector<Case> cases;
+  for (Case c : corpusCases()) {
+    if (c.variant != Variant::Default || !listed(kX4LentBooks, stem(c.epub))) continue;
+    c.lentArenaBytes = 48000;
+    cases.push_back(c);
   }
   return cases;
 }
 
 // The cases whose warm run can differ from their cold one. What the warm run reads back is the book-level cache,
 // which the default layout, normalization (the CSS index's font sizes) and the accent families (its font families)
-// all draw on. Hyphenation, bionic reading, an unshaped layout and a wider page draw on none of it: the language the
-// hyphenator and the shaper need comes from book.bin, which the default warm case of the same book already compares
-// (its BOOK line).
+// all draw on. Hyphenation, bionic reading, an unshaped layout, a wider page and paragraph spacing draw on none of it:
+// the language the hyphenator and the shaper need comes from book.bin, which the default warm case of the same book
+// already compares (its BOOK line).
 std::vector<Case> warmCases() {
   std::vector<Case> cases = corpusCases();
   cases.erase(std::remove_if(cases.begin(), cases.end(),
                              [](const Case& c) {
-                               return c.variant == Variant::Hyphenation || c.variant == Variant::Unshaped ||
-                                      c.variant == Variant::Wide;
+                               return c.variant == Variant::Hyphenation || c.variant == Variant::Bionic ||
+                                      c.variant == Variant::Unshaped || c.variant == Variant::Wide ||
+                                      c.variant == Variant::ParagraphSpacing;
                              }),
               cases.end());
   return cases;
@@ -342,6 +423,64 @@ std::string caseName(const testing::TestParamInfo<Case>& info) {
 }
 
 INSTANTIATE_TEST_SUITE_P(SyntheticCorpus, EpubPipelineTest, testing::ValuesIn(corpusCases()), caseName);
+INSTANTIATE_TEST_SUITE_P(LentRegion, EpubPipelineTest, testing::ValuesIn(lentCases()), caseName);
+INSTANTIATE_TEST_SUITE_P(LentRegionX4, EpubPipelineTest, testing::ValuesIn(lentX4Cases()), caseName);
 INSTANTIATE_TEST_SUITE_P(SyntheticCorpus, EpubPipelineWarmTest, testing::ValuesIn(warmCases()), caseName);
+
+// A protected book's cache at rest (D2, lib/CacheCipher/CacheCipherFile.h): every book of the corpus laid out in an
+// enciphered cache folder gives its golden, cold and then over its warm book cache (which reads book.bin, the CSS
+// index, the image manifest and the banked chapters back through the cipher), and leaves no file in the folder that
+// is not enciphered on the card. The default layout only: the cipher sits below the layout, which no variant changes.
+std::vector<Case> encipheredCases() {
+  std::vector<Case> cases = corpusCases();
+  cases.erase(std::remove_if(cases.begin(), cases.end(),
+                             [](const Case& c) { return c.variant != Variant::Default || c.lentArenaBytes != 0; }),
+              cases.end());
+  return cases;
+}
+
+bool testCacheKey(const uint8_t (&salt)[cache_cipher::kSaltBytes], uint8_t (&key)[cache_cipher::kKeyBytes]) {
+  for (size_t i = 0; i < sizeof(key); ++i) key[i] = static_cast<uint8_t>(0xA5 ^ i ^ salt[i % sizeof(salt)]);
+  return true;
+}
+
+class EpubPipelineEncipheredTest : public EpubPipelineTest {};
+
+TEST_P(EpubPipelineEncipheredTest, EncipheredCacheMatchesGolden) {
+  const Case c = GetParam();
+  if (std::getenv("UPDATE_GOLDENS") != nullptr) GTEST_SKIP() << "compares with the goldens, never writes one";
+  const std::string cacheDir = caseCacheDir(c, "enciphered");
+  const std::string folder = Epub::cachePathFor(c.epub, cacheDir);
+  fs::create_directories(folder);
+  Storage.setCacheKeySource(testCacheKey);
+  ASSERT_TRUE(Storage.markCacheFolderEnciphered(folder.c_str()));
+  const std::string cold = runOnce(c, cacheDir);
+  const std::string warm = runOnce(c, cacheDir);
+  Storage.setCacheKeySource(nullptr);
+
+  std::string golden;
+  ASSERT_TRUE(readFile(fs::path(GOLDEN_DIR) / (stem(c.epub) + ".golden.txt"), golden));
+  EXPECT_EQ(golden, cold) << c.epub << " lays out differently in an enciphered cache folder";
+  EXPECT_EQ(golden, warm) << c.epub << " lays out differently over its warm enciphered book cache";
+
+  size_t files = 0;
+  for (const auto& entry : fs::recursive_directory_iterator(folder)) {
+    if (!entry.is_regular_file() || entry.path().filename() == cache_cipher::kMarkerName) continue;
+    std::string bytes;
+    ASSERT_TRUE(readFile(entry.path(), bytes));
+    if (bytes.empty()) continue;  // an empty file a reader opened and never wrote holds nothing
+    ++files;
+    EXPECT_EQ(bytes.compare(0, sizeof(cache_cipher::kFileMagic),
+                            reinterpret_cast<const char*>(cache_cipher::kFileMagic), sizeof(cache_cipher::kFileMagic)),
+              0)
+        << entry.path() << " is on the card in the clear";
+  }
+  EXPECT_GE(files, 3u) << "the build left almost nothing in " << folder;
+}
+
+INSTANTIATE_TEST_SUITE_P(SyntheticCorpus, EpubPipelineEncipheredTest, testing::ValuesIn(encipheredCases()), caseName);
+
+// A renamed or dropped corpus book would leave the X4 subset quietly smaller.
+TEST(LentRegionX4Subset, EveryListedBookIsInTheCorpus) { EXPECT_EQ(std::size(kX4LentBooks), lentX4Cases().size()); }
 
 }  // namespace

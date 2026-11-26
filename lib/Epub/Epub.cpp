@@ -2,11 +2,14 @@
 
 #include <Bitmap.h>
 #include <BookCache.h>
+#include <BookSession.h>
 #include <BufferedFileIO.h>
+#include <CacheAtRest.h>
 #include <CooperativeAbort.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <ImageToBmp.h>
 #include <InflateReader.h>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
@@ -30,6 +33,7 @@
 #include "Epub/CoverImageRefScanner.h"
 #include "Epub/CoverThumbSession.h"
 #include "Epub/HashUtils.h"
+#include "Epub/HeadingCarry.h"
 #include "Epub/ImageFormatDetector.h"
 #include "Epub/NavCoverScanner.h"
 #include "Epub/SpineHrefMatch.h"
@@ -587,6 +591,7 @@ bool Epub::computeZipFingerprint(uint64_t* out) const {
   return true;
 }
 
+
 namespace {
 constexpr uint32_t FINGERPRINT_MAGIC = 0x31504658;  // "XFP1"
 constexpr const char* FINGERPRINT_FILE = "/fingerprint.bin";
@@ -832,9 +837,12 @@ void Epub::parseCssFiles() const {
   // re-parse — so one low-heap open would permanently strip the book's styles (observed
   // on-device). Abort instead; with no cache on disk the next open re-parses, and that
   // missing-cache path also invalidates the section caches built unstyled this session.
-  if (skippedForLowHeap) {
+  // So does a sheet table the heap refused its growth: written empty, it loaded as valid too, and
+  // every chapter resolved against every stylesheet for as long as the cache lasted (#843).
+  if (skippedForLowHeap || cssParser->sheetTableLostToHeap()) {
     cssParser->abortCacheCompile();
-    LOG_ERR("EBP", "CSS cache not persisted (stylesheet skipped on low heap); will re-parse on next open");
+    LOG_ERR("EBP", "CSS cache not persisted (%s on low heap); will re-parse on next open",
+            skippedForLowHeap ? "stylesheet skipped" : "sheet table lost");
     cssParser->clear();
     return;
   }
@@ -873,7 +881,6 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, BuildArena
   cssParser.reset(new CssParser(cachePath));
 
   clearCacheIfContentChanged();
-
   // An earlier build lost the TOC: rebuild rather than reuse its book.bin, which has no room to
   // take the TOC in afterwards. Only on the reader's open (see setLostTocRetryEnabled()).
   const bool retryLostToc = buildIfMissing && lostTocRetryEnabled_ && lostTocRetryDue();
@@ -1589,30 +1596,15 @@ bool Epub::generateCoverBmp(bool cropped) const {
     return false;
   }
 
-  FsFile coverBmp;
-  if (!Storage.openFileForWrite("EBP", getCoverBmpPath(cropped), coverBmp)) {
-    coverImage.close();
-    return false;
-  }
-
   // 8-bit: this cover is drawn only by the sleep screen, which dithers at draw time
   // and can apply the adaptive tone filter. Quantizing to 4 levels here would throw
   // away the tonal range that filter needs. Thumbnails stay 1-bit -- they are drawn
   // on the home screen's BW-plane path and are a different artifact entirely.
-  bool success = false;
-  if (detectedFormat == ImageFormatDetector::Format::Jpeg) {
-    success = JpegToBmpConverter::jpegFileToBmpStream(coverImage, coverBmp, cropped, /*grayscale8Bit=*/true);
-  } else {
-    success = PngToBmpConverter::pngFileToBmpStream(coverImage, coverBmp, cropped, /*grayscale8Bit=*/true);
-  }
-
-  coverImage.close();
-  coverBmp.close();
-
-  if (!success) {
-    LOG_ERR("EBP", "Failed to generate BMP from cover image");
-    Storage.remove(getCoverBmpPath(cropped).c_str());
-  }
+  const bool success = ImageToBmp::convert(
+      "EBP", coverImage,
+      detectedFormat == ImageFormatDetector::Format::Jpeg ? ImageToBmp::Format::Jpeg : ImageToBmp::Format::Png,
+      getCoverBmpPath(cropped), ImageToBmp::Target{.crop = cropped});
+  if (!success) LOG_ERR("EBP", "Failed to generate BMP from cover image");
 
   LOG_DBG("EBP", "Generated BMP from cover image, success: %s", success ? "yes" : "no");
   return success;
@@ -1661,100 +1653,20 @@ bool Epub::openStoredCoverInPlace(FsFile& out, uint32_t* offset) const {
 }
 
 ThumbResult Epub::generateThumbBmp(int height, bool allowExtract, BuildArena* scratch) const {
-  {
-    FsFile existing;
-    if (Storage.openFileForRead("EBP", getThumbBmpPath(height), existing)) {
-      const uint32_t sz = existing.size();
-      existing.close();
-      if (sz == 0) {  // 0-byte sentinel — a prior pass proved this cover structurally absent.
-        LOG_DBG("EBP", "Sentinel found for h=%d thumb, skipping retry", height);
-        return ThumbResult::StructurallyAbsent;
-      }
-      // size>0 is not "done": a thumb truncated by an interrupted write must be regenerated, not
-      // returned as valid (the caller's completeness check would otherwise reject it forever and
-      // loop). Reuse only a complete BMP; else fall through (openFileForWrite below truncates it).
-      if (thumbBmpComplete(getThumbBmpPath(height), height * 6 / 10, height)) return ThumbResult::Ok;
-      LOG_DBG("EBP", "Existing h=%d thumb is truncated — regenerating", height);
-    }
-  }
-
-  // No cover item at all is structural — record a sentinel now regardless of allowExtract,
-  // since no amount of extraction or retry can conjure a cover that the OPF doesn't declare.
-  if (getCoverItemHref().empty()) {
-    LOG_DBG("EBP", "No cover item for h=%d — writing structural sentinel", height);
-    writeThumbSentinel(getThumbBmpPath(height));
-    return ThumbResult::StructurallyAbsent;
-  }
-
-  // An extracted-but-undecodable cover is structural, and must be answered BEFORE the
-  // transient bail below: coverImageCachedAndValid() reports false for it exactly as it does
-  // for a not-yet-extracted cover, so without this the caller re-runs the extractor, gets the
-  // same bytes, and defers again — forever (observed: a .png that is really an AVIF, re-inflated
-  // from the ZIP every ~1.3 s). The unsupported-format branch further down never sees it.
-  if (coverImageCachedButUnsupported()) {
-    LOG_ERR("EBP", "Cached cover.img is not a supported format for h=%d — writing structural sentinel", height);
-    writeThumbSentinel(getThumbBmpPath(height));
-    return ThumbResult::StructurallyAbsent;
-  }
-
-  // Same in-place shortcut as the (width, height) overload above: a stored cover needs no
-  // extraction at all.
-  FsFile coverImage;
-  uint32_t coverBase = 0;
-  if (coverImageCachedAndValid(allowExtract)) {
-    if (!Storage.openFileForRead("EBP", getCoverImageCachePath(), coverImage)) return ThumbResult::TransientFail;
-  } else if (!openStoredCoverInPlace(coverImage, &coverBase)) {
-    // Neither cached nor stored. No sentinel — let the sliced extractor produce it, or retry
-    // next pass/boot. The caller counts these.
-    LOG_DBG("EBP", "cover.img not cached/valid for h=%d — transient, deferring", height);
-    return ThumbResult::TransientFail;
-  }
-
-  const auto detectedFormat = ImageFormatDetector::detect(coverImage, coverBase);
-  if (detectedFormat == ImageFormatDetector::Format::Unknown) {
-    // Cover extracted but its format is unsupported — structural, re-extraction yields the same
-    // bytes. Sentinel so we stop trying.
-    LOG_ERR("EBP", "Cached cover image is not a supported format — writing structural sentinel");
-    coverImage.close();
-    writeThumbSentinel(getThumbBmpPath(height));
-    return ThumbResult::StructurallyAbsent;
-  }
-
-  FsFile thumbBmp;
-  if (!Storage.openFileForWrite("EBP", getThumbBmpPath(height), thumbBmp)) {
-    coverImage.close();
-    return ThumbResult::TransientFail;
-  }
-
-  const int thumbW = static_cast<int>(height * 0.6f);
-  bool success = false;
-  if (detectedFormat == ImageFormatDetector::Format::Jpeg) {
-    LOG_DBG("EBP", "Generating thumb BMP from JPEG cover image");
-    success = JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(coverImage, thumbBmp, thumbW, height, scratch);
-  } else {
-    LOG_DBG("EBP", "Generating thumb BMP from PNG cover image");
-    success = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(coverImage, thumbBmp, thumbW, height);
-  }
-
-  coverImage.close();
-  thumbBmp.close();
-
-  if (!success) {
-    // Whether aborted for input or a plain decode failure, this is transient: drop the partial
-    // thumb (never leave it as a false sentinel) and let the caller retry / count it.
-    LOG_DBG("EBP", "Thumb decode for h=%d did not complete — removing partial, transient", height);
-    Storage.remove(getThumbBmpPath(height).c_str());
-    return ThumbResult::TransientFail;
-  }
-  LOG_DBG("EBP", "Generated thumb BMP from cover image (h=%d)", height);
-  return ThumbResult::Ok;
+  // By height alone: 6:10, filled and cut.
+  return generateThumbAt(getThumbBmpPath(height), height * 3 / 5, height, allowExtract, scratch, /*crop=*/true);
 }
 
 ThumbResult Epub::generateThumbBmp(int width, int height, bool allowExtract, BuildArena* scratch,
                                    const bool crop) const {
+  return generateThumbAt(getThumbBmpPath(width, height), width, height, allowExtract, scratch, crop);
+}
+
+ThumbResult Epub::generateThumbAt(const std::string& thumbPath, const int width, const int height,
+                                  const bool allowExtract, BuildArena* scratch, const bool crop) const {
   {
     FsFile existing;
-    if (Storage.openFileForRead("EBP", getThumbBmpPath(width, height), existing)) {
+    if (Storage.openFileForRead("EBP", thumbPath, existing)) {
       const uint32_t sz = existing.size();
       existing.close();
       if (sz == 0) {  // 0-byte sentinel — a prior pass proved this cover structurally absent.
@@ -1764,7 +1676,7 @@ ThumbResult Epub::generateThumbBmp(int width, int height, bool allowExtract, Bui
       // size>0 is not "done": a thumb truncated by an interrupted write must be regenerated, not
       // returned as valid (the caller's completeness check would otherwise reject it forever and
       // loop). Reuse only a complete BMP; else fall through (openFileForWrite below truncates it).
-      if (thumbBmpComplete(getThumbBmpPath(width, height), width, height)) return ThumbResult::Ok;
+      if (thumbBmpComplete(thumbPath, width, height)) return ThumbResult::Ok;
       LOG_DBG("EBP", "Existing %dx%d thumb is truncated — regenerating", width, height);
     }
   }
@@ -1773,15 +1685,18 @@ ThumbResult Epub::generateThumbBmp(int width, int height, bool allowExtract, Bui
   // since no amount of extraction or retry can conjure a cover that the OPF doesn't declare.
   if (getCoverItemHref().empty()) {
     LOG_DBG("EBP", "No cover item for %dx%d — writing structural sentinel", width, height);
-    writeThumbSentinel(getThumbBmpPath(width, height));
+    writeThumbSentinel(thumbPath);
     return ThumbResult::StructurallyAbsent;
   }
 
-  // See the h= overload above: extracted-but-undecodable must be answered before the transient
-  // bail, or the extractor is re-run forever on bytes that can never decode.
+  // An extracted-but-undecodable cover is structural, and must be answered BEFORE the
+  // transient bail below: coverImageCachedAndValid() reports false for it exactly as it does
+  // for a not-yet-extracted cover, so without this the caller re-runs the extractor, gets the
+  // same bytes, and defers again — forever (observed: a .png that is really an AVIF, re-inflated
+  // from the ZIP every ~1.3 s). The unsupported-format branch further down never sees it.
   if (coverImageCachedButUnsupported()) {
     LOG_ERR("EBP", "Cached cover.img is not a supported format for %dx%d — writing structural sentinel", width, height);
-    writeThumbSentinel(getThumbBmpPath(width, height));
+    writeThumbSentinel(thumbPath);
     return ThumbResult::StructurallyAbsent;
   }
 
@@ -1806,33 +1721,17 @@ ThumbResult Epub::generateThumbBmp(int width, int height, bool allowExtract, Bui
     // bytes. Sentinel so we stop trying.
     LOG_ERR("EBP", "Cached cover image is not a supported format — writing structural sentinel");
     coverImage.close();
-    writeThumbSentinel(getThumbBmpPath(width, height));
+    writeThumbSentinel(thumbPath);
     return ThumbResult::StructurallyAbsent;
   }
 
-  FsFile thumbBmp;
-  if (!Storage.openFileForWrite("EBP", getThumbBmpPath(width, height), thumbBmp)) {
-    coverImage.close();
-    return ThumbResult::TransientFail;
-  }
-
-  bool success = false;
-  if (detectedFormat == ImageFormatDetector::Format::Jpeg) {
-    LOG_DBG("EBP", "Generating %dx%d thumb BMP from JPEG cover image", width, height);
-    success = JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(coverImage, thumbBmp, width, height, scratch, crop);
-  } else {
-    LOG_DBG("EBP", "Generating %dx%d thumb BMP from PNG cover image", width, height);
-    success = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(coverImage, thumbBmp, width, height, crop);
-  }
-
-  coverImage.close();
-  thumbBmp.close();
-
-  if (!success) {
-    // Whether aborted for input or a plain decode failure, this is transient: drop the partial
-    // thumb (never leave it as a false sentinel) and let the caller retry / count it.
-    LOG_DBG("EBP", "Thumb decode for %dx%d did not complete — removing partial, transient", width, height);
-    Storage.remove(getThumbBmpPath(width, height).c_str());
+  const bool jpeg = detectedFormat == ImageFormatDetector::Format::Jpeg;
+  LOG_DBG("EBP", "Generating %dx%d thumb BMP from %s cover image", width, height, jpeg ? "JPEG" : "PNG");
+  if (!ImageToBmp::convert("EBP", coverImage, jpeg ? ImageToBmp::Format::Jpeg : ImageToBmp::Format::Png, thumbPath,
+                           ImageToBmp::Target{.width = width, .height = height, .crop = crop, .scratch = scratch})) {
+    // Aborted for input, a plain decode failure or a thumb that would not open: transient. The partial
+    // thumb is gone (never left as a false sentinel); the caller retries / counts it.
+    LOG_DBG("EBP", "Thumb decode for %dx%d did not complete — removed, transient", width, height);
     return ThumbResult::TransientFail;
   }
   LOG_DBG("EBP", "Generated %dx%d thumb BMP from cover image", width, height);
@@ -2215,7 +2114,8 @@ bool Epub::extractItemToFileOnce(const std::string& itemHref, const std::string&
   // inflate stops where the DEFLATE stream ends, whatever the entry's size says. A short file
   // would be trusted as the entry on every later visit, like the truncated one above.
   size_t entrySize = 0;
-  if (!getItemSize(itemHref, &entrySize)) {
+  bool sizeExact = true;
+  if (!getItemSize(itemHref, &entrySize, &sizeExact)) {
     LOG_ERR("EBP", "No entry to extract: %s", itemHref.c_str());
     return false;
   }
@@ -2248,7 +2148,9 @@ bool Epub::extractItemToFileOnce(const std::string& itemHref, const std::string&
     // Drain before the file is flushed/closed, and let a failed final write fail the extract:
     // a short file would otherwise pass as a complete one and be decoded as garbage.
     if (!sink.drain()) ok = false;
-    if (ok && sink.accepted() != entrySize) {
+    // An encrypted entry whose size its manifest does not give has only an estimate: there the
+    // stream's own end, which the reader checks, is the entry's.
+    if (ok && sizeExact && sink.accepted() != entrySize) {
       LOG_ERR("EBP", "Extract is %u bytes, entry is %u: %s", static_cast<unsigned>(sink.accepted()),
               static_cast<unsigned>(entrySize), itemHref.c_str());
       ok = false;
@@ -2287,7 +2189,7 @@ bool Epub::extractItemToFile(const std::string& itemHref, const std::string& des
   return extractItemToFileOnce(itemHref, destPath, nullptr);
 }
 
-bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
+bool Epub::getItemSize(const std::string& itemHref, size_t* size, bool* exact) const {
   const std::string path = FsHelpers::normalisePath(itemHref);
   ZipFile zip(filepath);
   primeZip(zip);
@@ -2295,6 +2197,7 @@ bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
   const bool ok = lookupItemStat(zip, path, &stat);
   adoptZipDetails(zip);
   if (ok) *size = static_cast<size_t>(stat.uncompressedSize);
+  if (ok && exact != nullptr) *exact = true;
   return ok;
 }
 
@@ -2370,6 +2273,8 @@ void Epub::forgetMetadataMemos() const {
   tocForSpineMemoToc_ = -1;
   tocEntryMemoIndex_ = -1;
   tocEntryMemo_ = {};
+  for (CarryMemo& memo : carryMemo_) memo = {};
+  carryMemoNext_ = 0;
 }
 
 BookMetadataCache::SpineEntry Epub::getSpineItem(const int spineIndex) const {
@@ -2475,6 +2380,43 @@ bool Epub::hasReliableToc() const {
   return reliable;
 }
 
+bool Epub::isCarriedSpine(const int spine, BuildArena* scratch) const {
+  return carryVerdict(spine, scratch, /*forLayout=*/false);
+}
+
+bool Epub::carriedSpineForLayout(const int spine, BuildArena* scratch) const {
+  return carryVerdict(spine, scratch, /*forLayout=*/true);
+}
+
+bool Epub::carryVerdict(const int spine, BuildArena* scratch, const bool forLayout) const {
+  if (spine < 0) return false;
+  for (const CarryMemo& memo : carryMemo_) {
+    if (memo.spine == spine) return memo.carried;
+  }
+  const HeadingCarry::Verdict verdict = HeadingCarry::decide(*this, spine, scratch);
+  const bool unknown = verdict == HeadingCarry::Verdict::Unknown;
+  if (unknown && !forLayout) return false;
+  if (unknown) {
+    LOG_ERR("EBP",
+            "Spine %d: whether its heading is carried cannot be told (a file not read); laid out as not, "
+            "for this session",
+            spine);
+  }
+  const bool carried = verdict == HeadingCarry::Verdict::Yes;
+  // The oldest slot no settled answer holds; every slot settled, the oldest.
+  size_t slot = carryMemoNext_;
+  for (size_t i = 0; i < std::size(carryMemo_); ++i) {
+    const size_t at = (carryMemoNext_ + i) % std::size(carryMemo_);
+    if (!carryMemo_[at].settled) {
+      slot = at;
+      break;
+    }
+  }
+  carryMemo_[slot] = {spine, carried, unknown};
+  carryMemoNext_ = static_cast<uint8_t>((slot + 1) % std::size(carryMemo_));
+  return carried;
+}
+
 int Epub::getTocIndexForSpineIndex(const int spineIndex) const {
   if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
     LOG_ERR("EBP", "getTocIndexForSpineIndex called but cache not loaded");
@@ -2539,17 +2481,22 @@ int Epub::getSpineIndexForTextReference() const {
   return textReferenceSpine_;
 }
 
-// Calculate progress in book (returns 0.0-1.0)
-float Epub::calculateProgress(const int currentSpineIndex, const float currentSpineRead) const {
+ProgressPpb Epub::calculateProgress(const int currentSpineIndex, const ProgressPpb inSpine) const {
   const size_t bookSize = getBookSize();
   if (bookSize == 0) {
-    return 0.0f;
+    return ProgressPpb();
   }
   const size_t prevChapterSize = (currentSpineIndex >= 1) ? getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
   const size_t curChapterSize = getCumulativeSpineItemSize(currentSpineIndex) - prevChapterSize;
-  const float sectionProgSize = currentSpineRead * static_cast<float>(curChapterSize);
-  const float totalProgress = static_cast<float>(prevChapterSize) + sectionProgSize;
-  return totalProgress / static_cast<float>(bookSize);
+  return ProgressPpb::across(static_cast<uint32_t>(prevChapterSize), static_cast<uint32_t>(curChapterSize),
+                             static_cast<uint32_t>(bookSize), inSpine);
+}
+
+// Fork: float progress for the chapter-marker status bar.
+float Epub::calculateProgress(const int currentSpineIndex, const float currentSpineRead) const {
+  const ProgressPpb ppb =
+      calculateProgress(currentSpineIndex, ProgressPpb::of(static_cast<int64_t>(currentSpineRead * 1000000.0f), 1000000));
+  return static_cast<float>(ppb.ppb()) / static_cast<float>(ProgressPpb::kWhole);
 }
 
 const std::vector<float>& Epub::getChapterProgressMarkers() const {

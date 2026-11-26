@@ -61,6 +61,16 @@ Fixtures:
                      into the file. The same coefficients, so prog_full_420.y.pgm is its reference
                      (asserted below). A 1/8 decode reads it only to the end of that scan.
 
+  prog_420_dc_al2.jpg    prog_full_420.jpg with its DC first scan at Al = 2 and the refinements 2 -> 1 and 1 -> 0
+                     where the DC refinement was: a first DC scan that loses two bits, so a 1/8 decode that
+                     takes only the first DC scan (decodeResized, at Al <= 1) must read on to Al = 0 here.
+                     Same coefficients as prog_full_420.jpg (asserted below).
+
+  prog_420_chroma_first.jpg  prog_full_420.jpg with its DC first scan split into a chroma-only DC first scan
+                     (Cb and Cr) and then a luma one, both at Al = 1, as a jpegtran scan script can order them.
+                     The first scan touches no luma, so a decode records none for it: the 1/8 resize
+                     (firstDcScanOnly) must read on to the luma scan. Same coefficients (asserted below).
+
 Progressive cases from the Free-Ink SDK decoder's test matrix (freeink-sdk c51246c8,
 libs/assets/ProgressiveJpeg/test/host/run.py), each with its libjpeg luma as the reference
 (<name>.y.pgm), checked like prog_full_*:
@@ -68,6 +78,9 @@ libs/assets/ProgressiveJpeg/test/host/run.py), each with its libjpeg luma as the
   prog_420_rst_row.jpg   4:2:0, 133x77, restart marker at every MCU row.
   prog_gray_rst.jpg      Grayscale, 101x63, restart marker every 5 blocks.
   prog_tiny_9x5.jpg      4:2:0, 9x5: smaller than one MCU.
+  prog_noisy_420_index.jpg  Progressive 4:2:0, 400x300 of uniform random noise (about 123 KB): its index
+                     scan polls for input every 32 KB, which no other fixture is large enough to reach. A
+                     decode parked mid-index must keep polling there when it resumes (ImageParkTest).
 """
 import os
 from PIL import Image, ImageDraw
@@ -309,9 +322,9 @@ K3_LUMA_DC = ([0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0], list(range(12)))
 K3_CHROMA_DC = ([0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0], list(range(12)))
 
 
-def merge_dc_scans(data):
-    """The file with its interleaved DC first scan (Al = 1) and DC refinement (Al = 0) as one
-    interleaved DC scan at Al = 0, with the K.3 DC tables. No restart markers."""
+def read_dc_scans(data):
+    """(segments, comps, mcus, order, first, refine, dc): the file's interleaved DC first scan (Al = 1)
+    and DC refinement (Al = 0), and the DC coefficients they hold, in scan order. No restart markers."""
     segments = jpeg_segments(data)
     dc_tables, comps, size, first, refine = {}, None, None, None, None
     for index, (marker, seg) in enumerate(segments):
@@ -352,14 +365,18 @@ def merge_dc_scans(data):
             dc.append(pred[cid])
     reader = EntropyReader(refine[1])
     dc = [(value << 1) | reader.bit() for value in dc]
+    return segments, comps, mcus, order, first, refine, dc
 
+
+def dc_first_scan(comps, mcus, order, dc, al):
+    """A DC first scan at `al` of `dc` (full-precision values) with the K.3 DC tables: (DHT, SOS + data)."""
     k3 = [K3_LUMA_DC, K3_CHROMA_DC]
     encoders = {cid: canonical_codes(*k3[min(k, 1)])[1] for k, (cid, _, _) in enumerate(comps)}
     writer, pred = EntropyWriter(), {c[0]: 0 for c in comps}
     values = iter(dc)
     for _ in range(mcus):
         for cid in order:
-            value = next(values)
+            value = next(values) >> al
             diff, pred[cid] = value - pred[cid], value
             category = abs(diff).bit_length()
             writer.bits(*encoders[cid][category])
@@ -367,15 +384,102 @@ def merge_dc_scans(data):
 
     tables = b"".join(bytes([k]) + bytes(t[0]) + bytes(t[1]) for k, t in enumerate(k3[:min(len(comps), 2)]))
     dht = bytes([0xFF, 0xC4]) + (2 + len(tables)).to_bytes(2, "big") + tables
+    return dht, dc_sos(comps, 0, al) + writer.data()
+
+
+def dc_sos(comps, ah, al):
     header = bytes([len(comps)]) + b"".join(bytes([cid, min(k, 1) << 4]) for k, (cid, _, _) in enumerate(comps))
-    sos = bytes([0xFF, 0xDA]) + (5 + len(header)).to_bytes(2, "big") + header + bytes([0, 0, 0])
+    return bytes([0xFF, 0xDA]) + (5 + len(header)).to_bytes(2, "big") + header + bytes([0, 0, (ah << 4) | al])
+
+
+def dc_refinement(comps, mcus, order, dc, ah, al):
+    """A DC refinement scan Ah -> Al: bit `al` of every block's DC value, MCU by MCU."""
+    writer = EntropyWriter()
+    values = iter(dc)
+    for _ in range(mcus):
+        for _ in order:
+            writer.bits((next(values) >> al) & 1, 1)
+    return dc_sos(comps, ah, al) + writer.data()
+
+
+def rebuilt(data, segments, replacements):
+    """The file with the segments at the given indexes replaced (a list of byte strings each)."""
     out = bytearray(data[:2])
     for index, (_, seg) in enumerate(segments):
-        if index == first[0]:
-            out += dht + sos + writer.data()
-        elif index != refine[0]:
-            out += seg
+        out += b"".join(replacements[index]) if index in replacements else seg
     return bytes(out)
+
+
+def merge_dc_scans(data):
+    """The file with its interleaved DC first scan (Al = 1) and DC refinement (Al = 0) as one
+    interleaved DC scan at Al = 0, with the K.3 DC tables."""
+    segments, comps, mcus, order, first, refine, dc = read_dc_scans(data)
+    dht, scan = dc_first_scan(comps, mcus, order, dc, 0)
+    return rebuilt(data, segments, {first[0]: [dht, scan], refine[0]: []})
+
+
+def split_dc_scans(data):
+    """The file with its DC scans as a first scan at Al = 2 and two refinements, 2 -> 1 and 1 -> 0, where
+    the DC refinement was: the first DC scan loses two bits, which a 1/8 decode must not stop at."""
+    segments, comps, mcus, order, first, refine, dc = read_dc_scans(data)
+    dht, scan = dc_first_scan(comps, mcus, order, dc, 2)
+    return rebuilt(data, segments, {first[0]: [dht, scan],
+                                    refine[0]: [dc_refinement(comps, mcus, order, dc, 2, 1),
+                                                dc_refinement(comps, mcus, order, dc, 1, 0)]})
+
+
+def chroma_first_dc_scans(data):
+    """The file with its interleaved DC first scan (Al = 1) split in two, as a jpegtran scan script can order
+    them: a DC first scan of the chroma alone (Cb and Cr interleaved), then one of luma alone (non-interleaved,
+    in raster order), both at Al = 1 with the K.3 DC tables. The interleaved DC refinement and every other scan
+    stay as they were."""
+    segments, comps, mcus, order, first, refine, dc = read_dc_scans(data)
+    sof = next(seg for marker, seg in segments if marker == 0xC2)
+    height, width = (sof[5] << 8) | sof[6], (sof[7] << 8) | sof[8]
+    hmax, vmax = max(c[1] for c in comps), max(c[2] for c in comps)
+    mcu_cols = -(-width // (8 * hmax))
+    luma, chroma = comps[0], comps[1:]
+    assert all(h == 1 and v == 1 for _, h, v in chroma), "one block of each chroma component an MCU"
+    # Every block's full-precision DC value by component, block row and block column (dc is in MCU order).
+    grid, values = {cid: {} for cid, _, _ in comps}, iter(dc)
+    for m in range(mcus):
+        my, mx = divmod(m, mcu_cols)
+        for cid, h, v in comps:
+            for b in range(h * v):
+                by, bx = divmod(b, h)
+                grid[cid][(my * v + by, mx * h + bx)] = next(values)
+    luma_code, chroma_code = canonical_codes(*K3_LUMA_DC)[1], canonical_codes(*K3_CHROMA_DC)[1]
+
+    def put(writer, code, diff):
+        category = abs(diff).bit_length()
+        writer.bits(*code[category])
+        writer.bits(diff if diff >= 0 else diff - 1, category)
+
+    def sos(selectors):  # [(component id, DC table)]: a DC first scan at Al = 1
+        header = bytes([len(selectors)]) + b"".join(bytes([cid, table << 4]) for cid, table in selectors)
+        return bytes([0xFF, 0xDA]) + (5 + len(header)).to_bytes(2, "big") + header + bytes([0, 0, 1])
+
+    writer, pred = EntropyWriter(), {cid: 0 for cid, _, _ in chroma}
+    for m in range(mcus):
+        my, mx = divmod(m, mcu_cols)
+        for cid, _, _ in chroma:
+            value = grid[cid][(my, mx)] >> 1
+            put(writer, chroma_code, value - pred[cid])
+            pred[cid] = value
+    chroma_scan = sos([(cid, 1) for cid, _, _ in chroma]) + writer.data()
+
+    # A non-interleaved scan covers the component's own blocks: ceil(width / 8) x ceil(height / 8) for luma.
+    writer, pred = EntropyWriter(), 0
+    for row in range(-(-height // 8)):
+        for col in range(-(-width // 8)):
+            value = grid[luma[0]][(row, col)] >> 1
+            put(writer, luma_code, value - pred)
+            pred = value
+    luma_scan = sos([(luma[0], 0)]) + writer.data()
+
+    tables = b"".join(bytes([k]) + bytes(t[0]) + bytes(t[1]) for k, t in enumerate((K3_LUMA_DC, K3_CHROMA_DC)))
+    dht = bytes([0xFF, 0xC4]) + (2 + len(tables)).to_bytes(2, "big") + tables
+    return rebuilt(data, segments, {first[0]: [dht, chroma_scan, luma_scan]})
 
 
 with open(os.path.join(HERE, "prog_full_420.jpg"), "rb") as f:
@@ -386,7 +490,32 @@ with open(os.path.join(HERE, "prog_420_dc_first.jpg"), "wb") as f:
 assert (Image.open(os.path.join(HERE, "prog_420_dc_first.jpg")).convert("RGB").tobytes() ==
         Image.open(os.path.join(HERE, "prog_full_420.jpg")).convert("RGB").tobytes())
 
+with open(os.path.join(HERE, "prog_420_dc_al2.jpg"), "wb") as f:
+    f.write(split_dc_scans(open(os.path.join(HERE, "prog_full_420.jpg"), "rb").read()))
+assert (Image.open(os.path.join(HERE, "prog_420_dc_al2.jpg")).convert("RGB").tobytes() ==
+        Image.open(os.path.join(HERE, "prog_full_420.jpg")).convert("RGB").tobytes())
+
+with open(os.path.join(HERE, "prog_420_chroma_first.jpg"), "wb") as f:
+    f.write(chroma_first_dc_scans(open(os.path.join(HERE, "prog_full_420.jpg"), "rb").read()))
+assert (Image.open(os.path.join(HERE, "prog_420_chroma_first.jpg")).convert("RGB").tobytes() ==
+        Image.open(os.path.join(HERE, "prog_full_420.jpg")).convert("RGB").tobytes())
+
 print("Fixtures written to", HERE)
 for f in sorted(os.listdir(HERE)):
     if f.endswith((".jpg", ".pgm")):
         print(" ", f, os.path.getsize(os.path.join(HERE, f)), "bytes")
+
+# --- prog_noisy_420_index.jpg: large enough for the index scan's 32 KB input poll ---
+def save_noisy_index_fixture():
+    import random
+    rnd = random.Random(11)
+    w, h = 400, 300
+    im = Image.new("RGB", (w, h))
+    px = im.load()
+    for y in range(h):
+        for x in range(w):
+            px[x, y] = (rnd.randrange(256), rnd.randrange(256), rnd.randrange(256))
+    im.save(os.path.join(HERE, "prog_noisy_420_index.jpg"), "JPEG", quality=95, subsampling=2,
+            progressive=True, optimize=True)
+
+save_noisy_index_fixture()

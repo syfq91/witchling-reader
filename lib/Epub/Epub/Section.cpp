@@ -30,6 +30,7 @@
 #include "BidiLine.h"
 #include "Epub/css/CssParser.h"
 #include "FootnotePreviews.h"
+#include "HeadingCarry.h"
 #include "Page.h"
 #include "ShapingHeapCheck.h"
 #include "TypographyProfile.h"
@@ -38,7 +39,30 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 124;  // v124: headings (h1-h6 and the blocks inside them) are not
+constexpr uint8_t SECTION_FILE_VERSION = 133;  // v133: an inline id between blocks names the next block's first
+                                               // line; a nested or degraded table's cell is laid out in parts and a
+                                               // paragraph per block in it; a list marker in a cell is the cell's
+                                               // v132: in a table, a TOC anchor breaks the page only before the
+                                               // first packed row, and an <hr> draws no rule: both acted on the
+                                               // page under the packed rows (an arena build corrupted or cut them)
+                                               // v131: the header's line compression is TextScale (2^-20ths in a
+                                               // u32), not float; CSS lengths resolve in fixed point
+                                               // v130: a line's font-size multiplier and its word fonts' scales
+                                               // are TextScale (2^-20ths in a u32), not float
+                                               // v129: an id on an inline element names the page of its own line
+                                               // (not its block's first, nor the next block's)
+                                               // v128: a chapter's CSS lookups use only the stylesheets it
+                                               // links and what those import (matcha-reader #453)
+                                               // v127: a <br> adds a blank line only on an empty line: none after
+                                               // a word or a picture (a contents entry's trailing <br>), one each
+                                               // in a run of them, none from a table cell's
+                                               // v126: the text of a table inside a table is laid out, a paragraph
+                                               // per inner cell; it was dropped
+                                               // v125: with extra paragraph spacing on, an empty box right after a
+                                               // laid-out block (a rule drawn as a border) keeps its frame: it took
+                                               // the spacing above it off its height, and was drawn short or not
+                                               // at all
+                                               // v124: headings (h1-h6 and the blocks inside them) are not
                                                // hyphenated
                                                // v123: CSS white-space: pre, pre-wrap and break-spaces keep runs of
                                                // spaces (a token each) and line feeds, pre-line keeps line feeds;
@@ -214,7 +238,7 @@ namespace header {
 constexpr uint32_t kVersion = 0;
 constexpr uint32_t kFontId = kVersion + sizeof(uint8_t);
 constexpr uint32_t kLineCompression = kFontId + sizeof(int);
-constexpr uint32_t kExtraParagraphSpacing = kLineCompression + sizeof(float);
+constexpr uint32_t kExtraParagraphSpacing = kLineCompression + sizeof(uint32_t);
 constexpr uint32_t kParagraphAlignment = kExtraParagraphSpacing + sizeof(bool);
 constexpr uint32_t kViewportWidth = kParagraphAlignment + sizeof(uint8_t);
 constexpr uint32_t kViewportHeight = kViewportWidth + sizeof(uint16_t);
@@ -432,6 +456,26 @@ uint32_t fnv1a(const uint8_t* data, size_t length) {
   return hash;
 }
 
+// The line compression as the variant key hashes it: the bytes the key hashed while it was a float (its IEEE-754
+// single), for the line-spacing steps, which are whole percents. A book's section files keep their names so, and the
+// format bump rebuilds each in place instead of beside a new one the card would keep until variant eviction. A CJK
+// pitch (a ratio of the font's metrics) has no float to recall: it hashes its TextScale.
+struct LegacyCompressionKey {
+  uint8_t percent;
+  uint32_t floatBits;
+};
+constexpr LegacyCompressionKey kLegacyCompressionKeys[] = {
+    {85, 0x3F59999A},  {90, 0x3F666666},  {95, 0x3F733333},  {100, 0x3F800000}, {110, 0x3F8CCCCD},
+    {120, 0x3F99999A}, {130, 0x3FA66666}, {135, 0x3FACCCCD}, {145, 0x3FB9999A}, {150, 0x3FC00000},
+    {160, 0x3FCCCCCD}, {165, 0x3FD33333}, {175, 0x3FE00000}};
+
+uint32_t compressionKey(const TextScale compression) {
+  for (const LegacyCompressionKey& key : kLegacyCompressionKeys) {
+    if (compression == TextScale::percent(key.percent)) return key.floatBits;
+  }
+  return compression.raw();
+}
+
 // A cache variant's property hash under this section format: what a page number is counted in. Never 0, which says
 // "not known".
 uint32_t layoutFingerprintOf(const uint32_t propertyHash) {
@@ -441,15 +485,68 @@ uint32_t layoutFingerprintOf(const uint32_t propertyHash) {
   const uint32_t fingerprint = fnv1a(bytes, sizeof(bytes));
   return fingerprint != 0 ? fingerprint : 1;
 }
+
+// Bump when what a carried heading file adds to a layout changes (HeadingCarry, ChapterHtmlSlimParser::beginCarried):
+// the layouts that carry one get new file names, and no other layout's changes.
+constexpr uint8_t HEADING_CARRY_LAYOUT_VERSION = 1;
+
+// The file key of a layout that carries the heading file before it: never the key of the same settings without it,
+// which older firmware wrote, reads, and must not find laid out with a heading it shows on a page of its own.
+uint32_t carryingHash(const uint32_t propertyHash) {
+  uint8_t bytes[sizeof(propertyHash) + 2];
+  memcpy(bytes, &propertyHash, sizeof(propertyHash));
+  bytes[sizeof(propertyHash)] = 'C';
+  bytes[sizeof(propertyHash) + 1] = HEADING_CARRY_LAYOUT_VERSION;
+  return fnv1a(bytes, sizeof(bytes));
+}
 }  // namespace
 
 uint32_t Section::layoutFingerprintFor(const BuildParams& p) { return layoutFingerprintOf(calculatePropertyHash(p)); }
 
 uint8_t Section::formatVersion() { return SECTION_FILE_VERSION; }
 
+bool Section::carriedAwayOf(const Epub& epub, const int spineIndex, const VerticalText request, BuildArena* scratch) {
+  return request == VerticalText::Off && epub.carriedSpineForLayout(spineIndex, scratch);
+}
+
+bool Section::carriesPreviousOf(const Epub& epub, const int spineIndex, const VerticalText request,
+                                BuildArena* scratch) {
+  return spineIndex > 0 && carriedAwayOf(epub, spineIndex - 1, request, scratch);
+}
+
+bool Section::carriesPrevious(const BuildParams& p) const {
+  return carriesPreviousOf(*epub, spineIndex, p.verticalText);
+}
+
+bool Section::carriedAway(const BuildParams& p) const { return carriedAwayOf(*epub, spineIndex, p.verticalText); }
+
+uint32_t Section::layoutFingerprintFor(const Epub& epub, const int spineIndex, const BuildParams& p) {
+  const uint32_t hash = calculatePropertyHash(p);
+  return layoutFingerprintOf(carriesPreviousOf(epub, spineIndex, p.verticalText) ? carryingHash(hash) : hash);
+}
+
+void Section::becomeCarried(const BuildParams& p) {
+  if (file) file.close();
+  forgetPagesWithoutPictures();
+  lut.clear();
+  lutFileOffset_ = 0;
+  tocBoundaries.clear();
+  filePath.clear();
+  pageCount = 0;
+  currentPage = 0;
+  request_ = p.verticalText;
+  vertical_ = false;
+  carriesHeading_ = false;
+  const uint32_t propertyHash = calculatePropertyHash(p);
+  layoutFingerprint_ = layoutFingerprintOf(propertyHash);
+  SpinePageIndex::recordCarried(epub->getCachePath(), {propertyHash, SECTION_FILE_VERSION}, epub->getSpineItemsCount(),
+                                spineIndex);
+  LOG_DBG("SCT", "spine=%d carried by %d", spineIndex, spineIndex + 1);
+}
+
 uint32_t Section::calculatePropertyHash(const BuildParams& p) {
   uint8_t buffer[104];
-  static_assert(sizeof(buffer) >= 23 + sizeof(uint32_t) + sizeof(float) + sizeof(uint16_t) +
+  static_assert(sizeof(buffer) >= 23 + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint16_t) +
                                       BlockFontFamilies::kMaxFamilies * 3 * sizeof(int32_t) + sizeof(uint8_t) +
                                       sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint8_t),
                 "the settings (23 B), Book's style line spacing, every family, the vertical request, the "
@@ -462,7 +559,8 @@ uint32_t Section::calculatePropertyHash(const BuildParams& p) {
   };
 
   append(&p.fontId, sizeof(p.fontId));
-  append(&p.lineCompression, sizeof(p.lineCompression));
+  const uint32_t lineCompression = compressionKey(p.lineCompression);
+  append(&lineCompression, sizeof(lineCompression));
   append(&p.extraParagraphSpacing, sizeof(p.extraParagraphSpacing));
   append(&p.paragraphAlignment, sizeof(p.paragraphAlignment));
   append(&p.viewportWidth, sizeof(p.viewportWidth));
@@ -480,8 +578,9 @@ uint32_t Section::calculatePropertyHash(const BuildParams& p) {
     append(&INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION, sizeof(INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION));
   }
   append(&p.imageRendering, sizeof(p.imageRendering));
-  if (p.bookLineHeightFloor > 0.0f) {
-    append(&p.bookLineHeightFloor, sizeof(p.bookLineHeightFloor));
+  if (p.bookLineHeightFloor.raw() > 0) {
+    const uint32_t floor = compressionKey(p.bookLineHeightFloor);
+    append(&floor, sizeof(floor));
     append(&p.lineHeightEmPx, sizeof(p.lineHeightEmPx));
   }
   // Only what the book's CSS can reach, and only when there is any: a variant without families keeps its old key.
@@ -732,11 +831,12 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page, serialization::Buff
   return position;
 }
 
-void Section::writeSectionFileHeader(const int fontId, const float lineCompression, const bool extraParagraphSpacing,
-                                     const uint8_t paragraphAlignment, const uint16_t viewportWidth,
-                                     const uint16_t viewportHeight, const bool hyphenationEnabled,
-                                     const bool embeddedStyle, const bool bionicReadingEnabled,
-                                     const uint8_t imageRendering, const VerticalText verticalText) {
+void Section::writeSectionFileHeader(const int fontId, const TextScale lineCompression,
+                                     const bool extraParagraphSpacing, const uint8_t paragraphAlignment,
+                                     const uint16_t viewportWidth, const uint16_t viewportHeight,
+                                     const bool hyphenationEnabled, const bool embeddedStyle,
+                                     const bool bionicReadingEnabled, const uint8_t imageRendering,
+                                     const VerticalText verticalText) {
   if (!file) {
     LOG_DBG("SCT", "File not open for writing header");
     return;
@@ -751,7 +851,7 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
                 "Header size mismatch");
   serialization::writePod(file, SECTION_FILE_VERSION);
   serialization::writePod(file, fontId);
-  serialization::writePod(file, lineCompression);
+  serialization::writePod(file, lineCompression.raw());
   serialization::writePod(file, extraParagraphSpacing);
   serialization::writePod(file, paragraphAlignment);
   serialization::writePod(file, viewportWidth);
@@ -783,10 +883,19 @@ bool Section::loadSectionFile(const BuildParams& p) {
   request_ = p.verticalText;
   vertical_ = false;
   embeddedStyleFallback = false;
-  uint32_t propertyHash = calculatePropertyHash(p);
-  filePath = getSectionFilePath(propertyHash);
+  if (carriedAway(p)) {
+    becomeCarried(p);
+    return true;
+  }
+  // The variant's key, which the SpinePageIndex is kept under, and the key of its file: another one when this layout
+  // carries the heading file before it.
+  const uint32_t propertyHash = calculatePropertyHash(p);
+  const bool carries = carriesPrevious(p);
+  carriesHeading_ = carries;  // a load that fails clears it (clearCache)
+  const auto fileKey = [carries](const uint32_t hash) { return carries ? carryingHash(hash) : hash; };
+  filePath = getSectionFilePath(fileKey(propertyHash));
   // The variant actually opened: the requested one, or the no-CSS one it falls back to.
-  uint32_t openedHash = propertyHash;
+  uint32_t openedHash = fileKey(propertyHash);
   layoutFingerprint_ = 0;
   // A cache that does not load is removed; clearCache() leaves a fresh section's request, so this one's is put back.
   const auto refuse = [this, &p] {
@@ -801,7 +910,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
     if (p.embeddedStyle) {
       BuildParams noCss = p;
       noCss.embeddedStyle = false;
-      const uint32_t fallbackHash = calculatePropertyHash(noCss);
+      const uint32_t fallbackHash = fileKey(calculatePropertyHash(noCss));
       const std::string fallbackPath = getSectionFilePath(fallbackHash);
       if (Storage.openFileForRead("SCT", fallbackPath, file)) {
         filePath = fallbackPath;
@@ -829,7 +938,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
 
     int fileFontId;
     uint16_t fileViewportWidth, fileViewportHeight;
-    float fileLineCompression;
+    uint32_t fileLineCompression;
     bool fileExtraParagraphSpacing;
     uint8_t fileParagraphAlignment;
     bool fileHyphenationEnabled;
@@ -853,7 +962,7 @@ bool Section::loadSectionFile(const BuildParams& p) {
 
     const bool embeddedStyleMatches =
         (p.embeddedStyle == fileEmbeddedStyle) || (usingEmbeddedStyleFallback && !fileEmbeddedStyle);
-    if (p.fontId != fileFontId || p.lineCompression != fileLineCompression ||
+    if (p.fontId != fileFontId || p.lineCompression.raw() != fileLineCompression ||
         p.extraParagraphSpacing != fileExtraParagraphSpacing || p.paragraphAlignment != fileParagraphAlignment ||
         p.viewportWidth != fileViewportWidth || p.viewportHeight != fileViewportHeight ||
         p.hyphenationEnabled != fileHyphenationEnabled || !embeddedStyleMatches ||
@@ -922,6 +1031,10 @@ bool Section::loadSectionFile(const BuildParams& p) {
   // Under the hash the reader asked for, even when the no-CSS fallback answered: these are the
   // pages it will show for this spine.
   recordPageCount(propertyHash);
+  if (carries) {
+    SpinePageIndex::recordCarried(epub->getCachePath(), {propertyHash, SECTION_FILE_VERSION},
+                                  epub->getSpineItemsCount(), spineIndex - 1);
+  }
 
   // File is intentionally left open; subsequent loadPageFromSectionFile() calls
   // seek within this handle instead of re-opening the file each time.
@@ -967,6 +1080,7 @@ bool Section::clearCache() {
   simplified_ = false;
   request_ = VerticalText::Off;  // a fresh section's, until a load or a build names one
   vertical_ = false;
+  carriesHeading_ = false;
 
   if (!Storage.exists(filePath.c_str())) {
     LOG_DBG("SCT", "Cache does not exist, no action needed");
@@ -989,8 +1103,12 @@ bool Section::clearCache() {
 // host tests that build this file do not have.
 #if defined(BOARD_HAS_PSRAM) && BOARD_HAS_PSRAM
 constexpr size_t PAGE_WRITE_BUFFER_BYTES = 4096;
+// The TOC anchor pool may live in the build region: the S3's is 256 KB of PSRAM, with room beside every peak.
+constexpr bool kPoolInRegion = true;
 #else
 constexpr size_t PAGE_WRITE_BUFFER_BYTES = 2048;
+// The C3s' lent region has no room for a build-long block beside the extraction ring and the image walk: the heap.
+constexpr bool kPoolInRegion = false;
 #endif
 
 // Live state of an in-progress section build. Holds exactly the locals that span build
@@ -1005,6 +1123,22 @@ struct Section::BuildState {
   std::function<void(int)> progressFn;
   uint32_t propertyHash = 0;
   std::string localPath;
+  // The heading file this build lays out first (carriesPrevious): its spine item (-1: none), its XHTML size,
+  // where its body's content lies in its banked copy (prepareCarry), and the feed's place in the splice: this file up
+  // to its <body ...> start tag, the heading file's body content, the rest of this file (runBuildParse).
+  struct Carry {
+    enum class Stage : uint8_t { Prefix, Carried, Rest };
+    int spine = -1;
+    size_t inflatedSize = 0;
+    uint32_t begin = 0;
+    uint32_t end = 0;
+    uint32_t fed = 0;
+    bool ready = false;
+    Stage stage = Stage::Prefix;
+    HeadingCarry::Scanner bodyStart;
+    FsFile file;
+    CssParser::SheetLinks links;  // the stylesheets its head links (prepareCarry, for scopeStylesheets)
+  } carry;
   std::string contentBase;
   std::string imageBasePath;
   size_t inflatedSize = 0;
@@ -1014,10 +1148,24 @@ struct Section::BuildState {
   ZipFile::FileStatSlim spineStat = {};
   bool statValid = false;
   bool statResolved = false;  // resolveSpineStat ran (statValid/inflatedSize are meaningful)
+  // The book's sheet table had no heap (CssParser::sheetTableRefused): the build resolves against every sheet, and is
+  // cached CSS-degraded (scopeStylesheets).
+  bool cssUnscoped = false;
   CssParser* cssParser = nullptr;
   // The parser stops a build at MAX_PAGES_PER_SECTION, so the table must never refuse below it.
   static_assert(PageLut::minMaxSize() >= Page::MAX_PAGES_PER_SECTION, "page LUT smaller than a section may be");
   PageLut lut;
+  // The spine's TOC anchors, packed "id\0id\0...", for the build's length: the parser holds a view of it, so these are
+  // declared before the visitor and outlive it. On a board that builds in PSRAM (kPoolInRegion) it is taken from the
+  // build's region when it is under a quarter of it; everywhere else it is one heap block (tocAnchorHeap): on the C3s
+  // the pool would live beside the extraction ring and the image walk's stage, which the lent region leaves a few
+  // hundred bytes at most (docs/memory-allocation-strategy.md 8.2). Taken once, in setup, before the page block opens.
+  const char* tocAnchorPool = nullptr;
+  size_t tocAnchorPoolBytes = 0;
+  std::unique_ptr<char[]> tocAnchorHeap;
+  // The pool's scope in the arena, when it is there (the arena rewinds newest-first, and the build gives back
+  // everything it took): below chunkBlock, so released after it.
+  BuildArena::Block tocPoolBlock;
   std::unique_ptr<ChapterHtmlSlimParser> visitor;
   // Live ZIP-side state of the parse, created on the first runBuildParse call and
   // released the moment the compressed stream is exhausted. zip must outlive reader
@@ -1034,7 +1182,8 @@ struct Section::BuildState {
   // The owned arena is a region of setOwnedBuildRegionBytes(), not the 10 KB parse arena: the build uses it as it would
   // a lent one.
   bool ownedIsRegion = false;
-  // The running text counted for the book's body size (BuildParams::measureBodySize), ~1 KB for the build's length.
+  // The running text counted for the book's body size (BuildParams::measureBodySize), ~1 KB from the parse's start
+  // (runBuildParse, after the note-preview resolve) to the build's end.
   std::unique_ptr<BodySize::Census> bodySizeCensus;
   // External region is large enough to also host the reader's readBuf + ring
   // directly (no separate entry-sized zipArena needed).
@@ -1061,6 +1210,69 @@ struct Section::BuildState {
   // The region the build may keep its parser state, rules, ring and word cache in: a lent one, or an owned region.
   // nullptr on the 10 KB parse arena, which has no room for them.
   BuildArena* region() const { return arena && (arena != ownedArena.get() || ownedIsRegion) ? arena : nullptr; }
+  // Packs the TOC anchors of `spine` into the pool (see tocAnchorPool): two passes over the TOC, the lengths and then
+  // the ids. False when the pool has no room anywhere; tocAnchorPoolBytes then says how big it was to be.
+  bool takeTocAnchorPool(const Epub& epub, const int spine) {
+    tocAnchorPool = nullptr;
+    tocAnchorPoolBytes = 0;
+    tocAnchorHeap.reset();
+    const int first = epub.getTocIndexForSpineIndex(spine);
+    if (first < 0) return true;
+    const int tocCount = epub.getTocItemsCount();
+    size_t bytes = 0;
+    int end = first;
+    for (; end < tocCount; end++) {
+      const auto entry = epub.getTocItem(end);
+      if (entry.spineIndex != spine) break;
+      if (!entry.anchor.empty()) bytes += entry.anchor.size() + 1;
+    }
+    tocAnchorPoolBytes = bytes;
+    if (bytes == 0) return true;
+    char* pool = nullptr;
+    BuildArena* const region = this->region();
+    bool inArena = false;
+    bool poolInRegion = kPoolInRegion;
+#ifdef SECTION_SETUP_FAULT_INJECTION
+    const bool arenaRefused = sectionSetupFaults().refuseTocPoolArena;
+    const bool heapRefused = sectionSetupFaults().refuseTocPoolHeap;
+#else
+    constexpr bool arenaRefused = false;
+    constexpr bool heapRefused = false;
+#endif
+#ifdef SECTION_SETUP_FAULT_INJECTION
+    if (sectionSetupFaults().poolInRegion) poolInRegion = true;  // the host stands in for an S3 board
+#endif
+    if (poolInRegion && region && !arenaRefused && bytes <= region->capacity() / 4) {
+      tocPoolBlock = region->reserveBlock();
+      pool = static_cast<char*>(region->alloc(bytes, 1));
+      inArena = pool != nullptr;
+      if (!pool) region->release(tocPoolBlock);
+    }
+    if (!pool && !heapRefused) {
+      tocAnchorHeap = makeUniqueNoThrow<char[]>(bytes);
+      pool = tocAnchorHeap.get();
+    }
+    if (!pool) return false;
+    // The second pass writes no further than the first one counted, whatever the TOC does between them.
+    size_t at = 0;
+    for (int i = first; i < end; i++) {
+      const auto entry = epub.getTocItem(i);
+      if (entry.anchor.empty() || at + entry.anchor.size() + 1 > bytes) continue;
+      memcpy(pool + at, entry.anchor.data(), entry.anchor.size());
+      at += entry.anchor.size();
+      pool[at++] = '\0';
+    }
+    tocAnchorPoolBytes = at;
+    tocAnchorPool = pool;
+#ifdef SECTION_SETUP_FAULT_INJECTION
+    sectionSetupFaults().lastPoolSource =
+        inArena ? SectionSetupFaults::PoolSource::Arena : SectionSetupFaults::PoolSource::Heap;
+    sectionSetupFaults().lastPoolBytes = at;
+#else
+    (void)inArena;
+#endif
+    return true;
+  }
   // Entry-sized arena hosting the EntryReader's readBuf + inflate ring during
   // phase (a) only, when the main arena is too small to host them (heap-backed
   // resident builds). Created at reader-open time — the ring is entry-sized, so
@@ -1134,6 +1346,8 @@ struct Section::BuildState {
   }
   ~BuildState() {
     if (pageWriter) pageWriter->discard();  // a build that never reached runBuildFinalize: its file is not read
+    // The chapter's stylesheet scope is the build's (Section::scopeStylesheets), whichever way it ends.
+    if (cssParser) cssParser->clearSheetScope();
     if (extractGrowBlock.valid()) arena->release(extractGrowBlock);
     reader.reset();
     // The note-preview resolver reserves its ring block ABOVE chunkBlock and holds it across
@@ -1145,6 +1359,7 @@ struct Section::BuildState {
     // page block (when it holds one) is nested above it: the parser goes first.
     visitor.reset();
     if (chunkBlock.valid()) arena->release(chunkBlock);
+    if (tocPoolBlock.valid()) arena->release(tocPoolBlock);
     // The line pass's memory lives for the build alone (deviation 1): the heap Scratch and workspace are freed, a lent
     // workspace unbound.
     BidiLine::releaseBuildMemory();
@@ -1192,7 +1407,8 @@ struct Section::BuildState {
   uint32_t previewResolveMs = 0;          // CPU actually spent resolving, summed across slices
   uint32_t previewResolveMaxSliceMs = 0;  // worst single slice — the number that says it slices
   // The pages on their way to `file`. A page is some 150 fields of a few bytes; this gathers them and sends them to
-  // the card in whole sectors (BufferedFileWriter::writeWholeSectors). Made once the header is written. A page loaded
+  // the card in whole sectors (BufferedFileWriter::writeWholeSectors). Made when the parse starts (runBuildParse, after
+  // the note-preview resolve); until then the file holds only its header, and no page can be loaded. A page loaded
   // mid-build is sent first (loadPageFromActiveBuild), and runBuildFinalize sends the rest before it reads or patches
   // the file. A build that never reaches finalize leaves a file nothing reads, so what is still here then is dropped.
   std::optional<serialization::BufferedFileWriter> pageWriter;
@@ -1298,8 +1514,22 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   forgetPagesWithoutPictures();
   const BuildParams& p = st.params;
   st.propertyHash = calculatePropertyHash(p);
-  filePath = getSectionFilePath(st.propertyHash);
-  layoutFingerprint_ = layoutFingerprintOf(st.propertyHash);
+  std::string carriedHref;  // its printed-page list entries are read below
+  // Asked with the build's region: a heading file not banked yet is inflated there, not on the heap.
+  if (carriesPreviousOf(*epub, spineIndex, p.verticalText, st.region())) {
+    const BookMetadataCache::SpineEntry heading = epub->getSpineItem(spineIndex - 1);
+    st.carry.spine = spineIndex - 1;
+    carriedHref = heading.href;
+    st.carry.inflatedSize = heading.zipUncompressedSize;
+    // A fact about the book, whatever becomes of this build: the chapter counter drawn while it runs already counts
+    // the heading file as no page.
+    SpinePageIndex::recordCarried(epub->getCachePath(), {st.requestedHash, SECTION_FILE_VERSION},
+                                  epub->getSpineItemsCount(), st.carry.spine);
+  }
+  const uint32_t fileHash = st.carry.spine >= 0 ? carryingHash(st.propertyHash) : st.propertyHash;
+  filePath = getSectionFilePath(fileHash);
+  layoutFingerprint_ = layoutFingerprintOf(fileHash);
+  carriesHeading_ = st.carry.spine >= 0;
 
   st.localPath = epub->getSpineItem(spineIndex).href;
   SCT_TRACE_HEAP(spineIndex, "build_start");
@@ -1345,11 +1575,6 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   writeSectionFileHeader(p.fontId, p.lineCompression, p.extraParagraphSpacing, p.paragraphAlignment, p.viewportWidth,
                          p.viewportHeight, p.hyphenationEnabled, p.embeddedStyle, p.bionicReadingEnabled,
                          p.imageRendering, p.verticalText);
-  st.pageWriter.emplace(file, PAGE_WRITE_BUFFER_BYTES);
-  if (!st.pageWriter->buffered()) {
-    LOG_INF("SCT", "createSectionFile spine=%d: no %u-byte block for the page writer, pages go out field by field",
-            spineIndex, static_cast<unsigned>(PAGE_WRITE_BUFFER_BYTES));
-  }
   st.lut.clear();
   // One u32 per page, appended by the completePageFn below across the whole parse. Pre-sized for
   // the same reason as the parser's paragraph LUT — see estimatePagesForSpine and
@@ -1396,22 +1621,20 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
     }
   }
 
-  // Collect TOC anchors for this spine so the parser can insert page breaks at chapter boundaries
-  std::vector<std::string> tocAnchors;
-  const int startTocIndex = epub->getTocIndexForSpineIndex(spineIndex);
-  if (startTocIndex >= 0) {
-    for (int i = startTocIndex; i < epub->getTocItemsCount(); i++) {
-      auto entry = epub->getTocItem(i);
-      if (entry.spineIndex != spineIndex) break;
-      if (!entry.anchor.empty()) {
-        tocAnchors.push_back(std::move(entry.anchor));
-      }
-    }
+  // The spine's TOC anchors, so the parser can insert page breaks at chapter boundaries, packed "id\0id\0..." in one
+  // block: how many there are is the book's to say (a book that is one XHTML file puts every TOC entry in one spine),
+  // and a vector of strings grew with it. A page break and navigation hang on each, so none is dropped: with no room
+  // for the pool the build does not start. The parser keeps a view of it, so it lives as long as the build does.
+  if (!st.takeTocAnchorPool(*epub, spineIndex)) {
+    LOG_ERR("SCT", "spine=%d: no room for the %u-byte TOC anchor pool; the build does not start", spineIndex,
+            static_cast<unsigned>(st.tocAnchorPoolBytes));
+    abortSectionBuild();  // the section file is open: closes and removes it; `st` is gone
+    return BuildPhaseResult::Failed;
   }
 
   // The visitor's completePageFn captures &st.lut: BuildState lives in a stable unique_ptr,
   // so this reference is valid for the visitor's whole lifetime, including across slices.
-  st.visitor = std::make_unique<ChapterHtmlSlimParser>(
+  st.visitor = makeUniqueNoThrow<ChapterHtmlSlimParser>(
       epub, renderer, p.fontId, p.lineCompression, p.extraParagraphSpacing, p.paragraphAlignment, p.viewportWidth,
       p.viewportHeight, p.hyphenationEnabled, p.fontSizeNormalization, p.bionicReadingEnabled,
       [this, &st](std::unique_ptr<Page> page) {
@@ -1425,8 +1648,17 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
         st.lut.back() = this->onPageComplete(std::move(page), *st.pageWriter);
         return true;
       },
-      p.embeddedStyle, st.contentBase, st.imageBasePath, p.imageRendering, std::move(tocAnchors), st.progressFn,
-      st.cssParser, epub->getImageManifest());
+      p.embeddedStyle, st.contentBase, st.imageBasePath, p.imageRendering,
+      std::string_view(st.tocAnchorPool, st.tocAnchorPoolBytes), st.progressFn, st.cssParser, epub->getImageManifest());
+#ifdef SECTION_SETUP_FAULT_INJECTION
+  if (sectionSetupFaults().refuseParser) st.visitor.reset();
+#endif
+  if (!st.visitor) {
+    LOG_ERR("SCT", "spine=%d: no %u bytes for the chapter parser; the build does not start", spineIndex,
+            static_cast<unsigned>(sizeof(ChapterHtmlSlimParser)));
+    abortSectionBuild();  // the section file is open: closes and removes it; `st` is gone
+    return BuildPhaseResult::Failed;
+  }
   // Load printed-page list entries (NCX <pageList> or EPUB 3 nav page-list) for this
   // chapter's href, if any, straight into the parser's packed store (no intermediate vector of
   // string pairs: memory audit 2026-09, build inventory). Format: u16 count, then per entry:
@@ -1444,7 +1676,8 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
       std::string href, anchor, label;  // reused across entries
       for (uint16_t i = 0; i < count; i++) {
         if (!in.readString(href) || !in.readString(anchor) || !in.readString(label)) break;
-        if (href == st.localPath) {
+        // The carried heading file's printed pages too: they land on its heading, at the top of the first page.
+        if (href == st.localPath || (st.carry.spine >= 0 && href == carriedHref)) {
           st.visitor->addExternalPageBreakAnchor(anchor, label);
         }
       }
@@ -1457,15 +1690,6 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
   st.visitor->setWidowOrphanControl(p.widowOrphanControl);
   st.visitor->setParagraphIndent(p.paragraphIndent);
   if (p.embeddedStyle) st.visitor->setBodySizePct(p.bodySizePct);
-  // Counted afresh by each setup: one build's text is the sample, and a setup run again (a retry without the book's
-  // style) counts nothing, its sizes not being the book's. Without the memory the build lays out as ever and counts
-  // nothing; the next one counts.
-  st.bodySizeCensus.reset();
-  if (p.measureBodySize && p.embeddedStyle && p.fontSizeNormalization) {
-    st.bodySizeCensus = makeUniqueNoThrow<BodySize::Census>();
-    if (!st.bodySizeCensus) LOG_ERR("SCT", "spine=%d: no memory for the body size census", spineIndex);
-  }
-  st.visitor->setBuildCensus(st.bodySizeCensus.get());
   if (p.embeddedStyle && p.fontFamilies) st.visitor->setFontFamilies(*p.fontFamilies);
   // Anchors stream to SD as they are found rather than accumulating in the parser; the
   // finalizer below copies the spill into the section file's anchor map. Set before setup(),
@@ -1488,13 +1712,75 @@ Section::BuildPhaseResult Section::runBuildSetup(BuildState& st) {
 
   // The layout parser is NOT initialised here. Its yxml state is ~10 KB, and the note-preview
   // resolve that runs between the phases needs a SAX parser of its own; initialising this one
-  // first would put both on the heap at once for no reason. See runBuildParse.
+  // first would put both on the heap at once for no reason. See runBuildParse. The page writer and
+  // the body-size census are taken there too, for the same reason.
   st.setupMs = millis() - phaseSetupStart;
   if (st.arena) st.laneSetup = static_cast<uint32_t>(st.arena->used());
   SCT_TRACE_HEAP(spineIndex, "after_setup");
   LOG_INF("SCT", "createSectionFile spine=%d setup done: %ums (inflatedSize=%u free=%lu)", spineIndex, st.setupMs,
           static_cast<uint32_t>(st.inflatedSize), esp_get_free_heap_size());
   return BuildPhaseResult::Ok;
+}
+
+bool Section::prepareCarry(BuildState& st) {
+  BuildState::Carry& carry = st.carry;
+  // Banked as its own build would leave it, if it is not yet; its ring from the region when there is room. The same
+  // scan reads the stylesheets its head links, resolved against the chapter's folder, which a carried heading file
+  // shares in the books that have one (calibre's split siblings); in another folder a relative link may name a path
+  // the table does not know, and the build then resolves against every sheet.
+  HeadingCarry::Scanner scan;
+  char linkValues[256];
+  carry.links = {st.cssParser, st.contentBase};
+  const HeadingCarry::LinkHook hook{&CssParser::addLink, &carry.links, linkValues, sizeof(linkValues)};
+  if (st.cssParser != nullptr) scan.setLinkHook(&hook);
+  if (!HeadingCarry::scanSpine(*epub, carry.spine, carry.inflatedSize, scan, st.region(), /*bankIt=*/true) ||
+      scan.finish() == HeadingCarry::Shape::Other) {
+    LOG_ERR("SCT", "spine=%d: carrying %d failed (%d)", spineIndex, carry.spine, 0);
+    return false;
+  }
+  carry.begin = scan.bodyBegin();
+  carry.end = scan.bodyEnd();
+  carry.ready = true;
+  LOG_INF("SCT", "spine=%d carries %d", spineIndex, carry.spine);
+  return true;
+}
+
+bool Section::scopeStylesheets(BuildState& st) {
+  CssParser* const css = st.cssParser;
+  // A table of the book's sheets the heap refused: every sheet applies, which is not this chapter's style. Cached as
+  // scoped, it was never rebuilt (#843); degraded, the reader rebuilds it when the heap has the table's few hundred
+  // bytes, which loadFromCache asks for again.
+  if (css != nullptr && css->sheetTableRefused()) {
+    LOG_ERR("SCT", "spine=%d: no heap for the stylesheet table; resolves against every sheet, cached CSS-degraded",
+            spineIndex);
+    st.cssUnscoped = true;
+    return true;
+  }
+  // With one sheet or none every chapter resolves alike, and the head is not read.
+  if (css == nullptr || css->sheetRanges().size() < 2) return true;
+  // The head's links, through the scanner the heading carry reads files with (comments, CDATA, quoted values, prefixed
+  // names); their values in a 256 B buffer here, the file through its 256 B window. A head not read whole cannot be
+  // scoped.
+  CssParser::SheetLinks links{css, st.contentBase};
+  char linkValues[256];
+  const HeadingCarry::LinkHook hook{&CssParser::addLink, &links, linkValues, sizeof(linkValues)};
+  HeadingCarry::Scanner scan;
+  scan.setLinkHook(&hook);
+  if (!HeadingCarry::scanHead(st.tempFile, scan)) links.unknown = true;
+  if (!st.tempFile.seek(0)) {
+    LOG_ERR("SCT", "Failed to read extracted XHTML from %s", st.tempPath.c_str());
+    return false;
+  }
+  // The heading file laid out first is part of the build: its sheets too (prepareCarry read them). One that links
+  // none resolves against every sheet, and so does the build.
+  if (st.carry.spine >= 0) {
+    links.sheets |= st.carry.links.sheets;
+    links.unknown = links.unknown || st.carry.links.unknown || st.carry.links.sheets == 0;
+  }
+  const unsigned sheets = static_cast<unsigned>(css->sheetRanges().size());
+  const unsigned inScope = css->scopeToSheets(links);
+  LOG_INF("SCT", "spine=%d resolves against %u of %u stylesheets", spineIndex, inScope != 0 ? inScope : sheets, sheets);
+  return true;
 }
 
 Section::BuildPhaseResult Section::runBuildParse(BuildState& st, const uint32_t budgetMs) {
@@ -1676,6 +1962,11 @@ Section::BuildPhaseResult Section::runBuildParse(BuildState& st, const uint32_t 
     }
   }
 
+  // The heading file this one carries: banked and found once, before the parse. A few KB, so within one slice.
+  if (!streamFailed && st.extractDone && st.carry.spine >= 0 && !st.carry.ready && !prepareCarry(st)) {
+    streamFailed = true;
+  }
+
   // The gap between the phases: the whole document is on SD, and ALL ZIP state was just
   // released, so this is both the only moment the note text can be resolved from a local file
   // and the widest the heap gets during a build. Preview text is a layout input — it changes
@@ -1728,18 +2019,42 @@ Section::BuildPhaseResult Section::runBuildParse(BuildState& st, const uint32_t 
     }
     st.visitorReady = true;
     finishInlineFootnotePreviewResolve(st);
-    if (!st.visitor->setup(st.inflatedSize)) {
-      LOG_ERR("SCT", "Failed to set up chapter parser");
-      file.close();
-      Storage.remove(filePath.c_str());
-      if (st.cssParser) {
-        st.cssParser->clear();
+    // Before setup(), which makes the first style lookups (the body's font size). A file that cannot be rewound fails
+    // the stream before the parser is set up, as a failed extraction does.
+    if (!scopeStylesheets(st)) {
+      streamFailed = true;
+    } else {
+      // The page writer's buffer and the body-size census are taken now rather than at setup: the extraction and the
+      // note-preview resolve above use neither, and on a heap-backed build the resolve can be the build's heap peak.
+      // Nothing touches the section file between its header and here, so the writer starts where it did, at the
+      // header's end; no page can complete before setup() below starts the parser's first text block.
+      st.pageWriter.emplace(file, PAGE_WRITE_BUFFER_BYTES);
+      if (!st.pageWriter->buffered()) {
+        LOG_INF("SCT", "createSectionFile spine=%d: no %u-byte block for the page writer, pages go out field by field",
+                spineIndex, static_cast<unsigned>(PAGE_WRITE_BUFFER_BYTES));
       }
-      return BuildPhaseResult::Failed;
-    }
-    if (st.arena) {
-      st.laneResident = static_cast<uint32_t>(st.arena->used());
-      st.arena->beginLane();  // parse lane: page blocks, font slots, the mid-build draw block
+      // Counted afresh by each build: one build's text is the sample, and a retry without the book's style counts
+      // nothing, its sizes not being the book's. Without the memory the build lays out as ever and counts nothing; the
+      // next one counts. Handed to the parser before setup(), as it asks.
+      const BuildParams& p = st.params;
+      if (p.measureBodySize && p.embeddedStyle && p.fontSizeNormalization) {
+        st.bodySizeCensus = makeUniqueNoThrow<BodySize::Census>();
+        if (!st.bodySizeCensus) LOG_ERR("SCT", "spine=%d: no memory for the body size census", spineIndex);
+      }
+      st.visitor->setBuildCensus(st.bodySizeCensus.get());
+      if (!st.visitor->setup(st.inflatedSize)) {
+        LOG_ERR("SCT", "Failed to set up chapter parser");
+        file.close();
+        Storage.remove(filePath.c_str());
+        if (st.cssParser) {
+          st.cssParser->clear();
+        }
+        return BuildPhaseResult::Failed;
+      }
+      if (st.arena) {
+        st.laneResident = static_cast<uint32_t>(st.arena->used());
+        st.arena->beginLane();  // parse lane: page blocks, font slots, the mid-build draw block
+      }
     }
   }
 
@@ -1750,11 +2065,34 @@ Section::BuildPhaseResult Section::runBuildParse(BuildState& st, const uint32_t 
 #ifdef BENCH_EXTRACT_PROFILE
       uint32_t sdReadUs = 0, visitorUs = 0;
 #endif
+      using CarryStage = BuildState::Carry::Stage;
+      BuildState::Carry& carry = st.carry;
       while (true) {
+        if (carry.stage == CarryStage::Carried) {
+          // The heading file's body content, fed as this file's first (ChapterHtmlSlimParser::beginCarried).
+          const uint32_t left = carry.end - carry.begin - carry.fed;
+          if (left == 0) {
+            carry.file.close();
+            st.visitor->endCarried();
+            carry.stage = CarryStage::Rest;
+            continue;
+          }
+          const int got = carry.file.read(st.chunkBuf, std::min<size_t>(left, PARSE_CHUNK_BYTES));
+          if (got <= 0 || st.visitor->write(st.chunkBuf, static_cast<size_t>(got)) != static_cast<size_t>(got)) {
+            LOG_ERR("SCT", "spine=%d: carrying %d failed (%d)", spineIndex, carry.spine, 1);
+            streamFailed = true;
+            break;
+          }
+          carry.fed += static_cast<uint32_t>(got);
+          if (overBudget()) {
+            return yieldSlice();
+          }
+          continue;
+        }
 #ifdef BENCH_EXTRACT_PROFILE
         const int64_t tr = esp_timer_get_time();
 #endif
-        const int n = st.tempFile.read(st.chunkBuf, PARSE_CHUNK_BYTES);
+        int n = st.tempFile.read(st.chunkBuf, PARSE_CHUNK_BYTES);
 #ifdef BENCH_EXTRACT_PROFILE
         sdReadUs += static_cast<uint32_t>(esp_timer_get_time() - tr);
 #endif
@@ -1764,7 +2102,27 @@ Section::BuildPhaseResult Section::runBuildParse(BuildState& st, const uint32_t 
           break;
         }
         if (n == 0) {
+          if (carry.spine >= 0 && carry.stage != CarryStage::Rest) {
+            LOG_ERR("SCT", "spine=%d: carrying %d failed (%d)", spineIndex, carry.spine, 2);
+            streamFailed = true;
+          }
           break;
+        }
+        bool startCarry = false;
+        if (carry.spine >= 0 && carry.stage == CarryStage::Prefix) {
+          // Up to this file's <body ...> start tag; what follows it is read again once the heading file is in.
+          const size_t through = carry.bodyStart.feedThroughBodyStart(st.chunkBuf, static_cast<size_t>(n));
+          if (carry.bodyStart.bodyStarted()) {
+            n = static_cast<int>(through);
+            const std::string banked = sectionHtmlCachePath(epub->getCachePath(), carry.spine);
+            if (!st.tempFile.seek(st.tempBytesFed + through) || !Storage.openFileForRead("SCT", banked, carry.file) ||
+                !carry.file.seek(carry.begin)) {
+              LOG_ERR("SCT", "spine=%d: carrying %d failed (%d)", spineIndex, carry.spine, 3);
+              streamFailed = true;
+              break;
+            }
+            startCarry = true;
+          }
         }
         st.tempBytesFed += static_cast<size_t>(n);
         // A short write means the parser failed mid-stream (it returns 0 after an
@@ -1773,6 +2131,10 @@ Section::BuildPhaseResult Section::runBuildParse(BuildState& st, const uint32_t 
         const int64_t tv = esp_timer_get_time();
 #endif
         const size_t wrote = st.visitor->write(st.chunkBuf, static_cast<size_t>(n));
+        if (startCarry && wrote == static_cast<size_t>(n)) {
+          st.visitor->beginCarried();
+          carry.stage = CarryStage::Carried;
+        }
 #if SCT_HEAP_TRACE
         // Sample AFTER the write: the allocation we are hunting happens inside the parser while
         // it consumes this chunk, and by here it is either still held or already released — a
@@ -1887,7 +2249,9 @@ Section::BuildPhaseResult Section::runBuildParse(BuildState& st, const uint32_t 
     // 14-page background build discarded after a single 960-byte dip below the lean floor,
     // forcing the released-path foreground rebuild whose 52 KB framebuffer realloc is the
     // failure that ends the session.
-    cssLowHeapDegraded_ = !st.cssParser->isArenaResident() && st.cssParser->getResolveStats().lowHeapSkips > 0;
+    // A stylesheet table the heap refused is lost whatever holds the rules: the chapter was not scoped.
+    cssLowHeapDegraded_ =
+        st.cssUnscoped || (!st.cssParser->isArenaResident() && st.cssParser->getResolveStats().lowHeapSkips > 0);
   }
   st.parseMs += millis() - sliceStart;
   if (st.arena) st.laneParse = static_cast<uint32_t>(st.arena->laneHighWater());
@@ -2287,6 +2651,8 @@ bool Section::startBuild(const BuildParams& params, const std::function<void(int
   buildState_->requestedHash = requestedHash;
   buildState_->totalStartMs = millis();
 
+  // A refusal in setup after the file is open has already torn the state down (abortSectionBuild); reset is then a
+  // no-op.
   if (runBuildSetup(*buildState_) != BuildPhaseResult::Ok) {
     buildState_.reset();
     return false;
@@ -2305,6 +2671,10 @@ Section::BuildStep Section::stepSectionBuild(const BuildParams& params, const ui
   }
 
   if (!buildState_) {
+    if (carriedAway(params)) {
+      becomeCarried(params);
+      return BuildStep::Done;
+    }
     if (!skipEviction) {
       evictOldVariants();
     }
@@ -2418,13 +2788,16 @@ void Section::abortSectionBuild() {
   // closing an unopened handle asserts.
   if (file) file.close();
   Storage.remove(filePath.c_str());
-  // Unlike the extraction temp above, the anchor spill is worth nothing to a retry: it belongs to
-  // the parse that just died, and the next attempt rewrites it from the first anchor.
-  Storage.remove(getAnchorSpillPath().c_str());
   if (buildState_->cssParser) {
     buildState_->cssParser->clear();
   }
   buildState_.reset();
+  // Unlike the extraction temp above, the anchor spill is worth nothing to a retry: it belongs to
+  // the parse that just died, and the next attempt rewrites it from the first anchor. Removed only
+  // now: the parser's spill writer flushes its buffer in its destructor, and a flush into a file
+  // that is already removed writes through a freed cluster chain on SdFat (cluster 0 when the tail
+  // crosses a cluster boundary, which is below the data region).
+  Storage.remove(getAnchorSpillPath().c_str());
 }
 
 std::unique_ptr<Page> Section::loadPageFromSectionFile() {
@@ -2527,6 +2900,7 @@ bool Section::activeBuildCssDegraded() const {
   // is the mid-parse half of the same rule: Background-B polls this every slice and discards
   // the whole build the first time it returns true.
   if (!buildState_ || !buildState_->cssParser) return false;
+  if (buildState_->cssUnscoped) return true;  // no stylesheet table: degraded from its first slice, whatever the store
   if (buildState_->cssParser->isArenaResident()) return false;
   return buildState_->cssParser->getResolveStats().lowHeapSkips > 0;
 }

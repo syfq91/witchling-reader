@@ -21,6 +21,13 @@ namespace SidecarFiles {
 inline constexpr const char* kCoverExtensions[] = {".jpg", ".jpeg", ".png", ".bmp", ".JPG", ".JPEG", ".PNG", ".BMP"};
 // Calibre-style metadata OPF.
 inline constexpr const char* kMetadataExtensions[] = {".opf", ".OPF"};
+// A protected EPUB's content key, wrapped to the device (lib/BookProtection/BookKey.h). Its name is
+// the book's whole name and ".key" ("Some Book.epub.key"), the same as an extension of the base.
+inline constexpr const char* kKeyExtensions[] = {".epub.key", ".EPUB.key"};
+// The licence a plugin wrote beside a protected EPUB it fetched (the Plugin Hub's protected-content:
+// "Some Book.epub.rights", Adobe's rights.xml), which it derives the key from again after a flash
+// erase. Upstream moves it with the book too (EpubReaderActivity's SIDECARS).
+inline constexpr const char* kLicenseExtensions[] = {".epub.rights", ".EPUB.rights"};
 // metadataStamp() reads no further than this. It must cover every byte a reader
 // of the sidecar takes in, or an edit past the cap would go unnoticed.
 inline constexpr size_t kMetadataStampBytes = 16384;
@@ -59,6 +66,15 @@ bool anyTargetTaken(const std::string& bookPath, const std::string& targetBookPa
 // extension. Call it for the move a reader asked for, where anyTargetTaken() has
 // already ruled out a clash; false when any one of them failed to move.
 bool moveAll(const std::string& bookPath, const std::string& targetBookPath);
+
+// Rename a protected book's key and licence (kKeyExtensions, kLicenseExtensions) to sit beside
+// targetBookPath, for a move that did not take the sidecars along: the web File Manager, WebDAV and
+// the serial transfer move the book alone, and without its key it no longer opens
+// (BookRelocation::bookMoved() calls this for every move). One already at the target belonged to a
+// book no longer at that path and is replaced (FileReplace, which never leaves neither copy). One
+// not at the old path (moveAll() took it, or a moved folder held it) is no failure. Covers and
+// metadata stay where they are. False when any one of them failed to move.
+bool moveProtection(const std::string& bookPath, const std::string& targetBookPath);
 
 // Delete every sidecar of bookPath. For a book being deleted from a view that
 // hides its sidecars: left behind, they would be invisible there and linger on

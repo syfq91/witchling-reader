@@ -4,6 +4,7 @@
 #include <BuildArena.h>
 #include <ChunkedVector.h>
 #include <HalStorage.h>
+#include <HeapFit.h>
 #include <Print.h>
 #include <SaxParser/SaxParser.h>
 
@@ -16,7 +17,9 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "../BlockFontFamilies.h"
@@ -82,6 +85,73 @@ inline size_t& tableCellTextsLeft() {
   static size_t left = SIZE_MAX;
   return left;
 }
+// The same for the grid row's line lists: how many more reserves of the shared line scratch (the table's first grid
+// row) and how many more exact-size `cell.lines` allocations may succeed; SIZE_MAX = never refuse.
+inline size_t& cellLineScratchLeft() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+inline size_t& cellLinesLeft() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+// How many `cell.lines` allocations layoutTableRow made (one per cell that has lines).
+inline size_t& cellLinesAllocated() {
+  static size_t n = 0;
+  return n;
+}
+// The table's three std::vector growths: how many more asks of each kind may succeed before one is refused as if the
+// heap were out. SIZE_MAX = never refuse. `tableRowCellsLeft` is the `<td>` that adds a cell to the pending row,
+// `layoutCellsLeft` a grid row's laid-out cell list, `packerRowsLeft` the fragment's row list.
+inline size_t& tableRowCellsLeft() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+inline size_t& layoutCellsLeft() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+inline size_t& packerRowsLeft() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+// ...and the allocation of the PageTableFragment a flush makes of the packed rows.
+inline size_t& fragmentAllocLeft() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+// How many pushes onto the fragment's row list found it full (so would have grown it through the throwing operator
+// new, past the reserve); a table's reserve is meant to leave this at zero.
+inline size_t& packerGrowthPushes() {
+  static size_t n = 0;
+  return n;
+}
+// How many asks, once a counter above reaches zero, are refused before the heap "recovers" (SIZE_MAX: all of them),
+// and how many were refused in all.
+inline size_t& tableGrowthRefusals() {
+  static size_t n = SIZE_MAX;
+  return n;
+}
+inline size_t& tableGrowthRefused() {
+  static size_t n = 0;
+  return n;
+}
+// One ask of a kind whose counter is `left`: true when it is refused.
+inline bool tableGrowthFault(size_t& left) {
+  if (left == SIZE_MAX) return false;
+  if (left > 0) {
+    --left;
+    return false;
+  }
+  size_t& refusals = tableGrowthRefusals();
+  if (refusals == 0) {
+    left = SIZE_MAX;
+    return false;
+  }
+  if (refusals != SIZE_MAX) --refusals;
+  ++tableGrowthRefused();
+  return true;
+}
 #endif
 
 #ifdef PAGE_FAULT_INJECTION
@@ -90,6 +160,63 @@ inline size_t& tableCellTextsLeft() {
 inline size_t& pagesLeft() {
   static size_t left = SIZE_MAX;
   return left;
+}
+// How many page breaks the fit tests that run before a line or a grid row is laid out (beforeLineHook, the row
+// packer's) take before they skip one, as if it had found room. SIZE_MAX (the default): they never do. Drives the
+// arena build's stop when the later fit test disagrees (stopOnLinesPastTheirPage).
+inline size_t& earlyFitBreaksBeforeSkip() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+// For a break one of those tests is about to take: true when it is the one to skip (once; the hook then disarms).
+inline bool skipEarlyFitBreak() {
+  size_t& left = earlyFitBreaksBeforeSkip();
+  if (left == SIZE_MAX) return false;
+  if (left > 0) {
+    --left;
+    return false;
+  }
+  left = SIZE_MAX;
+  return true;
+}
+#endif
+
+#ifdef ELEMENT_FAULT_INJECTION
+// Host tests only (firmware never defines it): how many more page elements may be added before each one is refused as
+// if the heap were out. SIZE_MAX = never refuse. Drives addPageElement's out-of-memory path.
+inline size_t& elementsLeft() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+// True: the refusal is the one add that finds elementsLeft() at zero, and the heap is back after it (a heap that
+// recovers); false: every add after it is refused too.
+inline bool& elementRefusalRecovers() {
+  static bool recovers = false;
+  return recovers;
+}
+#endif
+
+#ifdef STACK_FAULT_INJECTION
+// Host tests only (firmware never defines it): how many more pushes onto the per-element stacks may succeed before each
+// is refused as if the heap were out. SIZE_MAX = never refuse. Drives pushOrStop's out-of-memory path.
+inline size_t& stackPushesLeft() {
+  static size_t left = SIZE_MAX;
+  return left;
+}
+// The `what` of every refusal since the test cleared it, one name per stack, so a test can show each stack took one.
+inline std::string& stackRefusals() {
+  static std::string refused;
+  return refused;
+}
+// Every push, counted whether it is refused or not: the walk's upper bound.
+inline size_t& stackPushCount() {
+  static size_t count = 0;
+  return count;
+}
+// The `what` of every push in order, refused or not, so a test can pick the pushes that start a run of one stack.
+inline std::vector<const char*>& stackPushNames() {
+  static std::vector<const char*> names;
+  return names;
 }
 #endif
 
@@ -161,7 +288,8 @@ class ChapterHtmlSlimParser final : public Print {
   // advance. A box opening under it starts its frame below them. 0 on a fresh page.
   int16_t lastGlyphBottom_ = 0;
   // The extra paragraph spacing (setting) the last laid-out block added, and where it ended: a box closing right there
-  // keeps it out of its frame, which its top does not have either.
+  // keeps it out of its frame, which its top does not have either. Only a block laid out inside the box marks it:
+  // openBox clears what the block above it left.
   int16_t extraGap_ = 0;
   int16_t extraGapEnd_ = -1;
   // Whether `name`, with this style, is drawn as a box, and its plan: the pads, and `style`'s padding with the border
@@ -305,6 +433,8 @@ class ChapterHtmlSlimParser final : public Print {
   // The token count past which the block splits (flushPartWordBuffer), and the word-array capacity it implies
   // (ParsedText::setSplitCapacity), applied wherever splitKeptTokens_ changes.
   size_t splitThreshold() const;
+  // The same for a text that kept `keptTokens` after its last split (a paragraph cell's: layOutParagraphCell).
+  static size_t splitThresholdAfter(size_t keptTokens);
   void applySplitCapacity();
   static constexpr size_t kRubyGroupSlack = 32;  // tokens the 96-token split may wait for a group
   int rubyDepth_ = -1;                           // the open <ruby>'s depth
@@ -358,6 +488,11 @@ class ChapterHtmlSlimParser final : public Print {
   // The layout pass's working memory, one for the build: every ParsedText the parser makes (the main block, each table
   // cell) is lent it, so a row of buffered cells does not carry a set each (ParsedText::LayoutScratch).
   ParsedText::LayoutScratch layoutScratch_;
+  // A grid cell's lines are collected here, then moved into `cell.lines` allocated at its exact size (layoutTableRow),
+  // so a cell's line list is one allocation instead of a growth by doubling. Reserved to MAX_CELL_LINES pointers
+  // (64 x 4 B = 256 B on the C3) by the table's first grid row, freed at </table>; its pointers only live inside one
+  // cell's layout, so it is empty between rows (a TextBlock never outlives the arena block it was laid out in).
+  std::vector<std::unique_ptr<TextBlock>> cellLineScratch_;
   std::unique_ptr<ParsedText> currentTextBlock = nullptr;
   std::unique_ptr<Page> currentPage = nullptr;
   int16_t currentPageNextY = 0;
@@ -372,6 +507,10 @@ class ChapterHtmlSlimParser final : public Print {
   static constexpr uint8_t kMaxBreakAfterDepth = 4;
   uint8_t breakAfterCount_ = 0;
   int breakAfterDepths_[kMaxBreakAfterDepth] = {};
+  // See beginCarried(). carriedTop_: the carried blocks are in and this file has shown no text, taken no break and
+  // ended no page yet.
+  bool carried_ = false;
+  bool carriedTop_ = false;
 
   // Inline image beside paragraph text (CSS float context)
   // Fixed-size arrays — no heap allocation. Float nesting > 4 is pathological in practice.
@@ -441,9 +580,9 @@ class ChapterHtmlSlimParser final : public Print {
   // used for left-floated inline images.
   // CSS initial-letter asks for one in so many lines, on such a span (float and size or not) or on the paragraph's
   // ::first-letter: the letter is then as tall as the lines it spans, whatever font-size the book gives it.
-  static constexpr float kDropCapMinMultiplier = 1.95f;  // spans below this render inline
-  static constexpr float kDropCapMaxMultiplier = 4.0f;   // ≈3 text lines tall
-  static constexpr int16_t kDropCapGapPx = 6;            // horizontal gap between cap and text
+  static constexpr TextScale kDropCapMinMultiplier = TextScale::percent(195);  // spans below this render inline
+  static constexpr TextScale kDropCapMaxMultiplier = TextScale::ratio(4, 1);   // ≈3 text lines tall
+  static constexpr int16_t kDropCapGapPx = 6;                                  // horizontal gap between cap and text
   // The most lines an initial-letter cap spans (crosspoint-reader's MAX_INITIAL_LETTER too), and fewer where the cap
   // would take more than half the column's width.
   static constexpr uint8_t kMaxInitialLetterLines = 6;
@@ -456,7 +595,7 @@ class ChapterHtmlSlimParser final : public Print {
     uint8_t sink = 0;
     // Captured from a ::first-letter rule: the capture ends after the first letter, and the punctuation before it.
     bool firstLetter = false;
-    float multiplier = 1.0f;  // composed font-size multiplier relative to the body font
+    TextScale multiplier;  // composed font-size multiplier relative to the body font
     EpdFontFamily::Style style = EpdFontFamily::REGULAR;
     uint32_t family = 0;  // CssStyle::fontFamily of the cap, while the book has other families (fontFamilies_)
     char text[16] = {};   // drop caps are 1 glyph, occasionally with a leading quote
@@ -483,7 +622,8 @@ class ChapterHtmlSlimParser final : public Print {
   int fontId;
   // Default heading multipliers (index 0=h1, 1=h2, 2=h3) applied when a heading has no
   // explicit CSS font-size; resolveBlockFont() then snaps them to the size ladder.
-  static constexpr float kHeadingMultiplier[3] = {1.6f, 1.4f, 1.2f};
+  static constexpr TextScale kHeadingMultiplier[3] = {TextScale::percent(160), TextScale::percent(140),
+                                                      TextScale::percent(120)};
   // Sibling-size ladder of the body font (see FontSizeLadder). resolveBlockFont() snaps a
   // block's effective font size to the nearest real font on it; empty = scale-only fallback.
   FontSizeLadder fontSizeLadder_;
@@ -513,22 +653,22 @@ class ChapterHtmlSlimParser final : public Print {
   // A word in another family than its block's has the font slot of its family (BlockFontFamilies::slotOf), whose
   // face resolveBlockFont puts at the block's size: the block's size before it was resolved, and its own slot, kept
   // for the words a block laid out in parts takes after its first part. 0: currentTextBlock is not resolved yet.
-  float wordFontsSize_ = 0;
+  TextScale wordFontsSize_ = TextScale::fromRaw(0);
   uint8_t blockFontSlot_ = 0;
   // EPUBs often set their running prose to a nominal CSS size such as 10pt,
   // 87%, or 0.875em. The reader's selected font size is our body size. Root
   // (html/body) sizes are normalized as inherited context; the main-text
   // baseline comes from tag-level paragraph/list rules so prose maps to 1.0
   // and headings/notes remain proportional to that prose size.
-  float rootFontSizeBaseline_ = 1.0f;
+  TextScale rootFontSizeBaseline_;
   bool hasRootFontSizeBaseline_ = false;
-  float mainTextFontSizeBaseline_ = 1.0f;
+  TextScale mainTextFontSizeBaseline_;
   bool hasMainTextFontSizeBaseline_ = false;
-  float lineCompression;
+  TextScale lineCompression;
   // Book's style line spacing (setBookLineHeight): the compression of one em of line-height, and the least a block
   // takes. bookPerEm_ 0: off.
-  float bookPerEm_ = 0.0f;
-  float bookFloor_ = 0.0f;
+  TextScale bookPerEm_ = TextScale::fromRaw(0);
+  TextScale bookFloor_ = TextScale::fromRaw(0);
   bool extraParagraphSpacing;
   uint8_t paragraphAlignment;
   uint16_t viewportWidth;
@@ -545,7 +685,7 @@ class ChapterHtmlSlimParser final : public Print {
   BodySize::Census* buildCensus_ = nullptr;
   // The book's body size as a factor (setBodySizePct): the sizes on the text's scale are taken relative to it
   // (normalizeFontSizeForElement). 1 when it is the reader's size, or normalization is off.
-  float bodyScale_ = 1.0f;
+  TextScale bodyScale_;
   const CssParser* cssParser;
   EpubImageManifest* imageManifest;
   bool embeddedStyle;
@@ -615,6 +755,11 @@ class ChapterHtmlSlimParser final : public Print {
     std::string imageAlt;
     bool isHeader = false;
     uint8_t colSpan = 1;
+    // Opened by openStreamedCell (a nested table's cell, or a cell's rest after one): never a grid cell, so a second
+    // picture streams the cell so far instead of waiting for the one slot.
+    bool streamed = false;
+    // Tokens its text kept after the last part of it went out (layOutParagraphCell): the next part's threshold.
+    uint16_t splitKept = 0;
   };
   struct BufferedTableRow {
     std::vector<BufferedTableCell> cells;
@@ -638,6 +783,13 @@ class ChapterHtmlSlimParser final : public Print {
     int16_t xInset = 0;  // left edge of the table box; non-zero when the <table> carries a left inset
     bool hasBorder = true;
     uint32_t firstVisibleOffset = UINT32_MAX;  // first word of the fragment's first row with words
+    // Empty for the next fragment, once the rows are placed or dropped.
+    void reset() {
+      rows.clear();
+      height = 0;
+      cols = 0;
+      firstVisibleOffset = UINT32_MAX;
+    }
   };
   struct BufferedTable {
     // The row currently being filled. Cleared at every <tr> and freed again at </tr> once the row
@@ -652,7 +804,18 @@ class ChapterHtmlSlimParser final : public Print {
     // divide contentWidth rather than the full viewport, so an indented table stays indented
     // instead of being stretched edge to edge.
     uint16_t contentWidth = 0;
-    int depth = 0;          // nesting depth; > 1 means we're inside a nested table
+    int depth = 0;  // nesting depth; > 1 means we're inside a nested table
+    // Bit d - 2: the table nested at depth d opened inside a cell, whose rest (its text after the
+    // inner table) is a cell of its own. Past the mask, a table is taken to sit in a cell.
+    uint32_t nestedInCellBits = 0;
+    void noteNestedInCell(const bool inCell) {
+      if (depth < 2 || depth - 2 >= 32) return;
+      const uint32_t bit = 1u << (depth - 2);
+      nestedInCellBits = inCell ? (nestedInCellBits | bit) : (nestedInCellBits & ~bit);
+    }
+    [[nodiscard]] bool nestedInCell() const {
+      return depth < 2 || depth - 2 >= 32 || (nestedInCellBits & (1u << (depth - 2))) != 0;
+    }
     bool hasBorder = true;  // false when border="0" on the <table> element
     // The table runs right to left (its element's direction, else the book's): its columns are laid out from the
     // right, the first cell of a row being the rightmost.
@@ -683,6 +846,10 @@ class ChapterHtmlSlimParser final : public Print {
   };
   std::unique_ptr<BufferedTable> currentTable;
   BufferedTableCell* currentTableCell = nullptr;  // non-null while inside <td>/<th>
+  // True while laid-out rows wait in currentTable's packer for their fragment. They were laid out for the page in
+  // progress (on an arena build in its block, which emitPage() rewinds), so until flushTableFragment places them
+  // nothing else may go into the page's flow, nor the page be emitted.
+  bool tableRowsWait() const { return currentTable && !currentTable->packer.rows.empty(); }
 
   struct ListEntry {
     int depth;
@@ -732,7 +899,7 @@ class ChapterHtmlSlimParser final : public Print {
   // Fold the insets of every enclosing block-level element into `style`, capping each side at
   // MAX_HORIZONTAL_INSET_EM so deep nesting cannot squeeze the text column away. Only those opened above `belowDepth`
   // (the elements around the one at that depth), when given.
-  void addAncestorInsets(BlockStyle& style, float emSize, int belowDepth = INT_MAX) const;
+  void addAncestorInsets(BlockStyle& style, int emSize, int belowDepth = INT_MAX) const;
 
   // Bottom spacing (margin-bottom, padding-bottom) of the block-level elements currently open. A
   // block element's style starts only its FIRST text block -- child blocks and <br> lines follow
@@ -765,16 +932,34 @@ class ChapterHtmlSlimParser final : public Print {
   // BEFORE the note. Held until addLineToPage has placed a line, then recorded against the page
   // that line actually went on.
   //
-  // Small by construction: an entry lives only from an element's start tag to its first line, so
-  // it holds more than one only for id'd elements that produce no text at all. Past
-  // MAX_ANCHORS_AWAITING_LINE the queue is flushed at the current page rather than grown, which
-  // is exactly the old behaviour and no worse.
-  std::vector<std::string> anchorsAwaitingLine_;
-  // Records every queued anchor against `completedPageCount`. Called once a line has been placed
-  // (the page is then known) and again at end of parse for anchors that never got one.
-  void flushAnchorsAwaitingLine();
-  // Holds an anchor until a line settles its page; see anchorsAwaitingLine_.
-  void queueAnchorForNextLine(std::string id);
+  // Small by construction: an entry lives only from an element's start tag to its line, so it holds
+  // more than one only for id'd elements that produce no text at all, or for several ids inside one
+  // paragraph. Past MAX_ANCHORS_AWAITING_LINE an id is recorded at once, at the page reached so far,
+  // rather than queued: approximate, never lost.
+  //
+  // An id on an inline element in the middle of a block carries the index of the next word (as a
+  // footnote link carries the index of the word it follows), so the line that reaches that word
+  // records it, not the block's first line. A block's own id, an inline id before the block's
+  // first word and an id in a table cell, carry 0: the block's first line (a table's, the row's page).
+  // Queued by word index after crosspoint-reader #4328 (Mikalai Kryvusha, @MikalaiKryvusha).
+  struct AnchorAwaitingLine {
+    std::string id;
+    int wordIndex;
+  };
+  std::vector<AnchorAwaitingLine> anchorsAwaitingLine_;
+  // Records the queued anchors whose index lies in [firstIndex, lastIndex] at `completedPageCount`, the rest wait.
+  // After a line is placed: [0, wordsExtractedInBlock], the words its lines have reached (the page is then known).
+  // After a block is laid out: [1, INT_MAX], an id after its last word names the last line's page; a block's own id
+  // (index 0) waits on for its first line. Neither takes -1, an id startNewTextBlock sets aside for the next block.
+  void flushAnchorsInRange(int firstIndex, int lastIndex);
+  // Records every queued anchor at `page`: for a grid row (its page), and at the end of the parse for anchors that
+  // never got a line (the last page).
+  void flushAnchorsAwaitingLine(int page);
+  // Holds an anchor until the line that reaches word `wordIndex` of the block settles its page.
+  void queueAnchorForNextLine(std::string id, int wordIndex = 0);
+  // The index to queue an inline element's id with: that of the next word of the block in progress, or 0 when the
+  // block has no word yet or the id is not in a plain block (a table cell lays out apart).
+  int inlineAnchorWordIndex() const;
   // Records the id of a <span>, within MAX_SPAN_ANCHORS_PER_CHAPTER and never counted against the
   // general cap: see the definition.
   void recordSpanAnchor(const std::string& id);
@@ -797,7 +982,14 @@ class ChapterHtmlSlimParser final : public Print {
   // much smaller resident one when it is not. Defined in the .cpp beside the two constants.
   size_t anchorLimit() const;
   std::string pendingAnchorId;  // deferred until after previous text block is flushed
-  std::vector<std::string> tocAnchors;
+  // The spine's TOC anchors, packed "id\0id\0...", owned by whoever built the parser (Section: the build arena or a
+  // heap block, both outliving the parser). Empty when the spine has none.
+  std::string_view tocAnchorPool;
+  // True when `id` is one of them: a chapter boundary, which starts a page. Walks the pool.
+  bool isTocAnchor(std::string_view id) const;
+  // The page break a TOC anchor takes before its block, so that its chapter starts on a fresh page: none on an empty
+  // page, nor while tableRowsWait().
+  void breakPageBeforeTocAnchor();
 
   // External printed-page labels sourced from NCX <pageList> or EPUB 3 nav page-list.
   // Keyed by HTML id (anchor fragment). When the parser encounters an element whose id
@@ -848,6 +1040,11 @@ class ChapterHtmlSlimParser final : public Print {
   // Drops the page in hand and stops the parse the way a low-heap abort does: the pages already
   // emitted are kept as a truncated section.
   void stopOnFullPageTable();
+  // An arena build lays a line or a table row out in the block of the page its fit test chose (beforeLineHook, the
+  // row packer), and emitPage() rewinds that block. Should a later test send the line or the packed rows to the next
+  // page, they would be carried over in rewound bytes, so their caller drops them while the block is live and calls
+  // this: the parse stops the way a low-heap stop does, its pages kept. Unreachable while the tests agree.
+  void stopOnLinesPastTheirPage(const char* what);
 
   // Active parser for streaming. A member so write() can feed it and the abort paths can stop
   // it from inside a callback.
@@ -860,6 +1057,10 @@ class ChapterHtmlSlimParser final : public Print {
   // above the section's feed-chunk block and below nothing that outlives the page (a mid-build
   // draw's font-slot scope opens and closes between two slices): strictly LIFO.
   BuildArena::Block pageBlock_;
+  // What the open page's lines may take from pageBlock_'s arena, objects and bytes (TextBlock::ArenaRoom): handed to
+  // every ParsedText laid out on the page, its keepFree lineObjectKeepFree(), its displaced cleared whenever the
+  // page block opens or is rewound.
+  TextBlock::ArenaRoom lineRoom_;
   // The build's cache of shaped words, in buildArena_'s free tail (WordShapeCache.h): armed in setup() after the SAX
   // state is taken, bound to each ParsedText beside its line arena, disarmed at the end of finalize(), before the
   // section releases the feed-chunk block. Unarmed (no lent arena, or no room for it), every lookup is bypassed.
@@ -971,7 +1172,7 @@ class ChapterHtmlSlimParser final : public Print {
     int16_t depth = 0;
     CssWritingMode writingMode = CssWritingMode::Unset;
     CssDirection direction = CssDirection::Unset;
-    float lineHeightEm = 0.0f;  // 0: no line-height set
+    TextScale lineHeightEm = TextScale::fromRaw(0);  // 0: no line-height set
     CssWhiteSpace whiteSpace = CssWhiteSpace::Unset;
   };
   static constexpr uint8_t kMaxFlowEntries = 8;
@@ -1013,7 +1214,7 @@ class ChapterHtmlSlimParser final : public Print {
   // Puts the controls the element opening now asks for (CSS Writing Modes 3, 2.4.2: its unicode-bidi and computed
   // direction, elementFlow_) at the start of its text, and pushes the edge with their closers. An inline element takes
   // them all; one laid out as its own block (`inlineElement` false) only an override, as its other values set its
-  // paragraph's direction. Nothing where its text is not laid out (an rt's, a nested table's, a transparent run's).
+  // paragraph's direction. Nothing where its text is not laid out (an rt's, a transparent run's).
   void openBidiEdge(const CssStyle& style, bool inlineElement);
   // At the end tag of the element at `elementDepth`: its closers go in, and those of any edge left deeper.
   void closeBidiEdges(int elementDepth);
@@ -1148,6 +1349,17 @@ class ChapterHtmlSlimParser final : public Print {
   // that element has closed. A <br> inside it splits the element into more blocks, which keep its
   // font size; after it has closed, what it leaves behind must not lend that size to a sibling.
   int currentBlockOwnerDepth_ = -1;
+  // The line a <br> ends, for whether it is empty (the <br> branch of startElement): the current block's tokens
+  // that came before it, counted as the lines count them (0 where the block began, and the count at each close that
+  // ends a line, after which loose text starts a line of its own), and whether a picture was placed on it as a
+  // block of its own (<p><img/><br/>Caption</p>), which leaves the text block empty.
+  int lineStartTokens_ = 0;
+  bool pictureOnLine_ = false;
+  // The current block's tokens so far, with a word still in the buffer counted as one: read before anything is
+  // flushed or laid out, since a layout that hyphenates counts a word's two halves as two tokens.
+  int lineTokensSoFar() const;
+  bool closeEndsLine(const char* name) const;
+  void markLineStart();
   // The current block's own font-size is body-relative (rem/px/pt): its size then ignores the
   // sizes of the inline containers it sits in. Set where a block or heading starts, cleared when
   // it ends, as the single block-style slot did before blocks went onto the style stack.
@@ -1162,7 +1374,7 @@ class ChapterHtmlSlimParser final : public Print {
   // The outermost open <center>: every block inside it is centred (startElement).
   int centerDepth_ = INT_MAX;
   CssTextAlign headingAlignment_ = CssTextAlign::Center;
-  float headingFontSizeMultiplier_ = 1.0f;
+  TextScale headingFontSizeMultiplier_;
   void applyHeadingScope(BlockStyle& blockStyle, const CssStyle& cssStyle) const;
   // The <span> laid out as a block because the book styles it display:block (#388), and the
   // alignment and size of the block it interrupted: text after the span, still inside the same
@@ -1174,7 +1386,7 @@ class ChapterHtmlSlimParser final : public Print {
     CssTextAlign alignment = CssTextAlign::Justify;
     bool textAlignDefined = false;
     bool fontResolved = false;
-    float fontSizeMultiplier = 1.0f;
+    TextScale fontSizeMultiplier;
     int32_t headingFontId = 0;
   };
   BlockSpan blockSpan_;
@@ -1212,6 +1424,22 @@ class ChapterHtmlSlimParser final : public Print {
   // ParsedText before returning. Shared by the row fallback and the degraded path so both
   // produce identical output. Returns false when the heap guard stopped the parse.
   bool emitCellAsParagraph(BufferedTableCell& cell, bool emitImage);
+  // Lays a cell's text out as the page's lines, all of them or all but the last (includeLastLine), the words of those
+  // leaving the text. A text's first part starts a block in the page's flow; a later one goes on in it. False when the
+  // heap guard stopped the parse.
+  bool layOutCellText(ParsedText& text, bool includeLastLine);
+  // The open cell is laid out as the page's paragraphs, not as a grid cell: a nested table's, a cell's rest after one,
+  // a degraded row's. No row waits for it, and no row budget bounds it.
+  bool paragraphCellOpen() const;
+  // The open paragraph cell's words go to the page: all of them where a block in the cell starts or ends (`whole`), its
+  // text then empty for the next paragraph; else all but its last line's, which go on with the words to come, as a
+  // long block's do (splitLongBlock), once it holds more than the split threshold. A nested table's cell could hold a
+  // chapter in one text, its paragraphs run together (#832). False when the heap guard stopped the parse.
+  bool layOutParagraphCell(bool whole);
+  // The pending row's cell list and the fragment's row list grow through these: false when the heap holds no block for
+  // the growth, and nothing changed.
+  bool reserveRowCell(BufferedTableRow& row);
+  bool reservePackerRows(TableFragmentPacker& packer, size_t extra);
   // Give up the grid for the pending ROW: flush whatever is packed so the fragment closes before
   // the paragraphs, then emit the row's buffered cells (text then images) and latch rowDegraded so
   // the rest of the row streams at </td>. The next <tr> clears it and the grid resumes.
@@ -1226,6 +1454,10 @@ class ChapterHtmlSlimParser final : public Print {
   bool degradeRowAtOpenCell(const char* reason);
   // Called on </td> once degraded: emit and release the just-closed cell immediately.
   void streamClosedCell(BufferedTableRow& row);
+  // Opens a cell of the degraded table's stream that no outer <td> opens: a nested table's cell, or the rest of the
+  // cell a nested table sat in. Laid out and freed by streamClosedCell, as a degraded outer cell is. False when the
+  // heap cannot hold it: the parse has stopped, and no cell is open.
+  bool openStreamedCell(CssDirection direction, bool isHeader);
   // A table cell's text: no paragraph spacing, no hyphenation, the block's typography, shaping latch and writing mode.
   // Null when the heap cannot hold it; the parse then stops, as any low-heap stop does (the pages so far are kept).
   std::unique_ptr<ParsedText> makeCellText();
@@ -1318,6 +1550,36 @@ class ChapterHtmlSlimParser final : public Print {
   // The heap refused `bytes` for `what`, which the build cannot go on without: stop it as every such refusal does
   // (streamFailed, layoutFailed, the parser stopped). The pages so far are kept, the section marked truncated.
   void stopForHeap(const char* what, size_t bytes);
+  // Put an element on the current page, asking the heap for the table's growth first. False when it refuses (the build
+  // has stopped through stopForHeap, the element is gone) or when there is no page: the caller places nothing more.
+  // A borrowed pointer to the element (deferredPageImage_, deferredDropCapLine_) must be cleared on false.
+  [[nodiscard]] bool addPageElement(std::unique_ptr<PageElement> element);
+  // Push onto one of the per-element stacks, asking the heap for its growth first. False when it refuses: the build has
+  // stopped through stopForHeap (streamFailed latches, so startElement and endElementBody return at once and no pop
+  // follows), the entry is gone, and the caller returns as it does when flushPartWordBuffer() refuses.
+  template <typename V, typename T>
+  [[nodiscard]] bool pushOrStop(V& v, T&& x, const char* what) {
+    bool room = heapReserveFor(v, 1);
+#ifdef STACK_FAULT_INJECTION
+    ++stackPushCount();
+    stackPushNames().push_back(what);
+    if (stackPushesLeft() == 0) {
+      room = false;
+    } else if (stackPushesLeft() != SIZE_MAX) {
+      --stackPushesLeft();
+    }
+    if (!room) {
+      stackRefusals() += what;
+      stackRefusals() += ';';
+    }
+#endif
+    if (!room) {
+      stopForHeap(what, 2 * v.capacity() * sizeof(typename V::value_type));
+      return false;
+    }
+    v.push_back(std::forward<T>(x));
+    return true;
+  }
   // Take a pending page break (pageBreakPending_): emit the page if anything is on it. Called
   // where the content before the break has been laid out and the next is about to be placed.
   void applyPendingPageBreak();
@@ -1357,14 +1619,14 @@ class ChapterHtmlSlimParser final : public Print {
 
  public:
   explicit ChapterHtmlSlimParser(std::shared_ptr<Epub> epub, GfxRenderer& renderer, const int fontId,
-                                 const float lineCompression, const bool extraParagraphSpacing,
+                                 const TextScale lineCompression, const bool extraParagraphSpacing,
                                  const uint8_t paragraphAlignment, const uint16_t viewportWidth,
                                  const uint16_t viewportHeight, const bool hyphenationEnabled,
                                  const bool fontSizeNormalization, const bool bionicReadingEnabled,
                                  const std::function<bool(std::unique_ptr<Page>)>& completePageFn,
                                  const bool embeddedStyle, const std::string& contentBase,
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
-                                 std::vector<std::string> tocAnchors = {},
+                                 std::string_view tocAnchorPool = {},
                                  const std::function<void(int)>& progressFn = nullptr,
                                  const CssParser* cssParser = nullptr, EpubImageManifest* imageManifest = nullptr)
 
@@ -1386,7 +1648,7 @@ class ChapterHtmlSlimParser final : public Print {
         imageRendering(imageRendering),
         contentBase(contentBase),
         imageBasePath(imageBasePath),
-        tocAnchors(std::move(tocAnchors)),
+        tocAnchorPool(tocAnchorPool),
         bionicReadingEnabled(bionicReadingEnabled) {}
 
   ~ChapterHtmlSlimParser() override;
@@ -1528,6 +1790,14 @@ class ChapterHtmlSlimParser final : public Print {
   // For a build, set before setup(): the running text it lays out is also counted into `census`, by the rules of the
   // census above (countCensusWord), for the book's body size while it is not known (BodySize, Section::bodySizeSample).
   void setBuildCensus(BodySize::Census* census) { buildCensus_ = census; }
+  // A carried document (HeadingCarry): the body of a spine file that holds only its chapter's heading, fed between this
+  // file's <body> start tag and its first content (Section). Its blocks are laid out as this file's, at the top of its
+  // first page, and count nothing of this file's source: no visible text (the page LUT's offsets stay this file's own,
+  // which KOReader's positions are counted in), no paragraph or list item (the XPath indices), no anchor (a link to
+  // one names the other file), no word of the build's body-size sample. Its printed-page labels are kept. Its page
+  // breaks are not taken, nor the first one this file asks for before any text of its own: the converter's cut.
+  void beginCarried() { carried_ = true; }
+  void endCarried();
   // The size of the book's running text in percent of the reader's (BodySize::read), set before setup(). With
   // font-size normalization on, the book's sizes are taken relative to it, so that text reads at the reader's size;
   // off, or 100, nothing changes. Only the book's own CSS has sizes to take it out of.
@@ -1544,7 +1814,7 @@ class ChapterHtmlSlimParser final : public Print {
   bool isVertical() const { return vertical_; }
   // Book's style line spacing: a block's CSS line-height sets its pitch, a multiple of `emPx`, never below `floor`
   // (a compression on the font's line height). Off by default, and with a floor of 0.
-  void setBookLineHeight(float floor, uint16_t emPx);
+  void setBookLineHeight(TextScale floor, uint16_t emPx);
   // Widow and orphan control (keepTogetherBreak), on by default. Off, a page fills before a paragraph's lines go
   // over; a heading still keeps with its text. A vertical section ignores it and always fills.
   void setWidowOrphanControl(const bool on) { widowOrphanControl_ = on; }
@@ -1565,7 +1835,7 @@ class ChapterHtmlSlimParser final : public Print {
   // The face text in `family` (nullptr: the body's) is set in at `size`, a multiple of the body size: fontId 0 is the
   // body font, with the size left over as the residual. What resolveBlockFont does for a block, and for each family of
   // its words.
-  FontSizeLadder::Resolved resolveFamilyFont(const BlockFontFamilies::Family* family, float size);
+  FontSizeLadder::Resolved resolveFamilyFont(const BlockFontFamilies::Family* family, TextScale size);
   // Puts the face of font slot `slot` at the block's size into currentTextBlock (see wordFontsSize_).
   void resolveWordFont(uint8_t slot);
   // Effective fontId for a block: its heading font when set, else the body fontId.
@@ -1578,6 +1848,13 @@ class ChapterHtmlSlimParser final : public Print {
   // wireParagraphLines does the same for any text laid out as a paragraph of the page.
   void wireTextBlock();
   void wireParagraphLines(ParsedText& text);
+  // What the line arena must still have free after a line's TextBlock object for the object to go there beside its
+  // bytes, and, once an object of the page is there, after the line bytes too (memory-and-parsing 9b,
+  // TextBlock::ArenaRoom): the image walk's largest stage (EpubImageManifest::kWalkArenaReserve) whenever the build has
+  // an image manifest and a C3-sized region, else nothing. The one place the rule lives.
+  size_t lineObjectKeepFree() const;
+  // lineRoom_ with its keepFree set from lineObjectKeepFree(), for a ParsedText laid out on the page.
+  TextBlock::ArenaRoom* lineRoom();
   void beforeLineHook(uint8_t maxSizePct, bool annotated);
   // Widow/orphan control and keep-with-next (CSS defaults: orphans 2, widows 2), decided before
   // each line of currentTextBlock is placed: true when the page should end before a line that
@@ -1596,4 +1873,8 @@ class ChapterHtmlSlimParser final : public Print {
   uint16_t paragraphLinesOnPage_ = 0;
   void ensurePageBlock();
   void releasePageBlock();
+  // Destroys everything that holds lines laid out in the page block -- the open page and a table's packed rows -- on
+  // the paths that end a parse early (finalize(), the destructor). They must go before releasePageBlock() rewinds the
+  // block: the lines' bytes live there.
+  void dropLaidOutLines();
 };

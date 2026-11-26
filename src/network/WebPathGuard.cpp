@@ -50,3 +50,10 @@ bool isProtectedWebPath(const String& path, const ProtectedPaths::Target target,
   return ProtectedPaths::isProtectedPath(std::string_view(path.c_str(), path.length()), target, allowHidden,
                                          spelledByAlias);
 }
+
+// ProtectedPaths::isProtectedPluginPath(): every rule but the two about dot names, which a token file such as
+// /.crosspoint/.readest-token.json would otherwise fail, and never the host approvals.
+bool isProtectedPluginFile(const String& path) {
+  return path.isEmpty() || path == "/" || path.endsWith("/") ||
+         ProtectedPaths::isProtectedPluginPath(std::string_view(path.c_str(), path.length()), spelledByAlias);
+}

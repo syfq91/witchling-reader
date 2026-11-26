@@ -15,19 +15,20 @@
 #include <algorithm>
 #include <cstdlib>
 
+#include "BookRelocation.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "FinishedBookActivity.h"
+#include "KOReaderDocumentId.h"
 #include "MappedInputManager.h"
-#include "OpdsProgressionSyncActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
+#include "ReadingSessionTracker.h"
 #include "RecentBooksStore.h"
 #include "SerialTestApi.h"
 #include "XtcReaderChapterSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "network/OpdsProgressionSync.h"
 
 void XtcReaderActivity::onEnter() {
   Activity::onEnter();
@@ -51,6 +52,14 @@ void XtcReaderActivity::onEnter() {
   RECENT_BOOKS.addBook(xtc->getPath(), xtc->getTitle(), xtc->getAuthor(), "",
                        ReaderActivity::coverThumbPlaceholder(xtc->getPath()));
 
+  // Start the reading-stats session. XTC has real title/author from the
+  // file header so the per-book screen will look nicer than TXT/MD. A device test's book is no history
+  // (SerialTestApi::isTestBook).
+  if (!SerialTestApi::isTestBook(xtc->getPath())) {
+    globalReadingSessionTracker().begin(KOReaderDocumentId::calculateFromFilename(xtc->getPath()), xtc->getTitle(),
+                                        xtc->getAuthor());
+  }
+
   // Trigger first update
   requestUpdate();
 }
@@ -68,11 +77,17 @@ void XtcReaderActivity::onExit() {
   if ((xtc && xtc->getBitDepth() == 2) || renderer.supportsGrayFrame()) {
     ReaderUtils::enforceExitFullRefresh(renderer);
   }
+
+  // Flush stats session before tearing down the XTC reader.
+  globalReadingSessionTracker().end();
+
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
 
-  UITheme::getInstance().getMutableTheme().onBookWillClose(xtc ? xtc->getPath() : "", nullptr, xtc.get());
+  UITheme::getInstance().getMutableTheme().onBookWillClose(xtc ? xtc->getPath() : "", nullptr, xtc.get(), nullptr);
   xtc.reset();
+  // Last, as in EpubReaderActivity::onExit().
+  BookRelocation::bookClosed();
 }
 
 bool XtcReaderActivity::openChapterSelection() {
@@ -151,7 +166,23 @@ void XtcReaderActivity::loop() {
     }
   }
 
+  // A centre-third tap, or the top-edge menu swipe, opens the chapter list -- this reader's
+  // whole overlay, and what its Confirm already does. The EPUB reader answers the same gesture
+  // with its reader menu; each reader offers the navigation it has, so the gesture means
+  // "show me where I am in the book" wherever it is made.
+  //
+  // Kept next to the page-turn zones as it is there, and for the same reason: the zones do not
+  // overlap (outer thirds vs centre), so the order is not load-bearing.
+  if (ReaderUtils::isTouchMenuGesture(renderer, mappedInput) && openChapterSelection()) return;
+
   auto [prevTriggered, nextTriggered] = ReaderUtils::detectTiltPageTurn();
+  // Touch page turns join tilt here rather than in the button event queue: both
+  // are gesture sources the queue does not carry, and both must lose to an
+  // explicit button press. Inert on non-touch boards and when the user has set
+  // touchReaderControls to Off.
+  const ReaderUtils::TouchPageTurn touchTurn = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
+  prevTriggered = prevTriggered || touchTurn.prev;
+  nextTriggered = nextTriggered || touchTurn.next;
   if (!prevTriggered && !nextTriggered) {
     if (!buttonPrevTurn && !buttonNextTurn) {
       return;
@@ -169,7 +200,7 @@ void XtcReaderActivity::loop() {
     if (nextTriggered) {
       saveProgress();
       BookFinished::launchFinishedBookFlow(*this, renderer, mappedInput, xtc->getPath(), std::string(), std::string(),
-                                           xtc->getAuthor(), xtc->getTitle());
+                                           xtc->getAuthor());
     } else {
       currentPage = xtc->getPageCount() - 1;
       requestUpdate();
@@ -180,10 +211,12 @@ void XtcReaderActivity::loop() {
   if (prevTriggered) {
     if (currentPage > 0) {
       currentPage--;
+      globalReadingSessionTracker().onPageTurn();
       requestUpdate();
     }
   } else if (nextTriggered) {
     currentPage++;
+    globalReadingSessionTracker().onPageTurn();
     requestUpdate();
   }
 }
@@ -320,6 +353,20 @@ void XtcReaderActivity::renderPage() {
   LOG_DBG("XTR", "Rendered page %lu/%lu (%u-bit)", currentPage + 1, xtc->getPageCount(), bitDepth);
 }
 
+ScreenshotInfo XtcReaderActivity::screenshotInfo() const {
+  ScreenshotInfo info;
+  if (!xtc) return info;
+  info.title = xtc->getTitle();
+  const uint32_t pageCount = xtc->getPageCount();
+  if (pageCount > 0) {
+    // currentPage == pageCount is the end-of-book screen: name the last page.
+    const uint32_t page = currentPage < pageCount ? currentPage : pageCount - 1;
+    info.page = static_cast<int>(page) + 1;
+    info.percent = xtc->calculateProgress(page);
+  }
+  return info;
+}
+
 void XtcReaderActivity::saveProgress() const {
   FsFile f;
   if (Storage.openFileForWrite("XTR", xtc->getCachePath() + "/progress.bin", f)) {
@@ -333,6 +380,7 @@ void XtcReaderActivity::saveProgress() const {
     data[4] = percent;
     f.write(data, 5);
     f.close();
+    globalReadingSessionTracker().updateProgress(percent);
   }
 }
 
@@ -418,22 +466,32 @@ void XtcReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION a
     case BA::BTN_PAGE_FORWARD:
       if (currentPage + 1 < pageCount) {
         currentPage++;
+        globalReadingSessionTracker().onPageTurn();
         requestUpdate();
       }
       break;
     case BA::BTN_PAGE_BACK:
       if (currentPage > 0) {
         currentPage--;
+        globalReadingSessionTracker().onPageTurn();
         requestUpdate();
       }
       break;
     case BA::BTN_PAGE_FORWARD_10: {
+      const uint32_t prevPage = currentPage;
       currentPage = (currentPage + 10 < pageCount) ? currentPage + 10 : pageCount - 1;
+      if (currentPage != prevPage) {
+        globalReadingSessionTracker().onPageTurn();
+      }
       requestUpdate();
       break;
     }
     case BA::BTN_PAGE_BACK_10: {
+      const uint32_t prevPage = currentPage;
       currentPage = (currentPage >= 10) ? currentPage - 10 : 0;
+      if (currentPage != prevPage) {
+        globalReadingSessionTracker().onPageTurn();
+      }
       requestUpdate();
       break;
     }
@@ -444,6 +502,7 @@ void XtcReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION a
                                      [this](const auto& ch) { return ch.startPage > currentPage; });
         if (it != chapters.end()) {
           currentPage = it->startPage;
+          globalReadingSessionTracker().onPageTurn();
           requestUpdate();
         }
       }
@@ -456,6 +515,7 @@ void XtcReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION a
 
         if (prevChapter != chapters.rend()) {
           currentPage = prevChapter->startPage;
+          globalReadingSessionTracker().onPageTurn();
           requestUpdate();
         }
       }
@@ -472,22 +532,6 @@ void XtcReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION a
     case BA::BTN_READER_BARS:
       openChapterSelection();
       break;
-    case BA::BTN_SYNC_PROGRESS: {
-      const float progress = pageCount > 0 ? static_cast<float>(currentPage) / static_cast<float>(pageCount) : 0.0f;
-      startActivityForResult(std::make_unique<OpdsProgressionSyncActivity>(renderer, mappedInput, xtc->getCachePath(),
-                                                                           progress, xtc->getTitle()),
-                             [this, pageCount](const ActivityResult& result) {
-                               if (!result.isCancelled && std::holds_alternative<OpdsProgressionResult>(result.data)) {
-                                 const auto& res = std::get<OpdsProgressionResult>(result.data);
-                                 if (res.progression >= 0.0f && pageCount > 0) {
-                                   currentPage = static_cast<uint32_t>(res.progression * pageCount);
-                                   if (currentPage >= pageCount) currentPage = pageCount - 1;
-                                 }
-                               }
-                               requestUpdate();
-                             });
-      break;
-    }
     default:
       break;
   }

@@ -15,12 +15,12 @@ truncates the file in place.
 
 | File | Written by | Version | Contents |
 |---|---|---|---|
-| `settings.json` | `JsonSettingsIO::saveSettings` | `fontSizeOrderV`: `CrossPointSettings::FONT_SIZE_ORDER_VERSION` (2); `gestureDefaultsV`: `GESTURE_DEFAULTS_VERSION` (3) | The settings. From `fontSizeOrderV` 2, `fontSize` and `txtFontSize` are point sizes; an older file is converted as it loads and saved again |
+| `settings.json` | `JsonSettingsIO::saveSettings` | `fontSizeOrderV`: `CrossPointSettings::FONT_SIZE_ORDER_VERSION` (2); `gestureDefaultsV`: `GESTURE_DEFAULTS_VERSION` (3); `buttonActionsV`: `BUTTON_ACTIONS_VERSION` (6) | The settings. From `fontSizeOrderV` 2, `fontSize` and `txtFontSize` are point sizes; an older file is converted as it loads and saved again. From `buttonActionsV` 6 the button and gesture actions (`btnShort*`, `btnDouble*`, `btnLong*`, `gest*`) are names (`src/ButtonActionNames.h`, such as `"pageForward"`), not numbers; an older file's numbers are read in its version's numbering and saved again as names. Older firmware reads a name as the row's default |
 | `state.json` | `JsonSettingsIO::saveState` | none | The open book, the sleep image, a pending KOReader sync or bookmark jump, the pack offers declined (`hyphenationOffersDeclined`, two-letter keys back to back: a hyphenation pack's language in lower case, `de`; a CJK interface pack's UI language in upper case, `ZH`; a UI language pack's capitalised, `De`), the Library tab last left (`libraryTab`) and the views of its lists (`recentBooksView`, `addedBooksView`, `authorsView`; an old `recentBooksGridView` is read to migrate) |
 | `recent-books.bin` | `RecentBooksStore` (`RecentBooksFile`) | header version 1 | The books lately opened, at most 100 (not the `recent.bin` of CrossPoint's binary settings, long gone, which a card may still carry and nothing reads): a 512 B header (`RCNT`, version, slot count, slot size), a table of 100 x 8 B entries (FNV-1a hash of the book's path, 0 when free; the sequence it was last opened in, the highest the newest) and a 1 KB slot per book (record version, metadata stamp, the lengths and bytes of path, title, author, series and cover path, CRC-32), entry i describing slot i. Written in place: a reopened book its entry, a removal its entry, a new book its slot and then its entry. A row counts when its slot's CRC holds; a path that no longer hashes to its entry puts the entry right. Grows a slot at a time |
 | `recent.json` | (older firmware) | `fontSizeOrderV` (2) | The list before `recent-books.bin`, at most 10 books, with each book's own settings before `overrides.bin`. Read once into `recent-books.bin` (its rows' settings into their books' `overrides.bin`), then deleted |
 | `wifi.json`, `opds.json`, `koreader.json` | `JsonSettingsIO::saveWifi`, `saveOpds`, `saveKOReader` | none | Credentials, obfuscated with the key of the reader that saved them, which `wifi.json` names in `lastKnownMacAddress` and the other two in `keyId`, so a card moved to another reader still decodes; `wifi.json` also keeps `arrivedFrom`, the reader it was re-keyed from when the card moved. A file without `keyId` (older firmware) gets one the first time it loads if its passwords decode to plausible text with this reader's key and `wifi.json` does not say the card came from another reader; otherwise it is left as it is, and no later save records a `keyId` until those passwords are entered again. The web file endpoints refuse them (`lib/FsHelpers/ProtectedPaths.h`) |
-| `weather_settings.json`, `weather_cache.json` | `WeatherSettingsStore`, `WeatherClient::saveCache` | none | Weather settings, and the last forecast (dropped when its `requestSignature` no longer matches the settings) |
+| `weather_settings.json`, `weather_cache.json` | `WeatherSettingsStore`, `WeatherClient::saveCache` | cache: `layout=2` in `requestSignature` | Weather settings, the location in millionths of a degree (`latitudeE6`, `longitudeE6`) and as the decimal `latitude` and `longitude` that older firmware reads (a file with only those is read as that firmware held them); and the last forecast, its numbers in `lib/Weather/WeatherUnits.h`'s integer units (dropped when its `requestSignature`, which names the layout, no longer matches the settings) |
 | `autosync.json` | `AutoSyncState::saveToFile` | none | KOReader auto-sync state |
 | `language.bin` | `I18n::saveSettings` | `SETTINGS_VERSION` (2) | `u8` version, then the UI language's code; version 1 (an enum index) is migrated. See [i18n.md](i18n.md) |
 | `global_bookmarks.bin` | `GlobalBookmarkIndex::save` | `FILE_VERSION` (1) | Every book's bookmarks, updated from its `bookmarks.bin` as that saves |
@@ -53,21 +53,27 @@ the card stays as it was. `state.json` is streamed to its file and checked again
 `koreader_syncmethod.txt` and `overrides.bin` (`BookCache::isReadingState`), and removes the rest; **Reset** removes the
 directory whole.
 
+A protected book's directory (Adobe or LCP, `lib/BookProtection/`) is enciphered: [below](#enciphered-cache-folders-cipherbin).
+Every file in it has the format given here, behind a 512-byte header, and enciphered on the card.
+
 | File | Formats | Version | Contents |
 |---|---|---|---|
+| `cipher.bin` | EPUB | `WCF1` | Only in a protected book's directory, which it marks enciphered: [below](#enciphered-cache-folders-cipherbin) |
+| `protect.bin` | EPUB | in its header | A protected book's manifest: which archive entries are encrypted, and how (`lib/BookProtection/ProtectionManifest.cpp`) |
 | `progress.bin` | all | none (told apart by length) | Where the book was left: [below](#progressbin) |
 | `bookmarks.bin` | all | `BookmarkStore::FILE_VERSION` (4) | `u8` version, `u16` count, then per bookmark `u16` spine, `u16` page, `u16` name length, the name, and what finds an EPUB page's text again after a relayout (`StarAnchor`): `u32` layout (`Section::layoutFingerprint()` of the layout the page was counted in; 0 = not known: a TXT page, or a bookmark from older firmware, which the reader anchors when its chapter is first shown complete, its page taken as counted in that layout), `u16` that layout's page count for the chapter, `u16` XPath length, the KOReader XPath of the page's first text (at most 512 bytes; longer is written as none), `u8` the section format the offset was counted under (`Section::formatVersion()`; 0 = none) and `u32` the visible-text offset of that text in the chapter. The offset finds the text with no parse while that format stands; the XPath is what the text is, resolved again under another format. Versions 3 (no offset; it never left test devices), 2 (no anchor) and 1 (no names either) still read. Replaced whole through `FileReplace`. The anchors stay out of `global_bookmarks.bin` |
 | `overrides.bin` | EPUB | `kFormatVersion` (1) in `src/BookReaderOverrides.cpp` | The settings chosen for this book alone (`BookReaderOverridesFile`): `BO`, `u8` format version, `u8` font-size numbering (`FONT_SIZE_ORDER_VERSION`), `u8` line-spacing numbering (`LINE_SPACING_ORDER_VERSION`), `u8` count, then `count` `i8` values in `BookReaderOverrides::Field` order (-1 follows the global setting), `u8` length and the SD font family's name. Fields are only appended: a reader takes the ones it knows. No file while the book follows every setting. Replaced whole through `FileReplace`; a left-over `overrides.bin.old` is read when the file is missing |
 | `details.bin` | all | `BookDetailsCache` `VERSION` (3) | What the Library's lists show: [below](#detailsbin) |
 | `thumb_*.bmp` | all | in the name | Cover thumbnails: [below](#cover-thumbnails) |
 | `cover.bmp` | all | none | The sleep screen's cover (`cover_crop.bmp` for an EPUB's cropped one) |
+| `.cover.bmp.t<n>.rows` | all | `BRC` and a version byte (`1`) | The sleep cover's 2-bit rows as `Bitmap::readNextRow()` makes them, one file per tone mapping `<n>` (`.cover_crop.bmp.t<n>.rows` beside the cropped one): [below](#sleep-picture-row-caches-rows) |
 | `book.bin` | EPUB | `BOOK_CACHE_VERSION` (19) | Metadata, spine and TOC: [below](#bookbin) |
 | `fingerprint.bin`, `toc.retry` | EPUB | none | [below](#fingerprintbin-and-tocretry) |
 | `pagelist.bin` | EPUB | none | The printed-page list: [below](#pagelistbin) |
-| `css_rules.cache`, `css_bg.bin`, `css_fonts.bin` | EPUB | `CSS_CACHE_VERSION` (34), `BACKGROUND_IMAGES_FILE_VERSION` (1) | [below](#css_rulescache-css_bgbin-and-css_fontsbin) |
+| `css_rules.cache`, `css_bg.bin`, `css_fonts.bin` | EPUB | `CSS_CACHE_VERSION` (37), `BACKGROUND_IMAGES_FILE_VERSION` (1) | [below](#css_rulescache-css_bgbin-and-css_fontsbin) |
 | `spines/<n>/<spine>_<hash>.bin` | EPUB | `SECTION_FILE_VERSION` | Laid-out pages: [`section.bin`](#sectionbin) |
-| `spines/<n>/html_<spine>.bin` | EPUB | none | The spine item's inflated XHTML, banked by its build for the footnote pass and later builds; checked against the inflated size |
-| `pages.bin` | EPUB | `kFormatVersion` (1) in `SpinePageIndex.cpp`, plus the section version and property hash | Each spine item's page count and size under one render variant (`SpinePageIndex`), to count pages across a chapter split over several files |
+| `spines/<n>/html_<spine>.bin` | EPUB | none | The spine item's inflated XHTML, banked by its build for the footnote pass and later builds, and by the next item's build for a heading file it carries (below); checked against the inflated size |
+| `pages.bin` | EPUB | `kFormatVersion` (1) in `SpinePageIndex.cpp`, plus the section version and property hash | Each spine item's page count and size under one render variant (`SpinePageIndex`), to count pages across a chapter split over several files. A carried heading file (below) is 0 pages and 0xFFFFFFFF bytes (`SpinePageIndex::kCarriedBytes`): a file of no pages to this firmware, "not recorded" to older firmware, which reads every 0-page entry so |
 | `footnotes.bin` | EPUB | `CACHE_VERSION` (4) | Inline footnote previews: [below](#footnotesbin) |
 | `images.bin`, `images.pending` | EPUB | `EpubImageManifest::VERSION` (5) | Image sizes, 12 B per image (FNV-1a 64 of its path in the EPUB, width, height), and the queue of images whose size is still to be read |
 | `img_<hash><ext>`, `<image>.1bit.pxc`, `<image>.bayer.pxc` | EPUB | `PixelCache::PXC_MAGIC` | Images extracted from the book (`<hash>` is FNV-1a 64 of the entry), and their dithered pixel caches: `u16` magic, `u16` width, `u16` height, 2-bit pixels |
@@ -94,8 +100,10 @@ CSS pass), `spines/<n>/anchors_<spine>.tmp` (a section's anchor map), `footnotes
 | `/.tmp_opds_cache.dat`, `/.tmp_opds_cover.*` | `OpdsBookBrowserActivity` | The OPDS browser's entries and the cover being shown; removed when it closes, and the cover files also when it opens (a power cut or a crash leaves them) |
 | `/sleep.bmp` | `BmpViewerActivity` | An image set as the sleep screen. A rendered one goes through `/sleep.bmp.tmp`, the old file kept as `/sleep.bmp.bak` until the swap is done |
 | `/sleep/weather.bmp` | `WeatherActivity` | The last fetched forecast as a custom sleep image, the panel's pixels in portrait as `ScreenshotUtil` writes them. Goes through `/sleep/weather.bmp.tmp` and `FileReplace` |
+| `.<image>.png.f<filter>.pxc` beside a sleep PNG | `SleepActivity` | The PNG's dithered pixels under one sleep filter: the `.pxc` layout of the book caches above, then a 12-byte stamp of the PNG it was decoded from (`SPS1`, `u32` size, `u16` FAT modify date, `u16` time; `SleepPixelCacheStamp.h`). A cache with no stamp, or with another file's, is deleted and the PNG decoded again |
+| `/sleep/.<image>.t<n>.rows`, `/.sleep/.<image>.t<n>.rows`, `/.sleep.bmp.t<n>.rows` | `SleepActivity` | A BMP sleep picture's 2-bit rows, beside it, for tone mapping `<n>` (`BitmapToneMapping`: 0 none, 1 adaptive, 2 equalize): [below](#sleep-picture-row-caches-rows). Removed when the picture is gone from `/sleep` or `/.sleep` |
 | `/crash_report.txt` | `HalSystem::checkPanic` | The last panic, written at the first boot after it: the firmware version, the panic reason, the last log lines and the stack. A watchdog reset writes one only when the panic handler ran first (`PanicReboot::isFromPanic()`). The Library's Books tab and All Files list it; New and Authors, Recent books and the next-book suggestion leave it out (`FirmwareFiles`) |
-| `/screenshots/*.bmp` | `ScreenshotUtil` | Screenshots |
+| `/screenshots/*.bmp` | `ScreenshotUtil` | Screenshots, 1-bit, upright in the orientation the reader was held in |
 | `<dictionary>.qidx`, `.sidx` | `Dictionary` | Lookup indexes beside a dictionary's `.idx` and `.syn`, `SIDECAR_VERSION` (2): [dictionary.md](dictionary.md) |
 
 ### In flash: the font area
@@ -112,6 +120,36 @@ On the X3 and X4 the 384 KB below the language slot (`FlashFontPartition::HYPH_R
 area for the hyphenation store, `WHHS`: [below](#hyphenation-packs-cphy-and-the-store-whhs). The S3 boards keep the
 whole area for fonts and read a book's pack into PSRAM. A C3 whose area has no room for the store reads the book's trie
 from its pack on the card, a page at a time.
+
+## Enciphered cache folders (`cipher.bin`)
+
+The derived files of a protected book (its extracted chapters, laid-out pages, footnotes, search snippets, pictures
+and their pixel caches, and its own fonts) would be the book in the clear beside the encrypted one. Its cache
+directory is enciphered instead (`lib/CacheCipher/CacheCipherFile.h`, `lib/BookProtection/CacheAtRest.h`, and the
+design record [design/cache-cipher.md](design/cache-cipher.md)):
+
+- `cipher.bin`, the marker: `WCF1`, then a 12-byte random salt. Not enciphered itself. The directory's key is
+  lib/CacheCipher's derivation over the salt and `sha256("cache-key:" || the device secret)`, so another reader (or a
+  computer) cannot read the files.
+- Every other file: a 512-byte header (`WCC1`, a 12-byte random nonce, zeros), then its content XORed with the
+  ChaCha20 keystream of (the directory's key, the nonce) at the content's own offset. One sector, so the content
+  starts on a sector as a plain file's does and SdFat reads and writes it in runs of whole sectors. A new nonce
+  whenever a file is written from empty. The header is not part of the file to the firmware: `HalFile` gives the
+  content's size and positions, so every format on this page, its offsets and its patches in place are unchanged. A
+  rename keeps the file readable.
+- `HalStorage` recognises the directory by its path (`.../epub_<n>/`) and its marker, for whatever opens a file in it:
+  the reader, Home, the library, the sleep screen. Without the key (a marker another reader made, a damaged one)
+  nothing in it opens, for reading or writing. A file in it without a valid header (copied in, damaged, an older
+  layout) is damaged cache: removed when it is opened, and made again like a missing one. An open the heap or the card
+  refuses (no memory for the file's cipher, a header read that fails) fails and leaves the file as it is.
+- A clear that keeps some of the directory's files (the reading state, the covers: `BookCache::clear`) keeps
+  `cipher.bin` with them, since they are enciphered under its salt. With nothing else kept it goes with the directory.
+- What hands a file to the outside (the web server's download, the serial transfers) reads it raw
+  (`HalStorage::openRaw`), enciphered as on the card. A directory listing's entries are raw handles too: their size
+  includes the header.
+- A protected book's directory made before (by an older firmware) is emptied on the book's next open or the next look
+  at it (Home, the library): the reading state and `protect.bin` are written back enciphered, everything else is made
+  again. Freed sectors keep what they held until written over.
 
 ## `book.bin`
 
@@ -228,7 +266,9 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
-One file per spine item and per set of render settings: `spines/<spine / 32>/<spine>_<hash>.bin` in the book's cache directory, `<hash>` being the render settings' property hash in eight hex digits (`Section::getSectionFilePath`, `Epub::spineCacheDir`; 32 is `Epub::SPINE_CACHE_BUCKET_SIZE`). Up to five variants per spine item are kept; past that the oldest by modification date go (`Section::evictOldVariants`). Written and read by `lib/Epub/Epub/Section.cpp`. `SECTION_FILE_VERSION` at the top of that file is bumped on every layout change, so read it there; a number quoted here would go stale within weeks. A file with another version is rejected and rebuilt.
+One file per spine item and per set of render settings: `spines/<spine / 32>/<spine>_<hash>.bin` in the book's cache directory, `<hash>` being the render settings' property hash in eight hex digits (`Section::getSectionFilePath`, `Epub::spineCacheDir`; 32 is `Epub::SPINE_CACHE_BUCKET_SIZE`). Up to five variants per spine item are kept; past that the oldest by modification date go (`Section::evictOldVariants`). Written and read by `lib/Epub/Epub/Section.cpp`.
+
+A spine item that holds only its chapter's heading (or nothing), which a converter cut off from the chapter's text (calibre's `<stem>_split_000`), is *carried* (`HeadingCarry`, `Epub::isCarriedSpine`): it has no section file and no page, and the next item's file lays its body out at the top of its first page. That file's `<hash>` is the property hash mixed with `HEADING_CARRY_LAYOUT_VERSION` (`carryingHash` in `Section.cpp`), so it never shares a name with the layout without the heading, which older firmware writes and reads; the format is the same. The carried blocks count no visible text, paragraph or list item, and record no anchor (`ChapterHtmlSlimParser::beginCarried`): the paragraph LUT below counts the item's own document. The rules for "carried" are in `lib/Epub/Epub/HeadingCarry.h`. None under a vertical request. `SECTION_FILE_VERSION` at the top of that file is bumped on every layout change, so read it there; a number quoted here would go stale within weeks. A file with another version is rejected and rebuilt.
 
 The property hash (`Section::calculatePropertyHash`) covers the header's render settings, font-size normalisation, the inline-footnote-preview setting and, when previews are on, `INLINE_FOOTNOTE_PREVIEW_LAYOUT_VERSION` (3): a change in how previews expand rebuilds only the sections that show them. It also covers the vertical-text request (`VerticalText`: 0 Automatic, 1 On) when the request is not Off. Off adds nothing, and it is the request of every book in a language that is never set vertically, so those books keep the hash they had. The reader's Paragraph Indent (`ParagraphIndent`: 0 None, 1 to 4 half an em to two ems) is covered when it is not Book's Style (5); Book's Style adds nothing, so every section laid out before the setting keeps its hash.
 
@@ -253,7 +293,7 @@ These fields are the `header::*` constants in `Section.cpp`, in file order. The 
 | ---------------------- | ------- | ----------------------------------------------------------------------- |
 | `version`              | u8      | `SECTION_FILE_VERSION`                                                  |
 | `fontId`               | s32     | Render settings: they also feed the property hash                       |
-| `lineCompression`      | float   |                                                                         |
+| `lineCompression`      | u32     | `TextScale`, 2^-20ths of 1 (a float before v131)                        |
 | `extraParagraphSpacing`| bool    |                                                                         |
 | `paragraphAlignment`   | u8      |                                                                         |
 | `viewportWidth`        | u16     |                                                                         |
@@ -276,6 +316,7 @@ These fields are the `header::*` constants in `Section.cpp`, in file order. The 
 
 - `verticalBlockExtent` is 0 on a horizontal page. On a page of a vertical-rl section it is the block extent the columns fill, the reader's viewport width, and a non-zero value is what marks the page vertical (`Page::isVertical`): the page draws in the turned frame, and its elements are positioned in that frame.
 - A line (`TextBlock::serialize`) starts with a `u16` word count, whose top bit (0x8000; a line holds at most 10,000 words) says the line has a bidi region. A flags byte follows: bit 0 the word sizes are stored, bit 1 the line has annotations (ruby, emphasis or combined words), bit 2 the line is vertical (its words run down a column), bit 3 its marks are centred (a vertical line built under the Traditional Chinese punctuation profile: 、。，． are drawn centred in their cell, not in its top-right corner), bits 4-7 the number of word fonts. Then the `u16` text size, the `u16` annotation size when bit 1 is set, and the `u16` bidi size when the word count's top bit is.
+- A scale on a line, the font-size multiplier after its word arena (`u8` alignment, `u32` multiplier, `i32` heading font ID) and each word font's in the arena (`i32` font ID, `u32` scale), is a `TextScale`: 2^-20ths of 1, so 0x100000 is 1.0. Before v130 both were floats.
 - A line with annotations writes a `u16` byte count after its text size, and its word arena ends with the annotation region: a `u16` record count, then 10-byte records (`u16 firstWord`, `u16 wordCount`, `s16 x`, `u16 width`, `u8 kind`, `u8 len`) in `firstWord` order, then the ruby texts back to back (`TextBlock.h`). Kind 1 is Ruby (`len` bytes of ruby text over the words, `x`/`width` its box), kind 2 Emphasis (`len` is the mark, no text). Kind 3 is Combine, on a vertical line only: one word set upright as one block (tate-chu-yoko, from `text-combine-upright`), `x` and `width` its one-em cell along the column, `len` 0 and no text. Ruby and Emphasis reserve the annotation band beside the column (above a horizontal line); Combine reserves no band, so a line whose only records are Combine is as wide as one without annotations. A record of any other kind fails the line's read (`TextBlock::annotationsValid`).
 - A line with a bidi region (a right-to-left line, one with right-to-left words, or one with shaped words) ends its word arena with it, after the annotation region: a `u8 parts` byte (bit 0 display forms, bit 1 logical order, bit 2 glyph forms; bits 3-7 reserved and rejected), then, with bit 0 or bit 2, a `u16` offset per word into the texts that follow (0xFFFF: the word has none) and the forms; then, with bit 1, a `u8` per word, its place in reading order. A word has one form at most, and its text stays its logical text. A display form is UTF-8, NUL-terminated: what the word is drawn as (its characters in visual order), kept only where it differs from the word's text. A glyph form is what a shaped word is drawn as, by glyph ID (writing modes step 2, decision 4): 0xFF (which no UTF-8 form starts with), a `u16` glyph count (little-endian), the glyph records, then 0x00. A record is `u16 glyph`, then a `u16` whose bit 15 says an offset follows and whose bits 0-14 are the advance in 12.4 pixels (two's complement), then `i8 dx`, `i8 dy` (whole pixels, y down) when it does: 4 bytes, or 6 with an offset (`GlyphRun.h`), in the pixels the word is drawn at. The order is kept only when it is not the stored order, and only on a line of at most 255 words. The words stay in visual order, drawn at their x. The line's read fails (`TextBlock::bidiValid`) on a region whose parts are 0 or set a bit past bit 2, whose sizes do not add up, with an offset outside the texts, texts that do not end with a NUL, a forms bit with none of its forms set, a 0xFF form without bit 2 or another without bit 0, a glyph form that is not at least one glyph's whole records followed by its 0x00 inside the texts, a glyph form on a vertical line, or an order that is not a permutation. A line without a region writes the bytes it did before v108, and one without glyph forms the bytes it did before them.
 - An image (`ImageBlock::serialize`) ends with a flags byte whose bit 0 says the image is turned, as on a vertical page. A turned image stores the size it is decoded and drawn at, upright in the reader's frame; the box it takes on the page is that size with width and height swapped (`ImageBlock::getWidth`, `getHeight`).
@@ -326,7 +367,27 @@ Two small files beside `book.bin` (`lib/Epub/Epub.cpp`).
 
 ## `css_rules.cache`, `css_bg.bin` and `css_fonts.bin`
 
-The book's compiled stylesheets, written by `CssParser` (`lib/Epub/Epub/css/`). `css_rules.cache` starts with a 14-byte header (`u8` version, `u16` rule count, `u32` selector candidates, `u32` unsupported-selector skips, `u8` flags, `u16` complex-table bytes), then the complex-rule table (compound, descendant and child selectors, which the hashed index cannot key; its layout is described at `CssParser::complexTable`), then the sorted `{hash, offset}` index, then the rule records (`u16` selector length, selector, `u16` source order, style payload). A selector declared again after other rules has a record per declaration, so rules of equal specificity can apply in stylesheet order. A selector's element names are stored folded to lowercase and its class and id names as written (since version 33, #676): XHTML class and id names are case-sensitive, as Kindle, ADE and Readest match them, and a survey of 109 books found three where folding made two rules collide (`Dial`/`dial`, `TOC`/`toc`) and none that matched a rule only through the folding. The version byte is `CssParser::CSS_CACHE_VERSION` (34); the comment above it lists what each version changed. A file with another version is deleted and the CSS compiled again, and the book's section caches go with it. It is compiled into `css_rules.compile.tmp` first.
+The book's compiled stylesheets, written by `CssParser` (`lib/Epub/Epub/css/`). `css_rules.cache` starts with a 14-byte header (`u8` version, `u16` rule count, `u32` selector candidates, `u32` unsupported-selector skips, `u8` flags, `u16` complex-table bytes), then the complex-rule table (compound, descendant and child selectors, which the hashed index cannot key; its layout is described at `CssParser::complexTable`), then the sorted `{hash, offset}` index, then the rule records (`u16` selector length, selector, `u16` source order, style payload), then the sheet table (since version 36). A length in a style payload is 16.16 fixed point (`i32`, value / 65536) and its unit byte; the font-size multiplier and the line-height are `TextScale` (`u32`, 2^-20ths of 1); all three were floats before version 37. A selector declared again after other rules, or at the start of the next stylesheet, has a record per declaration, so rules of equal specificity can apply in stylesheet order. A selector's element names are stored folded to lowercase and its class and id names as written (since version 33, #676): XHTML class and id names are case-sensitive, as Kindle, ADE and Readest match them, and a survey of 109 books found three where folding made two rules collide (`Dial`/`dial`, `TOC`/`toc`) and none that matched a rule only through the folding. The version byte is `CssParser::CSS_CACHE_VERSION` (37); the comment above it lists what each version changed. A file with another version is deleted and the CSS compiled again, and the book's section caches go with it. It is compiled into `css_rules.compile.tmp` first.
+
+The source order runs on across the book's stylesheets in the order they are compiled (the manifest's, then those found only in the archive), so each sheet owns one contiguous range of orders. The sheet table records each sheet's range and the sheets its `@import` rules name (`CssParser::sheetRanges`, `CssParser::sheetImports`), so that a chapter resolves against only the sheets its head links and what those import (`CssParser::scopeToSheets`; why, and when every sheet still applies: [design/stylesheet-scope.md](design/stylesheet-scope.md)). It is written last, after the index is patched, so a file that ends in a valid table is complete; one that does not is deleted when it is loaded, and the CSS compiled again. It is read with the index, onto the heap (8 B a sheet and an import). A path is hashed (`CssParser::sheetPathHash`, FNV-1a) as the book compiles it: unescaped and normalised, an import's url joined to its sheet's folder. A reader finds the table from the file's last two bytes:
+
+```text
+u8  sheetCount          at most MAX_SHEETS (64); 0: every stylesheet applies to every chapter
+u8  importCount         at most MAX_SHEET_IMPORTS (128)
+sheetCount x {
+    u32 pathHash        CssParser::sheetPathHash of the sheet's path; 0 (kFoldedSheets) for the last range of a book
+                        with more sheets, which takes in its 64th sheet and every later one and applies to every chapter
+    u16 firstOrder      its rules' orders: firstOrder <= order < endOrder; each range starts where the one before ends
+    u16 endOrder
+}
+importCount x {
+    u8  importer        the importing sheet's index above
+    u32 importedHash    sheetPathHash of the path its @import names
+}
+u16 tableBytes          2 + 8 x sheetCount + 5 x importCount
+```
+
+Only the `@import` rules before a sheet's first rule, block or other at-rule (`@charset` and `@layer` statements aside) count, and only those that name a file in the book. Past 128 imports, when the source orders run out or when the compile has no heap for the table, it is written empty.
 
 `css_bg.bin` sits beside it and holds the CSS background pictures (`CssParser::backgroundImageFor`): the `no-repeat` `background-image` of each rule that sets one. Absent when the book has none.
 
@@ -342,7 +403,7 @@ count x {
 `css_fonts.bin` holds the book's `@font-face` rules (`CssParser::loadFontFaces`, read one at a time by `CssParser::nextFontFace`), in source order, for its embedded fonts: at most `MAX_FONT_FACES` (32). Absent when the book declares none.
 
 ```text
-u8  version             CSS_CACHE_VERSION (34)
+u8  version             CSS_CACHE_VERSION (37)
 then, to the end of the file, one record per face {
     u16 weight          font-weight, 100-900 (normal 400, bold 700)
     u8  italic          1 when font-style is not normal
@@ -729,3 +790,26 @@ subtable bytes. A face uses it only when every count and first-subtable index ma
   the block's made from it), and its room holds what the install would write there: the table is made again from the
   flash's copy of the tables and compared a half buffer at a time. A `CPac` torn by a power cut (the header is written
   after every block) does not match, and the block is erased and written again.
+
+## Sleep picture row caches (`.rows`)
+
+A sleep picture on a four-level panel is drawn once per plane, and each draw decoded and dithered the whole BMP. The
+first draw now records the rows `Bitmap::readNextRow()` makes into a file beside the BMP (`BitmapRowCache`,
+`lib/GfxRenderer/BitmapRowCache.h`), and every later draw, on this sleep and the next ones, reads them back. A
+1-bit picture (its own fast path reads no rows) and the panels that take more than four levels (they read 8-bit samples)
+do not use one.
+
+| Offset | Size | Contents |
+|---|---|---|
+| 0 | 4 | `BRC` and the layout's version (`1`) |
+| 4 | 4 | `u32` rendition fingerprint, `Bitmap::renditionFingerprint()`: CRC-32 over `RENDITION_VERSION`; the BMP's first cluster, size and modification time; whether a ditherer works; what the tone curve, `adjustPixel()` and the undithered quantiser make of each luminance; the panel's gray-4 table; the BMP's headers and palette and one 512-byte sector from each 32nd of its pixels |
+| 8 | 6 | `u16` width, height and bytes per row (`(width + 3) / 4`) |
+| 14 | 2 | 0 |
+| 16 | height x bytes per row | the rows in file order (bottom-up for an ordinary BMP), 2 bits a pixel, MSB first |
+
+A file whose header or size does not match is removed and recorded again. A recording goes to `<name>.part` and is
+renamed when every row is in it; a pass that stopped early (rows past the screen's edge) has the rest decoded first,
+and a read error while recording drops it. Bump `RENDITION_VERSION` in `Bitmap.cpp` when a ditherer makes other rows
+of the same inputs. The file is named after the tone mapping, the one input the sleep filter changes in the rows, so
+the plain and the 1-bit filters share one. `collectSleepImages()` removes the caches in `/sleep` and `/.sleep` whose
+picture is gone; a book's cover caches go with its cache folder.

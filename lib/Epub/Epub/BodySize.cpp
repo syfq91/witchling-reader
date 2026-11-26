@@ -153,11 +153,11 @@ Detected detect(const Epub& epub, GfxRenderer& renderer, const int fontId, Build
       // Font Size (so text within it of the body counts as body text, as it is set), images suppressed (no header is
       // read, an image's block is reset as a placed one's is), no page sizes needed. The metrics serve nothing here.
       auto parser = makeUniqueNoThrow<ChapterHtmlSlimParser>(
-          std::shared_ptr<Epub>(), renderer, fontId, /*lineCompression=*/1.0f, /*extraParagraphSpacing=*/false,
+          std::shared_ptr<Epub>(), renderer, fontId, /*lineCompression=*/TextScale(), /*extraParagraphSpacing=*/false,
           /*paragraphAlignment=*/0, /*viewportWidth=*/480, /*viewportHeight=*/800, /*hyphenationEnabled=*/false,
           /*fontSizeNormalization=*/true, /*bionicReadingEnabled=*/false, [](std::unique_ptr<Page>) { return true; },
           /*embeddedStyle=*/true, /*contentBase=*/std::string(),
-          /*imageBasePath=*/std::string(), /*imageRendering=*/2, std::vector<std::string>(), nullptr, css, nullptr);
+          /*imageBasePath=*/std::string(), /*imageRendering=*/2, std::string_view(), nullptr, css, nullptr);
       if (!parser) {
         LOG_ERR("BSZ", "OOM: parser");
       } else {

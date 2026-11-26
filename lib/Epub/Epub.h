@@ -16,6 +16,7 @@
 
 #include "Epub/BookMetadataCache.h"
 #include "Epub/EpubImageManifest.h"
+#include "Epub/ProgressPpb.h"
 #include "Epub/ThumbResult.h"
 #include "Epub/TocReliability.h"
 #include "Epub/css/CssParser.h"
@@ -23,7 +24,6 @@
 class ZipFile;
 class BuildArena;         // lib/Memory — optional scratch for the extraction inflate ring
 class CoverThumbSession;  // Epub/CoverThumbSession.h
-
 enum class OpfCacheMode { Disabled, Enabled };
 
 class Epub {
@@ -125,6 +125,19 @@ class Epub {
   mutable int tocForSpineMemoToc_ = -1;
   mutable int tocEntryMemoIndex_ = -1;
   mutable BookMetadataCache::TocEntry tocEntryMemo_;
+  // isCarriedSpine's last answers. A section load asks about its own spine and the one before it, and the reader
+  // asks again as it enters, steps over or looks ahead of a spine item: a few spines at a time, never the book.
+  struct CarryMemo {
+    int spine = -1;
+    bool carried = false;
+    // A layout took it while the file could not be read (carriedSpineForLayout): it stands for the session, and a
+    // later answer takes another slot while one is free.
+    bool settled = false;
+  };
+  mutable CarryMemo carryMemo_[4];
+  mutable uint8_t carryMemoNext_ = 0;
+  // isCarriedSpine and carriedSpineForLayout: the memo's answer, or HeadingCarry::decide's, remembered.
+  bool carryVerdict(int spine, BuildArena* scratch, bool forLayout) const;
   void forgetMetadataMemos() const;
   // The stat of the entry at the normalised `path`, from the memo or one lookup.
   bool lookupItemStat(ZipFile& zip, const std::string& path, ZipFile::FileStatSlim* out) const;
@@ -147,6 +160,9 @@ class Epub {
   // Compute (once) the ZIP content fingerprint. False when the archive is
   // unreadable — callers then skip fingerprint-based invalidation entirely.
   bool computeZipFingerprint(uint64_t* out) const;
+  // Both generateThumbBmp() overloads: the thumbnail at `thumbPath`, at most `width` x `height`.
+  ThumbResult generateThumbAt(const std::string& thumbPath, int width, int height, bool allowExtract,
+                              BuildArena* scratch, bool crop) const;
   // fingerprint.bin sidecar in the cache dir: the fingerprint the cache was
   // built from. The cache key is path-derived (see the constructor), so this is
   // what detects a different book dropped onto the same path.
@@ -378,7 +394,9 @@ class Epub {
   // come back later than have the ring on the heap now.
   bool extractItemToFile(const std::string& itemHref, const std::string& destPath, BuildArena* arena = nullptr,
                          bool heapRetry = true) const;
-  bool getItemSize(const std::string& itemHref, size_t* size) const;
+  // `exact`, when given: false when the size is the estimate ZipFile gives for an encrypted entry
+  // whose manifest names none (ZipFile::hasExactSize); a caller comparing sizes checks it.
+  bool getItemSize(const std::string& itemHref, size_t* size, bool* exact = nullptr) const;
   // Byte range of an item's raw data inside the EPUB, valid ONLY when the ZIP stores that entry
   // uncompressed (method 0). Lets a decoder read the entry in place instead of extracting it to
   // SD first -- worth ~3.4 s on an 857 KB cover, which is pure copying at ~255 KB/s.
@@ -408,6 +426,16 @@ class Epub {
   int getTocItemsCount() const;
   int getSpineIndexForTocIndex(int tocIndex) const;
   int getTocIndexForSpineIndex(int spineIndex) const;
+  // True when spine item `spine` holds only its chapter's heading (or nothing), which the next item's layout takes in
+  // at the top of its first page, so it has no page of its own (HeadingCarry). False too while that cannot be told (a
+  // file it must read could not be): the answer is not remembered then, and the next call asks again.
+  // `scratch`: a region the scan may take its inflate ring from (a build's lent one), else the heap (HeadingCarry).
+  bool isCarriedSpine(int spine, BuildArena* scratch = nullptr) const;
+  // The answer a layout takes (Section::carriedAwayOf, carriesPreviousOf): isCarriedSpine's, except that one that
+  // cannot be told is remembered as not carried for the rest of the session. The heading file's own layout and the next
+  // file's then agree whatever the heap does between the two questions: asked again once the heap was back, a heading
+  // file laid out on a page of its own was taken into the next file's first page too, and showed twice (#822).
+  bool carriedSpineForLayout(int spine, BuildArena* scratch = nullptr) const;
   bool hasReliableToc() const;
   void setSyntheticTocFallbackEnabled(bool enabled) { syntheticTocFallbackEnabled = enabled; }
   size_t getCumulativeSpineItemSize(int spineIndex) const;
@@ -416,6 +444,10 @@ class Epub {
   int getLargestSpineIndex() const;
 
   size_t getBookSize() const;
+  // How far through the book a point `inSpine` of the way through spine item `currentSpineIndex` lies, weighed by
+  // the items' inflated bytes.
+  ProgressPpb calculateProgress(int currentSpineIndex, ProgressPpb inSpine) const;
+  // Fork: float progress for the chapter-marker status bar.
   float calculateProgress(int currentSpineIndex, float currentSpineRead) const;
   const std::vector<float>& getChapterProgressMarkers() const;
   CssParser* getCssParser() const { return cssParser.get(); }

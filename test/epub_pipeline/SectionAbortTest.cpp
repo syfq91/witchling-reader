@@ -41,7 +41,7 @@ std::string freshCacheDir(const std::string& tag) {
 Section::BuildParams defaultParams() {
   Section::BuildParams p;
   p.fontId = 0;
-  p.lineCompression = 1.0f;
+  p.lineCompression = TextScale();
   p.extraParagraphSpacing = false;
   p.paragraphAlignment = 0;
   p.viewportWidth = 480;
@@ -157,4 +157,53 @@ TEST(SectionAbort, ABuildThatMeasuredAGlyphWithoutMemoryIsNotKept) {
   ASSERT_TRUE(section.createSectionFile(defaultParams(), {}, /*skipEviction=*/true));
   EXPECT_TRUE(section.loadSectionFile(defaultParams()));
   EXPECT_GT(section.pageCount, 0);
+}
+
+// An aborted build must close the anchor spill before it removes it. The parser's spill writer flushes its buffer when
+// it is destroyed, which is after abortSectionBuild() has already run; on SdFat a flush into a removed file writes
+// through a freed cluster chain (cluster 0 when the tail crosses a cluster boundary, i.e. below the data region).
+TEST(SectionAbort, AnAbortedBuildDoesNotRemoveTheAnchorSpillWhileItIsStillOpen) {
+  // The shim records open paths only while a test asks (HalFile::trackOpenPaths); off again however this test ends.
+  struct TrackOpenPaths {
+    TrackOpenPaths() { HalFile::trackOpenPaths = true; }
+    ~TrackOpenPaths() {
+      HalFile::trackOpenPaths = false;
+      HalFile::openPaths.clear();
+      HalFile::removedWhileOpen.clear();
+    }
+  } const tracking;
+  const std::string cacheDir = freshCacheDir("spill_removed_after_close");
+  const std::string epubPath = std::string(CORPUS_DIR) + "/test_tables.epub";
+
+  GfxRenderer renderer;
+  auto epub = std::make_shared<Epub>(epubPath, cacheDir);
+  ASSERT_TRUE(epub->load(true));
+
+  Section section(epub, kSpineIndex, renderer);
+  const Section::BuildParams p = defaultParams();
+  // Section::getAnchorSpillPath() is private; this is its definition.
+  const std::string spill =
+      Epub::spineCacheDir(epub->getCachePath(), kSpineIndex) + "/anchors_" + std::to_string(kSpineIndex) + ".tmp";
+
+  const host_clock::Ticking tick(1);
+
+  bool spillOpen = false;
+  for (int i = 0; i < 20000; ++i) {
+    const Section::BuildStep step = section.stepSectionBuild(p, /*budgetMs=*/1);
+    if (section.hasActiveBuild() && HalFile::isOpenPath(spill)) {
+      spillOpen = true;
+      break;
+    }
+    if (step == Section::BuildStep::Done || step == Section::BuildStep::Failed) break;
+  }
+  ASSERT_TRUE(spillOpen) << "the build never held the anchor spill open mid-parse; the abort path under test was "
+                            "never entered";
+
+  HalFile::removedWhileOpen.clear();
+  section.abortSectionBuild();
+
+  EXPECT_FALSE(fs::exists(spill)) << "an aborted build must not leave its spill on the card";
+  for (const auto& path : HalFile::removedWhileOpen) {
+    ADD_FAILURE() << "removed while a handle still held it open: " << path;
+  }
 }

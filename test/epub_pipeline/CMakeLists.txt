@@ -7,10 +7,12 @@ enable_language(C)
 set(PIPELINE_SOURCES
   PipelineRunner.cpp
   LoggingImpl.cpp
+  BookProtectionStub.cpp
   # lib/Epub — the code under test
   ${REPO_ROOT}/lib/Epub/Epub.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
   ${REPO_ROOT}/lib/Epub/Epub/SpinePageIndex.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/HeadingCarry.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Page.cpp
   ${REPO_ROOT}/lib/Epub/Epub/CjkLineBreak.cpp
   ${REPO_ROOT}/lib/Epub/Epub/CjkPunctuation.cpp
@@ -57,7 +59,9 @@ set(PIPELINE_SOURCES
   ${REPO_ROOT}/lib/CooperativeAbort/CooperativeAbort.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/lib/GfxRenderer/Bitmap.cpp
+  ${REPO_ROOT}/lib/GfxRenderer/BitmapRowCache.cpp
   ${REPO_ROOT}/lib/GfxRenderer/BitmapHelpers.cpp
+  ${REPO_ROOT}/lib/ImageToBmp/ImageToBmp.cpp
   ${REPO_ROOT}/lib/JpegToBmpConverter/JpegToBmpConverter.cpp
   ${REPO_ROOT}/lib/ProgressiveJpeg/ProgressiveJpeg.cpp
   ${REPO_ROOT}/lib/PngToBmpConverter/PngToBmpConverter.cpp
@@ -87,10 +91,12 @@ set(PIPELINE_INCLUDES
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/lib/ZipFile
+  ${REPO_ROOT}/lib/BookProtection  # BookSession.h, ProtectionManifest.h: BookProtectionStub.cpp
   ${REPO_ROOT}/lib/InflateReader
   ${REPO_ROOT}/lib/uzlib/src
   ${REPO_ROOT}/lib/FsHelpers
   ${REPO_ROOT}/lib/CooperativeAbort
+  ${REPO_ROOT}/lib/ImageToBmp
   ${REPO_ROOT}/lib/JpegToBmpConverter
   ${REPO_ROOT}/lib/PngToBmpConverter
   ${REPO_ROOT}/lib/PngDecoder
@@ -120,6 +126,7 @@ add_executable(EpubPipelineTest
   SpinePageIndexTest.cpp
   FootnotePreviewStoreTest.cpp
   FootnoteResolveSliceTest.cpp
+  FootnoteNoteCaptureTest.cpp
   ParagraphAnchorTest.cpp
   SavedPositionRestoreTest.cpp
   KeptReadingStateTest.cpp
@@ -133,6 +140,8 @@ add_executable(EpubPipelineTest
   TableCellTextHeapTest.cpp
   BlockImageHeapTest.cpp
   PageHeapTest.cpp
+  StackHeapTest.cpp
+  SectionSetupHeapTest.cpp
   TableRowFallbackArenaTest.cpp
   AnchorMapTest.cpp
   AnchorPageAccuracyTest.cpp
@@ -159,6 +168,10 @@ add_executable(EpubPipelineTest
   LayoutGapsInteractionTest.cpp
   FontFamilyLayoutTest.cpp
   SpineCacheLayoutTest.cpp
+  CacheFileIdentityTest.cpp
+  HeadingCarryTest.cpp
+  CarriedDocumentTest.cpp
+  HeadingJoinTest.cpp
   SaxStateInArenaTest.cpp
   OwnedBuildRegionTest.cpp
   JpegDownscaleTest.cpp
@@ -190,11 +203,16 @@ add_executable(EpubPipelineTest
   CoverFallbackTest.cpp
   VisibleTextTest.cpp
   BookFontsTest.cpp
+  CssSheetRangesTest.cpp
   BodySizeTest.cpp
   FirstOpenIndexingTest.cpp
   FirstChapterTest.cpp
   TocPassTest.cpp
   BoxLayoutTest.cpp
+  LentBuildTeardownTest.cpp
+  LentTableLayoutTest.cpp
+  GridTablePageFlowTest.cpp
+  PageLineArenaTest.cpp
   # A book's embedded body font (Publisher Fonts): the probe and the extraction. Its SHA-1 comes from
   # test/shims/wolfssl, standing in for wolfCrypt.
   ${REPO_ROOT}/lib/Epub/Epub/BookFonts.cpp
@@ -224,14 +242,28 @@ target_compile_definitions(EpubPipelineTest PRIVATE
   # LongChapterPageTablesTest refuses build-table chunks on purpose (see ChunkedVector.h). The
   # hook is inert until a test arms it; firmware and the dump tools never define it.
   CHUNKED_VECTOR_FAULT_INJECTION
-  # TableCellTextHeapTest refuses table cells their text (ChapterHtmlSlimParser::makeCellText). Inert otherwise.
+  # TableCellTextHeapTest refuses table cells their text (ChapterHtmlSlimParser::makeCellText), a grid row its line lists,
+  # and a table's row, cell-list and fragment growth (reserveRowCell, layoutTableRow, reservePackerRows,
+  # flushTableFragment). Inert otherwise.
   TABLE_CELL_FAULT_INJECTION
   # BlockImageHeapTest refuses block images their ImageBlock (ChapterHtmlSlimParser::placeImageWithBlockSpacing).
   BLOCK_IMAGE_FAULT_INJECTION
   # PageHeapTest refuses the build its pages (ChapterHtmlSlimParser::ensurePage). Inert otherwise.
   PAGE_FAULT_INJECTION
+  # SectionSetupHeapTest refuses the build's setup its parser and its TOC anchor pool (Section::runBuildSetup). Inert otherwise.
+  SECTION_SETUP_FAULT_INJECTION
+  # PageHeapTest refuses a page its n-th element (ChapterHtmlSlimParser::addPageElement). Inert otherwise.
+  ELEMENT_FAULT_INJECTION
+  # StackHeapTest refuses the n-th push onto a per-element stack (ChapterHtmlSlimParser::pushOrStop). Inert otherwise.
+  STACK_FAULT_INJECTION
+  # CssSheetRangesTest refuses the stylesheet table its heap block, at a load or in the compile (CssParser.h). Inert
+  # otherwise.
+  CSS_SHEET_TABLE_FAULT_INJECTION
   # Central-directory walk counters (ZipFile.h), for the tests that bound them. Inert otherwise.
   ZIP_FILE_SCAN_STATS
+  # A rewound build-arena block is filled (BuildArena.h), so a line or page used or destroyed after its block was given
+  # back fails here. The trace hooks it also compiles in stay null.
+  BUILD_ARENA_TRACE=1
 )
 target_link_libraries(EpubPipelineTest PRIVATE
   crosspoint_test_common
@@ -308,3 +340,44 @@ target_link_libraries(epub_pipeline_dump_noheap PRIVATE
   crosspoint_test_common
   SaxParser
 )
+
+# A protected book through the whole pipeline: the real lib/BookProtection in place of
+# BookProtectionStub.cpp, OpenSSL standing in for the chip's AES and wolfCrypt
+# (test/book_protection/shims), and protected/HalClock.h for the loan clock. Skipped without OpenSSL.
+find_package(OpenSSL)
+if(OPENSSL_FOUND)
+  set(PROTECTED_PIPELINE_SOURCES ${PIPELINE_SOURCES})
+  list(REMOVE_ITEM PROTECTED_PIPELINE_SOURCES BookProtectionStub.cpp)
+  add_executable(EpubProtectedPipelineTest
+    ProtectedBookPipelineTest.cpp
+    HeapTrackStub.cpp
+    ${REPO_ROOT}/lib/BookProtection/AesCbcCipher.cpp
+    ${REPO_ROOT}/lib/BookProtection/BookKey.cpp
+    ${REPO_ROOT}/lib/BookProtection/BookSession.cpp
+    ${REPO_ROOT}/lib/BookProtection/CacheAtRest.cpp
+    ${REPO_ROOT}/lib/BookProtection/EncryptionXmlParser.cpp
+    ${REPO_ROOT}/lib/BookProtection/ProtectionManifest.cpp
+    ${REPO_ROOT}/lib/DeviceSecret/DeviceSecret.cpp
+    ${PROTECTED_PIPELINE_SOURCES}
+  )
+  target_include_directories(EpubProtectedPipelineTest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/protected
+    ${REPO_ROOT}/test/book_protection/shims
+    ${REPO_ROOT}/test/book_protection
+    ${PIPELINE_INCLUDES}
+    ${REPO_ROOT}/lib/DeviceSecret
+  )
+  target_compile_definitions(EpubProtectedPipelineTest PRIVATE
+    CORPUS_DIR="${REPO_ROOT}/test/epubs"
+    FIXTURE_EPUB="${REPO_ROOT}/test/fixtures/moby-dick.epub"
+    ENABLE_SERIAL_LOG=1
+    LOG_LEVEL=2
+  )
+  target_link_libraries(EpubProtectedPipelineTest PRIVATE
+    crosspoint_test_common
+    SaxParser
+    OpenSSL::Crypto
+    GTest::gtest_main
+  )
+  gtest_discover_tests(EpubProtectedPipelineTest PROPERTIES TIMEOUT 300)
+endif()

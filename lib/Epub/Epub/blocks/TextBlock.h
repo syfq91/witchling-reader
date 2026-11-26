@@ -5,11 +5,18 @@
 
 #include <cstdint>
 #include <memory>
+#include <new>  // std::destroying_delete_t
 #include <string>
 #include <string_view>
 #include <vector>
 
 class BuildArena;  // lib/Memory -- optional page-scoped storage for the arena bytes
+#ifdef BUILD_ARENA_TRACE
+#include <BuildArena.h>  // the rewind fill a destroyed line checks its bytes against
+
+#include <cstdio>
+#include <cstdlib>
+#endif
 namespace serialization {
 class BufferedFileWriter;  // lib/Serialization -- where a block writes itself
 class BufferedFileReader;  // and where it reads itself back
@@ -98,7 +105,7 @@ class BufferedFileReader;  // and where it reads itself back
 // right-aligned. Nothing here is lost: the dropped fields remain in BlockStyle
 // and on disk, so widening this struct later is a local change.
 struct RenderStyle {
-  float fontSizeMultiplier = 1.0f;
+  TextScale fontSizeMultiplier;
   int32_t headingFontId = 0;  // 0 = body font scaled by fontSizeMultiplier
   CssTextAlign alignment = CssTextAlign::Justify;
 };
@@ -120,7 +127,7 @@ class TextBlock final : public Block {
   // crosspoint-reader PR #3934 (Justin Mitchell): its MAX_WORD_FONTS table and slot per word.
   struct WordFont {
     int32_t fontId = 0;  // a full 32-bit font ID; 0: the block's own font
-    float scale = 1.0f;
+    TextScale scale;
   };
   static constexpr uint8_t kMaxWordFonts = 8;
   // A word's size as layout keeps it: its inline font-size percent of the block's size, and its font slot, an index
@@ -143,6 +150,7 @@ class TextBlock final : public Block {
     uint8_t mark = 0;       // an emphasis run's mark; 0 for ruby
     std::string_view text;  // the ruby, at most kMaxAnnotationText bytes; empty for emphasis
   };
+  struct ArenaRoom;  // what a page's lines may take from their arena; see make()
 
  private:
   RenderStyle renderStyle;
@@ -151,13 +159,16 @@ class TextBlock final : public Block {
   bool sizesPresent = false;
   bool isValid = true;
   uint8_t wordFontCount = 0;  // the line's word fonts (see WordFont); 0 on a line in the block's font alone
-  // Four bits in the struct's pad byte: a line of a vertical-rl page (see setVertical), whether its 、。 are centred,
-  // whether it has a Ruby or Emphasis record (it reserves the band above its base), and whether the arena is ours to
-  // free (see arena).
+  // Six bits in the struct's pad byte: a line of a vertical-rl page (see setVertical), whether its 、。 are centred,
+  // whether it has a Ruby or Emphasis record (it reserves the band above its base), whether the arena is ours to
+  // free (see arena), whether the object itself was built in a build arena (make, operator delete), and whether the
+  // PageLine that holds it was (setHolderInArena).
   bool vertical_ : 1 = false;
   bool centredMarks_ : 1 = false;
   bool annotationBand_ : 1 = false;
   bool arenaOwned_ : 1 = false;
+  bool objectInArena_ : 1 = false;
+  bool holderInArena_ : 1 = false;
   // The ONLY allocation. Heap by default (nothrow, so OOM yields an invalid block instead of
   // abort() -- bare new is not nothrow with -fno-exceptions). A section build that lends a
   // scratch region (the borrowed secondary framebuffer) hands it in through the range
@@ -175,8 +186,11 @@ class TextBlock final : public Block {
   static constexpr uint8_t kGlyphFormLead = 0xFF;   // a glyph form's first byte, which no UTF-8 form starts with
   static constexpr uint16_t kNoDisplayForm = 0xFFFF;
   static constexpr uint16_t kBidiWordCountBit = 0x8000;
-  // Takes the arena bytes from `scratch` when given and it has room, else the heap. False on OOM.
-  bool allocArena(size_t size, BuildArena* scratch);
+  // Takes the arena bytes from `scratch` when given and it has room, as `room` allows (see ArenaRoom; null: any room),
+  // else the heap (new (std::nothrow)). False on OOM.
+  bool allocArena(size_t size, BuildArena* scratch, ArenaRoom* room = nullptr);
+  // Whether `arena` can hand out `bytes` at `align` and still have `keepFree` free after them, whatever the padding.
+  static bool roomKeepsFree(const BuildArena& arena, size_t bytes, size_t align, size_t keepFree);
   // Typed views into the arena, bound once after the arena is filled. All
   // 16-bit bases sit at even offsets, so direct dereference is alignment-safe.
   const uint16_t* textOffArr = nullptr;
@@ -219,10 +233,10 @@ class TextBlock final : public Block {
 
   // Effective render scale of word i: its font's scale (a word font's own, else the block multiplier) x the word's
   // size percent.
-  float wordScale(const uint16_t i) const {
+  TextScale wordScale(const uint16_t i) const {
     const WordFont* font = wordFont(i);
-    const float base = font ? font->scale : renderStyle.fontSizeMultiplier;
-    return sizesPresent ? base * (sizesArr[i] / 100.0f) : base;
+    const TextScale base = font ? font->scale : renderStyle.fontSizeMultiplier;
+    return sizesPresent ? base * TextScale::percent(sizesArr[i]) : base;
   }
   // The font word i is drawn in: its word font's, else the block's (`blockFontId`).
   int wordFontId(const uint16_t i, const int blockFontId) const {
@@ -291,14 +305,72 @@ class TextBlock final : public Block {
   // by-value forced the caller to hand over a vector it had just built, which meant one heap
   // allocation per rendered LINE for pure scratch. See ParsedText::extractLine.
   // `scratch`: see the arena member. Null (the default, and the reader-side deserialize path)
-  // means the heap.
+  // means the heap. `room`: what the page's lines may take from `scratch` (see ArenaRoom); null: any room.
   TextBlock(const WordRange& range, const std::vector<int16_t>& word_xpos, const BlockStyle& blockStyle,
-            BuildArena* scratch = nullptr);
+            BuildArena* scratch = nullptr, ArenaRoom* room = nullptr);
   ~TextBlock() override {
+#ifdef BUILD_ARENA_TRACE
+    // Host only: bytes taken from a build arena that read its rewind fill were given back before this line died.
+    if (!arenaOwned_ && buildArenaLooksRewound(arena, arenaBytes())) {
+      std::fprintf(stderr, "TextBlock destroyed after its arena block was rewound\n");
+      std::abort();
+    }
+#endif
     if (arenaOwned_) delete[] arena;
   }
   TextBlock(const TextBlock&) = delete;
   TextBlock& operator=(const TextBlock&) = delete;
+
+  // What the lines of one page may take from their arena (memory-and-parsing 9b), held by the one who lays the page out
+  // and handed to make() for each of its lines:
+  //  - a line's object goes into the arena only while `keepFree` bytes stay free after it, else the heap;
+  //  - while the page's objects there have taken room the page's line bytes have not given back (`displaced`), line
+  //    bytes that would leave less than `keepFree` free go to the heap, one block, and give that much back;
+  //  - with nothing displaced, the bytes take any room, as before 9b.
+  // The page's owner clears `displaced` when the page's block is new, and restores it, when a block inside the page is
+  // released (a grid row laid out again or refused), to what it was when that block opened. With that, on a page
+  // whose blocks only grow or are released that way, the page's lines take more of the arena than they did before 9b
+  // only while `keepFree` stays free: the room `keepFree` holds for (the image walk's stage, ChapterHtmlSlimParser) is
+  // there wherever it was before 9b. One exception: bytes the heap refuses while giving back take the arena as before
+  // 9b (allocArena), and the room is short of that by what is still displaced until later bytes give it back.
+  // SIZE_MAX for `keepFree`: no object goes into the arena.
+  struct ArenaRoom {
+    size_t keepFree = SIZE_MAX;
+    size_t displaced = 0;
+    // Where an object of the page goes in `arena` under the first rule above: `bytes` at `align` while `keepFree`
+    // stays free after them, counted in `displaced` with their padding. Null otherwise, and the object takes the heap.
+    // The one place the rule is applied, for every kind of object a page puts there.
+    void* placeObject(BuildArena& arena, size_t bytes, size_t align);
+  };
+  // A laid-out line, the object where its bytes go: in `arena` as `room` allows, else on the heap
+  // (new (std::nothrow), as before). Null `room`: the object on the heap, the bytes in `arena` while it has room. An
+  // object built in the arena lives in the caller's block of it and must be destroyed before that block is rewound;
+  // its bytes, wherever they are, go with it. Null when the heap refuses the object; check valid() as for the
+  // constructor.
+  static std::unique_ptr<TextBlock> make(const WordRange& range, const std::vector<int16_t>& word_xpos,
+                                         const BlockStyle& blockStyle, BuildArena* arena, ArenaRoom* room);
+  // Every delete of a TextBlock comes here (a C++20 destroying operator delete, so std::unique_ptr<TextBlock> stays the
+  // type everywhere): it runs the destructor, and gives the memory back to the heap only when the heap made the object
+  // (new (std::nothrow)); an arena's goes with its block's rewind. Defined in the class: out of line, GCC 16 takes the
+  // heap path's call for a mismatch with the nothrow new (-Wmismatched-new-delete, a false positive).
+  static void operator delete(TextBlock* const block, std::destroying_delete_t) {
+#ifdef BUILD_ARENA_TRACE
+    // Host only: an object whose own bytes read the rewind fill was destroyed after the arena block it lives in.
+    if (buildArenaLooksRewound(block, sizeof(TextBlock))) {
+      std::fprintf(stderr, "TextBlock destroyed after the arena block it was built in was rewound\n");
+      std::abort();
+    }
+#endif
+    const bool inArena = block->objectInArena_;
+    block->~TextBlock();
+    if (!inArena) ::operator delete(block);
+  }
+  bool objectInArena() const { return objectInArena_; }
+  // The PageLine that holds this line keeps here whether it was built in a build arena (PageLine::make,
+  // PageLine::objectInArena): a spare bit of this object's pad byte, where the PageLine has no byte to spare on the
+  // C3 (12 B: its vtable pointer, x and y, and this line's pointer). Only PageLine::make sets it.
+  void setHolderInArena() { holderInArena_ = true; }
+  bool holderInArena() const { return holderInArena_; }
 
   const RenderStyle& getRenderStyle() const { return renderStyle; }
   bool isEmpty() override { return numWords == 0; }
@@ -383,10 +455,10 @@ class TextBlock final : public Block {
   // drawn in.
   int annotationBand(const GfxRenderer& renderer, int fontId) const;
   // The same band from what a layout knows before the line exists.
-  static int annotationBandFor(const GfxRenderer& renderer, int effFontId, float blockScale, uint8_t maxSizePct);
+  static int annotationBandFor(const GfxRenderer& renderer, int effFontId, TextScale blockScale, uint8_t maxSizePct);
   // How far below the band the line's baseline sits: the ascender of its tallest word size, which render() draws every
   // word's baseline at. From what a layout knows before the line exists, as annotationBandFor is.
-  static int lineAscenderFor(const GfxRenderer& renderer, int effFontId, float blockScale, uint8_t maxSizePct);
+  static int lineAscenderFor(const GfxRenderer& renderer, int effFontId, TextScale blockScale, uint8_t maxSizePct);
   // No word draws scaled: block multiplier 1, no heading font, no word sizes, no SUP/SUB/SMALL_CAPS, no annotations,
   // not vertical.
   bool drawsUnscaled() const;
@@ -409,7 +481,7 @@ class TextBlock final : public Block {
     // font, and a word may carry a style and a size scale of its own.
     int fontId = 0;
     EpdFontFamily::Style style = EpdFontFamily::REGULAR;
-    float scale = 1.0f;
+    TextScale scale;
   };
   WordBox wordBox(const GfxRenderer& renderer, uint16_t i, int fontId, int x, int y) const;
 

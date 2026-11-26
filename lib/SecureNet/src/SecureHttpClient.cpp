@@ -1,6 +1,7 @@
 #include "SecureHttpClient.h"
 
 #include <Logging.h>
+#include <UrlTarget.h>
 #include <WiFi.h>
 #include <base64.h>
 
@@ -75,29 +76,19 @@ std::string escapedForRequestLine(const std::string& path) {
 
 }  // namespace
 
+// splitUrl() reads the URL, as the plugin allowlists do, so this connects to the host they judged.
+// It takes only the bytes of a host name into the host, which goes on the Host line as it stands
+// (no escape exists for a host).
 bool SecureHttpClient::parseUrl(const std::string& in, Url& out) {
-  const size_t schemeEnd = in.find("://");
-  if (schemeEnd == std::string::npos) return false;
-  out.scheme = toLowerAscii(in.substr(0, schemeEnd));
-  const size_t hostStart = schemeEnd + 3;
-  const size_t pathStart = in.find('/', hostStart);
-  const std::string hostPort =
-      pathStart == std::string::npos ? in.substr(hostStart) : in.substr(hostStart, pathStart - hostStart);
-  out.path = pathStart == std::string::npos ? "/" : in.substr(pathStart);
-  const size_t portSep = hostPort.rfind(':');
-  if (portSep != std::string::npos && hostPort.find(']') == std::string::npos) {
-    out.host = hostPort.substr(0, portSep);
-    out.port = static_cast<uint16_t>(atoi(hostPort.substr(portSep + 1).c_str()));
-  } else {
-    out.host = hostPort;
-    out.port = out.scheme == "https" ? 443 : 80;
-  }
-  // No escape exists for a host, and it goes on the Host line as it stands.
-  const bool hostIsClean = std::none_of(out.host.begin(), out.host.end(), [](const char c) {
-    const auto byte = static_cast<unsigned char>(c);
-    return byte <= 0x20 || byte >= 0x7F;
-  });
-  return !out.host.empty() && hostIsClean && (out.scheme == "http" || out.scheme == "https");
+  UrlTarget target;
+  if (!splitUrl(in, target)) return false;
+  out.scheme = toLowerAscii(std::string(target.scheme));
+  out.host = std::string(target.host);
+  out.port = target.port;
+  // A query or fragment straight after the host ("https://example.org?q=1") still asks for "/".
+  out.path =
+      target.rest.empty() || target.rest.front() != '/' ? "/" + std::string(target.rest) : std::string(target.rest);
+  return true;
 }
 
 bool SecureHttpClient::isHttps(const std::string& url) {
@@ -370,6 +361,7 @@ bool SecureHttpClient::readResponseHead(ResponseMeta& meta, const uint32_t deadl
   // HTTP/1.0 peers default to connection-per-request; only an explicit
   // Connection: keep-alive header (parsed below) overrides that.
   if (line.compare(0, 9, "HTTP/1.0 ") == 0) keepAlive = false;
+  const bool deliverHeaders = _headerSink && !isInterim(status);
 
   for (;;) {
     const LineRead lineRead = readLine(line, deadline);
@@ -391,6 +383,7 @@ bool SecureHttpClient::readResponseHead(ResponseMeta& meta, const uint32_t deadl
     }
     std::string value = line.substr(colon + 1);
     while (!value.empty() && value.front() == ' ') value.erase(value.begin());
+    if (deliverHeaders) _headerSink(line.substr(0, colon), value);
     if (name == "content-length") {
       contentLength = strtol(value.c_str(), nullptr, 10);
     } else if (name == "transfer-encoding") {
@@ -548,7 +541,7 @@ int SecureHttpClient::get(const std::string& url, const BodySink& sink, const Pr
 int SecureHttpClient::request(const char* method, const std::string& url, const std::string& body) {
   _body.clear();
   _bodyTruncated = false;
-  auto sink = [this](const uint8_t* d, size_t n) {
+  const auto sink = [this](const uint8_t* d, size_t n) {
     if (_maxBufferedBody > 0 && _body.size() + n > _maxBufferedBody) {
       n = _maxBufferedBody - _body.size();
       _bodyTruncated = true;
@@ -556,10 +549,16 @@ int SecureHttpClient::request(const char* method, const std::string& url, const 
     _body.append(reinterpret_cast<const char*>(d), n);
     return true;
   };
+  return request(method, url, body, sink);
+}
 
+int SecureHttpClient::request(const char* method, const std::string& url, const std::string_view body,
+                              const BodySink& sink) {
   std::string current = url;
   std::string activeMethod = method;
-  std::string activeBody = body;
+  // A view, not a copy: the plugin relay's body can be tens of KB, and a second block of its size from the throwing
+  // operator new aborts the C3 (-fno-exceptions) when it does not fit.
+  std::string_view activeBody = body;
   Url scope;  // see get()
   bool credentials = true;
   for (int hop = 0; hop <= _maxRedirects; ++hop) {
@@ -592,7 +591,7 @@ int SecureHttpClient::request(const char* method, const std::string& url, const 
       // HEAD stays HEAD (RFC 9110 §15.4): it asks for no body, wherever it lands.
       if (activeMethod != "HEAD" && (meta.status == 303 || meta.status == 301 || meta.status == 302)) {
         activeMethod = "GET";
-        activeBody.clear();
+        activeBody = {};
       }
       if (hop == _maxRedirects) return ERR_TOO_MANY_REDIRECTS;
       continue;

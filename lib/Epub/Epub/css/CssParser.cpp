@@ -3,12 +3,14 @@
 #include <Arduino.h>
 #include <BufferedFileIO.h>
 #include <BuildArena.h>
+#include <FsHelpers.h>
 #include <Logging.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <new>
 #include <optional>
@@ -98,22 +100,23 @@ constexpr size_t NEGATIVE_CACHE_SIZE = CSS_NEGATIVE_CACHE_SIZE;
 constexpr size_t MAX_SELECTOR_LENGTH = 256;
 
 constexpr size_t CSS_LENGTH_FIELD_COUNT = 11;
-constexpr size_t CSS_LENGTH_BYTES = sizeof(float) + sizeof(uint8_t);
+constexpr size_t CSS_LENGTH_BYTES = sizeof(int32_t) + sizeof(uint8_t);
 // Layout: 4 enum bytes + 11 lengths + display byte + definedBits uint16 + 3 vertAlign bytes (value, defined and
 //         percent flags, the length; v35) + cssFloat byte
-//         + smallCaps byte (bit 2 = text-emphasis defined, bits 3-6 = its mark; v31) + fontSizeMultiplier float +
+//         + smallCaps byte (bit 2 = text-emphasis defined, bits 3-6 = its mark; v31) + fontSizeMultiplier u32 +
 //         fontSize flags byte + block flags byte (listStyleNone / pageBreakBefore / pageBreakAfter value+defined pairs)
 //         + visibility flags byte (colorTransparent / opacityZero / visibilityHidden value+defined pairs; v19)
 //         + fontFamily hash (uint32; defined is bit 2 of the font-size flags byte; v28)
-//         + line-height in ems (float; defined is bit 3 of the font-size flags byte; v30)
+//         + line-height in ems (u32; defined is bit 3 of the font-size flags byte; v30)
+//         Lengths are 16.16 (CssLength), the multiplier and the line-height TextScale (v37; floats before)
 //         + the flow word (uint16: writing-mode, direction, text-combine-upright, text-orientation,
 //           unicode-bidi; packFlow; v30; white-space, v35)
 //         + the initial-letter byte (CssStyle::initialLetter; v35)
 //         + the box (CssBox's three bytes: the borders, the background and the <hr> facts; v35)
 constexpr size_t CSS_FIXED_STYLE_BYTES =
     4 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) + sizeof(uint8_t) + sizeof(uint16_t) +
-    3 * sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(float) + sizeof(uint8_t) + sizeof(uint8_t) +
-    sizeof(uint8_t) + sizeof(uint32_t) + sizeof(float) + sizeof(uint16_t) + sizeof(uint8_t) + CssBox::kBytes;
+    3 * sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint8_t) +
+    sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint16_t) + sizeof(uint8_t) + CssBox::kBytes;
 static_assert(CSS_FIXED_STYLE_BYTES == 88,
               "style payload layout changed — update read/writeCssStylePayload and bump CSS_CACHE_VERSION");
 // A rule record is selectorLen(2) selector order(2) payload; the order sits between selector and
@@ -142,6 +145,13 @@ constexpr uint8_t BACKGROUND_IMAGES_FILE_VERSION = 1;
 constexpr char fontFacesFile[] = "/css_fonts.bin";
 constexpr size_t MAX_FONT_FACE_TEXT = 255;  // a name or href longer than this is not recorded
 constexpr char compileTempRulesCache[] = "/css_rules.compile.tmp";
+
+// The sheet table (CssParser::sheetRanges), the end of the rules cache: sheetCount(1) importCount(1), each range
+// pathHash(4) firstOrder(2) endOrder(2), each import importer(1) importedHash(4), and last the table's byte count (2),
+// from which a reader finds where it starts.
+constexpr size_t SHEET_TABLE_HEADER_BYTES = 2;
+constexpr size_t SHEET_RANGE_BYTES = 8;
+constexpr size_t SHEET_IMPORT_BYTES = 5;
 
 // Check if character is CSS whitespace
 bool isCssWhitespace(const char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
@@ -707,16 +717,11 @@ CssLength CssParser::interpretLength(const std::string_view val) {
   return result;
 }
 
-bool CssParser::tryInterpretLength(const std::string_view v, CssLength& out) {
-  // Was three heap strings per call — normalized(val) plus a substr for each of the number and
-  // unit halves — on a function invoked for every margin/padding/indent in the sheet (and four
-  // times over for each shorthand). Now zero: the input is already normalized (see the note
-  // above the interpreters) and both halves are views into it.
-  if (v.empty()) {
-    out = CssLength{};
-    return false;
-  }
-
+namespace {
+// A length's number, read exactly, and its unit as written (the text after the number: "em", "%", nothing). The number
+// is what leads up to the first character that is no digit, point or sign, as CSS lengths are written; false when no
+// number starts it (auto, inherit, initial).
+bool splitLength(const std::string_view v, CssNumber& number, std::string_view& unit) {
   size_t unitStart = v.size();
   for (size_t i = 0; i < v.size(); ++i) {
     const char c = v[i];
@@ -725,26 +730,23 @@ bool CssParser::tryInterpretLength(const std::string_view v, CssLength& out) {
       break;
     }
   }
+  // Anything this long is no length.
+  if (unitStart == 0 || unitStart >= 24) return false;
+  unit = v.substr(unitStart);
+  return CssNumber::parse(v.substr(0, unitStart), number, /*exponent=*/false) != 0;
+}
+}  // namespace
 
-  const std::string_view numPart = v.substr(0, unitStart);
-  const std::string_view unitPart = v.substr(unitStart);
-
-  // strtof needs a NUL-terminated buffer and string_view gives no guarantee of one. The number
-  // half of a CSS length is short by construction, so copy it into a small stack buffer rather
-  // than heap-allocating; anything longer than the buffer is not a valid length anyway.
-  char numBuf[24];
-  if (numPart.empty() || numPart.size() >= sizeof(numBuf)) {
+bool CssParser::tryInterpretLength(const std::string_view v, CssLength& out) {
+  // Was three heap strings per call — normalized(val) plus a substr for each of the number and
+  // unit halves — on a function invoked for every margin/padding/indent in the sheet (and four
+  // times over for each shorthand). Now zero: the input is already normalized (see the note
+  // above the interpreters) and both halves are views into it.
+  CssNumber number;
+  std::string_view unitPart;
+  if (!splitLength(v, number, unitPart)) {
     out = CssLength{};
     return false;
-  }
-  std::memcpy(numBuf, numPart.data(), numPart.size());
-  numBuf[numPart.size()] = '\0';
-
-  char* endPtr = nullptr;
-  const float numericValue = std::strtof(numBuf, &endPtr);
-  if (endPtr == numBuf) {
-    out = CssLength{};
-    return false;  // No number parsed (e.g. auto, inherit, initial)
   }
 
   auto unit = CssUnit::Pixels;
@@ -758,7 +760,7 @@ bool CssParser::tryInterpretLength(const std::string_view v, CssLength& out) {
     unit = CssUnit::Percent;
   }
 
-  out = CssLength{numericValue, unit};
+  out = CssLength::of(number, unit);
   return true;
 }
 
@@ -767,27 +769,29 @@ bool CssParser::interpretVerticalAlignLength(const std::string_view v, int8_t& s
   // medium, as interpretLineHeight takes them, and ex as half an em; rounded, and clamped to what a byte holds (about
   // eight ems either way). A length that rounds to nothing is not kept, as before lengths were read: it is the
   // baseline anyway, and kept it would cancel a <sup>'s raise.
-  CssLength length;
-  if (!tryInterpretLength(v, length)) return false;
-  const size_t unitAt = v.find_first_not_of("0123456789.+-");
-  const std::string_view unit = unitAt == std::string_view::npos ? std::string_view{} : v.substr(unitAt);
-  float sixteenths = 0.0f;
+  CssNumber number;
+  std::string_view unit;
+  if (!splitLength(v, number, unit)) return false;
+  // The length in sixteenths, exactly: number x times / per.
+  int64_t times = 1;
+  int64_t per = 1;
   percent = false;
   if (unit == "em" || unit == "rem") {
-    sixteenths = length.value * 16.0f;
+    times = 16;
   } else if (unit == "ex") {
-    sixteenths = length.value * 8.0f;
-  } else if (unit == "px") {
-    sixteenths = length.value;
+    times = 8;
   } else if (unit == "pt") {
-    sixteenths = length.value * 4.0f / 3.0f;
+    times = 4;
+    per = 3;
   } else if (unit == "%") {
-    sixteenths = length.value;
     percent = true;
-  } else {
+  } else if (unit != "px") {
     return false;
   }
-  const long rounded = std::lround(std::clamp(sixteenths, -127.0f, 127.0f));
+  const CssNumber sixteenths{number.num * times, number.den * per};
+  const int64_t rounded = sixteenths.num > 127 * sixteenths.den    ? 127
+                          : sixteenths.num < -127 * sixteenths.den ? -127
+                                                                   : sixteenths.rounded();
   if (rounded == 0) return false;
   shift = static_cast<int8_t>(rounded);
   return true;
@@ -909,49 +913,43 @@ bool CssParser::interpretInitialLetter(const std::string_view v, uint8_t& out) {
     sink = trimCss(v.substr(space + 1));
     if (size == "drop" || size == "raise") std::swap(size, sink);
   }
-  const auto number = [](const std::string_view text, float& value) {
-    char buf[16];
-    if (text.empty() || text.size() >= sizeof(buf)) return false;
-    memcpy(buf, text.data(), text.size());
-    buf[text.size()] = '\0';
-    char* end = nullptr;
-    value = std::strtof(buf, &end);
-    return end == buf + text.size();
+  // The whole of `text` a number.
+  const auto number = [](const std::string_view text, CssNumber& value) {
+    return !text.empty() && text.size() < 16 && CssNumber::parse(text, value) == text.size();
   };
-  float lines = 0.0f;
-  if (!number(size, lines) || lines < 1.0f) return false;
-  uint8_t sinkLines = 0;  // as deep as the letter is tall
+  CssNumber lines;
+  if (!number(size, lines) || lines.num < lines.den) return false;  // below 1
+  uint8_t sinkLines = 0;                                            // as deep as the letter is tall
   if (sink == "raise") {
     sinkLines = 1;
   } else if (!sink.empty() && sink != "drop") {
-    float k = 0.0f;
-    if (!number(sink, k) || k < 1.0f || k != static_cast<float>(static_cast<int>(k))) return false;
-    sinkLines = static_cast<uint8_t>(std::min<float>(k, CssInitialLetter::kMaxLines));
+    CssNumber k;
+    if (!number(sink, k) || k.num < k.den || !k.whole()) return false;
+    sinkLines = static_cast<uint8_t>(std::min<int64_t>(k.num / k.den, CssInitialLetter::kMaxLines));
   }
-  out = CssInitialLetter::pack(static_cast<uint8_t>(std::min<float>(lines + 0.5f, CssInitialLetter::kMaxLines)),
+  out = CssInitialLetter::pack(static_cast<uint8_t>(std::min<int64_t>(lines.rounded(), CssInitialLetter::kMaxLines)),
                                sinkLines);
   return true;
 }
 
-bool CssParser::interpretLineHeight(const std::string_view v, float& em) {
+bool CssParser::interpretLineHeight(const std::string_view v, TextScale& em) {
   // A multiple of the element's font size, as CSS has it. px and pt are taken at CSS's 16 px medium, so a book written
   // in pixels keeps its ratio to the text. Clamped to what a page can sensibly show; zero and below are not a value.
-  CssLength length;
-  if (!tryInterpretLength(v, length)) return false;
-  const size_t unitAt = v.find_first_not_of("0123456789.+-");
-  const std::string_view unit = unitAt == std::string_view::npos ? std::string_view{} : v.substr(unitAt);
-  float value = length.value;
+  CssNumber number;
+  std::string_view unit;
+  if (!splitLength(v, number, unit)) return false;
+  int64_t per = 1;
   if (unit == "%") {
-    value /= 100.0f;
+    per = 100;
   } else if (unit == "px") {
-    value /= 16.0f;
+    per = 16;
   } else if (unit == "pt") {
-    value /= 12.0f;
+    per = 12;
   } else if (!unit.empty() && unit != "em" && unit != "rem") {
     return false;
   }
-  if (!(value > 0.0f)) return false;
-  em = std::max(0.5f, std::min(4.0f, value));
+  if (number.num <= 0) return false;
+  em = std::max(TextScale::percent(50), std::min(TextScale::ratio(4, 1), number.scale(per)));
   return true;
 }
 
@@ -965,7 +963,7 @@ bool CssParser::interpretImageSize(const std::string_view v, CssLength& out) {
   // inherit is excluded on purpose: width/height are not inherited properties, so it is not
   // equivalent to auto and we keep ignoring it.
   if (v == "auto" || v == "initial" || v == "unset" || v == "revert") {
-    out = CssLength{0.0f, CssUnit::Auto};
+    out = CssLength{0, CssUnit::Auto};
     return true;
   }
   return false;
@@ -1620,7 +1618,7 @@ void CssParser::parseDeclarationIntoStyle(const std::string_view decl, CssStyle&
       style.defined.pageBreakAfter = 1;
     }
   } else if (propNameBuf == "line-height") {
-    float em = 0.0f;
+    TextScale em;
     if (interpretLineHeight(propValueBuf, em)) {
       style.lineHeightEm = em;
       style.defined.lineHeight = 1;
@@ -1628,85 +1626,58 @@ void CssParser::parseDeclarationIntoStyle(const std::string_view decl, CssStyle&
   } else if (propNameBuf == "font-size") {
     const std::string_view val = propValueBuf;
     if (val != "inherit" && val != "initial" && val != "unset") {
-      float parsed = 0.0f;
-      bool ok = false;
+      TextScale parsed = TextScale::fromRaw(0);
       // em, % and smaller/larger scale the parent's size; everything else is the body's (rem) or a
       // fixed size, normalised against the body's nominal one -- CssStyle::fontSizeRootRelative.
       bool fromRoot = true;
+      // The number the value starts with, divided by `per`: 0 when none starts it.
+      const auto number = [&val](const int64_t per) {
+        CssNumber n;
+        return CssNumber::parse(val, n) != 0 ? n.scale(per) : TextScale::fromRaw(0);
+      };
       if (!val.empty() && val.back() == '%') {
         fromRoot = false;
-        const char* p = val.data();
-        char* end = nullptr;
-        float v = std::strtof(p, &end);
-        if (end != p) {
-          parsed = v / 100.0f;
-          ok = true;
-        }
+        parsed = number(100);
       } else if (val.size() > 3 && val.substr(val.size() - 3) == "rem") {
-        const char* p = val.data();
-        char* end = nullptr;
-        float v = std::strtof(p, &end);
-        if (end != p) {
-          parsed = v;
-          ok = true;
-        }
+        parsed = number(1);
       } else if (val.size() > 2 && val.substr(val.size() - 2) == "em") {
         fromRoot = false;
-        const char* p = val.data();
-        char* end = nullptr;
-        float v = std::strtof(p, &end);
-        if (end != p) {
-          parsed = v;
-          ok = true;
-        }
+        parsed = number(1);
       } else if (val.size() > 2 && val.substr(val.size() - 2) == "pt") {
         // Absolute points, normalised against a 12 pt nominal body size — the
         // convention print-derived EPUBs assume (CSS medium == 16 px == 12 pt).
-        const char* p = val.data();
-        char* end = nullptr;
-        float v = std::strtof(p, &end);
-        if (end != p) {
-          parsed = v / 12.0f;
-          ok = true;
-        }
+        parsed = number(12);
       } else if (val.size() > 2 && val.substr(val.size() - 2) == "px") {
         // Absolute pixels, normalised against the CSS default body size of 16 px.
-        const char* p = val.data();
-        char* end = nullptr;
-        float v = std::strtof(p, &end);
-        if (end != p) {
-          parsed = v / 16.0f;
-          ok = true;
-        }
+        parsed = number(16);
       } else {
         // CSS absolute-size keywords on the scale of CSS Fonts Level 4 (section 2.5, the table of
         // absolute-size keywords), as factors of medium; smaller and larger are relative-size
         // keywords, one step of 1.2 down or up from the parent's size.
         if (val == "xx-small") {
-          parsed = 3.0f / 5.0f;
+          parsed = TextScale::ratio(3, 5);
         } else if (val == "x-small") {
-          parsed = 3.0f / 4.0f;
+          parsed = TextScale::ratio(3, 4);
         } else if (val == "small") {
-          parsed = 8.0f / 9.0f;
+          parsed = TextScale::ratio(8, 9);
         } else if (val == "medium") {
-          parsed = 1.0f;
+          parsed = TextScale();
         } else if (val == "large") {
-          parsed = 6.0f / 5.0f;
+          parsed = TextScale::ratio(6, 5);
         } else if (val == "x-large") {
-          parsed = 3.0f / 2.0f;
+          parsed = TextScale::ratio(3, 2);
         } else if (val == "xx-large") {
-          parsed = 2.0f;
+          parsed = TextScale::ratio(2, 1);
         } else if (val == "xxx-large") {
-          parsed = 3.0f;
+          parsed = TextScale::ratio(3, 1);
         } else if (val == "smaller") {
-          parsed = 1.0f / 1.2f;
+          parsed = TextScale::ratio(5, 6);
         } else if (val == "larger") {
-          parsed = 1.2f;
+          parsed = TextScale::ratio(6, 5);
         }
-        ok = parsed > 0.0f;
         fromRoot = val != "smaller" && val != "larger";
       }
-      if (ok && parsed > 0.0f) {
+      if (parsed.raw() > 0) {
         style.fontSizeMultiplier = parsed;
         style.fontSizeRootRelative = fromRoot;
         style.defined.fontSizeMultiplier = 1;
@@ -1859,6 +1830,9 @@ void CssParser::processRuleBlockWithStyle(const std::string_view selectorGroup, 
     // their place: merged, they would take the later position and beat an intervening rule of
     // equal specificity they should lose to (`.a{x} .b{y} .a{z}` on class="a b": y beats x).
     // The adjacency rule is crosspoint-reader PR #3891's (Justin Mitchell, @itsthisjustin).
+    // Nor does a rule merge into one of the sheet before (sheetFirstOrder_): a record's order says
+    // which sheet it came from (sheetRanges), so it must not carry another sheet's declarations. The
+    // two records resolve as the merged one did.
     if (compileModeActive_) {
       if (!compileTempFile_) {
         compileModeFailed_ = true;
@@ -1867,7 +1841,8 @@ void CssParser::processRuleBlockWithStyle(const std::string_view selectorGroup, 
 
       CssStyle merged = style;
       auto existingIt = compileSelectorOffsets_.find(key);
-      if (existingIt != compileSelectorOffsets_.end() && existingIt->second.order + 1 >= order) {
+      if (existingIt != compileSelectorOffsets_.end() && existingIt->second.order + 1 >= order &&
+          existingIt->second.order >= sheetFirstOrder_) {
         // The earlier declaration is read back through a second handle, which sees only what has
         // reached the card. Synced here and only here: a sync writes the data and the directory
         // entry, a few ms on the device, and one before every rule cost seconds a stylesheet.
@@ -1907,7 +1882,7 @@ void CssParser::processRuleBlockWithStyle(const std::string_view selectorGroup, 
     for (auto it = range.first; it != range.second; ++it) {
       if (latest == range.second || it->second.order > latest->second.order) latest = it;
     }
-    if (latest != range.second && latest->second.order + 1 >= order) {
+    if (latest != range.second && latest->second.order + 1 >= order && latest->second.order >= sheetFirstOrder_) {
       latest->second.style.applyOver(style);
       latest->second.order = order;
     } else {
@@ -1998,6 +1973,9 @@ bool CssParser::loadFromStream(FsFile& source) {
   // The @supports blocks open whose rules are read as if the block were not there (supportsInitialLetter); the brace
   // that closes one comes where a selector would start.
   int supportsDepth = 0;
+  // An @import counts only at the top of a sheet, before any rule or block (CSS 2.1 §6.3): one further down is
+  // ignored, as a browser ignores it.
+  bool importsOpen = true;
 
   int bodyDepth = 0;
   bool skippingRule = false;
@@ -2023,6 +2001,7 @@ bool CssParser::loadFromStream(FsFile& source) {
     if (inAtRule) {
       if (c == '{') {
         if (++atDepth == 1) {
+          importsOpen = false;
           if (supportsInitialLetter(declBuffer.view())) {
             declBuffer.clear();
             inAtRule = false;
@@ -2042,6 +2021,7 @@ bool CssParser::loadFromStream(FsFile& source) {
           inAtRule = false;
         }
       } else if (c == ';' && atDepth == 0) {
+        if (importsOpen && !declBuffer.overflowed) importsOpen = noteImport(declBuffer.view());
         declBuffer.clear();
         inAtRule = false;
       } else if (atDepth == 0 || (inFontFace && atDepth == 1)) {
@@ -2066,6 +2046,7 @@ bool CssParser::loadFromStream(FsFile& source) {
       }
       if (c == '{') {
         bodyDepth = 1;
+        importsOpen = false;
         currentStyle = CssStyle{};
         ruleBackground = BackgroundDeclaration{};
         ruleBackgroundRepeat = -1;
@@ -2173,6 +2154,8 @@ bool CssParser::loadFromStream(FsFile& source) {
   if (maybeSlash) {
     handleChar('/');
   }
+  // The end of the file ends an @import that has no ';', as it does in a browser.
+  if (inAtRule && atDepth == 0 && importsOpen && !declBuffer.overflowed) noteImport(declBuffer.view());
 
   if (compileModeActive_) {
     LOG_DBG("CSS", "Parsed %zu usable selectors from %zu bytes (compile mode)", compileSelectorOffsets_.size(),
@@ -2229,7 +2212,7 @@ bool CssParser::endCacheCompile(BuildArena* const scratch) {
   // swap, not clear(): clear() frees the nodes but keeps the bucket array, which would sit
   // under the index ensureCacheIndexLoaded() is about to allocate.
   // The complex-rule table is staged in RAM: dropIndex() releases it (written to the cache by
-  // then, or abandoned with the failed compile).
+  // then, or abandoned with the failed compile). So is the sheet table.
   const auto dropStaging = [this] {
     Storage.remove(compileTempPath_.c_str());
     std::unordered_map<std::string, StagedRule>().swap(compileSelectorOffsets_);
@@ -2357,14 +2340,20 @@ bool CssParser::writeCompiledCache(FsFile& outFile, FsFile& tempFile, BuildArena
     out.write(tail.data(), tail.size());
   }
   if (!out.flush()) return false;
+  const uint32_t recordsEnd = out.position();
 
-  // Sort and patch the index placeholder at position 11, in one write.
+  // Sort and patch the index placeholder, in one write.
   std::sort(indexEntries.begin(), indexEntries.end(),
             [](const SelectorEntry& a, const SelectorEntry& b) { return a.hash < b.hash; });
-  outFile.seek(CssParser::CSS_CACHE_HEADER_BYTES + complexBytes_);
   const size_t indexBytes = indexEntries.size() * sizeof(SelectorEntry);
-  return indexBytes == 0 ||
-         outFile.write(reinterpret_cast<const uint8_t*>(indexEntries.data()), indexBytes) == indexBytes;
+  if (!outFile.seek(CssParser::CSS_CACHE_HEADER_BYTES + complexBytes_) ||
+      (indexBytes != 0 &&
+       outFile.write(reinterpret_cast<const uint8_t*>(indexEntries.data()), indexBytes) != indexBytes)) {
+    return false;
+  }
+  // The sheet table last, so that a file that ends in a valid one is complete (ensureCacheIndexLoaded). The writer
+  // goes on where the records end.
+  return outFile.seek(recordsEnd) && writeSheetTable(out) && out.flush();
 }
 
 bool CssParser::empty() const { return ruleCount() == 0; }
@@ -2436,6 +2425,10 @@ void CssParser::clear() {
   std::unordered_map<std::string, StagedRule>().swap(compileSelectorOffsets_);
   std::vector<uint32_t>().swap(compileRetiredOffsets_);
   nextRuleOrder_ = 0;
+  sheetTableDropped_ = false;  // the table itself went with the index
+  sheetTableLostToHeap_ = false;
+  sheetFirstOrder_ = 0;
+  scopedSheets_ = 0;
   totalSelectorCandidates_ = 0;
   unsupportedSelectorSkips_ = 0;
   // Cleared to FALSE, unlike its conservative default: what follows is either a parse, which
@@ -2615,13 +2608,13 @@ bool CssParser::decodeCssStylePayload(const uint8_t* const bytes, CssStyle& styl
   style.defined.smallCaps = (smallCapsVal & 0x2) != 0 ? 1 : 0;
   style.defined.textEmphasis = (smallCapsVal & 0x4) != 0 ? 1 : 0;
   style.textEmphasis = style.defined.textEmphasis ? static_cast<uint8_t>((smallCapsVal >> 3) & 0xF) : 0;
-  float fontSizeMul = 1.0f;
+  uint32_t fontSizeMul = TextScale::kOne;
   uint8_t fontSizeFlags = 0;
   if (!get(&fontSizeMul, sizeof(fontSizeMul)) || !get(&fontSizeFlags, 1)) {
     return false;
   }
   if ((fontSizeFlags & 0x1) != 0) {
-    style.fontSizeMultiplier = fontSizeMul;
+    style.fontSizeMultiplier = TextScale::fromRaw(fontSizeMul);
     style.fontSizeRootRelative = (fontSizeFlags & 0x2) != 0;
     style.defined.fontSizeMultiplier = 1;
   }
@@ -2647,7 +2640,7 @@ bool CssParser::decodeCssStylePayload(const uint8_t* const bytes, CssStyle& styl
   style.defined.opacityZero = (visibilityFlags & 0x08) != 0 ? 1 : 0;
   style.visibilityHidden = (visibilityFlags & 0x10) != 0;
   style.defined.visibilityHidden = (visibilityFlags & 0x20) != 0 ? 1 : 0;
-  float lineHeightEm = 0.0f;
+  uint32_t lineHeightEm = 0;
   uint16_t flow = 0;
   uint8_t box[CssBox::kBytes];
   if (!get(&style.fontFamily, sizeof(style.fontFamily)) || !get(&lineHeightEm, sizeof(lineHeightEm)) ||
@@ -2657,7 +2650,7 @@ bool CssParser::decodeCssStylePayload(const uint8_t* const bytes, CssStyle& styl
   unpackFlow(flow, style);
   style.box.setBytes(box);
   if (lineHeightDefined) {
-    style.lineHeightEm = lineHeightEm;
+    style.lineHeightEm = TextScale::fromRaw(lineHeightEm);
     style.defined.lineHeight = 1;
   }
   return true;
@@ -2729,9 +2722,10 @@ size_t CssParser::encodeCssStylePayload(const CssStyle& style, uint8_t* const pa
   uint8_t smallCapsVal = (style.smallCaps ? 0x1 : 0x0) | (style.defined.smallCaps ? 0x2 : 0x0);
   if (style.defined.textEmphasis) smallCapsVal |= static_cast<uint8_t>(0x4 | ((style.textEmphasis & 0xF) << 3));
   put8(smallCapsVal);
-  // font-size multiplier: float + flags byte (bit 0 = defined, bit 1 = relative to the body, v27;
-  // bit 2 = font-family defined, v28; bit 3 = line-height defined, v30)
-  put(&style.fontSizeMultiplier, sizeof(style.fontSizeMultiplier));
+  // font-size multiplier: TextScale's u32 (v37; a float before) + flags byte (bit 0 = defined, bit 1 = relative to
+  // the body, v27; bit 2 = font-family defined, v28; bit 3 = line-height defined, v30)
+  const uint32_t fontSizeMul = style.fontSizeMultiplier.raw();
+  put(&fontSizeMul, sizeof(fontSizeMul));
   const uint8_t fontSizeFlags = (style.defined.fontSizeMultiplier ? 0x1 : 0x0) |
                                 (style.fontSizeRootRelative ? 0x2 : 0x0) | (style.defined.fontFamily ? 0x4 : 0x0) |
                                 (style.defined.lineHeight ? 0x8 : 0x0);
@@ -2748,7 +2742,8 @@ size_t CssParser::encodeCssStylePayload(const CssStyle& style, uint8_t* const pa
                                   (style.defined.visibilityHidden ? 0x20 : 0x00);
   put8(visibilityFlags);
   put(&style.fontFamily, sizeof(style.fontFamily));
-  put(&style.lineHeightEm, sizeof(style.lineHeightEm));
+  const uint32_t lineHeightEm = style.lineHeightEm.raw();
+  put(&lineHeightEm, sizeof(lineHeightEm));
   const uint16_t flow = packFlow(style);
   put(&flow, sizeof(flow));
   put8(style.initialLetter);
@@ -2843,9 +2838,13 @@ bool CssParser::readRuleFromDiskAtOffset(const uint32_t ruleOffset, const std::s
 }
 
 struct CssParser::Cascade {
+  explicit Cascade(const CssParser& owner) : parser(owner) {}
+  const CssParser& parser;
   CssStyle result;
   uint32_t ranks[CssStyle::kCascadeProperties] = {};
   void apply(const CssStyle& style, const uint32_t specificity, const uint16_t order) {
+    // Every store's rules reach the result here, so the chapter's scope is one test (scopeToSheets).
+    if (parser.scopedSheets_ != 0 && !parser.sheetApplies(order)) return;
     result.applyOver(style, specificity << 16 | order, ranks);
   }
 };
@@ -2963,12 +2962,16 @@ bool CssParser::ensureCacheIndexLoaded() const {
   if (!Storage.openFileForRead("CSS", cachePath + rulesCache, file)) {
     return false;
   }
-
-  uint8_t version = 0;
-  if (file.read(&version, 1) != 1 || version != CssParser::CSS_CACHE_VERSION) {
+  // A cache of another version, or one that ends in no valid sheet table, goes: the open compiles the CSS again.
+  const auto discard = [&] {
     file.close();
     Storage.remove((cachePath + rulesCache).c_str());
     return false;
+  };
+
+  uint8_t version = 0;
+  if (file.read(&version, 1) != 1 || version != CssParser::CSS_CACHE_VERSION) {
+    return discard();
   }
 
   uint16_t ruleCount = 0;
@@ -2995,8 +2998,8 @@ bool CssParser::ensureCacheIndexLoaded() const {
     LOG_ERR("CSS", "This book's stylesheets exceed %zu rules; the rules past the cap are not applied", MAX_RULES);
   }
 
-  // v10: index is immediately after the header (v23: and the complex-rule table) — read
-  // sequentially, no seek.
+  // v10: index is immediately after the header (v23: and the complex-rule table); read after the
+  // sheet table at the file's end (v36).
   dropIndex();  // clears the heap vector and any arena view; resets cachedRuleCount_
   hotRuleCache_.clear();
   hotRuleLru_.clear();
@@ -3020,6 +3023,23 @@ bool CssParser::ensureCacheIndexLoaded() const {
     }
     if (indexArena_) complexArena_ = table;
     complexBytes_ = complexBytes;
+  }
+
+  // The sheet table, from the file's end, on the heap. A v36 file always ends in one, written last: one that does not
+  // is damaged (a write cut off), not old, and goes, so that the open compiles the stylesheets again (Epub::load)
+  // rather than resolve every chapter against every sheet. No memory for it: every sheet applies, and
+  // sheetTableRefused() says so, for the build to be cached CSS-degraded and asked again (loadFromCache).
+  const size_t indexEnd =
+      CSS_CACHE_HEADER_BYTES + complexBytes + static_cast<size_t>(ruleCount) * sizeof(SelectorEntry);
+  if (loadSheetTable(file, indexEnd) == SheetTableLoad::Damaged) {
+    LOG_ERR("CSS", "Damaged sheet table: compiling the CSS again");
+    dropIndex();
+    return discard();
+  }
+  if (!file.seek(CSS_CACHE_HEADER_BYTES + complexBytes)) {
+    file.close();
+    dropIndex();
+    return false;
   }
 
   // Arena mode (Phase 2): prefer the resident {hash, CssStyle} ruleset (in-RAM resolve, no
@@ -3466,6 +3486,7 @@ void CssParser::dropIndex() const {
   complexArena_ = nullptr;
   complexBytes_ = 0;
   complexCapacity_ = 0;
+  freeSheetTable();
   cacheIndexLoaded_ = false;
   cachedRuleCount_ = 0;
 }
@@ -3692,7 +3713,7 @@ CssStyle CssParser::resolve(const std::string& tagName, const std::string& class
   // Based on crosspoint-reader PR #3891 (Justin Mitchell, @itsthisjustin), which sorts the matches
   // by specificity and source order; reworked to rank each property instead, so no match list
   // (and no style per match) has to be held while the index is read from disk.
-  Cascade cascade;
+  Cascade cascade(*this);
   std::string pseudoKey;  // the key with the pseudo-element, only for a ::first-letter lookup
   const auto lookup = [&](const std::string& selector, const uint32_t specificity) {
     const std::string* key = &selector;
@@ -3972,6 +3993,295 @@ bool CssParser::nextFontFace(std::string_view& records, FontFace& face) {
 void CssParser::setStylesheetPath(const std::string& sheetPathInEpub) {
   const size_t slash = sheetPathInEpub.rfind('/');
   stylesheetDir_ = slash == std::string::npos ? std::string() : sheetPathInEpub.substr(0, slash + 1);
+  sheetFirstOrder_ = nextRuleOrder_;
+  beginSheetRange(sheetPathHash(sheetPathInEpub));
+}
+
+// --- The sheet table (see CssParser.h, sheetRanges) ---
+
+namespace {
+
+// Makes room in a sheet-table array for one more entry, doubling it up to `max`; false when the heap has no block.
+template <typename T>
+bool growSheetArray(std::unique_ptr<T[]>& array, uint8_t& capacity, const uint8_t count, const size_t max) {
+  if (count < capacity) return true;
+  const size_t grown = std::min<size_t>(max, capacity > 0 ? capacity * 2u : 4u);
+#ifdef CSS_SHEET_TABLE_FAULT_INJECTION
+  std::unique_ptr<T[]> bigger = cssSheetTableFaults().refuseCompile ? nullptr : makeUniqueNoThrow<T[]>(grown);
+#else
+  auto bigger = makeUniqueNoThrow<T[]>(grown);
+#endif
+  if (!bigger) {
+    LOG_ERR("CSS", "No heap for %u bytes of the sheet table", static_cast<unsigned>(grown * sizeof(T)));
+    return false;
+  }
+  std::copy(array.get(), array.get() + count, bigger.get());
+  array = std::move(bigger);
+  capacity = static_cast<uint8_t>(grown);
+  return true;
+}
+
+}  // namespace
+
+uint32_t CssParser::sheetPathHash(const std::string_view pathInEpub) {
+  const uint32_t h = fnv1a32(pathInEpub);
+  return h != kFoldedSheets ? h : kFoldedSheets + 1;
+}
+
+bool CssParser::resolveStylesheetHref(const std::string_view baseDir, std::string_view href, std::string& out) {
+  out.clear();
+  href = trimCss(href);
+  href = href.substr(0, href.find_first_of("?#"));
+  if (href.empty() || findIgnoreCase(href, "data:") == 0 || href.find("://") != std::string_view::npos ||
+      href.substr(0, 2) == "//") {
+    return false;
+  }
+  std::string joined;
+  if (href.front() == '/') {
+    while (!href.empty() && href.front() == '/') href.remove_prefix(1);
+  } else {
+    joined.assign(baseDir);
+  }
+  joined.append(href);
+  FsHelpers::decodeUriEscapes(joined, out);  // as the manifest's hrefs are (ContentOpfParser)
+  FsHelpers::normalisePath(out, joined);
+  out.swap(joined);
+  return !out.empty();
+}
+
+void CssParser::beginSheetRange(const uint32_t pathHash) {
+  if (sheetTableDropped_) return;
+  if (sheetCount_ > 0) sheetRanges_[sheetCount_ - 1].endOrder = nextRuleOrder_;
+  if (sheetCount_ == MAX_SHEETS) {
+    // The 65th sheet: the last range takes it in, and every sheet after it, and with no one path it becomes a range
+    // for every chapter. Its end is where the compile ends.
+    if (sheetRanges_[MAX_SHEETS - 1].pathHash != kFoldedSheets) {
+      LOG_INF("CSS", "More than %zu stylesheets: those from the %zuth on apply to every chapter", MAX_SHEETS,
+              MAX_SHEETS);
+      sheetRanges_[MAX_SHEETS - 1].pathHash = kFoldedSheets;
+    }
+    return;
+  }
+  if (!growSheetArray(sheetRanges_, sheetCapacity_, sheetCount_, MAX_SHEETS)) {
+    loseSheetTableToHeap();
+    return;
+  }
+  sheetRanges_[sheetCount_++] = SheetRange{pathHash, nextRuleOrder_, nextRuleOrder_};
+}
+
+bool CssParser::noteImport(const std::string_view prelude) {
+  if (sheetTableDropped_ || sheetCount_ == 0) return true;  // no sheet named (setStylesheetPath): nothing imports it
+  constexpr std::string_view kImport = "import";
+  std::string_view rest = trimCss(prelude);
+  if (equalsIgnoreCase(rest.substr(0, 9), "namespace")) return false;
+  if (rest.size() <= kImport.size() || !equalsIgnoreCase(rest.substr(0, kImport.size()), kImport)) return true;
+  rest.remove_prefix(kImport.size());
+  if (!isCssWhitespace(rest.front()) && rest.front() != '"' && rest.front() != '\'')
+    return true;  // @imports, @import-x
+  rest = trimCss(rest);
+  // `url(x.css)`, `url("x.css")` or a string; a media list after it is not read (every @media block is skipped, but
+  // a sheet imported for print applied before v36 too).
+  std::string_view href;
+  if (rest.size() > 4 && equalsIgnoreCase(rest.substr(0, 4), "url(")) {
+    const size_t close = rest.find(')');
+    if (close == std::string_view::npos) return true;
+    href = unquoteCss(rest.substr(4, close - 4));
+  } else if (!rest.empty() && (rest.front() == '"' || rest.front() == '\'')) {
+    const size_t close = rest.find(rest.front(), 1);
+    if (close == std::string_view::npos) return true;
+    href = rest.substr(1, close - 1);
+  } else {
+    return true;
+  }
+  std::string path;
+  if (!resolveStylesheetHref(stylesheetDir_, href, path)) return true;
+  const SheetImport edge{sheetPathHash(path), static_cast<uint8_t>(sheetCount_ - 1)};
+  for (uint8_t i = 0; i < importCount_; ++i) {
+    if (sheetImports_[i].importer == edge.importer && sheetImports_[i].importedHash == edge.importedHash) return true;
+  }
+  if (importCount_ == MAX_SHEET_IMPORTS) {
+    dropSheetTable("too many @import rules");
+    return true;
+  }
+  if (!growSheetArray(sheetImports_, importCapacity_, importCount_, MAX_SHEET_IMPORTS)) {
+    loseSheetTableToHeap();
+    return true;
+  }
+  sheetImports_[importCount_++] = edge;
+  return true;
+}
+
+void CssParser::dropSheetTable([[maybe_unused]] const char* const why) {
+  LOG_ERR("CSS", "No sheet table for this book (%s): every stylesheet will apply to every chapter", why);
+  freeSheetTable();
+  sheetTableDropped_ = true;
+}
+
+void CssParser::loseSheetTableToHeap() {
+  // Not written empty: an empty table loads as valid, and the book would resolve every chapter against every sheet
+  // for as long as its cache lasts. Epub::parseCssFiles keeps no cache instead (sheetTableLostToHeap).
+  sheetTableLostToHeap_ = true;
+  dropSheetTable("no heap");
+}
+
+void CssParser::freeSheetTable() const {
+  sheetRanges_.reset();
+  sheetImports_.reset();
+  sheetCount_ = 0;
+  sheetCapacity_ = 0;
+  importCount_ = 0;
+  importCapacity_ = 0;
+  sheetTableRefused_ = false;  // a load sets it again
+}
+
+bool CssParser::writeSheetTable(serialization::BufferedFileWriter& out) const {
+  // Orders that ran out tie from the last one on, across sheets: no range can tell those rules apart.
+  const bool saturated = nextRuleOrder_ == UINT16_MAX && sheetCount_ > 0;
+  if (saturated) {
+    LOG_ERR("CSS", "Rule orders ran out: no sheet table, every stylesheet will apply to every chapter");
+  }
+  const uint8_t sheets = saturated ? 0 : sheetCount_;
+  const uint8_t imports = saturated ? 0 : importCount_;
+  bool ok = out.writePod(sheets) && out.writePod(imports);
+  for (uint8_t i = 0; i < sheets; ++i) {
+    const SheetRange& range = sheetRanges_[i];
+    const uint16_t end = i + 1 < sheets ? sheetRanges_[i + 1].firstOrder : nextRuleOrder_;
+    uint8_t record[SHEET_RANGE_BYTES];
+    std::memcpy(record, &range.pathHash, 4);
+    std::memcpy(record + 4, &range.firstOrder, 2);
+    std::memcpy(record + 6, &end, 2);
+    ok = ok && out.write(record, sizeof(record));
+  }
+  for (uint8_t i = 0; i < imports; ++i) {
+    uint8_t record[SHEET_IMPORT_BYTES];
+    record[0] = sheetImports_[i].importer;
+    std::memcpy(record + 1, &sheetImports_[i].importedHash, 4);
+    ok = ok && out.write(record, sizeof(record));
+  }
+  const auto tableBytes =
+      static_cast<uint16_t>(SHEET_TABLE_HEADER_BYTES + sheets * SHEET_RANGE_BYTES + imports * SHEET_IMPORT_BYTES);
+  return ok && out.writePod(tableBytes);
+}
+
+CssParser::SheetTableLoad CssParser::loadSheetTable(FsFile& file, const size_t floor) const {
+  const size_t size = file.size();
+  uint16_t tableBytes = 0;
+  uint8_t counts[SHEET_TABLE_HEADER_BYTES] = {};
+  const bool found =
+      size >= floor + SHEET_TABLE_HEADER_BYTES + sizeof(tableBytes) && file.seek(size - sizeof(tableBytes)) &&
+      file.read(&tableBytes, sizeof(tableBytes)) == sizeof(tableBytes) && tableBytes >= SHEET_TABLE_HEADER_BYTES &&
+      tableBytes <= size - sizeof(tableBytes) - floor && file.seek(size - sizeof(tableBytes) - tableBytes) &&
+      file.read(counts, sizeof(counts)) == sizeof(counts) && counts[0] <= MAX_SHEETS &&
+      counts[1] <= MAX_SHEET_IMPORTS &&
+      tableBytes == SHEET_TABLE_HEADER_BYTES + counts[0] * SHEET_RANGE_BYTES + counts[1] * SHEET_IMPORT_BYTES;
+  if (!found) return SheetTableLoad::Damaged;
+  // 8 B a sheet and an import, 16 B to 1.5 KB, on the heap: a build's lent region has no room to spare for a block that
+  // lives the whole build (see sheetRanges_).
+  bool refused = false;
+#ifdef CSS_SHEET_TABLE_FAULT_INJECTION
+  if (CssSheetTableFaults& faults = cssSheetTableFaults();
+      faults.refuseLoads != 0 && (counts[0] > 0 || counts[1] > 0)) {
+    if (faults.refuseLoads > 0) --faults.refuseLoads;
+    refused = true;
+  }
+#endif
+  if (!refused && counts[0] > 0) sheetRanges_ = makeUniqueNoThrow<SheetRange[]>(counts[0]);
+  if (!refused && counts[1] > 0) sheetImports_ = makeUniqueNoThrow<SheetImport[]>(counts[1]);
+  SheetRange* const ranges = sheetRanges_.get();
+  SheetImport* const imports = sheetImports_.get();
+  if (refused || (counts[0] > 0 && ranges == nullptr) || (counts[1] > 0 && imports == nullptr)) {
+    LOG_ERR("CSS", "No heap for %u bytes of the sheet table", static_cast<unsigned>(tableBytes));
+    freeSheetTable();
+    // With one sheet or none every chapter resolves alike (Section::scopeStylesheets): nothing is lost then.
+    sheetTableRefused_ = counts[0] >= 2;
+    return SheetTableLoad::NoMemory;
+  }
+  // The ranges in one read, as they are stored (writeSheetTable: the struct's own layout); the imports, which a book
+  // has a few of, a record at a time.
+  static_assert(sizeof(SheetRange) == SHEET_RANGE_BYTES && offsetof(SheetRange, firstOrder) == 4 &&
+                    offsetof(SheetRange, endOrder) == 6,
+                "a sheet range is read as it is stored");
+  const size_t rangeBytes = counts[0] * SHEET_RANGE_BYTES;
+  bool ok = rangeBytes == 0 || file.read(ranges, rangeBytes) == static_cast<int>(rangeBytes);
+  for (uint8_t i = 0; ok && i < counts[0]; ++i) {
+    // The ranges follow one another without a gap, as the orders ran.
+    ok = ranges[i].firstOrder <= ranges[i].endOrder && (i == 0 || ranges[i].firstOrder == ranges[i - 1].endOrder);
+  }
+  for (uint8_t i = 0; ok && i < counts[1]; ++i) {
+    uint8_t record[SHEET_IMPORT_BYTES];
+    ok = file.read(record, sizeof(record)) == static_cast<int>(sizeof(record)) && record[0] < counts[0];
+    imports[i].importer = record[0];
+    std::memcpy(&imports[i].importedHash, record + 1, 4);
+  }
+  if (!ok) {
+    freeSheetTable();
+    return SheetTableLoad::Damaged;
+  }
+  sheetCount_ = sheetCapacity_ = counts[0];
+  importCount_ = importCapacity_ = counts[1];
+  sheetTableRefused_ = false;  // loaded on a retry (retrySheetTable)
+  return SheetTableLoad::Loaded;
+}
+
+bool CssParser::sheetApplies(const uint16_t order) const {
+  const std::span<const SheetRange> ranges = sheetRanges();
+  // The rule's sheet is the last whose range starts at or before its order: an empty range starts where the next one
+  // does. With no table (it went with the index, and has not come back) nothing is scoped.
+  const auto after = std::upper_bound(ranges.begin(), ranges.end(), order,
+                                      [](const uint16_t o, const SheetRange& range) { return o < range.firstOrder; });
+  if (after == ranges.begin()) return true;
+  return ((scopedSheets_ >> (after - ranges.begin() - 1)) & 1u) != 0;
+}
+
+uint64_t CssParser::sheetsOf(const uint32_t pathHash) const {
+  const std::span<const SheetRange> ranges = sheetRanges();
+  uint64_t sheets = 0;
+  for (size_t i = 0; i < ranges.size(); ++i) {
+    if (ranges[i].pathHash == pathHash) sheets |= uint64_t{1} << i;
+  }
+  return sheets;
+}
+
+void CssParser::addLink(void* const context, const std::string_view rel, const std::string_view href,
+                        const bool whole) {
+  SheetLinks& links = *static_cast<SheetLinks*>(context);
+  if (!whole) {
+    links.unknown = true;
+    return;
+  }
+  std::string path;
+  if (findIgnoreCase(rel, "stylesheet") == std::string_view::npos ||
+      !resolveStylesheetHref(links.baseDir, href, path)) {
+    return;  // no stylesheet, or nothing in the book
+  }
+  const uint64_t sheets = links.css->sheetsOf(sheetPathHash(path));
+  links.unknown = links.unknown || sheets == 0;
+  links.sheets |= sheets;
+}
+
+uint8_t CssParser::scopeToSheets(const SheetLinks& links) {
+  scopedSheets_ = 0;
+  const std::span<const SheetRange> ranges = sheetRanges();
+  if (links.unknown || links.sheets == 0 || ranges.empty()) return 0;
+  uint64_t scope = links.sheets;
+  // What the sheets in scope import, and what those import, until an import adds none.
+  for (bool grew = true; grew;) {
+    grew = false;
+    for (const SheetImport& edge : sheetImports()) {
+      if (((scope >> edge.importer) & 1u) == 0) continue;
+      const uint64_t imported = sheetsOf(edge.importedHash);
+      if (imported == 0) return 0;  // an import the book does not have
+      grew = grew || (scope & imported) != imported;
+      scope |= imported;
+    }
+  }
+  if (ranges.back().pathHash == kFoldedSheets) scope |= uint64_t{1} << (ranges.size() - 1);
+  const uint64_t every = ranges.size() == 64 ? ~uint64_t{0} : (uint64_t{1} << ranges.size()) - 1;
+  if (scope == every) return 0;  // resolves as an unscoped chapter does, without the test per rule
+  scopedSheets_ = scope;
+  uint8_t count = 0;
+  for (; scope != 0; scope &= scope - 1) ++count;
+  return count;
 }
 
 void CssParser::recordBackgroundImage(const std::string_view selectorGroup, const std::string& path) {
@@ -4129,6 +4439,7 @@ bool CssParser::saveToCache() const {
     writeRuleRecord(file, pair.first, pair.second.order, pair.second.style);
     indexEntries.push_back({selectorHash(pair.first), ruleOffset});
   }
+  const uint32_t recordsEnd = file.position();
 
   // Sort and patch the index placeholder at position 11.
   std::sort(indexEntries.begin(), indexEntries.end(),
@@ -4136,6 +4447,14 @@ bool CssParser::saveToCache() const {
   file.seek(CssParser::CSS_CACHE_HEADER_BYTES + complexBytes_);
   for (const auto& entry : indexEntries) {
     file.write(reinterpret_cast<const uint8_t*>(&entry), sizeof(entry));
+  }
+  // The sheet table last, as writeCompiledCache writes it.
+  file.seek(recordsEnd);
+  {
+    uint8_t window[64];
+    serialization::BufferedFileWriter tail(file, window, sizeof(window));
+    writeSheetTable(tail);
+    tail.flush();
   }
 
   LOG_DBG("CSS", "Saved %u rules to cache", ruleCount);
@@ -4150,6 +4469,8 @@ bool CssParser::loadFromCache() {
     return false;
   }
 
+  // A build starts here: it resolves against every sheet until it is scoped (scopeToSheets).
+  scopedSheets_ = 0;
   // Drop parse-time in-memory rules and LRU caches.
   rulesBySelector_.clear();
   hotRuleCache_.clear();
@@ -4164,11 +4485,31 @@ bool CssParser::loadFromCache() {
     cacheRuleOffsets_.clear();
     cachedRuleCount_ = 0;
   }
+  const bool indexKept = cacheIndexLoaded_;
 
   if (!ensureCacheIndexLoaded()) {
     return false;
   }
+  // The kept index keeps a sheet table the heap refused with it: asked for again, so the build is scoped once the heap
+  // has room. A fresh load has just asked.
+  if (indexKept && sheetTableRefused_) retrySheetTable();
 
   LOG_DBG("CSS", "Loaded %u rules from cache index", static_cast<unsigned>(cachedRuleCount_));
   return true;
+}
+
+void CssParser::retrySheetTable() const {
+  FsFile file;
+  if (!Storage.openFileForRead("CSS", cachePath + rulesCache, file)) return;
+  // Where the index loaded with it ends (ensureCacheIndexLoaded), which the table must not reach below.
+  const size_t indexEnd = CSS_CACHE_HEADER_BYTES + complexBytes_ + cachedRuleCount_ * sizeof(SelectorEntry);
+  const SheetTableLoad load = loadSheetTable(file, indexEnd);
+  file.close();
+  if (load == SheetTableLoad::Loaded) {
+    LOG_INF("CSS", "Sheet table loaded on a retry: chapters are scoped again");
+  } else if (load == SheetTableLoad::Damaged) {
+    // It read as whole a moment ago. Unscoped, the build is not to be cached as if it were scoped.
+    LOG_ERR("CSS", "Sheet table damaged on a retry");
+    sheetTableRefused_ = true;
+  }
 }

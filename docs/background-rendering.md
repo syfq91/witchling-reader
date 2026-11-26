@@ -8,7 +8,10 @@ For the memory model these mechanisms operate under — the borrow-vs-release di
 particular, which is what shapes B's and C's gates — see
 [memory-allocation-strategy.md](memory-allocation-strategy.md). For what the borrowed buffer holds
 and what lending it does to the display, see
-[secondary-buffer-management.md](secondary-buffer-management.md).
+[secondary-buffer-management.md](secondary-buffer-management.md). For the priority order all of
+this follows (the complete page, then its pictures, then the rest), its rules and what each panel
+controller needs from the framebuffers, see
+[design/reader-priority-scheme.md](design/reader-priority-scheme.md).
 
 ## Task model
 
@@ -59,8 +62,8 @@ navigated to and have nothing to read yet — so it has the highest priority.
 ```
 runDeferredGrayscalePass();                 // 1. AA of the page just shown (visible quality)
 if (pendingGrayscale_.active) return;        //    AA still owed → nothing else runs
-if (section && section->hasActiveBuild()) {  // 2. the page on screen's images, then Background C
-  if (!stepImageLaneDuringBuild()) stepCurrentSectionBuild();
+if (section && section->hasActiveBuild()) {  // 2. the page on screen's gray (S3) and images, then Background C
+  if (!askBuildPageGray() && !stepImageLaneDuringBuild()) stepCurrentSectionBuild();
   return;
 }
 if (stepGlyphStoreRoom()) return;            // 3. room in the TrueType glyph store
@@ -74,6 +77,19 @@ matter once the current page/section is settled. Of those, the pictures a few pa
 before a chapter fifty pages away: the image lane runs before B, and B takes the secondary buffer only
 once the lane has nothing left to decode (`LaneBeforeBuild.h`, see the image lane below).
 
+**Input first** (`InputFirst.h`): `loop()` gets here on every pass that found no input *event*, and a press is no
+event until it is released and read. While one is on its way (an edge the loop has not taken in, a button held, a
+release waiting out its double-press window) steps 3 to 5 do not run. Each slice of B's build held the loop for 40 ms
+and a parse chunk, so the press was read three to four slices late: on the X4 the turn was seen 363 ms after the press
+with B building, against 111 ms without (2026-11-16), and the build those slices fed was thrown away by the turn. C
+slices through a press while the page the reader asked for is not drawn yet (it may be one C has not laid out), and
+is held like B once that page is up: a key held on a page pauses the layout of the pages behind it. While a press
+holds the slices, `skipLoopDelay()` is false, so the loop reads the key at its usual 10 ms instead of spinning. X3,
+the test API's press 0.6 s after a cold open's first page: turn seen after 374-446 ms before, 265-274 ms held
+(2026-11-17); what remains over the 110 ms of an idle reader is two slices that run before the key's edge reaches
+the loop. The slices themselves: 40 ms and the parse chunk that crosses them, 58 ms on average, 3 to 6 in 105 over
+100 ms, 184 ms the longest.
+
 **Starred pages** (`stepStarredPages()`, `StarAnchoring`): a star keeps the KOReader XPath of its page's first text,
 that text's visible-text offset with the section format it was counted under, and the layout its page number was
 counted in. Once the chapter on screen is complete, its stars counted in another layout move onto the page holding
@@ -83,8 +99,15 @@ before the anchors), the first time its chapter is shown complete, its page take
 the KOReader sync's mappers, which cannot be aborted: the step waits for what the glyph-store step waits for (the
 look-ahead gates and `BG_BUILD_BORROW_QUIET_MS` since the last page landed) and for no gesture in flight, parses at
 most once a tick, and does it in the lent secondary framebuffer, never on the heap. A star-marker change found while
-input waits is redrawn only once input is idle and the page is still on screen. A jump goes by the offset; without one
-it resolves the XPath on the spot. Each parse logs `STAR` at INF with its time.
+input waits is redrawn only once input is idle and the page is still on screen (`starMarkerRedraw_`). A jump goes by
+the offset; without one it resolves the XPath on the spot. Each parse logs `STAR` at INF with its time.
+
+Accepted: one slower page turn per relayout. When a star settles onto the page on screen, or off it, the reader redraws
+that page for the status bar's star. If that redraw has already started when a turn is pressed, the turn waits for its
+refresh: +0.4-0.5 s on the Picco (2 of 4 trials), once per relayout and only when a bookmark lands on the page on
+screen. It is one of the two redraws that break rule R7 of
+[design/reader-priority-scheme.md](design/reader-priority-scheme.md) (a complete page is not drawn again for class 3
+reasons).
 
 ---
 
@@ -154,6 +177,12 @@ before B; one page per tick.
   next section's first pages when that section's cache exists (not a CSS-fallback cache, which the
   reader rebuilds on entry). A window found clean is remembered (`imageWarmCleanSpine_` /
   `imageWarmCleanPage_`) until the position moves or B completes a section the window reaches into.
+- **A picture that will not decode:** the reader keeps the hashes of the pictures whose decode failed
+  for the file's own fault this session (`imageDecodeFailures_`, `DecodeFailures`: 8 x 4 B, cleared in
+  `onExit`, nothing on the card). `ImageBlock::render` draws such a picture's frame without decoding it,
+  in the foreground render; the lane, which draws nothing, skips the decode (also the gray8 warm). A card error, a refusal for memory and a preemption
+  are not failures of the file and are decoded again. This is apart from `imageWarmMisses_`, which
+  bounds the lane's tries per page.
 - **Gates:** no C build active; a secondary buffer to lend, or B holding it (below); no queued input
   and no gesture in flight; `IMAGE_LANE_SETTLE_MS` (300 ms) since the last turn, the last page on
   screen, or the last preempted decode. The scheduler already runs nothing while the deferred AA is
@@ -188,7 +217,9 @@ before B; one page per tick.
   image is never a placeholder (`ImageBlock::wouldShowPlaceholder()` checks the cache with a stat
   before it probes the image's size).
 - **Preemption and misses:** input aborts the decode (`CooperativeAbort`); the page is retried after
-  the next settle. A page that comes back incomplete without input (an unsupported or corrupt
+  the next settle. A JPEG parks instead: its caches keep their finished rows in `.part` files, a checkpoint
+  (`ImageBlock::checkpointPath()`) holds the decoder's state, and a resume decodes one band (progressive) or
+  `kResumeMinRows` (4) MCU rows (baseline) before it polls again, so a resume always makes progress (#837). A page that comes back incomplete without input (an unsupported or corrupt
   image, a decode refused for heap) gets `kImageWarmMaxTries` (2) attempts per session.
 - **After a warm:** if the page on screen showed those images as placeholders, it is redrawn from
   the cache unless input is waiting. If the warmed page is the one after the page on screen, the
@@ -210,8 +241,12 @@ is the same `stepImageWarmLocked()`, called between two slices by `stepImageLane
 
 The redraw comes from the build's own pass (`displayBuildPage`), which draws cached images. Where nothing the decode
 needs is on the bus a refresh holds (`HalCapabilities::decodesThroughRefresh`: a native SDMMC card and a PSRAM arena), the
-lane does not wait for the refresh that shows the page, a 1.5 s HALF on a new chapter. That shows on the X4 Pro. The
-Murphy qualifies, but its driver blocks in `triggerDisplay`, so the lane follows the refresh. The T5S3 does not qualify,
+lane does not wait for the refresh that shows the page, a 1.5 s HALF on a new chapter. That shows on the X4 Pro, and
+on the Picco since its SE0400 driver defers a refresh (freeink-sdk `Ssd2677Driver::displayStart`): there the chapter
+build runs through its first page's refresh as well. The same holds on the Murphy since its UC8253 driver defers
+(`Uc8253MurphyDriver::displayStart`): there a 277x390 JPEG on a chapter's first page was decoded and its two caches
+written, 0.35 s, inside the 0.97 s HALF waveform that showed the page, which was redrawn with the picture 60 ms after
+the waveform's end. The T5S3 does not qualify,
 its card being on SPI; with the wait and without it, its lane started 72 and 74 ms after the refresh ended.
 
 | Board | Scratch beside the build | Picture on screen | Chapter built |
@@ -230,7 +265,10 @@ cache hit, not a blocking parse. `stepBackgroundSectionBuild()`, one bounded sli
   ahead of the reading position, counting the current section's unread tail plus the sections
   built so far. Whole spines are built until the budget is covered, so many tiny front-matter
   spines get several built while one big chapter covers it alone. The cursor walks forward as each
-  settles and re-anchors on any navigation.
+  settles and re-anchors on any navigation. A spine item that holds only its chapter's heading
+  (HeadingCarry) settles in `Probe` as a section of no pages: the next item's build lays it out.
+  Where B, build-through and the image lane mean "the next chapter" they go by
+  `nextReadingSpine()`, which steps over such an item.
 - **State machine:** `Probe` (cache check; a cached spine settles at once) → `WaitHeap` (gates,
   re-checked at most once a second) → `Building` (`BG_BUILD_BUDGET_MS` = 40 ms slices) → `Settled`.
 - **Builds only inside the borrowed secondary buffer.** `beginBackgroundBorrow()` lends the block as
@@ -248,18 +286,25 @@ cache hit, not a blocking parse. `stepBackgroundSectionBuild()`, one bounded sli
     leaves a truncated section, CSS lookups degrade, an image header that does not fit is refused),
     and B discards every such result. 1.5 s is sized against a cheap retry (setup + parse ~950 ms on
     an X3).
-  - **Cost:** while B holds the block the reader has no AA (`secondaryBufferDegraded_`). B seeds
-    nothing and opts into no single-buffer fast differential: every render takes the block back
-    first (`recoverSecondaryBufferIfNeeded()`), so no refresh happens while B holds it. For that
+  - **Cost:** while B holds the block the reader has no AA (`secondaryBufferDegraded_`). On the X4
+    the borrow first seeds RED from the block while it still holds the frame on screen
+    (`beginBackgroundBorrow()`, `BuildThroughGate::seedsRed()`, #805); elsewhere it seeds nothing.
+    B opts into no single-buffer fast differential: every render takes the block back
+    first (`recoverSecondaryBufferIfNeeded()`), so no refresh happens while B holds it. On the C3s,
+    where the block is the secondary framebuffer, the turn after a borrow loses its one-pass
+    refresh: the block held the frame on screen (open work in
+    [future_work/reader-priority-scheme.md](future_work/reader-priority-scheme.md)). For that
     reason a clock-minute status-bar tick waits while B holds the block (`shouldSkipPeriodicUpdate()`
     sets `statusRefreshDeferred_`, and `endBackgroundBorrow()` requests the refresh when the block
     comes back); a page turn still renders at once.
-  - **Build-through (X3 only):** on the last `BG_BUILD_THROUGH_PAGES` (3) pages of a chapter, B's
+  - **Build-through (X3, X4):** on the last `BG_BUILD_THROUGH_PAGES` (3) pages of a chapter, B's
     build of the next chapter starts without the quiet period and keeps the block across page turns.
     Those pages draw in B/W with the normal refresh, without AA or a pre-render. If the reader gets
-    to the next chapter first, C adopts the live build. X3 only, because its controller keeps the
-    displayed frame as its own baseline; elsewhere the SSD1677's RED would first need seeding from a
-    frame the lent buffer may no longer hold.
+    to the next chapter first, C adopts the live build. The X3's controller keeps the displayed
+    frame as its own baseline. The X4 diffs against RED, so its build-through starts only while RED
+    is still the frame B's borrow seeded, and keeps its pages FAST in single-buffer fast
+    differential (`BuildThroughGate`, #805). Not where B lends a PSRAM arena: there the display
+    loses no buffer, and a build-through would only give up AA and the pre-render.
   - **No decode beside the build:** a page render that finds an image to decode while B keeps the
     buffer (`renderContents()`) has B yield it first, and renders as if B had never held it. It
     used to decode on the heap beside the build (X3, 2026-10-19, anti-aliasing off: a JPEG at
@@ -272,6 +317,13 @@ cache hit, not a blocking parse. `stepBackgroundSectionBuild()`, one bounded sli
     but the inflated XHTML from phase (a) stays on the card (`Section::abortSectionBuild()` keys on
     `extractDone`), so the retry is the cheap one. After `BG_BUILD_MAX_PREEMPTIONS` (2) the spine is
     left to C; a next-chapter spine abandoned mid-chapter is retried on the chapter's last pages.
+  - **After an abandon the look-ahead stops** (`LookAheadPause.h`): the reader turns faster than a chapter
+    builds, so B does not walk on to the spines after it. Each would lose the same race, and every borrow
+    that a turn takes back costs that turn its one-pass refresh (X4, a page every 2.5 s: 20 spines abandoned
+    and 45 builds thrown away in half a chapter, 43 of 71 turns in two passes). The abandoned spine stays
+    the target until the reader pauses or enters another chapter. A pause is a page that stays up longer, by
+    the quiet period, than the longest-standing page whose turn took a build of that spine away; the spine
+    then has its two attempts again. While it waits B counts as pending for `CMD:IDLE`.
     Neither an overlay opening nor a yield to an image decode counts (`endBackgroundBorrow(false)`):
     they say nothing about whether the parse fits between two turns.
 - **Lean CSS resolver:** every build uses the disk-backed resolver (`setLeanResolve`). The hot-rule
@@ -294,6 +346,33 @@ gap B doesn't cover. The render task **only draws**; the build runs on the loop 
 
 - **Start:** `buildSection()` detects the cache miss, picks a mode (below), draws the "Indexing"
   popup, kicks off the build so `hasActiveBuild()` is true, and returns — handing off.
+- **The Indexing popup** (`IndexingPopupGate.h`): the work it announces starts while it paints, where the card can be
+  read during the refresh (a card on its own bus; the X4, `refreshLeavesBusToCard`; the X3) and the output is not
+  inverted. A build that starts with its popup (a released build, or one adopted from Background-B) ships it async and
+  slices on the render task until the waveform ends; its lend waits for nothing: the C3s lend the frame not being
+  painted (`borrowSecondaryBufferDuringRefresh`; on the X4 RED is seeded from the popup after its finish), the S3s the
+  PSRAM arena. The SectionBuilding pass's popup (a resident build's, a turn ahead of the build, a percent target)
+  ships async where the loop task's slice can run through it (the S3s with the card on SDMMC, the X4 waiting off the
+  bus) and is waited for as a build page is (`waitForBuildRefreshUnlocked`). The first open indexes through its popup
+  on every board, a TXT or Markdown index through its own. Blocking still: Dark Mode, the T5S3's chapter and TXT
+  popups (card traffic beside its waveform not tried for a build), the X3's SectionBuilding popup (its slice waits
+  for a pending refresh), `compileSectionCache()`'s (the blocking fallback build). The first page of a chapter still
+  goes out after the popup's waveform: one refresh at a time. What the overlap buys is the build's head start.
+
+  | n=3, medians, s from the action, before / after | First open: work starts | Page | Chapter laid out |
+  |---|---|---|---|
+  | X4, cold open | 0.67 / 0.13 | 4.17 / 3.69 | 4.92 / 4.47 |
+  | X4, crossing (B's build adopted) | | 1.13 / 1.17 (page out) | 2.36 / 1.93 |
+  | X4, percent jump | | 5.32 / 4.82 | 3.49 / 2.99 |
+  | X4 Pro, crossing | | 1.86 / 1.83 (page on panel) | 2.61 / 2.05 |
+  | X4 Pro, percent jump | | 4.48 / 3.93 | 2.73 / 2.18 |
+  | Picco, percent jump | | 2.50 / 2.01 | 1.71 / 1.21 |
+  | Murphy (Bitter 8 pt), crossing | | 2.05 / 2.00 (page on panel) | 2.87 / 2.41 |
+  | Murphy, percent jump | | 3.92 / 3.47 | 2.57 / 2.12 |
+  | TXT, 40 KB, first open: X4 / X4 Pro / Picco / Murphy | | 6.80 / 6.25, 6.22 / 5.72, 3.56 / 3.40, 7.32 / 6.84 | |
+
+  AA off, the 2.53 bench book and profile (the Murphy at its owner's settings). The files the work wrote (book.bin, the
+  chapters, the TXT index) are byte-identical to master's on the X4, whose card shares the panel's bus, and the X4 Pro.
 - **Build:** `stepCurrentSectionBuild()` on the loop task, 40 ms slices, highest reader-build
   priority. On a newly-written target page it `requestUpdate()`s so the render task draws it.
 - **Draw:** the `SectionBuilding` pass (`renderSectionBuildingPass`) shows the requested page from
@@ -302,6 +381,59 @@ gap B doesn't cover. The render task **only draws**; the build runs on the loop 
   with a pixel cache replays it, any other is drawn as an "indexing" placeholder, so no decode runs
   on the build's heap. The `Normal` render after the build draws the images. Page reads flush the
   writer first so a second handle sees committed bytes.
+- **Through the page's refresh:** `displayBuildPage()` starts the refresh, releases the render lock and waits for the
+  waveform, and the slices go on meanwhile: the HALF a new chapter opens with is 1.7 s on the X4. Where the card has
+  its own bus and the build's arena is PSRAM (`HalCapabilities::decodesThroughRefresh`: the X4 Pro, and the Picco and
+  the Murphy since their drivers return from `triggerDisplay` with the waveform running) nothing more is needed.
+  Where the card shares the panel's SPI bus the wait itself was in the way: `HalDisplay::completeDisplay()` holds the
+  bus lock for the whole waveform, the build reads the chapter from the card, and the slice therefore sat out every
+  pending refresh. On a panel that needs the bus only to start and to finish a refresh
+  (`HalDisplay::refreshLeavesBusToCard()`: the X4) the waveform is waited for without the lock (`waitRefreshOffBus()`)
+  and the slice runs through that one refresh (`BuildDuringRefresh.h`). The X3 and the T5S3 still wait.
+  X4, *The Odyssey*, cold open of a 45 KB chapter, n=3, medians, before / after: the chapter laid out 6.57 / 4.97 s
+  after the open, the screen settled 7.23 / 5.63 s (two-pass; One-Pass 7.26 / 5.64, AA off 6.97 / 5.36), the page
+  itself on the panel 4.15 / 4.20 s, the lowest free heap unchanged. The page the build drew is freed before the
+  wait, as its font slots are: left alive it was heap the slices no longer had.
+- **Its gray** (`BuildPageGray.h`): a page of text with nothing over it gets its AA while the build goes on, by one
+  of two passes. Where the build leaves the frame buffers alone (`HalCapabilities::buildsInPsram()`, the S3s: the
+  build lays out in PSRAM, in its own region or in the arena lent in place of the secondary buffer, and the frame on
+  screen stays in that buffer) it is `Restore`: on a panel that puts a page and its gray up in one push (One-Pass
+  Anti-Aliasing, the T5S3) it goes up with the page's own push, its planes captured by the draw as `renderContents()`
+  captures a turn's; elsewhere `askBuildPageGray()` arms the deferred gray pass once the page's refresh is over, and
+  `runDeferredGrayscalePass()` runs it ahead of the next slice. Where the build holds the secondary buffer as its
+  arena (the X3, the X4's borrowed builds) it is `Redraw` (`runBuildPageGrayRedraw()`), between two slices once the
+  page's refresh is over: the page, its glyph slots and the status bar's pixels go into a block of the build's arena,
+  the planes are rendered over the write buffer (the page's only copy), the page is drawn there again with the status
+  bar put back as kept, not drawn again (its battery, clock and "~" count may have moved since the push), and the
+  write buffer goes to the cleanup (`GfxRenderer::renderGrayscalePlanesOverFrame()`). A digest of the frame before
+  and after says whether the redraw is the pushed frame (`frame=same` in the log); if not, the driver is told it has
+  no baseline and the next push is a clean one. The build waits for either pass. A turn drops or preempts it as it
+  does a turn's pass; a preempted one, or a `Redraw` that found no room in the arena, is asked for again at the
+  build's end. The X4's resident build keeps the gray for the build's end: it runs on the heap its low-heap guard
+  watches, which the page and its glyphs would come from. The loop's ticks read a hint (`buildPageGrayDue_`) before
+  they take the render lock for this; the lock on every tick made the Picco's build 53-66 ms slower.
+
+  | Picco, *The Odyssey*, n=3, medians, s, before / after | Gray on the panel | Chapter laid out | Settled |
+  |---|---|---|---|
+  | Cold open, two passes | 3.27 / 1.98 | 2.90 / 3.43 | 3.73 / 3.75 |
+  | Cold open, One-Pass | 3.26 / 1.97 | 2.89 / 3.42 | 3.79 / 3.80 |
+  | Turn into a chapter not laid out, two passes | 2.09 / 1.37 | 1.73 / 2.26 | 2.59 / 2.59 |
+  | Turn into a chapter not laid out, One-Pass | 2.10 / 0.86, with the page | 1.74 / 1.76 | 2.65 / 2.19 |
+  | A turn 0.6 s after the first page, two passes (gray: the page turned to) | 4.01 / 3.74 | 3.63 / 4.71 | 4.48 / 5.03 |
+
+  The page itself is on the panel when it was before (1.47 s on a cold open; One-Pass 0.05 s later, the capture). The
+  build waits for each pass: a page left before the build ends has cost it one, as the last row shows.
+
+  | X3, *The Odyssey* BOOK IV (66 pages), n=3, medians, s, before / after | Gray on the panel | Chapter laid out | Settled |
+  |---|---|---|---|
+  | Cold open, two passes | 6.58 / 4.08 | 6.14 / 6.65 | 7.23 / 7.05 |
+  | Cold open, One-Pass | 6.56 / 4.10 | 6.12 / 6.66 | 7.22 / 7.05 |
+  | A turn 0.6 s after the first page, two passes (from the press: the page turned to) | 2.97 / 1.19 | 6.82 / 7.83 | 7.92 / 8.22 |
+
+  Master d81e79e07 against the `Redraw` pass, 2026-11-17, from the open (the last row's gray from the press). The page
+  itself on the panel at 3.43-3.45 s both. The pass: planes 119 ms, gray 228 ms, redraw and cleanup 78 ms, `frame=same`
+  in every run; 3,168 bytes of status bar kept, 38.9 KB of the arena free. The lowest free heap of a chapter build
+  (8 KB held, `CMD:HEAP:HOLD`) 43,084-43,112 against 43,112 bytes; 30 turns at 2.5 s 1,368 / 1,360 ms median.
 - **Navigation during the build:** only for an explicit `Page` target — forward advances
   optimistically (shows the page once C reaches it, popup until then), back works, back past page 0
   leaves the chapter. A chapter-list, anchor or saved-text target resolves as soon as the build has
@@ -312,7 +444,8 @@ gap B doesn't cover. The render task **only draws**; the build runs on the loop 
   `Normal` pass renders the page with AA. When the build ends on the page `displayBuildPage()` last drew, a page of
   text with nothing over it (`buildPageOnScreen_`), that page stays on the panel as drawn, its page count still the
   build's "~" estimate, until the next turn (`keepBuildPageOnScreen()`): its AA comes as the deferred gray pass, which
-  then asks for the next page's pre-render. A page with pictures is drawn again, with them.
+  then asks for the next page's pre-render; a page that got its gray during the build (above) asks for the pre-render
+  at once. A page with pictures is drawn again, with them.
 - **Failure (failed / truncated / css-degraded):** discard, latch `forceBlockingBuildSpine_`, and
   fall back to the **blocking** path (which builds with the buffer released for ~52 KB headroom).
 
@@ -366,8 +499,10 @@ the first render after the build ends. `onExit()` restores it too if the reader 
   the healthy case; a release means there was none to lend.
 - **B borrow** (`INF`): `Background-B: borrowed secondary buffer for spine N …` /
   `Background-B: returned secondary buffer (spine N, build discarded|no build live,
-  preemptions=K; heap … at start, … lowest)`. Repeated `build discarded` at `preemptions=2` means B
-  keeps losing the race to page turns on that spine and is handing it to C.
+  preemptions=K; heap … at start, … lowest)`. `build discarded` at `preemptions=2` means B lost the
+  race to page turns on that spine twice: `Background build spine=N abandoned after 2 preemptions;
+  look-ahead stopped until a page stays up M ms or the chapter changes` follows, once a chapter at a
+  steady pace, and `Background-B: page up for M ms, trying spine N again` when the reader has paused.
   `Background-B: giving the buffer back to the image lane|the page render (spine N, yield K of 4)`
   precedes a discard that is a yield; `Page N: images drawn as placeholders until Background-B's
   build is done` means B had no yields left.

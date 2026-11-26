@@ -24,6 +24,7 @@
 
 #include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
+#include "DictionarySuggestionsActivity.h"
 #include "WordOutline.h"
 #include "components/UITheme.h"
 #include "util/SerialCommandGrammar.h"
@@ -174,8 +175,8 @@ turnedframe::Offsets pageOrigin(const GfxRenderer& renderer, const Page& page, c
 int pieceWidth(const GfxRenderer& renderer, const TextBlock::WordBox& geometry, const char* piece,
                const bool vertical) {
   if (vertical) return verticalTextAdvance(renderer, geometry.fontId, piece, geometry.style, geometry.scale);
-  return (geometry.scale == 1.0f) ? renderer.getTextWidth(geometry.fontId, piece, geometry.style)
-                                  : renderer.getTextWidthScaled(geometry.fontId, piece, geometry.style, geometry.scale);
+  return geometry.scale.isOne() ? renderer.getTextWidth(geometry.fontId, piece, geometry.style)
+                                : renderer.getTextWidthScaled(geometry.fontId, piece, geometry.style, geometry.scale);
 }
 
 // How far the pen moves past that piece: its advance, not its ink width. A vertical line's run down the column is both.
@@ -183,7 +184,7 @@ int pieceAdvance(const GfxRenderer& renderer, const TextBlock::WordBox& geometry
                  const bool vertical) {
   if (vertical) return verticalTextAdvance(renderer, geometry.fontId, piece, geometry.style, geometry.scale);
   const int advance = renderer.getTextAdvanceX(geometry.fontId, piece, geometry.style);
-  return (geometry.scale == 1.0f) ? advance : static_cast<int>(advance * geometry.scale + 0.5f);
+  return geometry.scale.isOne() ? advance : geometry.scale.apply(advance);
 }
 
 // The middle of a row, where the first selection starts: across the screen, or down it on a vertical page, whose rows
@@ -222,7 +223,7 @@ turnedframe::Rect readerBox(const bool vertical, const int readerWidth, const tu
 // piece). Called in the page's frame: on a vertical line (x, y) is the pen down the column and the line's top, as
 // drawTextVertical takes them.
 void drawPiece(const GfxRenderer& renderer, const int fontId, const int x, const int y, const char* text,
-               const GlyphRun& glyphs, const EpdFontFamily::Style style, const float scale, const uint8_t flags,
+               const GlyphRun& glyphs, const EpdFontFamily::Style style, const TextScale scale, const uint8_t flags,
                const bool black) {
   if (glyphs.count != 0) {
     renderer.drawGlyphRun(fontId, x, y, glyphs, black, style, scale);
@@ -230,7 +231,7 @@ void drawPiece(const GfxRenderer& renderer, const int fontId, const int x, const
     drawCombinedVertical(renderer, fontId, x, y, text, style, scale, black);
   } else if ((flags & DRAW_VERTICAL) != 0) {
     drawTextVertical(renderer, fontId, x, y, text, style, scale, (flags & DRAW_CENTRED_MARKS) != 0, black);
-  } else if (scale == 1.0f) {
+  } else if (scale.isOne()) {
     renderer.drawFormedText(fontId, x, y, text, black, style);
   } else {
     renderer.drawFormedTextScaled(fontId, x, y, text, black, style, scale);
@@ -932,7 +933,7 @@ void DictionaryWordSelectActivity::switchDictionary(const int direction) {
   performLookup();
 }
 
-void DictionaryWordSelectActivity::performLookup() {
+void DictionaryWordSelectActivity::performLookup(const char* const chosenHeadword) {
   if (SETTINGS.dictionaryName[0] == '\0') {
     popup = Popup::Error;
     popupMsg = StrId::STR_DICT_NO_DICT_SET;
@@ -989,14 +990,22 @@ void DictionaryWordSelectActivity::performLookup() {
   std::string headword;
   Dictionary::LookupResult result = Dictionary::LookupResult::NotFound;
   bool found = false;
-  // Not before the busy repaint: after a dictionary switch, that repaint is what rebuilt the words.
-  const CjkLookupRun::Script script = scriptAt(selected);
+  // Filled on a miss: "Did you mean", and the word it is for.
+  DictSuggestions suggestions;
+  std::string suggestedFor;
+  // Not before the busy repaint: after a dictionary switch, that repaint is what rebuilt the words. A chosen headword
+  // came from the suggestions for a word of the Latin path.
+  const CjkLookupRun::Script script = chosenHeadword ? CjkLookupRun::Script::Other : scriptAt(selected);
   if (script != CjkLookupRun::Script::Other) {
     found = lookUpRun(ok, retryable, definition, result);
   } else {
     char text[WORD_TEXT_CAPACITY];
-    buildWordText(selected, text, sizeof(text), true);
-    if (ok && speculationIdx == selected && speculation != Speculation::Unknown) {
+    if (chosenHeadword) {
+      snprintf(text, sizeof(text), "%s", chosenHeadword);
+    } else {
+      buildWordText(selected, text, sizeof(text), true);
+    }
+    if (!chosenHeadword && ok && speculationIdx == selected && speculation != Speculation::Unknown) {
       // The index search already ran while the cursor sat here. A hit only has to
       // read the definition; a known miss needs no SD access at all.
       if (speculation == Speculation::Found) {
@@ -1010,7 +1019,7 @@ void DictionaryWordSelectActivity::performLookup() {
       }
     } else if (ok) {
       found = dict.lookup(text, definition, headword, &result);
-      if (!found && result == Dictionary::LookupResult::NotFound && isHyphenJoined(selected)) {
+      if (!chosenHeadword && !found && result == Dictionary::LookupResult::NotFound && isHyphenJoined(selected)) {
         buildWordText(selected, text, sizeof(text), false);
         found = dict.lookup(text, definition, headword, &result);
       }
@@ -1021,9 +1030,32 @@ void DictionaryWordSelectActivity::performLookup() {
     }
     Dictionary::logLookup(SETTINGS.dictionaryName, text, ok ? Dictionary::resultName(result) : "open_or_index_failed",
                           found ? headword.c_str() : nullptr);
+    // A genuine miss: the headwords near the word, for "Did you mean". Not for a headword picked there, which the
+    // index has; and on the word as the page shows it, not the hyphenated retry.
+    if (ok && !found && !chosenHeadword && result == Dictionary::LookupResult::NotFound) {
+      buildWordText(selected, text, sizeof(text), true);
+      if (dict.suggest(text, suggestions)) suggestedFor = Dictionary::cleanWord(text);
+    }
   }
   // Before the definition or a popup is drawn, and before the render lock below.
   lent.giveBack();
+
+  if (suggestions.count > 0) {
+    popup = Popup::None;
+    // The list needs nothing of the dictionary's; the lookup of a pick takes the buffers again.
+    dict.releaseCaches();
+    startActivityForResult(
+        std::make_unique<DictionarySuggestionsActivity>(renderer, mappedInput, std::move(suggestedFor), suggestions),
+        [this](const ActivityResult& result) {
+          // The list overdrew the page; the snapshot no longer matches.
+          snapshotIdx = -1;
+          if (const auto* pick = std::get_if<DictionarySuggestionResult>(&result.data)) {
+            pendingSuggestion = pick->headword;
+          }
+          requestUpdate();
+        });
+    return;
+  }
 
   if (found) {
     popup = Popup::None;
@@ -1109,6 +1141,12 @@ void DictionaryWordSelectActivity::loop() {
     const int direction = pendingDictionarySwitch;
     pendingDictionarySwitch = 0;
     switchDictionary(direction);
+    return;
+  }
+  if (!pendingSuggestion.empty()) {
+    const std::string chosen = std::move(pendingSuggestion);
+    pendingSuggestion.clear();
+    performLookup(chosen.c_str());
     return;
   }
 

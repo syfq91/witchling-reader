@@ -1,10 +1,13 @@
 // A table cell whose text the heap cannot hold stops the build the way any low-heap stop does: the pages laid out
 // before it are kept as a truncated section, and nothing aborts. The cell's ParsedText used to be a bare `new`, which
 // aborts the firmware when the heap is out (-fno-exceptions). TABLE_CELL_FAULT_INJECTION refuses the n-th cell its
-// text (ChapterHtmlSlimParser::makeCellText).
+// text (ChapterHtmlSlimParser::makeCellText). The same hook refuses a grid row its line lists, and a table's own
+// growth: the pending row's cell list, a laid-out row's cell list, the fragment's row list and the fragment's
+// allocation.
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -30,7 +33,7 @@ constexpr int kCols = 3;
 Section::BuildParams pages() {
   Section::BuildParams p;
   p.fontId = 0;
-  p.lineCompression = 1.0f;
+  p.lineCompression = TextScale();
   p.viewportWidth = 480;
   p.viewportHeight = 96;
   p.fontSizeNormalization = false;
@@ -134,4 +137,289 @@ TEST(TableCellTextHeap, ARefusedCellStopsTheBuildAndKeepsThePagesBeforeIt) {
     epub.reset();
     fs::remove_all(work);
   }
+}
+
+namespace {
+
+// Restores "never refuse" and the count however the test ends.
+struct CellLineHooks {
+  CellLineHooks(const size_t scratch, const size_t lists) {
+    cellLineScratchLeft() = scratch;
+    cellLinesLeft() = lists;
+    cellLinesAllocated() = 0;
+  }
+  ~CellLineHooks() {
+    cellLineScratchLeft() = SIZE_MAX;
+    cellLinesLeft() = SIZE_MAX;
+  }
+  CellLineHooks(const CellLineHooks&) = delete;
+  CellLineHooks& operator=(const CellLineHooks&) = delete;
+};
+
+bool hasWord(const std::vector<std::string>& words, const std::string& w) {
+  for (const auto& x : words)
+    if (x == w) return true;
+  return false;
+}
+
+// Builds `body()` with the hooks set; the build must finish whole, the table's words all present.
+void expectTableKeptAsParagraphs(const std::string& tag, const size_t scratch, const size_t lists) {
+  SCOPED_TRACE(tag);
+  GfxRenderer renderer;
+  const auto work = freshWorkDir(tag);
+  auto epub = syntheticBook(work, 0, body());
+  ASSERT_TRUE(epub);
+  Section built(epub, 0, renderer);
+  bool ok = false;
+  {
+    const CellLineHooks guard(scratch, lists);
+    ok = built.createSectionFile(pages(), {}, /*skipEviction=*/true);
+  }
+  ASSERT_TRUE(ok);
+  EXPECT_FALSE(built.isTruncatedCache()) << "a refused line list is a softer exit: the row goes out as paragraphs";
+  const auto words = wordsOfAllPages(built);
+  for (int r = 0; r < kRows; ++r) {
+    for (int c = 0; c < kCols; ++c) {
+      const std::string cell = "c" + std::to_string(r) + std::to_string(c);
+      EXPECT_TRUE(hasWord(words, cell)) << "lost " << cell;
+    }
+  }
+  EXPECT_EQ(words.back(), "after");
+  epub.reset();
+  fs::remove_all(work);
+}
+
+}  // namespace
+
+// Each cell's line list is one allocation at its exact size, and the table's first grid row reserves the scratch once.
+TEST(TableCellLines, OneAllocationPerCell) {
+  GfxRenderer renderer;
+  const auto work = freshWorkDir("lines_count");
+  auto epub = syntheticBook(work, 0, body());
+  ASSERT_TRUE(epub);
+  Section built(epub, 0, renderer);
+  {
+    const CellLineHooks guard(SIZE_MAX, SIZE_MAX);
+    ASSERT_TRUE(built.createSectionFile(pages(), {}, /*skipEviction=*/true));
+    // Whole rows, one allocation per cell: a row the page cannot hold is laid out again on the next page.
+    EXPECT_GE(cellLinesAllocated(), static_cast<size_t>(kRows * kCols));
+    EXPECT_EQ(cellLinesAllocated() % kCols, 0u);
+  }
+  EXPECT_FALSE(built.isTruncatedCache());
+  epub.reset();
+  fs::remove_all(work);
+}
+
+TEST(TableCellLines, ARefusedScratchSendsTheRowOutAsParagraphs) {
+  expectTableKeptAsParagraphs("scratch_refused", 0, SIZE_MAX);
+}
+
+TEST(TableCellLines, ARefusedExactListSendsTheRowOutAsParagraphs) {
+  for (size_t allowed = 0; allowed < static_cast<size_t>(kCols); ++allowed) {
+    expectTableKeptAsParagraphs("list_refused_" + std::to_string(allowed), SIZE_MAX, allowed);
+  }
+}
+
+namespace {
+
+enum class TableGrowth { RowCells, LayoutCells, PackerRows, FragmentAlloc };
+
+// Restores "never refuse" however the test ends. `asks` successes of `kind`, then `refusals` refused asks (SIZE_MAX:
+// every one from then on).
+struct GrowthHooks {
+  GrowthHooks(const TableGrowth kind, const size_t asks, const size_t refusals) {
+    tableRowCellsLeft() = layoutCellsLeft() = packerRowsLeft() = fragmentAllocLeft() = SIZE_MAX;
+    size_t& left = kind == TableGrowth::RowCells      ? tableRowCellsLeft()
+                   : kind == TableGrowth::LayoutCells ? layoutCellsLeft()
+                   : kind == TableGrowth::PackerRows  ? packerRowsLeft()
+                                                      : fragmentAllocLeft();
+    left = asks;
+    tableGrowthRefusals() = refusals;
+    tableGrowthRefused() = 0;
+  }
+  ~GrowthHooks() {
+    tableRowCellsLeft() = layoutCellsLeft() = packerRowsLeft() = fragmentAllocLeft() = SIZE_MAX;
+    tableGrowthRefusals() = SIZE_MAX;
+  }
+  GrowthHooks(const GrowthHooks&) = delete;
+  GrowthHooks& operator=(const GrowthHooks&) = delete;
+};
+
+// The words of every page, a grid row's cells included (wordsOfAllPages sees paragraphs only), in reading order.
+std::vector<std::string> wordsOfAllPagesAndGrids(Section& section) {
+  std::vector<std::string> words;
+  const auto addBlock = [&words](const TextBlock* block) {
+    if (!block || !block->valid()) return;
+    for (uint16_t w = 0; w < block->wordCount(); ++w) words.emplace_back(block->wordText(w));
+  };
+  for (int pg = 0; pg < section.pageCount; ++pg) {
+    section.currentPage = pg;
+    const auto page = section.loadPageFromSectionFile();
+    EXPECT_TRUE(page) << "page " << pg;
+    if (!page) break;
+    for (const auto& el : page->elements) {
+      if (el->getTag() == TAG_PageLine) {
+        addBlock(static_cast<const PageLine&>(*el).getBlock());
+      } else if (el->getTag() == TAG_PageTable) {
+        for (const auto& row : static_cast<const PageTableFragment&>(*el).getRows())
+          for (const auto& cell : row.cells)
+            for (const auto& line : cell.lines) addBlock(line.get());
+      }
+    }
+  }
+  return words;
+}
+
+// Every word the whole chapter holds, in order.
+std::vector<std::string> expectedWords() {
+  std::vector<std::string> out;
+  for (int i = 0; i < kLeadParagraphs; ++i) out.push_back(word(i));
+  for (int r = 0; r < kRows; ++r)
+    for (int c = 0; c < kCols; ++c) out.push_back("c" + std::to_string(r) + std::to_string(c));
+  out.push_back("after");
+  return out;
+}
+
+// Builds `body()` refusing the (`asks`+1)-th ask of `kind`. A refusal the table absorbs leaves the whole chapter, every
+// word in order; one the build cannot absorb stops it with the pages before it kept and nothing lost out of order.
+// Returns whether any ask was refused (false: `asks` is past the table's last ask).
+bool buildRefusingGrowth(const TableGrowth kind, const size_t asks, const size_t refusals, const bool mustStop) {
+  SCOPED_TRACE("kind " + std::to_string(static_cast<int>(kind)) + ", asks allowed " + std::to_string(asks) +
+               ", refusals " + std::to_string(refusals));
+  GfxRenderer renderer;
+  const auto work = freshWorkDir("growth_" + std::to_string(static_cast<int>(kind)) + "_" + std::to_string(asks) + "_" +
+                                 std::to_string(refusals == SIZE_MAX ? 99 : refusals));
+  auto epub = syntheticBook(work, 0, body());
+  EXPECT_TRUE(epub);
+  if (!epub) return false;
+  size_t refused = 0;
+  {
+    Section built(epub, 0, renderer);
+    bool ok = false;
+    {
+      const GrowthHooks guard(kind, asks, refusals);
+      ok = built.createSectionFile(pages(), {}, /*skipEviction=*/true);
+      refused = tableGrowthRefused();
+    }
+    EXPECT_TRUE(ok);
+    const auto words = wordsOfAllPagesAndGrids(built);
+    const auto expected = expectedWords();
+    if (refused == 0) {
+      EXPECT_FALSE(built.isTruncatedCache());
+      EXPECT_EQ(words, expected);
+    } else if (mustStop) {
+      EXPECT_TRUE(built.isTruncatedCache()) << "the heap stayed out: the build stops and says so";
+      EXPECT_GE(words.size(), static_cast<size_t>(kLeadParagraphs) / 2);
+      EXPECT_LE(words.size(), expected.size());
+      if (words.size() > expected.size()) return true;  // would read past `expected`
+      EXPECT_TRUE(std::equal(words.begin(), words.end(), expected.begin())) << "what was kept is a prefix, in order";
+    } else {
+      EXPECT_FALSE(built.isTruncatedCache()) << "a softer exit: the row goes out as paragraphs";
+      EXPECT_EQ(words, expected) << "every word of every degraded row, in order";
+    }
+  }
+  epub.reset();
+  fs::remove_all(work);
+  return refused != 0;
+}
+
+// Walks the refusal over every ask of `kind` the fixture makes, until a count that refuses nothing.
+void walkGrowth(const TableGrowth kind, const size_t refusals, const bool mustStop) {
+  size_t asks = 0;
+  while (buildRefusingGrowth(kind, asks, refusals, mustStop)) {
+    ++asks;
+    ASSERT_LT(asks, 64u) << "the walk never ran out of asks";
+  }
+  EXPECT_GT(asks, 0u) << "the fixture made no ask of this kind";
+}
+
+}  // namespace
+
+// A refused cell slot degrades the row it would have joined, keeping its text, and asks once more.
+TEST(TableRowGrowth, ARefusedCellSlotDegradesTheRowAndKeepsItsWords) {
+  walkGrowth(TableGrowth::RowCells, 1, /*mustStop=*/false);
+}
+
+// A second refusal in a row has no row left to degrade: the build stops with its pages kept.
+TEST(TableRowGrowth, ARefusedCellSlotThatStaysRefusedStopsTheBuild) {
+  walkGrowth(TableGrowth::RowCells, SIZE_MAX, /*mustStop=*/true);
+}
+
+// A refused laid-out cell list is the paragraph exit, whether it is one row or every row.
+TEST(TableRowGrowth, ARefusedLayoutCellListSendsTheRowOutAsParagraphs) {
+  walkGrowth(TableGrowth::LayoutCells, 1, /*mustStop=*/false);
+  walkGrowth(TableGrowth::LayoutCells, SIZE_MAX, /*mustStop=*/false);
+}
+
+// A refused fragment row list flushes the fragment and asks once more.
+TEST(TableRowGrowth, ARefusedFragmentRowListFlushesAndAsksAgain) {
+  walkGrowth(TableGrowth::PackerRows, 1, /*mustStop=*/false);
+}
+
+// Refused twice in a row, the build stops with its pages kept.
+TEST(TableRowGrowth, AFragmentRowListRefusedTwiceStopsTheBuild) {
+  walkGrowth(TableGrowth::PackerRows, SIZE_MAX, /*mustStop=*/true);
+}
+
+// A fragment that cannot be allocated is not dropped silently: the build stops and the section says it is truncated.
+TEST(TableRowGrowth, ARefusedFragmentAllocationStopsTheBuildInsteadOfDroppingTheRows) {
+  walkGrowth(TableGrowth::FragmentAlloc, 1, /*mustStop=*/true);
+}
+
+namespace {
+
+constexpr int kManyRows = 120;
+
+// A table with a header row and many body rows: it spans several pages (and, in a tall viewport, hits the 48-row cap).
+std::string manyRowsBody() {
+  std::string out =
+      "<table>"
+      "<thead><tr><th>h0</th><th>h1</th><th>h2</th></tr></thead><tbody>";
+  for (int r = 0; r < kManyRows; ++r) {
+    out += "<tr>";
+    for (int c = 0; c < 3; ++c) out += "<td>r" + std::to_string(r) + "x" + std::to_string(c) + "</td>";
+    out += "</tr>";
+  }
+  out += "</tbody></table><p>after</p>";
+  return out;
+}
+
+// Builds `manyRowsBody()` at `viewportHeight` and counts the pushes onto a full fragment row list.
+void expectNoUnaskedGrowth(const uint16_t viewportHeight, const size_t minFragments) {
+  SCOPED_TRACE("viewport height " + std::to_string(viewportHeight));
+  GfxRenderer renderer;
+  const auto work = freshWorkDir("many_rows_" + std::to_string(viewportHeight));
+  auto epub = syntheticBook(work, 0, manyRowsBody());
+  ASSERT_TRUE(epub);
+  size_t fragments = 0;
+  {
+    Section built(epub, 0, renderer);
+    auto params = pages();
+    params.viewportHeight = viewportHeight;
+    packerGrowthPushes() = 0;
+    ASSERT_TRUE(built.createSectionFile(params, {}, /*skipEviction=*/true));
+    EXPECT_FALSE(built.isTruncatedCache());
+    EXPECT_EQ(packerGrowthPushes(), 0u) << "a push found the fragment's row list full: it grew past its reserve";
+    for (int pg = 0; pg < built.pageCount; ++pg) {
+      built.currentPage = pg;
+      const auto page = built.loadPageFromSectionFile();
+      ASSERT_TRUE(page);
+      for (const auto& el : page->elements) fragments += el->getTag() == TAG_PageTable ? 1 : 0;
+    }
+    const auto words = wordsOfAllPagesAndGrids(built);
+    EXPECT_NE(std::find(words.begin(), words.end(), "r" + std::to_string(kManyRows - 1) + "x2"), words.end());
+    EXPECT_EQ(words.back(), "after");
+  }
+  EXPECT_GE(fragments, minFragments);
+  epub.reset();
+  fs::remove_all(work);
+}
+
+}  // namespace
+
+// The fragment's row list is reserved after the flush that empties it, so a table over several pages (a page break
+// each few rows) and one over the 48-row cap never grow it through the throwing operator new.
+TEST(TableRowGrowth, ATableOverManyPagesNeverGrowsTheFragmentRowListPastItsReserve) {
+  expectNoUnaskedGrowth(96, 10);
+  expectNoUnaskedGrowth(4000, 3);
 }

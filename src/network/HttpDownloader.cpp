@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "CrossPointSettings.h"
@@ -80,10 +81,11 @@ crosspoint::UnverifiableHosts g_unverifiableHosts;
 // user's "skip HTTPS validation" setting -- the escape hatch for self-hosted servers with a private
 // CA or a self-signed certificate, which Strict ignores by design -- and, for
 // VerifiedThenUnverified, whether the request carries credentials (a username or a password,
-// whether or not Basic auth would send them).
+// whether or not Basic auth would send them, or what `carriesCredentials` says: headers, a body).
 crosspoint::TlsPlan tlsPlanFor(const HttpDownloader::TlsPolicy tls, const std::string& username,
-                               const std::string& password) {
-  return crosspoint::planTls(tls, SETTINGS.skipHttpsValidation, !username.empty() || !password.empty());
+                               const std::string& password, const bool carriesCredentials = false) {
+  return crosspoint::planTls(tls, SETTINGS.skipHttpsValidation,
+                             carriesCredentials || !username.empty() || !password.empty());
 }
 
 // Modem sleep parks the radio between DTIM beacons, which costs packets on a transfer long
@@ -116,7 +118,8 @@ size_t largestFreeBlock() { return heap_caps_get_largest_free_block(MALLOC_CAP_D
 // peer fails to verify.
 HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
                                            const std::string& password, Sink& sink, HttpDownloader::TlsPolicy tls,
-                                           const HttpDownloader::RedirectFilter& redirectAllowed) {
+                                           const HttpDownloader::RedirectFilter& redirectAllowed,
+                                           const HttpDownloader::Headers& headers, int* httpStatus) {
   const WifiPowerSaveGuard psGuard;
   logPreCallContext(url);
   const unsigned long startMs = millis();
@@ -124,7 +127,7 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
           heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 
   crosspoint::SecureHttpClient http;
-  const crosspoint::TlsPlan plan = tlsPlanFor(tls, username, password);
+  const crosspoint::TlsPlan plan = tlsPlanFor(tls, username, password, !headers.empty());
   // No roots => SecureClient sets WOLFSSL_VERIFY_NONE and skips the hostname
   // check: one handshake, no chain work.
   http.setCACert(plan.verify ? CROSSPOINT_ROOTS_PEM : nullptr);
@@ -138,6 +141,7 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
     http.setBasicAuth(username, password);
   }
   if (redirectAllowed) http.setRedirectFilter(redirectAllowed);
+  for (const auto& header : headers) http.addHeader(header.first, header.second);
 
   bool openLogged = false;
   const auto write = sink.write;
@@ -159,6 +163,8 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   LOG_DBG("HTTP", "Phase done @%lums rc=%d downloaded=%zu (insecure=%d) handshakeMinFree=%u handshakeMinLargest=%u",
           millis() - startMs, rc, sink.downloaded, static_cast<int>(http.lastConnectionWasInsecure()),
           static_cast<unsigned>(http.lastHandshakeMinFree()), static_cast<unsigned>(http.lastHandshakeMinLargest()));
+  // A negative rc is the client's own error: no answer came.
+  if (httpStatus) *httpStatus = rc > 0 ? rc : 0;
   if (rc == crosspoint::SecureHttpClient::ERR_ABORTED) {
     return HttpDownloader::ABORTED;
   }
@@ -183,8 +189,9 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
 // files, or fetch public data pass their own.
 HttpDownloader::DownloadError runGetDispatch(const std::string& url, const std::string& username,
                                              const std::string& password, Sink& sink, HttpDownloader::TlsPolicy tls,
-                                             const HttpDownloader::RedirectFilter& redirectAllowed = {}) {
-  return runGetSecure(url, username, password, sink, tls, redirectAllowed);
+                                             const HttpDownloader::RedirectFilter& redirectAllowed = {},
+                                             const HttpDownloader::Headers& headers = {}, int* httpStatus = nullptr) {
+  return runGetSecure(url, username, password, sink, tls, redirectAllowed, headers, httpStatus);
 }
 }  // namespace
 
@@ -374,9 +381,11 @@ HttpDownloader::DownloadError finishFileDownload(HttpDownloader::DownloadError r
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress, const std::string& username,
                                                              const std::string& password, TlsPolicy tls,
-                                                             const RedirectFilter& redirectAllowed) {
+                                                             const RedirectFilter& redirectAllowed,
+                                                             const Headers& headers, int* httpStatus) {
   LOG_DBG("HTTP", "Downloading: %s", url.c_str());
   LOG_DBG("HTTP", "Destination: %s", destPath.c_str());
+  if (httpStatus) *httpStatus = 0;
 
   const std::string partPath = partPathFor(destPath);
   FsFile file;
@@ -394,8 +403,35 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     return Storage.openFileForWrite("HTTP", partPath.c_str(), file);
   };
 
-  const DownloadError result = runGetDispatch(url, username, password, sink, tls, redirectAllowed);
+  const DownloadError result = runGetDispatch(url, username, password, sink, tls, redirectAllowed, headers, httpStatus);
   return finishFileDownload(result, destPath, file, sink.downloaded);
+}
+
+int HttpDownloader::request(const char* method, const std::string& url, const Headers& headers,
+                            const std::string_view body, const HeaderCallback& onHeader, const ResponseCallback& onData,
+                            const TlsPolicy tls) {
+  const WifiPowerSaveGuard psGuard;
+  logPreCallContext(url);
+  crosspoint::SecureHttpClient http;
+  // A body or a write is a credential as much as a header: a password grant sends its secret in the body.
+  const crosspoint::TlsPlan plan =
+      tlsPlanFor(tls, "", "", crosspoint::requestCarriesCredentials(method, !headers.empty(), !body.empty()));
+  http.setCACert(plan.verify ? CROSSPOINT_ROOTS_PEM : nullptr);
+  http.setAllowInsecureFallback(plan.fallbackOnVerifyError);
+  http.setUnverifiableHosts(&g_unverifiableHosts);
+  http.setAllowCertificateDateErrors(waiveCertificateDates(url, plan));
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.setUserAgent("WitchReader-ESP32-" CROSSPOINT_VERSION);
+  for (const auto& header : headers) http.addHeader(header.first, header.second);
+  // A 3xx goes back to the caller: the filter stops at the first redirect, which hands back its status.
+  http.setRedirectFilter([](const std::string&) { return false; });
+  if (onHeader) http.setResponseHeaderSink(onHeader);
+  const int rc = http.request(method, url, body, [&http, &onData](const uint8_t* data, const size_t len) {
+    return onData(http.lastStatus(), data, len);
+  });
+  LOG_DBG("HTTP", "%s %s -> %d (insecure=%d)", method, url.c_str(), rc,
+          static_cast<int>(http.lastConnectionWasInsecure()));
+  return rc;
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(Session& session, const std::string& url,

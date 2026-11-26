@@ -2,8 +2,10 @@
 # cache. Pure host code, so they run in the default ctest sweep on any host.
 add_executable(CssParserTest
   CssParserTest.cpp
+  CssNumberTest.cpp
   ${REPO_ROOT}/test/zip_entry_reader/LoggingStub.cpp
   ${REPO_ROOT}/lib/Epub/Epub/css/CssParser.cpp
+  ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
   ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
   ${REPO_ROOT}/lib/InflateReader/InflateReader.cpp
   ${REPO_ROOT}/lib/uzlib/src/tinflate.c
@@ -19,6 +21,7 @@ target_include_directories(CssParserTest PRIVATE
   ${REPO_ROOT}/lib/Logging
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/Memory
+  ${REPO_ROOT}/lib/FsHelpers
   ${REPO_ROOT}/lib/InflateReader
   ${REPO_ROOT}/lib/uzlib/src
   ${REPO_ROOT}/test/zip_entry_reader
@@ -38,6 +41,7 @@ add_executable(EpubCssCacheTest
   CssParserCacheTest.cpp
   ${REPO_ROOT}/test/zip_entry_reader/LoggingStub.cpp
   ${REPO_ROOT}/lib/Epub/Epub/css/CssParser.cpp
+  ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
   ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
   ${REPO_ROOT}/lib/InflateReader/InflateReader.cpp
   ${REPO_ROOT}/lib/uzlib/src/tinflate.c
@@ -53,6 +57,7 @@ target_include_directories(EpubCssCacheTest PRIVATE
   ${REPO_ROOT}/lib/Logging
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/Memory
+  ${REPO_ROOT}/lib/FsHelpers
   ${REPO_ROOT}/lib/InflateReader
   ${REPO_ROOT}/lib/uzlib/src
   ${REPO_ROOT}/test/zip_entry_reader
@@ -76,6 +81,7 @@ add_executable(EpubCssCascadeTest
   CssCascadeTest.cpp
   ${REPO_ROOT}/test/zip_entry_reader/LoggingStub.cpp
   ${REPO_ROOT}/lib/Epub/Epub/css/CssParser.cpp
+  ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
 )
 
 target_include_directories(EpubCssCascadeTest PRIVATE
@@ -85,6 +91,7 @@ target_include_directories(EpubCssCascadeTest PRIVATE
   ${REPO_ROOT}/lib/Logging
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/Memory
+  ${REPO_ROOT}/lib/FsHelpers
   ${REPO_ROOT}/test/zip_entry_reader
   ${REPO_ROOT}/test/shims
 )
@@ -104,6 +111,7 @@ add_executable(EpubCssCensusTest EXCLUDE_FROM_ALL
   CssCensusTest.cpp
   ${REPO_ROOT}/test/zip_entry_reader/LoggingStub.cpp
   ${REPO_ROOT}/lib/Epub/Epub/css/CssParser.cpp
+  ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
   ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
   ${REPO_ROOT}/lib/InflateReader/InflateReader.cpp
   ${REPO_ROOT}/lib/uzlib/src/tinflate.c
@@ -119,6 +127,7 @@ target_include_directories(EpubCssCensusTest PRIVATE
   ${REPO_ROOT}/lib/Logging
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/Memory
+  ${REPO_ROOT}/lib/FsHelpers
   ${REPO_ROOT}/lib/InflateReader
   ${REPO_ROOT}/lib/uzlib/src
   ${REPO_ROOT}/test/zip_entry_reader

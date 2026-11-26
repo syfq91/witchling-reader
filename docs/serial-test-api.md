@@ -228,8 +228,9 @@ Reply: `ACT_OK`, or `ACT_ERROR:<reason>` (`no such file <path>`, `bad position <
   it also saves that position as the book's progress. `@<percent>%` lands where the reader's own
   "go to percent" lands.
 - The new screen opens on the next loop pass; wait with `CMD:IDLE` before you look at it. Opening a
-  book that has never been opened indexes it first, which can take seconds (a full `CMD:IDLE`
-  waits for that; `IDLE:...:SCREEN` does not).
+  book at a chapter that is not laid out yet shows its page while the layout goes on, which can take
+  seconds: `IDLE:...:SCREEN` answers once that page is complete, a full `CMD:IDLE` once the chapter
+  is laid out (see [`IDLE`](#waiting-idle)).
 
 ```
 > CMD:ACT:READER:/test/The Anarchy - Dalrymple, William.epub@20:5
@@ -384,8 +385,8 @@ book holds.
 
 Errors: `not in the reader` (another screen is on top, the reader's own menu included), `no page`
 (no section loaded, or the page could not be read), `busy` (the section on screen is still being
-built, or a page turn is on its way to the panel: wait with `CMD:IDLE:...:SCREEN`, which waits for
-both), `no memory` (the heap had no 2 KB block for the command's scratch).
+built, or a page turn is on its way to the panel: wait with `CMD:IDLE`, which waits for both;
+`:SCREEN` waits for the turn only), `no memory` (the heap had no 2 KB block for the command's scratch).
 
 How it works: the reader keeps no page in memory between draws, so the command loads the page on
 screen from its section file, as a redraw does, and writes it out element by element; nothing it
@@ -436,12 +437,17 @@ press that changes nothing on screen counts as done 1 s after it was taken in.
 | --- | --- |
 | `transition` | a screen change is queued |
 | `input` | a press (or touch) has not been taken in yet, or is waiting out the double-press window |
-| `render` | a frame is queued, being drawn, or still being refreshed onto the panel; or the screen is about to change by itself (the reader's page still being built, a page turn on its way, the anti-aliasing redraw of the page); or the frame of the last command's effect is still to come |
+| `render` | a frame is queued, being drawn, or still being refreshed onto the panel; or the screen is about to change by itself (the reader's page not on the panel yet, a page turn on its way, the page's anti-aliasing still to come); or the frame of the last command's effect is still to come |
 | `background` | the screen has work of its own to finish: the reader's chapter builds (the current one and the look-ahead), the pre-render of the next page, image decodes, a step of the TrueType glyph store an idle tick would run (room to make: a reclaim or an index rebuild; or its use counts to take); Home's cover loading |
 | `settling` | nothing was busy, but not yet for 250 ms when the timeout came |
 
 With `:SCREEN` it waits only until the screen has settled (everything above but `background`).
-That is what you want before a screenshot after a page turn or after opening a book. A full
+That is what you want before a screenshot after a page turn or after opening a book. In the reader
+it is the complete page (`PageComplete.h`): the page asked for is on the panel, with its gray when
+anti-aliasing is on. A chapter still being laid out behind that page is `background`, so a press
+can be sent while it goes on. Where the page a build shows gets its gray only at the build's end
+(the X3 and the X4 with anti-aliasing on) the page is complete only then; so is a page with
+pictures, which the build's end draws again with them. A full
 `CMD:IDLE` in the reader also waits for the look-ahead builds of the next chapters, which start
 1.5 s after a page appears and can take tens of seconds on a long book, and for a TrueType glyph store that still
 needs room made (a reclaim or an index rebuild, `CMD:TTF`) or still has its use counts to take (their block is
@@ -469,6 +475,21 @@ install. A 20.6 s open of a book with a TrueType family not yet installed was an
 < IDLE:613
 > CMD:SCREENSHOT
 ```
+
+**The "page complete" stamp.** Every command `IDLE` follows (`BTN`, `TOUCH`, `SWIPE`, an `ACT` that opens a
+screen) also starts a `:SCREEN` wait of its own, answered in the log instead of on the line:
+
+```
+[INF] [SER] page complete: 913 ms after the press
+```
+
+The time runs from when the device read the command to the first loop pass at which the screen had nothing left
+to do, without the 250 ms the wait then stays quiet (so the line itself comes 250 ms later). A render pass that
+follows the page without a gap counts with it, as it does for `IDLE:SCREEN`: after a page turn that is the
+pre-render of the next page (about 65 ms on the X3). A bench reads
+it per press without sending an `IDLE` between its presses. A command that follows before the frame was complete
+starts the wait again, and that frame gets no stamp; neither does one that is not complete within 60 s. After
+an `ACT` the line says `after the screen change`.
 
 ### Events: `EVENTS`
 
@@ -585,10 +606,18 @@ DICT:result=<outcome> dict=<dictionary> word=<word>[ headword=<matched entry> by
 DICT_ERROR:no word
 ```
 
+A Latin word the dictionary does not have also gets the "Did you mean" headwords the word screen
+would list (`Dictionary::suggest`): up to 8, best first, comma-separated and empty when there are
+none; `scanned` counts the index headwords compared (at most 768), `suggest_ms` times the search.
+
+```
+DICT:result=not_found dict=<d> word=<w> suggestions=<s1,s2,...> scanned=<n> suggest_ms=<t>
+```
+
 A word whose first kept character is Han, kana or Hangul takes the prefix search the word screen
 runs on CJK text instead (it searches the `.syn` too, but takes none of the word-form fallbacks: no
-stemming, lowercase or elision retries), and the reply gains the search's findings. The Latin reply
-is unchanged.
+stemming, lowercase or elision retries), and the reply gains the search's findings, never
+suggestions.
 
 ```
 DICT:result=<outcome> dict=<d> word=<w>[ headword=<hits[0]> bytes=<n>] run=<run> matched=<codepoints of hits[0]> hits=<h1,h2,h3> entries=<n1,n2,n3> probes=<n> reads=<n> ms=<t>[ exact_ms=<t>]
@@ -657,14 +686,24 @@ directly (`Wait complete: refresh ...`) are not log lines and stay. A reboot res
 
 ```
 CMD:SLEEP
+CMD:SLEEP:SCREEN[:T=<a>,<b>,<c>][:F=<a>,<b>,<c>,<d>][:BOOK=<path>]
 CMD:REBOOT
 ```
 
-Replies: `SLEEP_OK`, `REBOOT_OK`, sent before the device acts.
+Replies: `SLEEP_OK`, `SLEEP_OK:screen T=<a>,<b>,<c> F=<a>,<b>,<c>,<d>`, `REBOOT_OK`, sent before the device acts.
 
 - `SLEEP` goes to sleep the normal way (sleep screen, progress saved), as a held power key does.
   **Deep sleep switches the USB port off, and only a real button press wakes the device.** Do not
   use it on a device nobody can reach.
+- `SLEEP:SCREEN` paints the sleep screen the way `SLEEP` would and stays awake on it, so a camera
+  can look at it and the next one follows without a button press. `ACT:HOME` leaves it; the screen
+  may have given up the second framebuffer, so end a series with `REBOOT`. `T=` sets the 4-level
+  dither thresholds (`quantizeGray4()` in `lib/GfxRenderer/BitmapHelpers.h`, rising, 0..255) and `F=`
+  the values fed back to the diffuser for the four levels (rising), for this and every later image
+  until the next `T=`/`F=` or a restart, which puts back the panel's own table
+  (`HalCapabilities::imageGray4Levels()`; 30,50,140 and 0,85,170,255 on a panel not measured yet). `BOOK=` comes
+  last and takes the rest of the line: that book's cover stands in for the last book's for this
+  screen, without opening it. Development builds only.
 - `REBOOT` restarts to Home the way the firmware's own maintenance restarts do: the reading session
   is closed, no boot screen. On the ESP32-C3 boards the port stays up through it (the boot log
   arrives on it), so nothing has to be reopened; a command sent right behind `REBOOT` is lost with
