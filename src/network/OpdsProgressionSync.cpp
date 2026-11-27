@@ -8,8 +8,10 @@
 #include <SecureHttpClient.h>
 #include <WiFi.h>
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 
 #include "CrossPointSettings.h"
@@ -56,6 +58,47 @@ std::string formatIso8601(time_t t) {
   char buf[32];
   strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tmUtc);
   return std::string(buf);
+}
+
+bool equalsIgnoreCase(const std::string& a, const char* b) {
+  const size_t len = std::strlen(b);
+  if (a.size() != len) return false;
+  for (size_t i = 0; i < len; ++i) {
+    if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Parses an HTTP-date (IMF-fixdate / RFC 1123, e.g. "Fri, 27 Nov 2026 08:46:38 GMT") to UTC time_t.
+// Returns 0 if the string cannot be parsed.
+time_t parseHttpDate(const std::string& value) {
+  static constexpr const char* kMonths[] = {"jan", "feb", "mar", "apr", "may", "jun",
+                                            "jul", "aug", "sep", "oct", "nov", "dec"};
+  char mon[4] = {};
+  int d = 0, y = 0, h = 0, m = 0, s = 0;
+  // Skip optional "<weekday>, " prefix if present.
+  const char* p = value.c_str();
+  if (const char* comma = std::strchr(p, ',')) {
+    p = comma + 1;
+  }
+  if (sscanf(p, " %d %3[A-Za-z] %d %d:%d:%d", &d, mon, &y, &h, &m, &s) != 6) {
+    return 0;
+  }
+  if (y < 1970 || d < 1 || d > 31 || h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 60) {
+    return 0;
+  }
+  unsigned monthNum = 0;
+  for (unsigned i = 0; i < 12; ++i) {
+    if (equalsIgnoreCase(mon, kMonths[i])) {
+      monthNum = i + 1;
+      break;
+    }
+  }
+  if (monthNum == 0) return 0;
+  const int64_t days = daysFromCivil(y, monthNum, static_cast<unsigned>(d));
+  return static_cast<time_t>(days * 86400LL + h * 3600LL + m * 60LL + s);
 }
 
 // Parses an OPDS Progression document body into `out`. Returns a non-Ok
@@ -205,8 +248,19 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
 
   client.addHeader("Accept", "application/opds-progression+json");
 
+  time_t serverTime = 0;
+  client.setResponseHeaderSink([&serverTime](const std::string& name, const std::string& value) {
+    if (equalsIgnoreCase(name, "date")) {
+      const time_t parsed = parseHttpDate(value);
+      if (parsed > 0) {
+        serverTime = parsed;
+      }
+    }
+  });
+
   LOG_INF(TAG, "Fetching remote progression from %s", config.progressionUrl.c_str());
   const int getStatus = client.GET(config.progressionUrl);
+  client.clearResponseHeaderSink();
 
   if (getStatus == 401 || getStatus == 403) {
     LOG_ERR(TAG, "Authentication failed (HTTP %d)", getStatus);
@@ -283,8 +337,10 @@ SyncResult performSync(const std::string& cachePath, float localProgression, con
     return {SyncStatus::SUCCESS_IN_SYNC, remote, ""};
   }
 
-  // Local is newer: push local progress to server via PUT
-  const std::string nowIso = formatIso8601(0);
+  // Local is newer: push local progress to server via PUT.
+  // Prefer the HTTP Date captured from GET so devices without an RTC/NTP clock still
+  // send a wall-clock timestamp aligned with the server (preventing 409 date conflicts).
+  const std::string nowIso = formatIso8601(serverTime);
 
   JsonDocument putDoc;
   putDoc["progression"] = localProgression;

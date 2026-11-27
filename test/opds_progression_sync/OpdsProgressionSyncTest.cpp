@@ -172,4 +172,39 @@ TEST_F(OpdsProgressionSyncTest, ParseIso8601IsUtcIndependentOfLocalTimezone) {
   tzset();
 }
 
+TEST_F(OpdsProgressionSyncTest, UsesHttpDateHeaderFromGetForPutModified) {
+  ASSERT_TRUE(OpdsProgressionSync::saveSyncConfig(kCachePath, kProgUrl, kServerUrl));
+
+  crosspoint::gMockHttp.responses.push_back({200, "", {{"Date", "Fri, 27 Nov 2026 08:46:38 GMT"}}});
+  crosspoint::gMockHttp.responses.push_back({200, R"({"progression":0.30,"modified":"2026-11-27T08:46:38Z"})"});
+
+  const auto res = OpdsProgressionSync::performSync(kCachePath, 0.30f, "Chapter 3", "Text/ch03.xhtml");
+  EXPECT_EQ(res.status, OpdsProgressionSync::SyncStatus::SUCCESS_LOCAL_PUSHED);
+  ASSERT_EQ(crosspoint::gMockHttp.requests.size(), 2u);
+
+  JsonDocument putDoc;
+  ASSERT_FALSE(deserializeJson(putDoc, crosspoint::gMockHttp.requests[1].body));
+  EXPECT_EQ(putDoc["modified"].as<std::string>(), "2026-11-27T08:46:38Z");
+
+  OpdsProgressionSync::SyncConfig loaded;
+  ASSERT_TRUE(OpdsProgressionSync::loadSyncConfig(kCachePath, loaded));
+  EXPECT_EQ(loaded.lastSyncedModified, "2026-11-27T08:46:38Z");
+}
+
+TEST_F(OpdsProgressionSyncTest, IgnoresMalformedHttpDateHeaderAndFallsBackToSystemClock) {
+  ASSERT_TRUE(OpdsProgressionSync::saveSyncConfig(kCachePath, kProgUrl, kServerUrl));
+
+  crosspoint::gMockHttp.responses.push_back({200, "", {{"date", "not-a-valid-date"}}});
+  crosspoint::gMockHttp.responses.push_back({200, R"({"progression":0.30,"modified":"2026-11-27T08:46:38Z"})"});
+
+  const auto res = OpdsProgressionSync::performSync(kCachePath, 0.30f);
+  EXPECT_EQ(res.status, OpdsProgressionSync::SyncStatus::SUCCESS_LOCAL_PUSHED);
+  ASSERT_EQ(crosspoint::gMockHttp.requests.size(), 2u);
+
+  JsonDocument putDoc;
+  ASSERT_FALSE(deserializeJson(putDoc, crosspoint::gMockHttp.requests[1].body));
+  EXPECT_FALSE(putDoc["modified"].as<std::string>().empty());
+  EXPECT_NE(putDoc["modified"].as<std::string>(), "not-a-valid-date");
+}
+
 }  // namespace

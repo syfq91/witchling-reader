@@ -1,7 +1,9 @@
 #pragma once
 #include <deque>
+#include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace crosspoint {
@@ -9,6 +11,7 @@ namespace crosspoint {
 struct MockHttpResponse {
   int status = 200;
   std::string body;
+  std::vector<std::pair<std::string, std::string>> headers = {};
 };
 
 struct RecordedHttpRequest {
@@ -52,6 +55,10 @@ class SecureHttpClient {
     basicPass_.clear();
   }
 
+  using HeaderSink = std::function<void(const std::string& name, const std::string& value)>;
+  void setResponseHeaderSink(HeaderSink sink) { headerSink_ = std::move(sink); }
+  void clearResponseHeaderSink() { headerSink_ = nullptr; }
+
   int GET(const std::string& url) { return dispatch("GET", url, ""); }
   int PUT(const std::string& url, const std::string& body) { return dispatch("PUT", url, body); }
 
@@ -66,6 +73,11 @@ class SecureHttpClient {
     }
     const auto resp = gMockHttp.responses.front();
     gMockHttp.responses.pop_front();
+    if (headerSink_) {
+      for (const auto& [name, value] : resp.headers) {
+        headerSink_(name, value);
+      }
+    }
     lastBody_ = resp.body;
     return resp.status;
   }
@@ -74,6 +86,7 @@ class SecureHttpClient {
   std::string basicPass_;
   std::map<std::string, std::string> headers_;
   std::string lastBody_;
+  HeaderSink headerSink_;
 };
 
 }  // namespace crosspoint
